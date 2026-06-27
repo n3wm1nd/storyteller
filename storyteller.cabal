@@ -33,6 +33,8 @@ library
                   , Storyteller.Types
                   , Storyteller.Storage
                   , Storyteller.Git
+                  , Storyteller.Runtime
+                  , Storyteller.Agent.Continuation
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
@@ -44,6 +46,7 @@ library
                   , polysemy
                   , template-haskell
                   , storyteller:gitlib-effect
+                  , polysemy-plugin
   hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -57,7 +60,13 @@ executable storyteller
   main-is:          Main.hs
   build-depends:    base >=4.18 && <5
                   , storyteller
+                  , runix
+                  , universal-llm
                   , text
+                  , bytestring
+                  , directory
+                  , polysemy
+                  , polysemy-plugin
   hs-source-dirs:   app
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -69,6 +78,7 @@ executable storyteller
                     -rtsopts
                     -with-rtsopts=-N
                     -O2
+                    -fplugin=Polysemy.Plugin
 
 test-suite storyteller-test
   type:             exitcode-stdio-1.0
