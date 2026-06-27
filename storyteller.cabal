@@ -11,10 +11,28 @@ maintainer:         authors@storyteller.dev
 category:           Development
 build-type:         Simple
 
+-- | General-purpose git effect + libgit2 interpreter.
+--   Intended to migrate to runix proper once stable.
+library gitlib-effect
+  exposed-modules:  Runix.Git
+  build-depends:    base >=4.18 && <5
+                  , polysemy
+                  , text
+                  , bytestring
+                  , runix
+  hs-source-dirs:   gitlib-effect/src
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+
 library
   exposed-modules:  Storyteller
                   , Storyteller.Types
                   , Storyteller.Storage
+                  , Storyteller.Git
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
@@ -24,6 +42,7 @@ library
                   , containers
                   , polysemy
                   , template-haskell
+                  , storyteller:gitlib-effect
   hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -53,8 +72,17 @@ executable storyteller
 test-suite storyteller-test
   type:             exitcode-stdio-1.0
   main-is:          Main.hs
+  other-modules:    Git.Mock
+                  , Storyteller.StorageSpec
   build-depends:    base >=4.18 && <5
                   , storyteller
+                  , storyteller:gitlib-effect
+                  , polysemy
+                  , polysemy-plugin
+                  , containers
+                  , text
+                  , hspec >=2.11
+                  , QuickCheck >=2.14
   hs-source-dirs:   test
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -65,3 +93,4 @@ test-suite storyteller-test
                     -threaded
                     -rtsopts
                     -with-rtsopts=-N
+                    -fplugin=Polysemy.Plugin

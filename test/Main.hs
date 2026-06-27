@@ -1,5 +1,8 @@
 module Main where
 
+import Test.Hspec
+import qualified Storyteller.StorageSpec
+
 main :: IO ()
-main = do
-    putStrLn "All tests passed!"
+main = hspec $ do
+  describe "Storyteller.Storage" Storyteller.StorageSpec.spec
