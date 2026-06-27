@@ -36,7 +36,9 @@ module Runix.Git
   , readCommit
   , writeCommit
   , readBlob
+  , writeBlob
   , readTree
+  , writeTree
   , lookupPath
 
     -- * Interpreter
@@ -92,7 +94,9 @@ data Git m a where
   ReadCommit  :: ObjectHash                 -> Git m CommitData
   WriteCommit :: CommitData                 -> Git m ObjectHash
   ReadBlob    :: ObjectHash                 -> Git m ByteString
+  WriteBlob   :: ByteString                 -> Git m ObjectHash
   ReadTree    :: ObjectHash                 -> Git m [TreeEntry]
+  WriteTree   :: [TreeEntry]               -> Git m ObjectHash
   LookupPath  :: ObjectHash -> FilePath     -> Git m (Maybe ObjectHash)
 
 makeSem ''Git
@@ -143,9 +147,25 @@ runGitIO repo = interpret $ \case
     out <- git repo ["cat-file", "blob", T.unpack (unObjectHash hash)]
     return $ TE.encodeUtf8 (stdout out)
 
+  WriteBlob content -> do
+    out <- gitStdin repo ["hash-object", "-w", "--stdin"] content
+    case T.lines (stdout out) of
+      (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
+      _ -> fail $ "git hash-object failed: " <> T.unpack (stderr out)
+
   ReadTree hash -> do
     out <- git repo ["ls-tree", T.unpack (unObjectHash hash)]
     return $ mapMaybe parseTreeLine (T.lines (stdout out))
+
+  WriteTree entries -> do
+    let entryLine e = case e of
+          BlobEntry name h -> "100644 blob " <> unObjectHash h <> "\t" <> T.pack name
+          SubTree   name h -> "040000 tree " <> unObjectHash h <> "\t" <> T.pack name
+        input = T.unlines (map entryLine entries)
+    out <- gitStdin repo ["mktree"] (TE.encodeUtf8 input)
+    case T.lines (stdout out) of
+      (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
+      _ -> fail $ "git mktree failed: " <> T.unpack (stderr out)
 
   LookupPath hash path -> do
     out <- git repo ["ls-tree", "-r", T.unpack (unObjectHash hash), "--", path]

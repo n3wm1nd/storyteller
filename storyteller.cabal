@@ -40,6 +40,7 @@ library
                   , text
                   , bytestring
                   , containers
+                  , filepath
                   , polysemy
                   , template-haskell
                   , storyteller:gitlib-effect
@@ -80,7 +81,9 @@ test-suite storyteller-test
                   , polysemy
                   , polysemy-plugin
                   , containers
+                  , bytestring
                   , text
+                  , runix
                   , hspec >=2.11
                   , QuickCheck >=2.14
   hs-source-dirs:   test

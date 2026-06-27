@@ -1,11 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- | Git-backed interpreters for StoryStorage and StoryBranch.
@@ -16,23 +19,154 @@
 --   * Tick messages are encoded as:
 --       @refs: <hash1> <hash2> ...\n<message>@   when refs are present
 --       @<message>@                               otherwise
---   * Commits carry no tree changes — all commits use the empty git tree.
---   * @At@ is a stub: runs the action at head and returns an empty id mapping.
+--   * Each tick (commit) carries the full working-tree snapshot as its tree object.
+--   * 'WorkingTree' is a complete in-memory filesystem: files carry their content,
+--     directories are explicit empty entries.  On 'Store' it is serialised to a git
+--     tree object; on branch checkout it is reconstructed from the commit's tree.
 module Storyteller.Git
-  ( runStoryStorageGit
+  ( -- * Branch tag for filesystem effects
+    BranchTag(..)
+
+    -- * Interpreters
+  , runStoryStorageGit
   , runStoryBranchGit
+  , runStoryFSGit
+
+    -- * Working tree (in-memory filesystem)
+  , FSNode(..)
+  , WorkingTree
+  , emptyWorkingTree
   ) where
 
-import Prelude hiding (drop)
+import Prelude
+import Control.Monad (foldM)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import System.FilePath (splitDirectories, joinPath)
 import Polysemy
 import Polysemy.Fail
+import Polysemy.State
 
 import Runix.Git
+import Runix.FileSystem
+  ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
 
 import Storyteller.Types
-import Storyteller.Storage
+import Storyteller.Storage hiding (get, drop, Get)
+import qualified Storyteller.Storage as S
+
+-- ---------------------------------------------------------------------------
+-- In-memory filesystem
+-- ---------------------------------------------------------------------------
+
+-- | Kind-* wrapper carrying the branch type-level tag.
+--   Used as the @project@ parameter for filesystem effects, so that
+--   @FileSystem (BranchTag branch)@ is unambiguous on the effect stack.
+newtype BranchTag (branch :: k) = BranchTag BranchName
+
+-- | A node in the in-memory working tree.
+--
+--   'FSFile' always carries both content and its git blob hash — the hash is
+--   written to git eagerly on every 'WriteFile', so flush is pure tree assembly
+--   with no further blob writes needed.
+--   'FSDir' represents an explicit, possibly-empty directory.
+data FSNode
+  = FSFile !ByteString !ObjectHash
+  | FSDir
+  deriving (Show, Eq)
+
+-- | The complete in-memory filesystem, keyed by path.
+--   Directories are stored explicitly so empty dirs round-trip.
+--   Path separator convention: forward slash, no trailing slash, relative.
+type WorkingTree = Map FilePath FSNode
+
+emptyWorkingTree :: WorkingTree
+emptyWorkingTree = Map.empty
+
+-- ---------------------------------------------------------------------------
+-- WorkingTree ↔ git tree serialisation
+-- ---------------------------------------------------------------------------
+
+-- | Reconstruct a 'WorkingTree' from a git commit's tree object.
+--   Reads the flat tree at the commit; subtrees are read recursively.
+loadWorkingTree :: Members '[Git, Fail] r => ObjectHash -> Sem r WorkingTree
+loadWorkingTree commitHash = do
+  cd <- readCommit commitHash
+  readTreeRecursive "" (commitTree cd)
+
+readTreeRecursive
+  :: Members '[Git, Fail] r
+  => FilePath    -- ^ path prefix (empty at root)
+  -> ObjectHash
+  -> Sem r WorkingTree
+readTreeRecursive prefix treeHash = do
+  entries <- readTree treeHash
+  fmap (Map.unions) $ mapM (readEntry prefix) entries
+  where
+    readEntry pfx (BlobEntry name hash) = do
+      content <- readBlob hash
+      let path = if null pfx then name else pfx <> "/" <> name
+      return $ Map.singleton path (FSFile content hash)
+    readEntry pfx (SubTree name hash) = do
+      let path = if null pfx then name else pfx <> "/" <> name
+      sub <- readTreeRecursive path hash
+      -- insert an explicit FSDir entry for the directory itself
+      return $ Map.insert path FSDir sub
+
+-- | Write the 'WorkingTree' to git, returning the root tree hash.
+--   Builds the tree hierarchy bottom-up from the flat path map.
+flushWorkingTree :: Members '[Git, Fail] r => WorkingTree -> Sem r ObjectHash
+flushWorkingTree wt
+  | Map.null wt = return emptyTree
+  | otherwise   = buildTree "" wt
+
+-- | Build git tree objects for a subtree rooted at @prefix@.
+buildTree
+  :: Members '[Git, Fail] r
+  => FilePath    -- ^ directory prefix (empty for root)
+  -> WorkingTree -- ^ the full tree (we select entries belonging to this dir)
+  -> Sem r ObjectHash
+buildTree prefix wt = do
+  let children = directChildren prefix wt
+  entries <- mapM (\name -> toEntry prefix name wt) children
+  writeTree entries
+
+-- | List the immediate child names under @prefix@.
+directChildren :: FilePath -> WorkingTree -> [String]
+directChildren prefix wt =
+  let prefixParts = if null prefix then [] else splitDirectories prefix
+      len         = length prefixParts
+      names       = [ c
+                    | p <- Map.keys wt
+                    , let parts = splitDirectories p
+                    , length parts > len
+                    , take len parts == prefixParts
+                    , c : _ <- [drop len parts]
+                    ]
+  in dedupe names
+  where
+    dedupe [] = []
+    dedupe (x:xs) = x : dedupe (filter (/= x) xs)
+
+toEntry
+  :: Members '[Git, Fail] r
+  => FilePath   -- ^ parent prefix
+  -> FilePath   -- ^ child name (single component)
+  -> WorkingTree
+  -> Sem r TreeEntry
+toEntry prefix name wt =
+  let path = if null prefix then name else prefix <> "/" <> name
+  in case Map.lookup path wt of
+    Just (FSFile _content hash) ->
+      return (BlobEntry name hash)
+    _ -> do
+      -- directory (explicit FSDir or implicit from deeper entries)
+      hash <- buildTree path wt
+      return (SubTree name hash)
 
 -- ---------------------------------------------------------------------------
 -- Naming conventions
@@ -41,7 +175,6 @@ import Storyteller.Storage
 storyRef :: BranchName -> RefName
 storyRef (BranchName n) = RefName ("refs/heads/story/" <> n)
 
--- | The well-known SHA of the empty git tree object.
 emptyTree :: ObjectHash
 emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -49,13 +182,11 @@ emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 -- Message encoding / decoding
 -- ---------------------------------------------------------------------------
 
--- | Encode tick refs and message into a commit message.
 encodeMessage :: [TickId] -> Text -> Text
 encodeMessage [] msg  = msg
 encodeMessage refs msg =
   "refs: " <> T.unwords (map unTickId refs) <> "\n" <> msg
 
--- | Decode a commit message into (refs, message).
 decodeMessage :: Text -> ([TickId], Text)
 decodeMessage raw =
   case T.lines raw of
@@ -85,7 +216,6 @@ commitToTick hash cd =
 -- StoryStorage interpreter
 -- ---------------------------------------------------------------------------
 
--- | Interpret 'StoryStorage' against git via 'Runix.Git'.
 runStoryStorageGit
   :: Members '[Git, Fail] r
   => Sem (StoryStorage : r) a
@@ -93,7 +223,6 @@ runStoryStorageGit
 runStoryStorageGit = interpret $ \case
   CreateBranch name -> do
     let ref = storyRef name
-    -- Write a root commit (no parents) onto the empty tree
     rootHash <- writeCommit CommitData
       { commitParents = []
       , commitTree    = emptyTree
@@ -114,69 +243,238 @@ runStoryStorageGit = interpret $ \case
         in return Branch { branchName = name, branchHead = TickId (unObjectHash hash) }
 
   UpdateReferences _mapping ->
-    -- Full cross-branch ref rewriting after rebase — deferred.
     return ()
 
 -- ---------------------------------------------------------------------------
 -- StoryBranch interpreter
 -- ---------------------------------------------------------------------------
 
--- | Interpret 'StoryBranch' against git via 'Runix.Git', operating on the
---   named branch.
+-- | Interpret 'StoryBranch branch' against git.
+--   'Store' flushes the shared 'WorkingTree' into a real git tree object.
+--   'Drop' and 'At' restore the working tree from the target commit's tree.
 runStoryBranchGit
-  :: Members '[Git, Fail] r
+  :: forall branch r a
+  .  Members '[Git, Fail, State WorkingTree] r
   => BranchName
-  -> Sem (StoryBranch : r) a
+  -> Sem (StoryBranch branch : r) a
   -> Sem r a
 runStoryBranchGit branch = interpretH $ \case
-      Store msg -> do
-        headHash <- raise $ resolveHead branch
-        newHash <- raise $ writeCommit CommitData
+  Store msg -> do
+    headHash <- raise $ resolveHead branch
+    wt       <- raise $ get @WorkingTree
+    parentWt <- raise $ loadWorkingTree headHash
+    case checkAppendOnly parentWt wt of
+      Left err -> pureT (Left err)
+      Right () -> do
+        treeHash <- raise $ flushWorkingTree wt
+        newHash  <- raise $ writeCommit CommitData
           { commitParents = [headHash]
-          , commitTree    = emptyTree
+          , commitTree    = treeHash
           , commitMessage = encodeMessage [] msg
           }
         raise $ updateRef (storyRef branch) newHash
-        pureT $ TickId (unObjectHash newHash)
+        pureT $ Right (TickId (unObjectHash newHash))
 
-      Drop -> do
-        headHash <- raise $ resolveHead branch
-        cd <- raise $ readCommit headHash
-        case commitParents cd of
-          []       -> pureT ()
-          (p : _)  -> raise (updateRef (storyRef branch) p) >> pureT ()
+  Drop -> do
+    headHash <- raise $ resolveHead branch
+    cd       <- raise $ readCommit headHash
+    case commitParents cd of
+      []      -> pureT ()
+      (p : _) -> raise (updateRef (storyRef branch) p) >> pureT ()
 
-      Get -> do
-        headHash <- raise $ resolveHead branch
-        cd <- raise $ readCommit headHash
-        pureT $ commitToTick headHash cd
+  S.Get -> do
+    headHash <- raise $ resolveHead branch
+    cd       <- raise $ readCommit headHash
+    pureT $ commitToTick headHash cd
 
-      Follow seed step -> do
-        headHash <- raise $ resolveHead branch
-        result <- raise $ walkFrom seed step headHash
-        pureT result
+  S.Reset -> do
+    headHash <- raise $ resolveHead branch
+    wt       <- raise $ loadWorkingTree headHash
+    raise $ put wt
+    pureT ()
 
-      At tid action -> do
-        -- 1. Collect the tail: commits from head back to (but not including) tid,
-        --    in reverse order (oldest first after reversal).
-        headHash <- raise $ resolveHead branch
-        tail_ <- raise $ collectTail (TickId (unObjectHash headHash)) tid []
-        -- 2. Rewind branch pointer to tid.
+  Follow seed step -> do
+    headHash <- raise $ resolveHead branch
+    result   <- raise $ walkFrom seed step headHash
+    pureT result
+
+  At tid action -> do
+    headHash  <- raise $ resolveHead branch
+    eTail     <- raise $ collectTail (TickId (unObjectHash headHash)) tid []
+    case eTail of
+      Left err  -> pureT (Left err)
+      Right tail_ -> do
+        savedWt  <- raise $ get @WorkingTree
         raise $ updateRef (storyRef branch) (ObjectHash (unTickId tid))
-        -- 3. Run the inner action with branch pointing at tid.
-        fa <- runTSimple action
-        -- 4. Replay the tail on top of whatever the action left at head.
-        newHead <- raise $ resolveHead branch
-        mapping <- raise $ replayTail newHead tail_
-        -- 5. Update the branch to the replayed head.
+        targetWt <- raise $ loadWorkingTree (ObjectHash (unTickId tid))
+        raise $ put targetWt
+        fa       <- runTSimple action
+        newHead  <- raise $ resolveHead branch
+        mapping  <- raise $ replayTail newHead tail_
         case mapping of
           [] -> return ()
           _  -> raise $ updateRef (storyRef branch) (ObjectHash (unTickId (snd (last mapping))))
-        return $ fmap (, mapping) fa
+        raise $ put savedWt
+        return $ fmap (\a -> Right (a, mapping)) fa
+
+-- ---------------------------------------------------------------------------
+-- FileSystem interpreter (git-backed, shares WorkingTree state)
+-- ---------------------------------------------------------------------------
+
+-- | Interpret filesystem effects for a branch against the in-memory 'WorkingTree'.
+--
+--   The project type for all three effects is @BranchTag branch@, making each
+--   branch's filesystem unambiguous on the effect stack.  The 'BranchTag branch'
+--   runtime value is what 'GetFileSystem' returns; all actual IO goes through
+--   'Git' and 'State WorkingTree', which are shared with 'runStoryBranchGit'.
+runStoryFSGit
+  :: forall branch r a
+  .  Members '[Git, Fail, State WorkingTree] r
+  => BranchName
+  -> Sem ( FileSystemWrite (BranchTag branch)
+         : FileSystemRead  (BranchTag branch)
+         : FileSystem      (BranchTag branch)
+         : r ) a
+  -> Sem r a
+runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
+  where
+    interpretFS
+      :: Members '[State WorkingTree] r'
+      => Sem (FileSystem (BranchTag branch) : r') a'
+      -> Sem r' a'
+    interpretFS = interpret $ \case
+      GetFileSystem ->
+        return (BranchTag name)
+      GetCwd ->
+        return $ Right "/"
+      ListFiles dir -> do
+        wt <- get @WorkingTree
+        return $ Right [ p | p <- Map.keys wt, isDirectChild dir p ]
+      FileExists path -> do
+        wt <- get @WorkingTree
+        return $ Right (Map.member path wt)
+      IsDirectory path -> do
+        wt <- get @WorkingTree
+        return $ Right $ case Map.lookup path wt of
+          Just FSDir -> True
+          _          -> False
+      Glob _base _pat ->
+        return $ Left "Branch FS: Glob not yet implemented"
+
+    interpretFSRead
+      :: Members '[Git, Fail, State WorkingTree] r'
+      => Sem (FileSystemRead (BranchTag branch) : r') a'
+      -> Sem r' a'
+    interpretFSRead = interpret $ \case
+      ReadFile path -> do
+        wt <- get @WorkingTree
+        case Map.lookup path wt of
+          Just (FSFile bs _) -> return $ Right bs
+          Just FSDir         -> return $ Left (path <> ": is a directory")
+          Nothing            -> return $ Left (path <> ": not found")
+
+    interpretFSWrite
+      :: Members '[Git, Fail, State WorkingTree] r'
+      => Sem (FileSystemWrite (BranchTag branch) : r') a'
+      -> Sem r' a'
+    interpretFSWrite = interpret $ \case
+      WriteFile path content -> do
+        hash <- writeBlob content
+        let parents = ancestorDirs path
+        modify @WorkingTree $ \wt ->
+          foldr (\d m -> Map.insertWith keepExisting d FSDir m) wt parents
+        modify @WorkingTree (Map.insert path (FSFile content hash))
+        return $ Right ()
+      CreateDirectory _recursive path -> do
+        modify @WorkingTree (Map.insertWith keepExisting path FSDir)
+        return $ Right ()
+      Remove recursive path -> do
+        if recursive
+          then modify @WorkingTree $ Map.filterWithKey
+                 (\k _ -> k /= path && not (isUnderDir path k))
+          else modify @WorkingTree (Map.delete path)
+        return $ Right ()
+
+    -- Keep the existing entry rather than overwriting (so a file is not
+    -- silently replaced by FSDir when a parent dir is ensured).
+    keepExisting :: FSNode -> FSNode -> FSNode
+    keepExisting _ old = old
+
+    -- True when @child@ is directly inside @dir@:
+    --   "a/b" is a direct child of "a", but "a/b/c" is not.
+    isDirectChild :: FilePath -> FilePath -> Bool
+    isDirectChild "/"  p = length (splitDirectories p) == 1
+    isDirectChild "."  p = length (splitDirectories p) == 1
+    isDirectChild ""   p = length (splitDirectories p) == 1
+    isDirectChild dir  p =
+      let dirParts  = splitDirectories dir
+          pathParts = splitDirectories p
+      in take (length dirParts) pathParts == dirParts
+         && length pathParts == length dirParts + 1
+
+    isUnderDir :: FilePath -> FilePath -> Bool
+    isUnderDir dir path =
+      let dirParts  = splitDirectories dir
+          pathParts = splitDirectories path
+      in take (length dirParts) pathParts == dirParts
+         && length pathParts > length dirParts
+
+    ancestorDirs :: FilePath -> [FilePath]
+    ancestorDirs path =
+      let parts = splitDirectories path
+          -- all prefixes except the full path itself
+      in [ joinPath (take n parts) | n <- [1 .. length parts - 1] ]
 
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
+
+-- | Check that every file in the new working tree is a pure append of the
+--   corresponding file in the parent tree. New files and directories are fine;
+--   deletions and modifications (content not prefixed by the parent's content)
+--   are rejected with a descriptive error.
+checkAppendOnly :: WorkingTree -> WorkingTree -> Either String ()
+checkAppendOnly parent new = mapM_ check (Map.toList new)
+  where
+    check (_,    FSDir)            = Right ()
+    check (path, FSFile content _) =
+      case Map.lookup path parent of
+        Nothing            -> Right ()
+        Just FSDir         -> Right ()
+        Just (FSFile old _)
+          | old `BS.isPrefixOf` content -> Right ()
+          | otherwise -> Left $ "Store: non-append modification of " <> path
+              <> " (existing content must be a prefix of new content)"
+
+-- | Apply the suffix that commit @cd@ added to its parent onto @parentWt@.
+--   For each file: compute bytes added beyond the commit's own parent's version,
+--   then append those bytes to the corresponding file in @parentWt@.
+applyCommitSuffix
+  :: Members '[Git, Fail] r
+  => WorkingTree   -- ^ tree of the new parent (what we're rebasing onto)
+  -> CommitData    -- ^ the commit being replayed
+  -> Sem r WorkingTree
+applyCommitSuffix parentWt cd = do
+  commitWt       <- readTreeRecursive "" (commitTree cd)
+  commitParentWt <- case commitParents cd of
+    []    -> return emptyWorkingTree
+    (p:_) -> loadWorkingTree p
+  foldM (applyFile commitParentWt) parentWt (Map.toList commitWt)
+  where
+    applyFile _commitParentWt wt (path, FSDir) =
+      return $ Map.insertWith keepExisting path FSDir wt
+    applyFile commitParentWt wt (path, FSFile newContent _) = do
+      let oldContent = case Map.lookup path commitParentWt of
+            Just (FSFile bs _) -> bs
+            _                  -> BS.empty
+          suffix   = BS.drop (BS.length oldContent) newContent
+          base     = case Map.lookup path wt of
+            Just (FSFile bs _) -> bs
+            _                  -> BS.empty
+          combined = base <> suffix
+      hash <- writeBlob combined
+      return $ Map.insert path (FSFile combined hash) wt
+    keepExisting _ old = old
 
 resolveHead :: Members '[Git, Fail] r => BranchName -> Sem r ObjectHash
 resolveHead name = do
@@ -185,33 +483,33 @@ resolveHead name = do
     Just h  -> return h
     Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName name)
 
--- | Walk from head back to (but not including) the target tick, accumulating
---   commits in reverse order (so the result is oldest-first).
 collectTail
   :: Members '[Git, Fail] r
-  => TickId       -- ^ current position (starts at head)
-  -> TickId       -- ^ stop before this tick
-  -> [CommitData] -- ^ accumulator
-  -> Sem r [CommitData]
+  => TickId
+  -> TickId
+  -> [CommitData]
+  -> Sem r (Either String [CommitData])
 collectTail current stop acc
-  | current == stop = return acc
+  | current == stop = return (Right acc)
   | otherwise = do
       cd <- readCommit (ObjectHash (unTickId current))
       case commitParents cd of
-        [] -> fail "StoryBranch.At: target tick not found in branch history"
+        [] -> return $ Left $
+          "At: tick " <> T.unpack (unTickId stop) <> " not found in branch history"
         (p:_) -> collectTail (TickId (unObjectHash p)) stop (cd : acc)
 
--- | Replay a list of commits (oldest-first) on top of the current head,
---   returning the old→new TickId mapping.
 replayTail
   :: Members '[Git, Fail] r
-  => ObjectHash        -- ^ current head to build on top of
-  -> [CommitData]      -- ^ tail to replay, oldest first
+  => ObjectHash
+  -> [CommitData]
   -> Sem r [(TickId, TickId)]
 replayTail _ [] = return []
 replayTail parent (cd : rest) = do
-  let oldId = TickId $ unObjectHash $ case commitParents cd of { (p:_) -> p; [] -> parent }
-  newHash <- writeCommit cd { commitParents = [parent] }
+  let oldId     = TickId $ unObjectHash $ case commitParents cd of { (p:_) -> p; [] -> parent }
+  parentWt  <- loadWorkingTree parent
+  newWt     <- applyCommitSuffix parentWt cd
+  treeHash  <- flushWorkingTree newWt
+  newHash   <- writeCommit cd { commitParents = [parent], commitTree = treeHash }
   let newId = TickId (unObjectHash newHash)
   remaining <- replayTail newHash rest
   return ((oldId, newId) : remaining)
