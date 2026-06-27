@@ -222,13 +222,17 @@ runStoryStorageGit
 runStoryStorageGit = interpret $ \case
   CreateBranch name -> do
     let ref = storyRef name
-    rootHash <- writeCommit CommitData
-      { commitParents = []
-      , commitTree    = emptyTree
-      , commitMessage = "root"
-      }
-    createRef ref rootHash
-    return Branch { branchName = name, branchHead = TickId (unObjectHash rootHash) }
+    existing <- resolveRef ref
+    case existing of
+      Just _ -> fail $ "branch already exists: " <> T.unpack (unBranchName name)
+      Nothing -> do
+        rootHash <- writeCommit CommitData
+          { commitParents = []
+          , commitTree    = emptyTree
+          , commitMessage = "root"
+          }
+        createRef ref rootHash
+        return Branch { branchName = name, branchHead = TickId (unObjectHash rootHash) }
 
   DeleteBranch name ->
     deleteRef (storyRef name)
@@ -257,65 +261,71 @@ runStoryBranchGit
   => BranchName
   -> Sem (StoryBranch branch : r) a
   -> Sem r a
-runStoryBranchGit branch = interpretH $ \case
-  Store msg -> do
-    headHash <- raise $ resolveHead branch
-    wt       <- raise $ get @WorkingTree
-    parentWt <- raise $ loadWorkingTree headHash
-    eCheck <- raise $ checkAppendOnly parentWt wt
-    case eCheck of
-      Left err -> pureT (Left err)
-      Right () -> do
-        treeHash <- raise $ flushWorkingTree wt
-        newHash  <- raise $ writeCommit CommitData
-          { commitParents = [headHash]
-          , commitTree    = treeHash
-          , commitMessage = encodeMessage [] msg
-          }
-        raise $ updateRef (storyRef branch) newHash
-        pureT $ Right (TickId (unObjectHash newHash))
+runStoryBranchGit branch action = do
+  -- Initialise working tree from head commit before running any branch operations
+  headHash <- resolveHead branch
+  wt       <- loadWorkingTree headHash
+  put wt
+  interpretH (\case
+    Store msg -> do
+      headHash' <- raise $ resolveHead branch
+      wt'       <- raise $ get @WorkingTree
+      parentWt  <- raise $ loadWorkingTree headHash'
+      eCheck    <- raise $ checkAppendOnly parentWt wt'
+      case eCheck of
+        Left err -> pureT (Left err)
+        Right () -> do
+          treeHash <- raise $ flushWorkingTree wt'
+          newHash  <- raise $ writeCommit CommitData
+            { commitParents = [headHash']
+            , commitTree    = treeHash
+            , commitMessage = encodeMessage [] msg
+            }
+          raise $ updateRef (storyRef branch) newHash
+          pureT $ Right (TickId (unObjectHash newHash))
 
-  Drop -> do
-    headHash <- raise $ resolveHead branch
-    cd       <- raise $ readCommit headHash
-    case commitParents cd of
-      []      -> pureT ()
-      (p : _) -> raise (updateRef (storyRef branch) p) >> pureT ()
+    Drop -> do
+      headHash' <- raise $ resolveHead branch
+      cd        <- raise $ readCommit headHash'
+      case commitParents cd of
+        []      -> pureT ()
+        (p : _) -> raise (updateRef (storyRef branch) p) >> pureT ()
 
-  S.Get -> do
-    headHash <- raise $ resolveHead branch
-    cd       <- raise $ readCommit headHash
-    pureT $ commitToTick headHash cd
+    S.Get -> do
+      headHash' <- raise $ resolveHead branch
+      cd        <- raise $ readCommit headHash'
+      pureT $ commitToTick headHash' cd
 
-  S.Reset -> do
-    headHash <- raise $ resolveHead branch
-    wt       <- raise $ loadWorkingTree headHash
-    raise $ put wt
-    pureT ()
+    S.Reset -> do
+      headHash' <- raise $ resolveHead branch
+      wt'       <- raise $ loadWorkingTree headHash'
+      raise $ put wt'
+      pureT ()
 
-  Follow seed step -> do
-    headHash <- raise $ resolveHead branch
-    result   <- raise $ walkFrom seed step headHash
-    pureT result
+    Follow seed step -> do
+      headHash' <- raise $ resolveHead branch
+      result    <- raise $ walkFrom seed step headHash'
+      pureT result
 
-  At tid action -> do
-    headHash  <- raise $ resolveHead branch
-    eTail     <- raise $ collectTail (TickId (unObjectHash headHash)) tid []
-    case eTail of
-      Left err  -> pureT (Left err)
-      Right tail_ -> do
-        savedWt  <- raise $ get @WorkingTree
-        raise $ updateRef (storyRef branch) (ObjectHash (unTickId tid))
-        targetWt <- raise $ loadWorkingTree (ObjectHash (unTickId tid))
-        raise $ put targetWt
-        fa       <- runTSimple action
-        newHead  <- raise $ resolveHead branch
-        mapping  <- raise $ replayTail newHead tail_
-        case mapping of
-          [] -> return ()
-          _  -> raise $ updateRef (storyRef branch) (ObjectHash (unTickId (snd (last mapping))))
-        raise $ put savedWt
-        return $ fmap (\a -> Right (a, mapping)) fa
+    At tid innerAction -> do
+      headHash'  <- raise $ resolveHead branch
+      eTail      <- raise $ collectTail (TickId (unObjectHash headHash')) tid []
+      case eTail of
+        Left err    -> pureT (Left err)
+        Right tail_ -> do
+          savedWt  <- raise $ get @WorkingTree
+          raise $ updateRef (storyRef branch) (ObjectHash (unTickId tid))
+          targetWt <- raise $ loadWorkingTree (ObjectHash (unTickId tid))
+          raise $ put targetWt
+          fa       <- runTSimple innerAction
+          newHead  <- raise $ resolveHead branch
+          mapping  <- raise $ replayTail newHead tail_
+          case mapping of
+            [] -> return ()
+            _  -> raise $ updateRef (storyRef branch) (ObjectHash (unTickId (snd (last mapping))))
+          raise $ put savedWt
+          return $ fmap (\a -> Right (a, mapping)) fa
+    ) action
 
 -- ---------------------------------------------------------------------------
 -- FileSystem interpreter (git-backed, shares WorkingTree state)
@@ -450,7 +460,11 @@ checkAppendOnly parent new = go (Map.toList new)
           if oldContent `BS.isPrefixOf` newContent
             then go rest
             else return $ Left $ "Store: non-append modification of " <> path
-                   <> " (existing content must be a prefix of new content)"
+                   <> " (old=" <> show (BS.length oldContent)
+                   <> " new=" <> show (BS.length newContent)
+                   <> " oldHash=" <> T.unpack (unObjectHash oldHash)
+                   <> " newHash=" <> T.unpack (unObjectHash newHash)
+                   <> ")"
 
 -- | Apply the suffix that commit @cd@ added to its parent onto @parentWt@.
 --   For each file: compute bytes added beyond the commit's own parent's version,

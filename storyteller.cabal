@@ -60,6 +60,7 @@ executable storyteller
   main-is:          Main.hs
   build-depends:    base >=4.18 && <5
                   , storyteller
+                  , storyteller:gitlib-effect
                   , runix
                   , universal-llm
                   , text

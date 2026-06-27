@@ -21,16 +21,18 @@ module Storyteller.Storage
     -- * Storage-level effect
   , StoryStorage(..)
   , createBranch
+  , getBranch
   , deleteBranch
   , listBranches
   , updateReferences
   ) where
 
 import Prelude hiding (drop)
+import Data.List (find)
 import Polysemy
 import Polysemy.Fail
 import Data.Text (Text)
-import Storyteller.Types (TickId, BranchName, Branch, Tick)
+import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick)
 
 -- | Operations on a single named branch (a chain of ticks).
 --   The @branch@ type parameter is a phantom used to disambiguate multiple
@@ -96,6 +98,9 @@ deleteBranch name = send (DeleteBranch name)
 
 listBranches :: Member StoryStorage r => Sem r [Branch]
 listBranches = send ListBranches
+
+getBranch :: Member StoryStorage r => BranchName -> Sem r (Maybe Branch)
+getBranch name = find ((== name) . branchName) <$> listBranches
 
 updateReferences :: Member StoryStorage r => [(TickId, TickId)] -> Sem r ()
 updateReferences mapping = send (UpdateReferences mapping)
