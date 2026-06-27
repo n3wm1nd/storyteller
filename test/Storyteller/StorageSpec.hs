@@ -336,6 +336,33 @@ spec = do
         Left err -> err `shouldContain` "non-append"
         Right _  -> fail "expected store to fail on non-append"
 
+    it "file deleted then recreated: content at each tick is correct" $ do
+      -- Check current state and t1 content in one run
+      let result1 = runTestFS $ do
+            _ <- createBranch (BranchName "main")
+            appendFile @Main "outfit.md" "red dress\n"
+            t1 <- store "wearing red dress"
+            remove @(BranchTag Main) False "outfit.md"
+            _  <- store "outfit removed"
+            appendFile @Main "outfit.md" "black coat\n"
+            _  <- store "wearing black coat"
+            current <- readFile @(BranchTag Main) "outfit.md"
+            (atT1, _) <- at t1 $ readFile @(BranchTag Main) "outfit.md"
+            return (current, atT1)
+      result1 `shouldBe` Right ("black coat\n", "red dress\n")
+      -- Check that file was absent at t2 in a separate run
+      let result2 = runTestFS $ do
+            _ <- createBranch (BranchName "main")
+            appendFile @Main "outfit.md" "red dress\n"
+            _  <- store "wearing red dress"
+            remove @(BranchTag Main) False "outfit.md"
+            t2 <- store "outfit removed"
+            appendFile @Main "outfit.md" "black coat\n"
+            _  <- store "wearing black coat"
+            (exists, _) <- at t2 $ fileExists @(BranchTag Main) "outfit.md"
+            return exists
+      result2 `shouldBe` Right False
+
     it "at fails cleanly when tick is not in branch history" $ do
       let result = runTestFS $ do
             _ <- createBranch (BranchName "main")
