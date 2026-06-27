@@ -40,7 +40,6 @@ module Storyteller.Git
 
 import Prelude
 import Control.Monad (foldM)
-import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -70,12 +69,13 @@ newtype BranchTag (branch :: k) = BranchTag BranchName
 
 -- | A node in the in-memory working tree.
 --
---   'FSFile' always carries both content and its git blob hash — the hash is
---   written to git eagerly on every 'WriteFile', so flush is pure tree assembly
---   with no further blob writes needed.
+--   'FSFile' carries only the git blob hash; content is written to git eagerly
+--   on every 'WriteFile' (mandatory, not a side-effect) and fetched via
+--   'ReadBlob' on demand.  This mirrors git's index/staging-area semantics:
+--   the working tree is a pure hash-addressed index, no content in RAM.
 --   'FSDir' represents an explicit, possibly-empty directory.
 data FSNode
-  = FSFile !ByteString !ObjectHash
+  = FSFile !ObjectHash
   | FSDir
   deriving (Show, Eq)
 
@@ -108,9 +108,8 @@ readTreeRecursive prefix treeHash = do
   fmap (Map.unions) $ mapM (readEntry prefix) entries
   where
     readEntry pfx (BlobEntry name hash) = do
-      content <- readBlob hash
       let path = if null pfx then name else pfx <> "/" <> name
-      return $ Map.singleton path (FSFile content hash)
+      return $ Map.singleton path (FSFile hash)
     readEntry pfx (SubTree name hash) = do
       let path = if null pfx then name else pfx <> "/" <> name
       sub <- readTreeRecursive path hash
@@ -161,7 +160,7 @@ toEntry
 toEntry prefix name wt =
   let path = if null prefix then name else prefix <> "/" <> name
   in case Map.lookup path wt of
-    Just (FSFile _content hash) ->
+    Just (FSFile hash) ->
       return (BlobEntry name hash)
     _ -> do
       -- directory (explicit FSDir or implicit from deeper entries)
@@ -263,7 +262,8 @@ runStoryBranchGit branch = interpretH $ \case
     headHash <- raise $ resolveHead branch
     wt       <- raise $ get @WorkingTree
     parentWt <- raise $ loadWorkingTree headHash
-    case checkAppendOnly parentWt wt of
+    eCheck <- raise $ checkAppendOnly parentWt wt
+    case eCheck of
       Left err -> pureT (Left err)
       Right () -> do
         treeHash <- raise $ flushWorkingTree wt
@@ -369,7 +369,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       ReadFile path -> do
         wt <- get @WorkingTree
         case Map.lookup path wt of
-          Just (FSFile bs _) -> return $ Right bs
+          Just (FSFile hash) -> fmap Right (readBlob hash)
           Just FSDir         -> return $ Left (path <> ": is a directory")
           Nothing            -> return $ Left (path <> ": not found")
 
@@ -383,7 +383,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
         let parents = ancestorDirs path
         modify @WorkingTree $ \wt ->
           foldr (\d m -> Map.insertWith keepExisting d FSDir m) wt parents
-        modify @WorkingTree (Map.insert path (FSFile content hash))
+        modify @WorkingTree (Map.insert path (FSFile hash))
         return $ Right ()
       CreateDirectory _recursive path -> do
         modify @WorkingTree (Map.insertWith keepExisting path FSDir)
@@ -433,18 +433,24 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
 --   corresponding file in the parent tree. New files and directories are fine;
 --   deletions and modifications (content not prefixed by the parent's content)
 --   are rejected with a descriptive error.
-checkAppendOnly :: WorkingTree -> WorkingTree -> Either String ()
-checkAppendOnly parent new = mapM_ check (Map.toList new)
+checkAppendOnly
+  :: Members '[Git, Fail] r
+  => WorkingTree -> WorkingTree -> Sem r (Either String ())
+checkAppendOnly parent new = go (Map.toList new)
   where
-    check (_,    FSDir)            = Right ()
-    check (path, FSFile content _) =
+    go []             = return (Right ())
+    go ((_, FSDir) : rest) = go rest
+    go ((path, FSFile newHash) : rest) =
       case Map.lookup path parent of
-        Nothing            -> Right ()
-        Just FSDir         -> Right ()
-        Just (FSFile old _)
-          | old `BS.isPrefixOf` content -> Right ()
-          | otherwise -> Left $ "Store: non-append modification of " <> path
-              <> " (existing content must be a prefix of new content)"
+        Nothing           -> go rest
+        Just FSDir        -> go rest
+        Just (FSFile oldHash) -> do
+          oldContent <- readBlob oldHash
+          newContent <- readBlob newHash
+          if oldContent `BS.isPrefixOf` newContent
+            then go rest
+            else return $ Left $ "Store: non-append modification of " <> path
+                   <> " (existing content must be a prefix of new content)"
 
 -- | Apply the suffix that commit @cd@ added to its parent onto @parentWt@.
 --   For each file: compute bytes added beyond the commit's own parent's version,
@@ -463,17 +469,18 @@ applyCommitSuffix parentWt cd = do
   where
     applyFile _commitParentWt wt (path, FSDir) =
       return $ Map.insertWith keepExisting path FSDir wt
-    applyFile commitParentWt wt (path, FSFile newContent _) = do
-      let oldContent = case Map.lookup path commitParentWt of
-            Just (FSFile bs _) -> bs
-            _                  -> BS.empty
-          suffix   = BS.drop (BS.length oldContent) newContent
-          base     = case Map.lookup path wt of
-            Just (FSFile bs _) -> bs
-            _                  -> BS.empty
-          combined = base <> suffix
+    applyFile commitParentWt wt (path, FSFile newHash) = do
+      newContent <- readBlob newHash
+      oldContent <- case Map.lookup path commitParentWt of
+        Just (FSFile h) -> readBlob h
+        _               -> return BS.empty
+      let suffix   = BS.drop (BS.length oldContent) newContent
+      baseContent <- case Map.lookup path wt of
+        Just (FSFile h) -> readBlob h
+        _               -> return BS.empty
+      let combined = baseContent <> suffix
       hash <- writeBlob combined
-      return $ Map.insert path (FSFile combined hash) wt
+      return $ Map.insert path (FSFile hash) wt
     keepExisting _ old = old
 
 resolveHead :: Members '[Git, Fail] r => BranchName -> Sem r ObjectHash
