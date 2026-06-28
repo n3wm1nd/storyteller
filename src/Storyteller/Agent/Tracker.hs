@@ -30,8 +30,8 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists, readFile, writeFile)
 import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage (StoryBranch, StoryStorage, get, store)
-import Storyteller.Types (Tick(..), TickId(..))
+import Storyteller.Storage (StoryBranch, StoryStorage, get, storeDraft)
+import Storyteller.Types (Tick(..), TickDraft(..), TickId(..))
 
 import Prelude hiding (readFile, writeFile)
 
@@ -83,8 +83,10 @@ trackFile trackeeTick path = do
     then return []
     else do
       writeFile @trackerProject path (trackerContent <> newSuffix)
-      let msg = "track: " <> T.pack path <> " from " <> unTickId (tickId trackeeTick)
-      tid <- store @trackerBranch msg
+      tid <- storeDraft @trackerBranch TickDraft
+        { draftRefs    = [tickId trackeeTick]
+        , draftMessage = "track: " <> T.pack path
+        }
       return [tid]
 
 readFromBranch

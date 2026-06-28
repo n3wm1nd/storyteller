@@ -24,9 +24,10 @@ import UniversalLLM (ModelConfig(..))
 import Storyteller.Runtime (StoryModel)
 
 data StoryEnv = StoryEnv
-  { envRepo     :: FilePath  -- ^ STORY_REPO: path to git repository
-  , envBranch   :: Text      -- ^ STORY_BRANCH: story branch name
-  , envEndpoint :: String    -- ^ LLAMACPP_ENDPOINT (default: http://localhost:8080/v1)
+  { envRepo        :: FilePath  -- ^ STORY_REPO: path to git repository
+  , envBranch      :: Text      -- ^ STORY_BRANCH: story branch name
+  , envEndpoint    :: String    -- ^ LLAMACPP_ENDPOINT (default: http://localhost:8080/v1)
+  , envActiveChars :: [Text]    -- ^ ACTIVE_CHARS: comma-separated character branch names
   }
 
 -- | Load common ENV vars. Exits with a clear message if required vars are missing.
@@ -35,10 +36,13 @@ loadEnv = do
   repo     <- requireEnv "STORY_REPO"
   branch   <- requireEnv "STORY_BRANCH"
   endpoint <- maybe "http://localhost:8080/v1" id <$> lookupEnv "LLAMACPP_ENDPOINT"
+  chars    <- maybe [] (filter (not . T.null) . map T.strip . T.splitOn "," . T.pack)
+              <$> lookupEnv "ACTIVE_CHARS"
   return StoryEnv
-    { envRepo     = repo
-    , envBranch   = T.pack branch
-    , envEndpoint = endpoint
+    { envRepo        = repo
+    , envBranch      = T.pack branch
+    , envEndpoint    = endpoint
+    , envActiveChars = chars
     }
 
 requireEnv :: String -> IO String

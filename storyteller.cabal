@@ -36,6 +36,7 @@ library
                   , Storyteller.Runtime
                   , Storyteller.CLI.Env
                   , Storyteller.Agent.Continuation
+                  , Storyteller.Agent.CharContext
                   , Storyteller.Agent.Splitter
                   , Storyteller.Agent.Tracker
                   , Storyteller.Agent.SplitDiffMerge

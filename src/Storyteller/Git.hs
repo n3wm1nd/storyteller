@@ -57,6 +57,7 @@ import Runix.FileSystem
 import Storyteller.Types
 import Storyteller.Storage hiding (get, drop, Get)
 import qualified Storyteller.Storage as S
+import Storyteller.Types (TickDraft(..))
 
 -- ---------------------------------------------------------------------------
 -- In-memory filesystem
@@ -270,7 +271,7 @@ runStoryBranchGit branch action = do
     Nothing -> put emptyWorkingTree
     Just h  -> loadWorkingTree h >>= put
   interpretH (\case
-    Store msg -> do
+    Store d -> do
       headHash' <- raise $ resolveHead branch
       wt'       <- raise $ get @WorkingTree
       parentWt  <- raise $ loadWorkingTree headHash'
@@ -282,7 +283,7 @@ runStoryBranchGit branch action = do
           newHash  <- raise $ writeCommit CommitData
             { commitParents = [headHash']
             , commitTree    = treeHash
-            , commitMessage = encodeMessage [] msg
+            , commitMessage = encodeMessage (draftRefs d) (draftMessage d)
             }
           raise $ updateRef (storyRef branch) newHash
           pureT $ Right (TickId (unObjectHash newHash))

@@ -34,6 +34,7 @@ module Storyteller.Runtime
     -- * Re-exported primitives for multi-branch runners
   , module Storyteller.Git
   , emptyWorkingTree
+  , Git
   , runGitIO
   , loggingIO
   , failLog
@@ -45,13 +46,14 @@ module Storyteller.Runtime
   , interpretCmd
   , runError
   , evalState
+  , State
   ) where
 
 import Control.Monad (void)
 import Polysemy
 import Polysemy.Fail
 import Polysemy.Error (runError)
-import Polysemy.State (evalState)
+import Polysemy.State (State, evalState)
 import Runix.Cmd (cmdsIO, interpretCmd)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
@@ -61,7 +63,7 @@ import Runix.Runner (httpIO, withRequestTimeout, loggingIO, failLog)
 import Runix.Time (timeIO, sleepIO)
 import Runix.Logging (Logging)
 
-import Runix.Git (runGitIO)
+import Runix.Git (Git, runGitIO)
 import Storyteller.Types (BranchName(..))
 import Storyteller.Git
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
@@ -147,6 +149,9 @@ runBranchIO endpoint repoPath branch action =
 -- ---------------------------------------------------------------------------
 
 -- | Run an action against a single git branch with full LLM access.
+--
+-- Exposes 'Git' and 'State WorkingTree' so that actions can temporarily
+-- install additional branch interpreters (e.g. for loading character context).
 runStoryGitIO
   :: String
   -> FilePath
@@ -158,6 +163,8 @@ runStoryGitIO
                            , FileSystemWrite (BranchTag Main)
                            , StoryBranch Main
                            , StoryStorage
+                           , Git
+                           , State WorkingTree
                            , Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)

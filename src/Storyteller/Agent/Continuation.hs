@@ -30,22 +30,24 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import Prelude hiding (readFile)
 
 -- | Ask the LLM what text to append, given:
---   - @configs@:   model configuration
---   - @context@:   all files in the filesystem as labelled blocks (already read by caller)
---                  these are read from the provided filesystem
---   - @existing@:  current content of the file being continued (may be empty)
---   - @instruction@: what the user wants written next
+--   - @configs@:      model configuration
+--   - @outputHint@:   approximate desired output length in words
+--   - @charContexts@: pre-built character context blocks (one per active character),
+--                     each already formatted with filenames and content
+--   - @existing@:     current content of the file being continued (may be empty)
+--   - @instruction@:  what the user wants written next
 --
 --   Returns only the new text to append — never a full rewrite.
 continuationAgent
   :: forall project model r
   .  Members '[FileSystem project, FileSystemRead project, LLM model, Fail] r
   => [ModelConfig model]
-  -> Maybe Int   -- ^ approximate desired output length in words (hint to the LLM)
+  -> Maybe Int   -- ^ approximate desired output length in words
+  -> [Text]      -- ^ character context blocks (from active character branches)
   -> Text        -- ^ current content of the file being continued
   -> Text        -- ^ user instruction
   -> Sem r Text
-continuationAgent configs outputHint existing instruction = do
+continuationAgent configs outputHint charContexts existing instruction = do
   cwd   <- getCwd @project
   files <- fmap List.sort $ listFiles @project cwd
 
@@ -58,6 +60,13 @@ continuationAgent configs outputHint existing instruction = do
             <> T.intercalate "\n\n" contextBlocks
             <> "\n\n"
 
+      charSection
+        | null charContexts = ""
+        | otherwise =
+            "Character information:\n\n"
+            <> T.intercalate "\n\n" charContexts
+            <> "\n\n"
+
       existingSection
         | T.null existing = "The file is currently empty.\n\n"
         | otherwise       = "File to continue:\n\n" <> existing <> "\n\n"
@@ -67,6 +76,7 @@ continuationAgent configs outputHint existing instruction = do
         Just n  -> "Write approximately " <> T.pack (show n) <> " words.\n"
 
       userMsg = contextSection
+             <> charSection
              <> existingSection
              <> "Instruction: " <> instruction <> "\n\n"
              <> lengthHint

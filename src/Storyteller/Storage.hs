@@ -12,6 +12,7 @@ module Storyteller.Storage
   ( -- * Branch-level effect
     StoryBranch(..)
   , store
+  , storeDraft
   , drop
   , get
   , reset
@@ -32,7 +33,7 @@ import Data.List (find)
 import Polysemy
 import Polysemy.Fail
 import Data.Text (Text)
-import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick)
+import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickDraft(..), draft)
 
 -- | Operations on a single named branch (a chain of ticks).
 --   The @branch@ type parameter is a phantom used to disambiguate multiple
@@ -41,7 +42,7 @@ import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick)
 data StoryBranch (branch :: k) m a where
   -- | Save current filesystem state as a new tick at head.
   --   Returns 'Left' if any file violates the append-only invariant.
-  Store  :: Text -> StoryBranch branch m (Either String TickId)
+  Store  :: TickDraft -> StoryBranch branch m (Either String TickId)
 
   -- | Rewind the tick pointer to the previous tick. Working tree is untouched.
   --   Dropping the root tick is a no-op.
@@ -61,10 +62,14 @@ data StoryBranch (branch :: k) m a where
   --   branch history; otherwise the inner result and the old→new id mapping.
   At     :: TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
 
--- | Store the current working tree as a new tick.
+-- | Store the current working tree as a new tick with a plain message.
 --   Fails if any file is not a pure append of its previous content.
 store :: forall branch r. Members '[StoryBranch branch, Fail] r => Text -> Sem r TickId
-store msg = send @(StoryBranch branch) (Store msg) >>= either fail return
+store msg = storeDraft @branch (draft msg)
+
+-- | Store with a full 'TickDraft' — use when cross-branch refs must be declared.
+storeDraft :: forall branch r. Members '[StoryBranch branch, Fail] r => TickDraft -> Sem r TickId
+storeDraft d = send @(StoryBranch branch) (Store d) >>= either fail return
 
 drop :: forall branch r. Member (StoryBranch branch) r => Sem r ()
 drop = send @(StoryBranch branch) Drop
