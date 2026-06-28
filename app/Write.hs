@@ -44,6 +44,7 @@ import Storyteller.Storage (StoryBranch, StoryStorage, store)
 import Storyteller.Types (BranchName(..))
 import Storyteller.Agent.Continuation (continuationAgent)
 import Storyteller.Agent.CharContext (loadCharContext)
+import Storyteller.Agent.Splitter (Splitter, splitAtoms, splitByParagraph)
 import Storyteller.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 -- | Phantom tag for character branches opened temporarily within the action.
@@ -63,7 +64,7 @@ main = do
     (envRepo env)
     (BranchName (envBranch env))
     modelConfigs
-    (writeAction outFile instruction (envActiveChars env))
+    (splitByParagraph $ writeAction outFile instruction (envActiveChars env))
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -76,6 +77,7 @@ writeAction
               , FileSystemWrite (BranchTag Main)
               , StoryBranch Main
               , StoryStorage
+              , Splitter
               , Git
               , State WorkingTree
               , Logging, Fail] r
@@ -93,9 +95,24 @@ writeAction outFile instruction activeChars = do
     False -> return ""
   appended <- continuationAgent @(BranchTag Main) @StoryModel
                 modelConfigs (Just 300) charContexts existing instruction
+
+  -- Split the generated content into atoms and commit each separately,
+  -- growing the file one atom at a time so each store sees a valid append.
+  atoms <- splitAtoms appended
   let sep = if T.null existing || T.isSuffixOf "\n\n" existing then ""
             else if T.isSuffixOf "\n" existing then "\n"
             else "\n\n"
-  writeFile @(BranchTag Main) outFile (TE.encodeUtf8 (existing <> sep <> appended))
-  _ <- store @Main (T.take 60 instruction)
+      -- Each atom is appended as a paragraph: prefix with "\n\n" except
+      -- the very first which uses the join separator against existing content.
+      atomSuffixes = case atoms of
+        []     -> []
+        (a:as) -> (sep <> a) : map ("\n\n" <>) as
+      -- Cumulative file contents after each atom.
+      atomContents = tail $ scanl (<>) existing atomSuffixes
+
+  mapM_ (\(atom, content) -> do
+    writeFile @(BranchTag Main) outFile (TE.encodeUtf8 content)
+    store @Main (T.take 60 atom)
+    ) (zip atoms atomContents)
+
   return appended

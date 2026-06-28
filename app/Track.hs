@@ -35,7 +35,7 @@ import Storyteller.Runtime
   , runStoryFSGit, runStoryBranchGit, runStoryStorageGit
   , BranchTag(..), WorkingTree
   )
-import Storyteller.Storage (StoryBranch, StoryStorage, get, createBranch, getBranch)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 import Storyteller.Types (BranchName(..), TickId)
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.CLI.Env (StoryEnv(..), loadEnv)
@@ -88,5 +88,4 @@ runTrackIO endpoint repoPath sourceBranch trackerBranch files =
       getBranch trackerBranch >>= \case
         Nothing -> void $ createBranch trackerBranch
         Just _  -> return ()
-      trackeeTick <- get @Source
-      trackBranch @(BranchTag Source) @(BranchTag Tracker) @Tracker trackeeTick files
+      trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker) files
