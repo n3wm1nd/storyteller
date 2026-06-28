@@ -46,13 +46,21 @@ splitByParagraph :: Sem (Splitter : r) a -> Sem r a
 splitByParagraph = interpret $ \case
   SplitAtoms text -> return (byParagraph text)
 
+-- | Split text into atoms at paragraph boundaries (runs of 2+ newlines).
+--
+-- Purely structural: the delimiter (the full newline run) is appended to the
+-- preceding atom, so @concat (byParagraph t) == t@ for all @t@. No character
+-- is ever added or removed — the atoms are just views into the original bytes.
 byParagraph :: Text -> [Text]
-byParagraph text = map (T.intercalate "\n") $ filter (not . null) $ go $ T.lines text
+byParagraph t = dropTrailingEmpty (go t)
   where
-    go [] = []
-    go ls =
-      let (block, rest) = break T.null ls
-          trimmedBlock  = dropWhile T.null block
-      in case trimmedBlock of
-        [] -> go (dropWhile T.null rest)
-        _  -> trimmedBlock : go (dropWhile T.null rest)
+    go s =
+      let (chunk, rest) = T.breakOn "\n\n" s
+          (delim, after) = T.span (== '\n') rest
+      in if T.null rest
+           then [chunk]
+           else (chunk <> delim) : go after
+    -- A trailing empty atom arises when input ends with a delimiter run.
+    -- That's not a real split — nothing follows.
+    dropTrailingEmpty [] = []
+    dropTrailingEmpty xs = if T.null (last xs) then init xs else xs

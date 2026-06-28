@@ -14,38 +14,34 @@ spec = do
     it "single paragraph" $
       byParagraph "hello world" `shouldBe` ["hello world"]
 
-    it "two paragraphs separated by blank line" $
-      byParagraph "first\n\nsecond" `shouldBe` ["first", "second"]
+    it "two paragraphs: delimiter appended to first atom" $
+      byParagraph "first\n\nsecond" `shouldBe` ["first\n\n", "second"]
 
-    it "multiple blank lines collapsed" $
-      byParagraph "first\n\n\n\nsecond" `shouldBe` ["first", "second"]
+    it "three paragraphs" $
+      byParagraph "a\n\nb\n\nc" `shouldBe` ["a\n\n", "b\n\n", "c"]
 
-    it "leading and trailing blank lines ignored" $
-      byParagraph "\n\nfirst\n\nsecond\n\n" `shouldBe` ["first", "second"]
+    it "preserves internal newlines within a paragraph" $
+      byParagraph "line one\nline two\n\nnext para"
+        `shouldBe` ["line one\nline two\n\n", "next para"]
+
+    it "preserves leading whitespace within a line" $
+      byParagraph "  indented\n\nnormal" `shouldBe` ["  indented\n\n", "normal"]
+
+    it "extra newlines stay in the atom" $
+      byParagraph "a\n\n\n\nb" `shouldBe` ["a\n\n\n\n", "b"]
+
+    it "leading blank lines go with the empty first atom" $
+      byParagraph "\n\nfirst" `shouldBe` ["\n\n", "first"]
+
+    it "trailing blank lines stay in the preceding atom, no empty tail" $
+      byParagraph "last\n\n" `shouldBe` ["last\n\n"]
 
     it "empty string gives no atoms" $
       byParagraph "" `shouldBe` []
 
-    it "only whitespace gives no atoms" $
-      byParagraph "\n\n\n" `shouldBe` []
-
-    it "preserves internal newlines within a paragraph" $
-      byParagraph "line one\nline two\n\nnext para"
-        `shouldBe` ["line one\nline two", "next para"]
-
-    it "three paragraphs" $
-      byParagraph "a\n\nb\n\nc" `shouldBe` ["a", "b", "c"]
-
   describe "byParagraph / QuickCheck" $ do
-    it "concatenation roundtrip: joining atoms with blank lines gives back something that re-splits the same way" $
-      property $ \(NonEmpty chunks) ->
-        let texts   = map (T.pack . getNonEmpty) chunks
-            joined  = T.intercalate "\n\n" texts
-            resplit = byParagraph joined
-        in resplit == texts
-
-    it "number of atoms is always >= 1 for non-empty input" $
-      property $ \(NonEmpty s) ->
+    it "is lossless: concat of atoms equals the original" $
+      property $ \s ->
         let t = T.pack s
-        in not (T.null (T.strip t)) ==>
-           not (null (byParagraph t))
+        in T.concat (byParagraph t) === t
+
