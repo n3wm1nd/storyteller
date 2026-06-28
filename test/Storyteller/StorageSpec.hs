@@ -264,7 +264,7 @@ spec = do
             t1 <- store "tick one"
             appendFile @Main "scene.md" "p2\n"
             _  <- store "tick two"
-            (content, _mapping) <- atWithFS (BranchName "main") t1 $
+            (content, _mapping) <- atWithFS @Main t1 $
               readFile @(BranchTag Main) "scene.md"
             return content
       result `shouldBe` Right "p1\n"
@@ -278,7 +278,7 @@ spec = do
             appendFile @Main "scene.md" "p3\n"
             _  <- store "tick three"
             appendFile @Main "notes.md" "unsaved\n"
-            ((), _mapping) <- atWithFS (BranchName "main") t1 $ do
+            ((), _mapping) <- atWithFS @Main t1 $ do
               appendFile @Main "scene.md" "p1-revised\n"
               _ <- store "tick one (revised)"
               return ()
@@ -331,7 +331,7 @@ spec = do
             appendFile @Main "outfit.md" "black coat\n"
             _  <- store "wearing black coat"
             current <- readFile @(BranchTag Main) "outfit.md"
-            (atT1, _) <- atWithFS (BranchName "main") t1 $ readFile @(BranchTag Main) "outfit.md"
+            (atT1, _) <- atWithFS @Main t1 $ readFile @(BranchTag Main) "outfit.md"
             return (current, atT1)
       result1 `shouldBe` Right ("black coat\n", "red dress\n")
       -- Check that file was absent at t2 in a separate run
@@ -342,7 +342,7 @@ spec = do
             t2 <- store "outfit removed"
             appendFile @Main "outfit.md" "black coat\n"
             _  <- store "wearing black coat"
-            (exists, _) <- atWithFS (BranchName "main") t2 $ fileExists @(BranchTag Main) "outfit.md"
+            (exists, _) <- atWithFS @Main t2 $ fileExists @(BranchTag Main) "outfit.md"
             return exists
       result2 `shouldBe` Right False
 
@@ -369,7 +369,7 @@ spec = do
             appendFile @Main "scene.md" "p3\n"
             _  <- store "t3"
 
-            ((), mapping) <- atWithFS (BranchName "main") t1 $ do
+            ((), mapping) <- atWithFS @Main t1 $ do
               S.drop
               writeFile @(BranchTag Main) "scene.md" "p1-revised\n"
               _ <- S.replace t1 (draft "t1'")
@@ -377,7 +377,7 @@ spec = do
 
             -- Read head content via a fresh atWithFS at the new head tick.
             headTick <- S.get
-            (content, _) <- atWithFS (BranchName "main") (tickId headTick) $
+            (content, _) <- atWithFS @Main (tickId headTick) $
               readFile @(BranchTag Main) "scene.md"
             return (content, length mapping)
       result `shouldBe` Right ("p1-revised\np2\np3\n", 2)

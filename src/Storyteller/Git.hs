@@ -40,9 +40,6 @@ module Storyteller.Git
 
     -- * Combined branch + filesystem interpreter (storage-agnostic interface)
   , runBranchAndFS
-
-    -- * Convenience: At with a fresh filesystem scoped to the target tick
-  , atWithFS
   ) where
 
 import Prelude
@@ -347,6 +344,21 @@ runStoryBranchGit branch action = do
       case eResult of
         Left err            -> pureT (Left err)
         Right (fa, mapping) -> return $ fmap (\a -> Right (a, mapping)) fa
+
+    AtWithFS tid innerAction -> do
+      headHash' <- raise $ resolveHead branch
+      eResult   <- runAtH branch tid headHash' $ do
+        -- Save outer working tree, load the target tick's tree, run the
+        -- action, then restore so the caller's buffer is unaffected.
+        outerWt   <- raise $ get @WorkingTree
+        targetWt  <- raise $ loadWorkingTree (ObjectHash (unTickId tid))
+        raise $ put targetWt
+        fa        <- runTSimple innerAction
+        raise $ put outerWt
+        return fa
+      case eResult of
+        Left err            -> pureT (Left err)
+        Right (fa, mapping) -> return $ fmap (\a -> Right (a, mapping)) fa
     ) action
 
 -- ---------------------------------------------------------------------------
@@ -490,36 +502,6 @@ runBranchAndFS name action = do
     . subsume_
     $ action
 
--- | Run an action at a historical tick position with a fresh filesystem
---   scoped to that tick's tree. The branch ref is moved to @tid@ before the
---   filesystem is initialised, so the FS sees exactly that tick's snapshot.
---   On completion the branch ref reflects whatever At rebuilt.
-atWithFS
-  :: forall branch r a
-  .  Members '[ StoryBranch branch
-              , StoryStorage
-              , Git
-              , State WorkingTree
-              , Fail ] r
-  => BranchName
-  -> TickId
-  -> Sem ( FileSystemWrite (BranchTag branch)
-         : FileSystemRead  (BranchTag branch)
-         : FileSystem      (BranchTag branch)
-         : r ) a
-  -> Sem r (a, [(TickId, TickId)])
-atWithFS name tid action =
-  at @branch tid $ do
-    -- Load the target tick's tree into the shared State WorkingTree so that
-    -- Store/Replace (which read from it via the branch interpreter) see the
-    -- correct historical content. Save and restore the outer tree around the
-    -- inner action so the caller's editing buffer is unaffected.
-    outerWt   <- get @WorkingTree
-    initialWt <- loadWorkingTree (ObjectHash (unTickId tid))
-    put initialWt
-    result <- runStoryFSGit @branch name (subsume_ action)
-    put outerWt
-    return result
 
 -- ---------------------------------------------------------------------------
 -- Helpers
