@@ -34,7 +34,11 @@ library
                   , Storyteller.Storage
                   , Storyteller.Git
                   , Storyteller.Runtime
+                  , Storyteller.CLI.Env
                   , Storyteller.Agent.Continuation
+                  , Storyteller.Agent.Splitter
+                  , Storyteller.Agent.Tracker
+                  , Storyteller.Agent.SplitDiffMerge
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
@@ -56,8 +60,11 @@ library
                     -fwarn-tabs
                     -O2
 
-executable storyteller
-  main-is:          Main.hs
+-- ---------------------------------------------------------------------------
+-- Executables
+-- ---------------------------------------------------------------------------
+
+common exe-common
   build-depends:    base >=4.18 && <5
                   , storyteller
                   , storyteller:gitlib-effect
@@ -65,10 +72,9 @@ executable storyteller
                   , universal-llm
                   , text
                   , bytestring
-                  , directory
+                  , containers
                   , polysemy
                   , polysemy-plugin
-  hs-source-dirs:   app
   default-language: Haskell2010
   ghc-options:      -Wall
                     -Wcompat
@@ -81,11 +87,31 @@ executable storyteller
                     -O2
                     -fplugin=Polysemy.Plugin
 
+-- | Append a generated story section.
+executable story-write
+  import:           exe-common
+  main-is:          Write.hs
+  hs-source-dirs:   app
+
+-- | Copy atoms from a source branch into an entity/tracker branch.
+executable story-track
+  import:           exe-common
+  main-is:          Track.hs
+  hs-source-dirs:   app
+
+-- | Split working-tree diffs and merge them into the chain at the right positions.
+executable story-rebase
+  import:           exe-common
+  main-is:          Rebase.hs
+  hs-source-dirs:   app
+
+
 test-suite storyteller-test
   type:             exitcode-stdio-1.0
   main-is:          Main.hs
   other-modules:    Git.Mock
                   , Storyteller.StorageSpec
+                  , Storyteller.SplitDiffMergeSpec
   build-depends:    base >=4.18 && <5
                   , storyteller
                   , storyteller:gitlib-effect

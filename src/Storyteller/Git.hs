@@ -262,10 +262,13 @@ runStoryBranchGit
   -> Sem (StoryBranch branch : r) a
   -> Sem r a
 runStoryBranchGit branch action = do
-  -- Initialise working tree from head commit before running any branch operations
-  headHash <- resolveHead branch
-  wt       <- loadWorkingTree headHash
-  put wt
+  -- Initialise working tree from head commit if the branch already exists.
+  -- If it doesn't exist yet, start with an empty tree — createBranch will
+  -- be called before any Store, establishing the root commit.
+  mHead <- resolveRef (storyRef branch)
+  case mHead of
+    Nothing -> put emptyWorkingTree
+    Just h  -> loadWorkingTree h >>= put
   interpretH (\case
     Store msg -> do
       headHash' <- raise $ resolveHead branch

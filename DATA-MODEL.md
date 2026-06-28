@@ -65,7 +65,7 @@ A tick that adds content to files is called an **atom** — the finest granulari
 
 Two invariants the storage layer enforces:
 
-1. **Monotonic references** — following any combination of parent and ref links must eventually terminate. There are no cycles, and no tick may reference a tick that comes after it in the same chain. References to other chains or orphan objects are unrestricted. This is what makes chain position meaningful: within a chain, anything a tick references is guaranteed to precede it.
+1. **Monotonic references** — following any combination of parent and ref links must eventually terminate. There are no cycles, and no tick may reference a tick that comes after it in the same chain. References to other chains or orphan objects are unrestricted. This is what makes chain position meaningful: within a chain, anything a tick references is guaranteed to precede it. Unlike git, where content-addressing enforces this for free, here `updateReferences` mutates the graph in place after a rebase — so the monotonic invariant must be explicitly checked on every `updateReferences` call, verifying that each redirected ref still precedes its referencing tick in its chain.
 2. **All tick references must be declared** — every reference to another tick must appear in `tickParent` or `tickRefs`. Tick IDs must never be embedded in the message or anywhere else. This is what makes rebase fixups complete and mechanical.
 
 Helper ticks (parentless ticks used purely as reference containers, e.g. to store a variable-length list of references that a single tick can then point to via `tickRefs`) are valid and follow the same invariants.

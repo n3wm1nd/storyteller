@@ -4,22 +4,47 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Shared runtime: model, interpreter, and IO effect stack for all executables.
+-- | Shared runtime: model, interpreters, and IO effect stacks.
+--
+-- Design: effects are layered bottom-up. The infrastructure layer (git, HTTP,
+-- logging) is common. Branch interpreters sit above that. LLM sits above the
+-- branch interpreters (so it shares the HTTP stack).
+--
+-- 'runBranchIO' provides one branch with no LLM — for tools like story-rebase
+-- and story-track that don't call an LLM.
+-- 'runStoryGitIO' adds the LLM layer on top — for tools like story-write.
+-- Multi-branch tools (story-track) assemble their own stack from primitives
+-- re-exported here.
 module Storyteller.Runtime
   ( -- * Model
     StoryModel
   , storyModel
 
-    -- * Filesystem tags
-  , StoryFS(..)
+    -- * Branch phantom
   , Main
 
-    -- * IO runners
-  , runStoryIO
+    -- * Runners
+  , runBranchIO
   , runStoryGitIO
+
+    -- * Re-exported primitives for multi-branch runners
+  , module Storyteller.Git
+  , emptyWorkingTree
+  , runGitIO
+  , loggingIO
+  , failLog
+  , httpIO
+  , withRequestTimeout
+  , timeIO
+  , sleepIO
+  , cmdsIO
+  , interpretCmd
+  , runError
+  , evalState
   ) where
 
 import Control.Monad (void)
@@ -28,9 +53,7 @@ import Polysemy.Fail
 import Polysemy.Error (runError)
 import Polysemy.State (evalState)
 import Runix.Cmd (cmdsIO, interpretCmd)
-import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
-                        , HasProjectPath(..), fileSystemLocal )
-import Runix.FileSystem.System (filesystemReadIO, filesystemWriteIO)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..))
@@ -40,9 +63,8 @@ import Runix.Logging (Logging)
 
 import Runix.Git (runGitIO)
 import Storyteller.Types (BranchName(..))
-import Storyteller.Git ( BranchTag(..), WorkingTree, emptyWorkingTree
-                       , runStoryStorageGit, runStoryBranchGit, runStoryFSGit )
-import Storyteller.Storage (StoryBranch, createBranch, getBranch)
+import Storyteller.Git
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 
 import UniversalLLM (Model(..), ModelConfig, Routing(..))
 import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))
@@ -58,16 +80,10 @@ storyModel :: StoryModel
 storyModel = Model Qwen35_40B LlamaCpp
 
 -- ---------------------------------------------------------------------------
--- Filesystem tags
+-- Phantom tag
 -- ---------------------------------------------------------------------------
 
--- | Tag for local-filesystem-backed story access (chrooted to a directory).
-newtype StoryFS = StoryFS FilePath
-
-instance HasProjectPath StoryFS where
-  getProjectPath (StoryFS path) = path
-
--- | Phantom tag for the git-backed main story branch.
+-- | Phantom tag for the primary story branch in single-branch tools.
 data Main
 
 -- ---------------------------------------------------------------------------
@@ -82,50 +98,67 @@ instance RestEndpoint StoryLlamaCppAuth where
   useragent  _                     = "storyteller/0.1"
 
 -- ---------------------------------------------------------------------------
--- Local filesystem runner
+-- Base runner: one branch, no LLM
 -- ---------------------------------------------------------------------------
 
--- | Run a story action against a local directory (no git).
---   Provides: LLM StoryModel, FileSystem StoryFS, Logging, Fail.
-runStoryIO
-  :: String                    -- ^ llama-cpp base URL
-  -> FilePath                  -- ^ root directory (chroot)
-  -> [ModelConfig StoryModel]
-  -> ( forall r. Members '[LLM StoryModel, FileSystem StoryFS, FileSystemRead StoryFS, FileSystemWrite StoryFS, Logging, Fail] r
+-- | Run an action against a single git branch.
+--
+-- Provides:
+--   FileSystem / FileSystemRead / FileSystemWrite for (BranchTag branch)
+--   StoryBranch branch, StoryStorage, Logging, Fail
+--
+-- The branch is created if it doesn't exist. No LLM is wired.
+runBranchIO
+  :: forall branch a.
+     String      -- ^ LLAMACPP_ENDPOINT (feeds the HTTP stack even if LLM unused)
+  -> FilePath    -- ^ path to git repository
+  -> BranchName  -- ^ branch name
+  -> ( forall r. Members '[ FileSystem      (BranchTag branch)
+                           , FileSystemRead  (BranchTag branch)
+                           , FileSystemWrite (BranchTag branch)
+                           , StoryBranch branch
+                           , StoryStorage
+                           , Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)
-runStoryIO endpoint rootDir configs action =
+runBranchIO endpoint repoPath branch action =
   runM
   . runError
   . loggingIO
   . failLog
-  . filesystemReadIO
-  . filesystemWriteIO
-  . fileSystemLocal (StoryFS rootDir)
+  . cmdsIO
+  . interpretCmd @"git"
+  . evalState (emptyWorkingTree :: WorkingTree)
+  . runGitIO repoPath
+  . runStoryFSGit @branch branch
+  . runStoryBranchGit @branch branch
+  . runStoryStorageGit
   . timeIO
   . sleepIO
   . httpIO (withRequestTimeout 600)
-  . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
-  $ action
+  $ do
+      getBranch branch >>= \case
+        Nothing -> void $ createBranch branch
+        Just _  -> return ()
+      action
 
 -- ---------------------------------------------------------------------------
--- Git-backed runner
+-- Story runner: one branch + LLM
 -- ---------------------------------------------------------------------------
 
--- | Run a story action against a git repository.
---   Opens (or creates) @branchName@ under @refs/heads/story/<name>@.
---   Provides: LLM StoryModel, FileSystem (BranchTag Main), Logging, Fail.
+-- | Run an action against a single git branch with full LLM access.
 runStoryGitIO
-  :: String                    -- ^ llama-cpp base URL
-  -> FilePath                  -- ^ path to the git repository
-  -> BranchName                -- ^ story branch name
+  :: String
+  -> FilePath
+  -> BranchName
   -> [ModelConfig StoryModel]
   -> ( forall r. Members '[ LLM StoryModel
                            , FileSystem      (BranchTag Main)
                            , FileSystemRead  (BranchTag Main)
                            , FileSystemWrite (BranchTag Main)
                            , StoryBranch Main
-                           , Logging, Fail] r
+                           , StoryStorage
+                           , Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)
 runStoryGitIO endpoint repoPath branch configs action =
