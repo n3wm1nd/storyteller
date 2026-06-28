@@ -25,6 +25,7 @@ module Runix.Git
   , RefName(..)
   , CommitData(..)
   , TreeEntry(..)
+  , GitObject(..)
 
     -- * Effect
   , Git(..)
@@ -35,11 +36,15 @@ module Runix.Git
   , listRefs
   , readCommit
   , writeCommit
+  , readObject
+  , writeObject
+  , lookupPath
+
+    -- * Typed smart constructors (encode/decode around readObject/writeObject)
   , readBlob
   , writeBlob
   , readTree
   , writeTree
-  , lookupPath
 
     -- * Interpreter
   , runGitIO
@@ -81,6 +86,12 @@ data TreeEntry
   | SubTree   { entryName :: FilePath, entryHash :: ObjectHash }
   deriving (Show, Eq)
 
+-- | A typed git object: either raw blob bytes or a parsed tree.
+data GitObject
+  = BlobObject ByteString
+  | TreeObject [TreeEntry]
+  deriving (Show, Eq)
+
 -- ---------------------------------------------------------------------------
 -- Effect
 -- ---------------------------------------------------------------------------
@@ -93,13 +104,31 @@ data Git m a where
   ListRefs    :: Text                       -> Git m [(RefName, ObjectHash)]
   ReadCommit  :: ObjectHash                 -> Git m CommitData
   WriteCommit :: CommitData                 -> Git m ObjectHash
-  ReadBlob    :: ObjectHash                 -> Git m ByteString
-  WriteBlob   :: ByteString                 -> Git m ObjectHash
-  ReadTree    :: ObjectHash                 -> Git m [TreeEntry]
-  WriteTree   :: [TreeEntry]               -> Git m ObjectHash
+  ReadObject  :: ObjectHash                 -> Git m GitObject
+  WriteObject :: GitObject                  -> Git m ObjectHash
   LookupPath  :: ObjectHash -> FilePath     -> Git m (Maybe ObjectHash)
 
 makeSem ''Git
+
+-- ---------------------------------------------------------------------------
+-- Typed smart constructors
+-- ---------------------------------------------------------------------------
+
+readBlob :: Members '[Git, Fail] r => ObjectHash -> Sem r ByteString
+readBlob h = readObject h >>= \case
+  BlobObject bs -> return bs
+  TreeObject _  -> fail $ "readBlob: hash is a tree: " <> T.unpack (unObjectHash h)
+
+writeBlob :: Member Git r => ByteString -> Sem r ObjectHash
+writeBlob = writeObject . BlobObject
+
+readTree :: Members '[Git, Fail] r => ObjectHash -> Sem r [TreeEntry]
+readTree h = readObject h >>= \case
+  TreeObject es -> return es
+  BlobObject _  -> fail $ "readTree: hash is a blob: " <> T.unpack (unObjectHash h)
+
+writeTree :: Member Git r => [TreeEntry] -> Sem r ObjectHash
+writeTree = writeObject . TreeObject
 
 -- ---------------------------------------------------------------------------
 -- Interpreter
@@ -143,21 +172,25 @@ runGitIO repo = interpret $ \case
       (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
       _ -> fail $ "git commit-tree failed: " <> T.unpack (stderr out)
 
-  ReadBlob hash -> do
-    out <- git repo ["cat-file", "blob", T.unpack (unObjectHash hash)]
-    return $ TE.encodeUtf8 (stdout out)
+  ReadObject hash -> do
+    out <- git repo ["cat-file", "--batch-check=%(objecttype)", T.unpack (unObjectHash hash)]
+    case T.strip (stdout out) of
+      "blob" -> do
+        raw <- git repo ["cat-file", "blob", T.unpack (unObjectHash hash)]
+        return $ BlobObject (TE.encodeUtf8 (stdout raw))
+      "tree" -> do
+        raw <- git repo ["ls-tree", T.unpack (unObjectHash hash)]
+        return $ TreeObject (mapMaybe parseTreeLine (T.lines (stdout raw)))
+      typ -> fail $ "ReadObject: unsupported object type '" <> T.unpack typ
+                 <> "' for " <> T.unpack (unObjectHash hash)
 
-  WriteBlob content -> do
+  WriteObject (BlobObject content) -> do
     out <- gitStdin repo ["hash-object", "-w", "--stdin"] content
     case T.lines (stdout out) of
       (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
       _ -> fail $ "git hash-object failed: " <> T.unpack (stderr out)
 
-  ReadTree hash -> do
-    out <- git repo ["ls-tree", T.unpack (unObjectHash hash)]
-    return $ mapMaybe parseTreeLine (T.lines (stdout out))
-
-  WriteTree entries -> do
+  WriteObject (TreeObject entries) -> do
     let entryLine e = case e of
           BlobEntry name h -> "100644 blob " <> unObjectHash h <> "\t" <> T.pack name
           SubTree   name h -> "040000 tree " <> unObjectHash h <> "\t" <> T.pack name

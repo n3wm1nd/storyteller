@@ -16,7 +16,6 @@ module Git.Mock
   , runGitMock
   ) where
 
-import Data.ByteString (ByteString)
 import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -41,12 +40,11 @@ emptyTreeHash = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 data GitState = GitState
   { gsRefs     :: Map RefName ObjectHash
   , gsCommits  :: Map ObjectHash CommitData
-  , gsBlobs    :: Map ObjectHash ByteString
-  , gsTrees    :: Map ObjectHash [TreeEntry]
+  , gsObjects  :: Map ObjectHash GitObject
   } deriving (Show, Eq)
 
 emptyGitState :: GitState
-emptyGitState = GitState Map.empty Map.empty Map.empty Map.empty
+emptyGitState = GitState Map.empty Map.empty Map.empty
 
 toHex :: Int -> String
 toHex x = showHex (fromIntegral x :: Word64) ""
@@ -95,38 +93,26 @@ runGitMock = interpret $ \case
     put s { gsCommits = Map.insert h cd (gsCommits s) }
     return h
 
-  ReadBlob h -> do
+  ReadObject h -> do
     s <- get
-    case Map.lookup h (gsBlobs s) of
-      Just bs -> return bs
-      Nothing -> fail $ "ReadBlob: unknown hash " <> T.unpack (unObjectHash h)
-
-  WriteBlob content -> do
-    let h = blobContentHash content
-    s <- get
-    put s { gsBlobs = Map.insert h content (gsBlobs s) }
-    return h
-
-  ReadTree h -> do
-    s <- get
-    case Map.lookup h (gsTrees s) of
-      Just entries -> return entries
+    case Map.lookup h (gsObjects s) of
+      Just obj -> return obj
       Nothing
-        | h == emptyTreeHash -> return []
-        | otherwise -> fail $ "ReadTree: unknown hash " <> T.unpack (unObjectHash h)
+        | h == emptyTreeHash -> return (TreeObject [])
+        | otherwise -> fail $ "ReadObject: unknown hash " <> T.unpack (unObjectHash h)
 
-  WriteTree entries -> do
-    let h = treeContentHash entries
+  WriteObject obj -> do
+    let h = objectContentHash obj
     s <- get
-    put s { gsTrees = Map.insert h entries (gsTrees s) }
+    put s { gsObjects = Map.insert h obj (gsObjects s) }
     return h
 
   LookupPath h path -> do
     s <- get
-    case Map.lookup h (gsTrees s) of
+    case Map.lookup h (gsObjects s) of
       Nothing -> fail $ "LookupPath: unknown tree hash " <> T.unpack (unObjectHash h)
-      Just entries ->
-        return $ entryHash <$> find (\e -> entryName e == path) entries
+      Just (TreeObject entries) -> return $ entryHash <$> find (\e -> entryName e == path) entries
+      Just (BlobObject _)       -> fail $ "LookupPath: hash is a blob: " <> T.unpack (unObjectHash h)
 
 -- ---------------------------------------------------------------------------
 -- Content hashing
@@ -135,11 +121,10 @@ runGitMock = interpret $ \case
 -- Each object type uses a distinct prefix so hashes from different domains
 -- never collide even if the underlying Hashable values happen to be equal.
 
-blobContentHash :: ByteString -> ObjectHash
-blobContentHash bs = ObjectHash $ "blob:" <> T.pack (toHex (hash bs))
-
-treeContentHash :: [TreeEntry] -> ObjectHash
-treeContentHash entries =
+objectContentHash :: GitObject -> ObjectHash
+objectContentHash (BlobObject bs) =
+  ObjectHash $ "blob:" <> T.pack (toHex (hash bs))
+objectContentHash (TreeObject entries) =
   ObjectHash $ "tree:" <> T.pack (toHex (hash (map hashEntry entries)))
   where
     hashEntry e = hash (entryName e, unObjectHash (entryHash e))
