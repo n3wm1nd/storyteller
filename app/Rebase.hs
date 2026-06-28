@@ -38,8 +38,8 @@ main = do
   env <- loadEnv
 
   result <- runBranchIO @Main
-    (envEndpoint env)
     (envRepo env)
+    (envEndpoint env)
     (BranchName (envBranch env))
     rebaseAction
 

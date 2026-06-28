@@ -25,16 +25,13 @@ import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 import Polysemy
-import Polysemy.Fail
+import Polysemy.Error (runError)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import Runix.Git (Git)
 import Runix.Logging (Logging)
 
 import Storyteller.Runtime
-  ( runGitIO, loggingIO, failLog, httpIO, withRequestTimeout
-  , timeIO, sleepIO, cmdsIO, interpretCmd, runError
-  , runBranchAndFS, runStoryStorageGit
-  , BranchTag(..)
-  )
+  ( runInfrastructure, runBranchAndFS, runStoryStorageGit, BranchTag(..) )
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 import Storyteller.Types (BranchName(..), TickId)
 import Storyteller.Agent.Tracker (trackBranch)
@@ -54,33 +51,25 @@ main = do
 
   let trackerBranch = BranchName (envBranch env)
 
-  result <- runTrackIO (envEndpoint env) (envRepo env) sourceBranch trackerBranch files
+  result <- runTrackIO (envRepo env) (envEndpoint env) sourceBranch trackerBranch files
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
     Right tids -> TIO.putStrLn $ "Tracked " <> T.pack (show (length tids)) <> " new tick(s)"
 
 runTrackIO
-  :: String
-  -> FilePath
+  :: FilePath
+  -> String
   -> BranchName   -- ^ trackee (source)
   -> BranchName   -- ^ tracker (destination)
   -> [FilePath]
   -> IO (Either String [TickId])
-runTrackIO endpoint repoPath sourceBranch trackerBranch files =
-  runM
-  . runError
-  . loggingIO
-  . failLog
-  . cmdsIO
-  . interpretCmd @"git"
-  . runGitIO repoPath
+runTrackIO repoPath endpoint sourceBranch trackerBranch files =
+  runM . runError
+  . runInfrastructure repoPath endpoint
   . runBranchAndFS @Source sourceBranch
   . runBranchAndFS @Tracker trackerBranch
   . runStoryStorageGit
-  . timeIO
-  . sleepIO
-  . httpIO (withRequestTimeout 600)
   $ do
       getBranch trackerBranch >>= \case
         Nothing -> void $ createBranch trackerBranch

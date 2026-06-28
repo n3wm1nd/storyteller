@@ -18,38 +18,28 @@ module Storyteller.Runtime
   , Main
 
     -- * Runners
+  , runInfrastructure
   , runBranchIO
   , runStoryGitIO
 
-    -- * Re-exported primitives for multi-branch runners
+    -- * Re-exported for custom stacks
   , module Storyteller.Git
-  , runGitIO
-  , loggingIO
-  , failLog
-  , httpIO
-  , withRequestTimeout
-  , timeIO
-  , sleepIO
-  , cmdsIO
-  , interpretCmd
-  , runError
-  , evalState
+  , runStoryStorageGit
   , Git
-  , State
   ) where
 
 import Control.Monad (void)
 import Polysemy
 import Polysemy.Fail
-import Polysemy.Error (runError)
-import Polysemy.State (State, evalState)
-import Runix.Cmd (cmdsIO, interpretCmd)
+import Polysemy.Error (Error, runError)
+import Runix.Cmd (Cmds, Cmd, cmdsIO, interpretCmd)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..))
 import Runix.Runner (httpIO, withRequestTimeout, loggingIO, failLog)
-import Runix.Time (timeIO, sleepIO)
+import Runix.HTTP (HTTP)
+import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
 import Runix.Git (Git, runGitIO)
@@ -88,52 +78,56 @@ instance RestEndpoint StoryLlamaCppAuth where
   useragent  _                     = "storyteller/0.1"
 
 -- ---------------------------------------------------------------------------
--- Base runner: one branch, no LLM
+-- Runners
 -- ---------------------------------------------------------------------------
 
+-- | Shared infrastructure interpreters: git, http, time, logging, error.
+--   Every executable uses this as its base; branch/storage/LLM go on top.
+runInfrastructure
+  :: Members '[Error String, Embed IO] r
+  => FilePath
+  -> String
+  -> Sem (HTTP : Sleep : Time : Git : Cmd "git" : Cmds : Fail : Logging : r) a
+  -> Sem r a
+runInfrastructure repoPath _endpoint =
+    loggingIO
+  . failLog
+  . cmdsIO
+  . interpretCmd @"git"
+  . runGitIO repoPath
+  . timeIO
+  . sleepIO
+  . httpIO (withRequestTimeout 600)
+
+-- | One branch, storage, no LLM. Creates the branch if it doesn't exist.
 runBranchIO
   :: forall branch a.
-     String
-  -> FilePath
+     FilePath
+  -> String
   -> BranchName
   -> ( forall r. Members '[ FileSystem      (BranchTag branch)
                            , FileSystemRead  (BranchTag branch)
                            , FileSystemWrite (BranchTag branch)
                            , StoryBranch branch
                            , StoryStorage
-                           , Logging, Fail ] r
+                           , Git, Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)
-runBranchIO endpoint repoPath branch action =
-  runM
-  . runError
-  . loggingIO
-  . failLog
-  . cmdsIO
-  . interpretCmd @"git"
-  . runGitIO repoPath
+runBranchIO repoPath endpoint branch action =
+  runM . runError
+  . runInfrastructure repoPath endpoint
   . runBranchAndFS @branch branch
   . runStoryStorageGit
-  . timeIO
-  . sleepIO
-  . httpIO (withRequestTimeout 600)
   $ do
       getBranch branch >>= \case
         Nothing -> void $ createBranch branch
         Just _  -> return ()
       action
 
--- ---------------------------------------------------------------------------
--- Story runner: one branch + LLM
--- ---------------------------------------------------------------------------
-
--- | Run an action against a single git branch with full LLM access.
---
--- Exposes 'Git' so that actions can temporarily install additional branch
--- interpreters (e.g. for loading character context via 'runBranchAndFS').
+-- | One branch, storage, LLM. Creates the branch if it doesn't exist.
 runStoryGitIO
-  :: String
-  -> FilePath
+  :: FilePath
+  -> String
   -> BranchName
   -> [ModelConfig StoryModel]
   -> ( forall r. Members '[ LLM StoryModel
@@ -142,23 +136,14 @@ runStoryGitIO
                            , FileSystemWrite (BranchTag Main)
                            , StoryBranch Main
                            , StoryStorage
-                           , Git
-                           , Logging, Fail ] r
+                           , Git, Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)
-runStoryGitIO endpoint repoPath branch configs action =
-  runM
-  . runError
-  . loggingIO
-  . failLog
-  . cmdsIO
-  . interpretCmd @"git"
-  . runGitIO repoPath
+runStoryGitIO repoPath endpoint branch configs action =
+  runM . runError
+  . runInfrastructure repoPath endpoint
   . runBranchAndFS @Main branch
   . runStoryStorageGit
-  . timeIO
-  . sleepIO
-  . httpIO (withRequestTimeout 600)
   . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
   $ do
       getBranch branch >>= \case

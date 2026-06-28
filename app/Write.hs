@@ -59,8 +59,8 @@ main = do
   instruction <- fmap T.strip TIO.getContents
 
   result <- runStoryGitIO
-    (envEndpoint env)
     (envRepo env)
+    (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
     (splitByParagraph $ writeAction outFile instruction (envActiveChars env))
