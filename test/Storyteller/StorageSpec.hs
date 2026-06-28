@@ -28,7 +28,7 @@ import Git.Mock
 import Storyteller.Types
 import Storyteller.Storage hiding (get, drop)
 import qualified Storyteller.Storage as S
-import Storyteller.Git
+import Storyteller.Git hiding (get, drop)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -76,6 +76,7 @@ runTestFS
           , FileSystem      (BranchTag Main)
           , StoryStorage
           , Git
+          , State WorkingTree
           , State GitState
           , Fail
           ] a
@@ -85,10 +86,14 @@ runTestFS action =
   . runFail
   . evalState emptyGitState
   . runGitMock
+  . evalState emptyWorkingTree
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "main")
-      runBranchAndFS @Main (BranchName "main") action
+      runStoryFSGit @Main (BranchName "main")
+        . runStoryBranchGit @Main (BranchName "main")
+        . subsume_
+        $ action
 
 -- ---------------------------------------------------------------------------
 -- Spec
@@ -253,17 +258,18 @@ spec = do
             return (t1 /= t1', tickMessage tick)
       result `shouldBe` Right (True, "tick one (amended)")
 
-    it "at checks out target tick's filesystem for the inner action" $ do
+    it "atWithFS checks out target tick's filesystem for the inner action" $ do
       let result = runTestFS $ do
             appendFile @Main "scene.md" "p1\n"
             t1 <- store "tick one"
             appendFile @Main "scene.md" "p2\n"
             _  <- store "tick two"
-            (content, _mapping) <- at t1 $ readFile @(BranchTag Main) "scene.md"
+            (content, _mapping) <- atWithFS (BranchName "main") t1 $
+              readFile @(BranchTag Main) "scene.md"
             return content
       result `shouldBe` Right "p1\n"
 
-    it "at restores the caller's working tree after completion" $ do
+    it "atWithFS inner filesystem is independent of outer" $ do
       let result = runTestFS $ do
             appendFile @Main "scene.md" "p1\n"
             t1 <- store "tick one"
@@ -272,10 +278,11 @@ spec = do
             appendFile @Main "scene.md" "p3\n"
             _  <- store "tick three"
             appendFile @Main "notes.md" "unsaved\n"
-            ((), _mapping) <- at t1 $ do
+            ((), _mapping) <- atWithFS (BranchName "main") t1 $ do
               appendFile @Main "scene.md" "p1-revised\n"
               _ <- store "tick one (revised)"
               return ()
+            -- outer FS unchanged — independent state
             (,) <$> readFile @(BranchTag Main) "scene.md"
                 <*> readFile @(BranchTag Main) "notes.md"
       result `shouldBe` Right ("p1\np2\np3\n", "unsaved\n")
@@ -324,7 +331,7 @@ spec = do
             appendFile @Main "outfit.md" "black coat\n"
             _  <- store "wearing black coat"
             current <- readFile @(BranchTag Main) "outfit.md"
-            (atT1, _) <- at t1 $ readFile @(BranchTag Main) "outfit.md"
+            (atT1, _) <- atWithFS (BranchName "main") t1 $ readFile @(BranchTag Main) "outfit.md"
             return (current, atT1)
       result1 `shouldBe` Right ("black coat\n", "red dress\n")
       -- Check that file was absent at t2 in a separate run
@@ -335,7 +342,7 @@ spec = do
             t2 <- store "outfit removed"
             appendFile @Main "outfit.md" "black coat\n"
             _  <- store "wearing black coat"
-            (exists, _) <- at t2 $ fileExists @(BranchTag Main) "outfit.md"
+            (exists, _) <- atWithFS (BranchName "main") t2 $ fileExists @(BranchTag Main) "outfit.md"
             return exists
       result2 `shouldBe` Right False
 
@@ -347,3 +354,30 @@ spec = do
       case result of
         Left err -> err `shouldContain` "not found in branch history"
         Right _  -> fail "expected at to fail on unknown tick"
+
+    it "replace amends a tick in place and At replays the tail" $ do
+      -- Chain: t1 → t2 → t3, each appending one paragraph.
+      -- atWithFS t1 + replace t1: rewrites t1's content, At replays t2 and t3
+      -- on top. The mapping records all replayed ticks (t1' from replace,
+      -- t2' and t3' from At's rewind). Reading from a fresh FS at head
+      -- shows the amended content.
+      let result = runTestFS $ do
+            appendFile @Main "scene.md" "p1\n"
+            t1 <- store "t1"
+            appendFile @Main "scene.md" "p2\n"
+            _  <- store "t2"
+            appendFile @Main "scene.md" "p3\n"
+            _  <- store "t3"
+
+            ((), mapping) <- atWithFS (BranchName "main") t1 $ do
+              S.drop
+              writeFile @(BranchTag Main) "scene.md" "p1-revised\n"
+              _ <- S.replace t1 (draft "t1'")
+              return ()
+
+            -- Read head content via a fresh atWithFS at the new head tick.
+            headTick <- S.get
+            (content, _) <- atWithFS (BranchName "main") (tickId headTick) $
+              readFile @(BranchTag Main) "scene.md"
+            return (content, length mapping)
+      result `shouldBe` Right ("p1-revised\np2\np3\n", 2)

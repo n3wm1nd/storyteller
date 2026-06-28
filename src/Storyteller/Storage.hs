@@ -13,6 +13,7 @@ module Storyteller.Storage
     StoryBranch(..)
   , store
   , storeDraft
+  , replace
   , drop
   , get
   , reset
@@ -57,10 +58,17 @@ data StoryBranch (branch :: k) m a where
   -- | Discard pending working-tree changes, restoring the head tick's state.
   Reset  :: StoryBranch branch m ()
 
+  -- | Replace the given tick with the current working tree state, recording
+  --   the supersession so that all branches referencing the old id are updated.
+  --   The old tick's parent becomes the new tick's parent — the new tick takes
+  --   the old one's position in the chain. Returns 'Left' if the append-only
+  --   invariant is violated or the old tick is not in the branch history.
+  Replace :: TickId -> TickDraft -> StoryBranch branch m (Either String TickId)
+
   -- | Run branch operations at the given position, save/restore working tree,
   --   then replay the tail. Returns 'Left' if the target tick is not in the
   --   branch history; otherwise the inner result and the old→new id mapping.
-  At     :: TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
+  At      :: TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
 
 -- | Store the current working tree as a new tick with a plain message.
 --   Fails if any file is not a pure append of its previous content.
@@ -70,6 +78,12 @@ store msg = storeDraft @branch (draft msg)
 -- | Store with a full 'TickDraft' — use when cross-branch refs must be declared.
 storeDraft :: forall branch r. Members '[StoryBranch branch, Fail] r => TickDraft -> Sem r TickId
 storeDraft d = send @(StoryBranch branch) (Store d) >>= either fail return
+
+-- | Replace an existing tick with new working tree content. The new tick takes
+--   the old one's position in the chain; all cross-branch references to the
+--   old tick are updated via 'UpdateReferences'.
+replace :: forall branch r. Members '[StoryBranch branch, Fail] r => TickId -> TickDraft -> Sem r TickId
+replace old d = send @(StoryBranch branch) (Replace old d) >>= either fail return
 
 drop :: forall branch r. Member (StoryBranch branch) r => Sem r ()
 drop = send @(StoryBranch branch) Drop

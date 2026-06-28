@@ -36,13 +36,17 @@ module Storyteller.Git
   , FSNode(..)
   , WorkingTree
   , emptyWorkingTree
+  , loadWorkingTree
 
     -- * Combined branch + filesystem interpreter (storage-agnostic interface)
   , runBranchAndFS
+
+    -- * Convenience: At with a fresh filesystem scoped to the target tick
+  , atWithFS
   ) where
 
 import Prelude
-import Control.Monad (foldM)
+import Control.Monad (foldM, when)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -250,8 +254,8 @@ runStoryStorageGit = interpret $ \case
         let name = BranchName $ T.drop (T.length "refs/heads/story/") ref
         in return Branch { branchName = name, branchHead = TickId (unObjectHash hash) }
 
-  UpdateReferences _mapping ->
-    return ()
+  UpdateReferences mapping ->
+    mapM_ (\(o, n) -> cascadeReplace (ObjectHash (unTickId o)) (ObjectHash (unTickId n))) mapping
 
 -- ---------------------------------------------------------------------------
 -- StoryBranch interpreter
@@ -315,24 +319,34 @@ runStoryBranchGit branch action = do
       result    <- raise $ walkFrom seed step headHash'
       pureT result
 
+    Replace oldId d -> do
+      wt'      <- raise $ get @WorkingTree
+      oldCd    <- raise $ readCommit (ObjectHash (unTickId oldId))
+      parentWt <- raise $ loadWorkingTree
+                    (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
+      eCheck   <- raise $ checkAppendOnly parentWt wt'
+      case eCheck of
+        Left err -> pureT (Left err)
+        Right () -> do
+          treeHash <- raise $ flushWorkingTree wt'
+          newHash  <- raise $ writeCommit CommitData
+            { commitParents = commitParents oldCd
+            , commitTree    = treeHash
+            , commitMessage = encodeMessage (draftRefs d) (draftMessage d)
+            }
+          let newId = TickId (unObjectHash newHash)
+          -- Cascade to other branches only — the current branch is being
+          -- rebuilt by At's rewind and must not be touched here.
+          raise $ cascadeReplaceOtherBranches branch (ObjectHash (unTickId oldId)) newHash
+          raise $ updateRef (storyRef branch) newHash
+          pureT $ Right newId
+
     At tid innerAction -> do
-      headHash'  <- raise $ resolveHead branch
-      eTail      <- raise $ collectTail (TickId (unObjectHash headHash')) tid []
-      case eTail of
-        Left err    -> pureT (Left err)
-        Right tail_ -> do
-          savedWt  <- raise $ get @WorkingTree
-          raise $ updateRef (storyRef branch) (ObjectHash (unTickId tid))
-          targetWt <- raise $ loadWorkingTree (ObjectHash (unTickId tid))
-          raise $ put targetWt
-          fa       <- runTSimple innerAction
-          newHead  <- raise $ resolveHead branch
-          mapping  <- raise $ replayTail newHead tail_
-          case mapping of
-            [] -> return ()
-            _  -> raise $ updateRef (storyRef branch) (ObjectHash (unTickId (snd (last mapping))))
-          raise $ put savedWt
-          return $ fmap (\a -> Right (a, mapping)) fa
+      headHash' <- raise $ resolveHead branch
+      eResult   <- runAtH branch tid headHash' (runTSimple innerAction)
+      case eResult of
+        Left err            -> pureT (Left err)
+        Right (fa, mapping) -> return $ fmap (\a -> Right (a, mapping)) fa
     ) action
 
 -- ---------------------------------------------------------------------------
@@ -476,6 +490,37 @@ runBranchAndFS name action = do
     . subsume_
     $ action
 
+-- | Run an action at a historical tick position with a fresh filesystem
+--   scoped to that tick's tree. The branch ref is moved to @tid@ before the
+--   filesystem is initialised, so the FS sees exactly that tick's snapshot.
+--   On completion the branch ref reflects whatever At rebuilt.
+atWithFS
+  :: forall branch r a
+  .  Members '[ StoryBranch branch
+              , StoryStorage
+              , Git
+              , State WorkingTree
+              , Fail ] r
+  => BranchName
+  -> TickId
+  -> Sem ( FileSystemWrite (BranchTag branch)
+         : FileSystemRead  (BranchTag branch)
+         : FileSystem      (BranchTag branch)
+         : r ) a
+  -> Sem r (a, [(TickId, TickId)])
+atWithFS name tid action =
+  at @branch tid $ do
+    -- Load the target tick's tree into the shared State WorkingTree so that
+    -- Store/Replace (which read from it via the branch interpreter) see the
+    -- correct historical content. Save and restore the outer tree around the
+    -- inner action so the caller's editing buffer is unaffected.
+    outerWt   <- get @WorkingTree
+    initialWt <- loadWorkingTree (ObjectHash (unTickId tid))
+    put initialWt
+    result <- runStoryFSGit @branch name (subsume_ action)
+    put outerWt
+    return result
+
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
@@ -506,6 +551,32 @@ checkAppendOnly parent new = go (Map.toList new)
                    <> " oldHash=" <> T.unpack (unObjectHash oldHash)
                    <> " newHash=" <> T.unpack (unObjectHash newHash)
                    <> ")"
+
+-- | Apply the diff between @originalParentWt@ and @commitWt@ onto @newParentWt@.
+--   For each file: compute bytes added beyond the original parent, append to new parent.
+applyDiff
+  :: Members '[Git, Fail] r
+  => WorkingTree   -- ^ original parent tree (what the commit was based on)
+  -> WorkingTree   -- ^ commit tree (what the commit produced)
+  -> WorkingTree   -- ^ new parent tree (what we're rebasing onto)
+  -> Sem r WorkingTree
+applyDiff originalParentWt commitWt newParentWt =
+  foldM applyFile newParentWt (Map.toList commitWt)
+  where
+    applyFile wt (path, FSDir) =
+      return $ Map.insertWith keepExisting path FSDir wt
+    applyFile wt (path, FSFile newHash) = do
+      commitContent <- readBlob newHash
+      originalContent <- case Map.lookup path originalParentWt of
+        Just (FSFile h) -> readBlob h
+        _               -> return BS.empty
+      let suffix      = BS.drop (BS.length originalContent) commitContent
+      baseContent <- case Map.lookup path wt of
+        Just (FSFile h) -> readBlob h
+        _               -> return BS.empty
+      hash <- writeBlob (baseContent <> suffix)
+      return $ Map.insert path (FSFile hash) wt
+    keepExisting _ old = old
 
 -- | Apply the suffix that commit @cd@ added to its parent onto @parentWt@.
 --   For each file: compute bytes added beyond the commit's own parent's version,
@@ -545,36 +616,58 @@ resolveHead name = do
     Just h  -> return h
     Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName name)
 
-collectTail
-  :: Members '[Git, Fail] r
-  => TickId
+-- | Recursive implementation of At, inside the interpretH tactic context.
+--
+-- Base case: @current == tid@ — load the target working tree, run the action,
+-- return the result and an empty mapping.
+--
+-- Recursive case: capture this tick's diff, drop to parent, recurse, then
+-- reapply the diff onto whatever the inner action left, write a new commit.
+runAtH
+  :: forall branch f a rInitial r
+  .  Members '[Git, Fail, State WorkingTree] r
+  => BranchName
   -> TickId
-  -> [CommitData]
-  -> Sem r (Either String [CommitData])
-collectTail current stop acc
-  | current == stop = return (Right acc)
+  -> ObjectHash
+  -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r) (f a)
+  -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r)
+         (Either String (f a, [(TickId, TickId)]))
+runAtH branch tid current action
+  | TickId (unObjectHash current) == tid = do
+      fa <- action
+      return $ Right (fa, [])
   | otherwise = do
-      cd <- readCommit (ObjectHash (unTickId current))
-      case commitParents cd of
-        [] -> return $ Left $
-          "At: tick " <> T.unpack (unTickId stop) <> " not found in branch history"
-        (p:_) -> collectTail (TickId (unObjectHash p)) stop (cd : acc)
-
-replayTail
-  :: Members '[Git, Fail] r
-  => ObjectHash
-  -> [CommitData]
-  -> Sem r [(TickId, TickId)]
-replayTail _ [] = return []
-replayTail parent (cd : rest) = do
-  let oldId     = TickId $ unObjectHash $ case commitParents cd of { (p:_) -> p; [] -> parent }
-  parentWt  <- loadWorkingTree parent
-  newWt     <- applyCommitSuffix parentWt cd
-  treeHash  <- flushWorkingTree newWt
-  newHash   <- writeCommit cd { commitParents = [parent], commitTree = treeHash }
-  let newId = TickId (unObjectHash newHash)
-  remaining <- replayTail newHash rest
-  return ((oldId, newId) : remaining)
+      mResult <- raise $ do
+        cd <- readCommit current
+        case commitParents cd of
+          [] -> return $ Left $
+            "At: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
+          (parent : _) -> do
+            parentWt <- loadWorkingTree parent
+            commitWt <- loadWorkingTree current
+            updateRef (storyRef branch) parent
+            return $ Right (parent, parentWt, commitWt, cd)
+      case mResult of
+        Left err -> return (Left err)
+        Right (parent, parentWt, commitWt, cd) -> do
+          eInner <- runAtH branch tid parent action
+          case eInner of
+            Left err -> return (Left err)
+            Right (fa, innerMapping) -> do
+              newHash <- raise $ do
+                newParent   <- resolveHead branch
+                newParentWt <- loadWorkingTree newParent
+                newWt       <- applyDiff parentWt commitWt newParentWt
+                treeHash    <- flushWorkingTree newWt
+                newHash     <- writeCommit cd
+                  { commitParents = newParent : drop 1 (commitParents cd)
+                  , commitTree    = treeHash
+                  }
+                updateRef (storyRef branch) newHash
+                return newHash
+              let oldId = TickId (unObjectHash current)
+                  newId = TickId (unObjectHash newHash)
+              return $ Right (fa, innerMapping <> [(oldId, newId)])
 
 walkFrom
   :: Members '[Git, Fail] r
@@ -589,3 +682,59 @@ walkFrom acc step hash = do
   case next of
     Nothing          -> return acc'
     Just (TickId h)  -> walkFrom acc' step (ObjectHash h)
+
+-- | Rewrite all story branch commits that reference @old@ as a parent,
+--   substituting @new@, then cascade until no more referencing commits remain.
+--   Branch refs are updated in place.
+--
+--   Only commit parent links are rewritten — trees and blobs are not tick
+--   references and are left untouched.
+cascadeReplace
+  :: Members '[Git, Fail] r
+  => ObjectHash  -- ^ old commit hash (now superseded)
+  -> ObjectHash  -- ^ new commit hash (the replacement)
+  -> Sem r ()
+cascadeReplace old new = do
+  pairs <- listRefs "refs/heads/story/"
+  mapM_ (rewriteRef old new) pairs
+
+-- | Like 'cascadeReplace' but skips the given branch — used by 'Replace'
+--   inside 'At' where the current branch is being rebuilt by the rewind.
+cascadeReplaceOtherBranches
+  :: Members '[Git, Fail] r
+  => BranchName
+  -> ObjectHash
+  -> ObjectHash
+  -> Sem r ()
+cascadeReplaceOtherBranches skipBranch old new = do
+  pairs <- listRefs "refs/heads/story/"
+  let others = filter (\(ref, _) -> ref /= storyRef skipBranch) pairs
+  mapM_ (rewriteRef old new) others
+
+rewriteRef
+  :: Members '[Git, Fail] r
+  => ObjectHash
+  -> ObjectHash
+  -> (RefName, ObjectHash)
+  -> Sem r ()
+rewriteRef old new (ref, headHash) = do
+  newHead <- rewriteChain old new headHash
+  when (newHead /= headHash) $ updateRef ref newHead
+
+-- | Walk a commit chain rewriting any commit that has @old@ as a parent.
+--   Returns the (possibly new) head hash. Works bottom-up by recursing to
+--   parents first, so a single rewrite propagates upward automatically.
+rewriteChain
+  :: Members '[Git, Fail] r
+  => ObjectHash
+  -> ObjectHash
+  -> ObjectHash
+  -> Sem r ObjectHash
+rewriteChain old new hash
+  | hash == old = return new
+  | otherwise   = do
+      cd         <- readCommit hash
+      newParents <- mapM (rewriteChain old new) (commitParents cd)
+      if newParents == commitParents cd
+        then return hash
+        else writeCommit cd { commitParents = newParents }

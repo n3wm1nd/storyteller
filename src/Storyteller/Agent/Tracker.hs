@@ -12,21 +12,6 @@
 --
 -- Copies new atoms from a trackee branch into a tracker branch, using
 -- cross-branch refs to determine what has already been copied.
---
--- "Already copied" is determined by refs declared in tracker ticks: if a
--- tracker tick has a trackee tick ID in its draftRefs, that atom was copied.
--- Everything in the trackee chain after the last such ref is new.
---
--- The tracker branch may freely diverge — it can have its own ticks, edits,
--- and additions. Only the sourced ref IDs matter for sync state.
---
--- Type parameters throughout:
---   @trackeeBranch@   — StoryBranch phantom for the source  (e.g. @Source@)
---   @trackeeProject@  — FS phantom for the source           (e.g. @BranchTag Source@)
---   @trackerBranch@   — StoryBranch phantom for the dest    (e.g. @Tracker@)
---   @trackerProject@  — FS phantom for the dest             (e.g. @BranchTag Tracker@)
--- where @trackeeProject ~ BranchTag trackeeBranch@
---   and @trackerProject ~ BranchTag trackerBranch@.
 module Storyteller.Agent.Tracker
   ( trackBranch
   , dropUntilAfterLastSynced
@@ -34,6 +19,8 @@ module Storyteller.Agent.Tracker
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -42,8 +29,9 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
                         , fileExists, readFile, writeFile )
-import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage (StoryBranch, StoryStorage, follow, at, storeDraft)
+import Runix.Git (Git, ObjectHash(..), readBlob)
+import Storyteller.Git (BranchTag(..), loadWorkingTree, FSNode(..), WorkingTree)
+import Storyteller.Storage (StoryBranch, StoryStorage, follow, storeDraft)
 import Storyteller.Types (Tick(..), TickDraft(..), TickId(..))
 
 import Prelude hiding (readFile, writeFile)
@@ -53,30 +41,27 @@ trackBranch
   .  ( trackeeProject ~ BranchTag trackeeBranch
      , trackerProject ~ BranchTag trackerBranch
      , Members '[ StoryBranch trackeeBranch
-                , FileSystem     trackeeProject
-                , FileSystemRead trackeeProject
                 , FileSystem     trackerProject
                 , FileSystemRead trackerProject
                 , FileSystemWrite trackerProject
                 , StoryBranch trackerBranch
                 , StoryStorage
+                , Git
                 , Fail
                 ] r )
   => [FilePath]
   -> Sem r [TickId]
 trackBranch files = do
-  -- Collect trackee chain oldest-first.
   trackeeTicks <- follow @trackeeBranch [] $ \acc tick ->
     (tick : acc, tickParent tick)
 
-  -- Collect all trackee tick IDs already referenced in the tracker chain.
   syncedRefs <- follow @trackerBranch Set.empty $ \acc tick ->
     (foldr Set.insert acc (tickRefs tick), tickParent tick)
 
   let newTicks = dropUntilAfterLastSynced syncedRefs trackeeTicks
 
   fmap concat $ mapM
-    (copyAtom @trackeeBranch @trackeeProject @trackerProject @trackerBranch files)
+    (copyAtom @trackerProject @trackerBranch files)
     newTicks
 
 -- | Drop everything up to and including the last synced tick; return the rest.
@@ -87,45 +72,37 @@ dropUntilAfterLastSynced synced ticks =
     Nothing  -> ticks
     Just idx -> drop (idx + 1) ticks
 
--- | Copy one trackee atom into the tracker branch.
---
--- Uses 'At' to position the trackee FS at this atom and its parent, computes
--- the per-file deltas (what this atom added), appends them to the tracker,
--- and commits one tracker tick with a ref to the source atom.
+-- | Copy one trackee atom's delta into the tracker branch.
+--   Reads this tick's tree and its parent's tree directly from git to compute
+--   the per-file delta, then appends to the tracker branch.
 copyAtom
-  :: forall trackeeBranch trackeeProject trackerProject trackerBranch r
-  .  ( trackeeProject ~ BranchTag trackeeBranch
-     , trackerProject ~ BranchTag trackerBranch
-     , Members '[ StoryBranch trackeeBranch
-                , FileSystem     trackeeProject
-                , FileSystemRead trackeeProject
-                , FileSystem     trackerProject
-                , FileSystemRead trackerProject
-                , FileSystemWrite trackerProject
-                , StoryBranch trackerBranch
-                , StoryStorage
-                , Fail
-                ] r )
+  :: forall trackerProject trackerBranch r
+  .  Members '[ FileSystem     trackerProject
+              , FileSystemRead trackerProject
+              , FileSystemWrite trackerProject
+              , StoryBranch trackerBranch
+              , StoryStorage
+              , Git
+              , Fail
+              ] r
   => [FilePath]
   -> Tick
   -> Sem r [TickId]
 copyAtom files tick = do
-  -- Read file contents at this atom using At on the trackee branch.
-  (atContent, _) <- at @trackeeBranch (tickId tick) $
-    mapM (\f -> (f,) <$> readFromBranch @trackeeProject f) files
+  thisWt   <- loadWorkingTree (ObjectHash (unTickId (tickId tick)))
+  parentWt <- case tickParent tick of
+    Nothing  -> return Map.empty
+    Just pid -> loadWorkingTree (ObjectHash (unTickId pid))
 
-  -- Read file contents at the parent atom (what existed before this atom).
-  parentContents <- case tickParent tick of
-    Nothing  -> return [ (f, BS.empty) | f <- files ]
-    Just pid -> fmap fst $ at @trackeeBranch pid $
-      mapM (\f -> (f,) <$> readFromBranch @trackeeProject f) files
+  thisContents   <- readFiles thisWt   files
+  parentContents <- readFiles parentWt files
 
-  -- The delta for each file: bytes this atom added beyond its parent.
-  let deltas = [ (f, BS.drop (BS.length parentBytes) atomBytes)
-               | ((f, atomBytes), (_, parentBytes)) <- zip atContent parentContents
+  let deltas = [ (f, BS.drop (BS.length parentBytes) thisBytes)
+               | f <- files
+               , let thisBytes   = Map.findWithDefault BS.empty f thisContents
+               , let parentBytes = Map.findWithDefault BS.empty f parentContents
                ]
 
-  -- Append deltas to tracker files.
   anyWritten <- fmap or $ mapM (appendDelta @trackerProject) deltas
 
   if not anyWritten
@@ -136,6 +113,16 @@ copyAtom files tick = do
         , draftMessage = "track from " <> unTickId (tickId tick)
         }
       return [tid]
+
+readFiles
+  :: Members '[Git, Fail] r
+  => WorkingTree -> [FilePath] -> Sem r (Map FilePath ByteString)
+readFiles wt files = fmap Map.fromList $ mapM (\f -> (f,) <$> readFromWT wt f) files
+
+readFromWT :: Members '[Git, Fail] r => WorkingTree -> FilePath -> Sem r ByteString
+readFromWT wt path = case Map.lookup path wt of
+  Just (FSFile hash) -> readBlob hash
+  _                  -> return BS.empty
 
 appendDelta
   :: forall trackerProject r
