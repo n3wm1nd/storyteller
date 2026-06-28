@@ -345,20 +345,14 @@ runStoryBranchGit branch action = do
         Left err            -> pureT (Left err)
         Right (fa, mapping) -> return $ fmap (\a -> Right (a, mapping)) fa
 
-    AtWithFS tid innerAction -> do
+    WithFS innerAction -> do
       headHash' <- raise $ resolveHead branch
-      eResult   <- runAtH branch tid headHash' $ do
-        -- Save outer working tree, load the target tick's tree, run the
-        -- action, then restore so the caller's buffer is unaffected.
-        outerWt   <- raise $ get @WorkingTree
-        targetWt  <- raise $ loadWorkingTree (ObjectHash (unTickId tid))
-        raise $ put targetWt
-        fa        <- runTSimple innerAction
-        raise $ put outerWt
-        return fa
-      case eResult of
-        Left err            -> pureT (Left err)
-        Right (fa, mapping) -> return $ fmap (\a -> Right (a, mapping)) fa
+      outerWt   <- raise $ get @WorkingTree
+      headWt    <- raise $ loadWorkingTree headHash'
+      raise $ put headWt
+      fa        <- runTSimple innerAction
+      raise $ put outerWt
+      return fa
     ) action
 
 -- ---------------------------------------------------------------------------

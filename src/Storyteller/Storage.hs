@@ -18,6 +18,7 @@ module Storyteller.Storage
   , get
   , reset
   , at
+  , withFS
   , atWithFS
   , follow
 
@@ -71,11 +72,10 @@ data StoryBranch (branch :: k) m a where
   --   branch history; otherwise the inner result and the old→new id mapping.
   At      :: TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
 
-  -- | Like 'At', but additionally initialises the filesystem to the target
-  --   tick's snapshot before running the inner action, and restores the outer
-  --   filesystem state afterward.  Use this when the inner action needs to read
-  --   or write files relative to a historical tick rather than the current head.
-  AtWithFS :: TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
+  -- | Initialise the filesystem to the current head tick's snapshot, run the
+  --   inner action, then restore the outer filesystem state.  Compose with
+  --   'at' to get historical filesystem access: @at tid (withFS action)@.
+  WithFS  :: m a -> StoryBranch branch m a
 
 -- | Store the current working tree as a new tick with a plain message.
 --   Fails if any file is not a pure append of its previous content.
@@ -109,12 +109,16 @@ at :: forall branch r a. Members '[StoryBranch branch, Fail] r
    => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 at tid action = send @(StoryBranch branch) (At tid action) >>= either fail return
 
--- | Like 'at', but initialises the filesystem to the target tick's snapshot
---   for the duration of the inner action.  The outer filesystem state is
---   restored on completion.
+-- | Initialise the filesystem to the current head tick's snapshot, run the
+--   action, then restore the outer filesystem state.
+withFS :: forall branch r a. Member (StoryBranch branch) r => Sem r a -> Sem r a
+withFS action = send @(StoryBranch branch) (WithFS action)
+
+-- | Run an action at a historical tick position with the filesystem
+--   initialised to that tick's snapshot.  Equivalent to @at tid (withFS action)@.
 atWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
          => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
-atWithFS tid action = send @(StoryBranch branch) (AtWithFS tid action) >>= either fail return
+atWithFS tid action = at @branch tid (withFS @branch action)
 
 -- | Operations across all branches.
 data StoryStorage m a where
