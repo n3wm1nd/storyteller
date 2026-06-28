@@ -8,6 +8,26 @@ Prose carries craft. Entity branches carry perspective. These are separate conce
 
 ---
 
+## The Append-Only Invariant
+
+Every file in every branch is append-only: each tick may only extend a file beyond its previous content. New files and directories are permitted; deletions and in-place modifications are not.
+
+**Why this constraint exists.** Git commits are snapshots, not diffs. When git merges two branches, it infers diffs between snapshots and hopes they don't collide — and when they do, a human has to resolve it. The fundamental problem is that arbitrary file changes are not composable: two changes to the same region of the same file can be irreconcilable.
+
+An atom eliminates this problem by making the diff the primitive. An atom *is* "append X to file F" — a complete, self-describing, trivially conflict-free operation. Two atoms touching the same file always compose: you append both, in order. There is nothing to infer and nothing to conflict. Rebase is not an operation that might succeed — it is an operation that always succeeds, because replaying a sequence of append operations onto a new base is just executing them again.
+
+**Why it isn't a real limitation.** This is not source code. Prose is written linearly — from the first word to the last — and read linearly. The mental model of time matches: at t=0 the file is empty, at t=50 it's halfway done, at t=100 it's finished. Whatever was there at t=50 is still there at t=100; the file just got longer. The append-only constraint encodes exactly how writing already works. The constraint only bites when you want to fix something earlier — and for that, rebase exists.
+
+**What "changing" something means under this invariant:**
+
+- **Append** — add new content at HEAD. The character learns something, a constraint is added, a scene continues. The common case.
+- **Amend** — `At` back to the tick where the content was written, write it differently, rebase forward. From HEAD, it was always that way. The old version exists only in the temporal ledger.
+- **Replace a file** — write a new file with the same name at HEAD. This is a forward append operation: a new file appears, the old one is no longer in the active tree but remains reachable via `At`. Categorically different from amending: replacement is a forward move, amendment is a rewrite of history.
+
+**Reticking** — atom boundaries can be changed after the fact. Splitting one tick into two requires choosing which inherits the original ID (preserving existing references) and which gets a new one (propagated via `updateReferences`). Merging two ticks into one is the reverse. Because rebase is already guaranteed to succeed, reticking is just another rebase — the storage layer imposes no additional cost.
+
+---
+
 ## The Structures
 
 Storyteller uses three distinct structures, each answering a different question:
@@ -39,6 +59,8 @@ Every tick has:
 
 The filesystem at any point in the chain is the product of replaying all ticks from the beginning. The tick itself carries no file content — it records that the chain advanced, and the message says why.
 
+A tick that adds content to files is called an **atom** — the finest granularity at which content is addressable. Atoms can be anything from a phrase to a complete generation block; the choice determines how precisely history can be navigated and how finely other ticks (summaries, annotations, cross-branch references) can point into it. Ticks that carry no filesystem change are not atoms — they sit *between* atoms in the chain, logically anchored to the atom that immediately precedes them.
+
 ### Invariants
 
 Two invariants the storage layer enforces:
@@ -52,7 +74,9 @@ Helper ticks (parentless ticks used purely as reference containers, e.g. to stor
 
 The storage layer is agnostic to tick kind. The application layer tags the message and interprets accordingly:
 
-**Prose tick** — the common case. The filesystem gained one more paragraph (or sentence, or LLM-generated block — the granularity is flexible). The message is a brief summary of what was written, or the paragraph itself verbatim.
+**The general pattern:** any agent or system component can insert a tick that carries no filesystem change. Such a tick is logically *at a position in the chain* — it sits between specific atoms of content — without being *part of the content*. Its position is its primary meaning; its message and refs carry whatever additional data the inserting agent needs. This is how summaries, annotations, consistency flags, task completions, and anything else agents want to attach to a specific point in the story are all expressed through the same mechanism. The file, read plainly, is unaffected; the chain, traversed by an agent, sees everything.
+
+**Prose tick** (atom) — the common case. The filesystem gained one more unit of content. The message is a brief summary of what was written, or the content itself verbatim. Everything that depends on position (cross-branch references, summary boundaries, `At` targets, knowledge filter granularity) bottoms out at the atom. A practical atom is somewhere between a sentence and a ~200-word LLM response block: fine enough to pinpoint where a piece of knowledge entered the story, coarse enough that history stays navigable. Atom granularity is a **policy decision in application code**, not a storage constraint — it can be configured per workflow and changed after the fact via reticking.
 
 **Summary tick** — the filesystem did not change. The message summarizes a range of prior ticks. References point to the first and last tick of the summarized range. These are free navigation artifacts: "what happened in act 2?" = read the act 2 summary tick message, no files needed.
 
@@ -128,21 +152,46 @@ Authorial corrections are scoped by fiction-time position. A constraint added be
 An entity branch represents the entity's history **as they currently understand it**:
 
 - Ticks can be revised when understanding changes
-- Ticks can be deleted (forgotten, suppressed, never actually known)
+- Ticks can be removed by amending back to where they were introduced and not writing them
 - False beliefs sit in the branch as fact, from the entity's perspective
 - Inferences and working theories are recorded, even if wrong
 
 A corrected misremembering: go back, amend the tick, replay forward. The old version exists in the temporal ledger. No corrective tick appended at the end.
 
+### Entity Branch as Editable Internal State
+
+An entity branch is not just a knowledge log — it is the entity's **editable internal state**. The file tree within the branch is author-controlled and can contain anything that shapes how the entity is written:
+
+- `sheet.md` — identity, voice, core traits (always loaded)
+- `active.md` — current goals, focus, live suspicions
+- `bob.md` — everything this entity knows or suspects about Bob
+- `inventory.md` — current possessions (replaced entirely when it changes, not appended)
+- `tasks.md` — what the entity is currently trying to accomplish
+
+The author has four operations available, each with distinct semantics:
+
+| Operation | Mechanism | Effect |
+|---|---|---|
+| **Append** | New content at HEAD | Character learns something, state advances |
+| **Amend** | `At` + rewrite + rebase | It was always this way; old version in ledger only |
+| **Replace** | Remove + recreate file at HEAD | Clean break; old file reachable via `At` but not active |
+| **Constrain** | Append blunt instruction to history | Permanent behavioral constraint from that fiction-time position forward |
+
+The correction loop for LLM output is correspondingly precise: if a character behaves wrongly, amend their branch at the point where the wrong belief or constraint was introduced, and regenerate. The fix is permanent — not a patch at HEAD that decays as context shifts.
+
 ---
 
 ## Summarization
 
-Summaries form a tree over the chain. A chapter-level summary tick covers all scene-level ticks within it; a scene-level summary covers all prose ticks within it. Agents navigate this tree dynamically — reading a chapter summary, deciding one scene is relevant, drilling into that scene's ticks directly, ignoring the rest.
+A summary is just a tagged tick with no filesystem change, whose message contains a compressed description of a range of prior atoms, and whose refs point to the start of that range. Nothing more. The storage layer has no special concept of a summary — it is purely an application-layer convention on top of the general non-atom tick pattern.
 
-Summary ticks are free navigation artifacts — they cost one extra tick and give hierarchical zoom for free.
+This means there is no single canonical summary tree. Any number of summarizer agents can run independently and insert their own summary ticks into the chain, each tagged with their kind. A character entity branch might have a "casual appearance" summary (how this character comes across to strangers), a "professional context" summary (their work habits and competencies), and an "internal state" summary (private beliefs and emotional state) — all covering the same range of atoms, all inserted by different agents running at different times, all available for any downstream agent to discover and choose between.
 
-Summarization is a background task. The natural trigger is completion: a chapter closes, a character exits, an arc resolves. The content is stable; the agent has moved on; the summary will be ready before it's needed.
+When a narrator or context-assembly agent needs to load an entity, it walks the chain, discovers the available summaries via their tags, and decides: use one of the pre-generated summaries as-is, combine a summary with selected raw content, or generate a bespoke compression on the fly tailored to the current scene. Pre-generated summaries are a cache of likely-useful compressions. They are never mandatory.
+
+**Validity.** Because the underlying content is append-only, a summary is never stale in the sense of covering content that was later modified — modification doesn't exist. The only way a summary can become inaccurate is if the atoms it covers were rewritten via `At` and rebase. A summary tick stores the start-atom ID in its refs; a background validation pass can check whether that ID still resolves to the same content, and flag or regenerate the summary if not. Summaries produced after a rebase that didn't touch their covered range remain valid without any verification.
+
+**Summarization is a background task.** Summarizer agents run when content is stable — a chapter closes, a character exits, an arc resolves — and insert their ticks without blocking the writing workflow. If no summary exists yet, the consuming agent falls back to raw content or generates its own. The chain always has a correct answer; summaries only make retrieval cheaper.
 
 ---
 
@@ -161,6 +210,15 @@ Each branch maintains a temporal ledger: append-only, never rebased.
 Every time a branch moves — forward, replayed, amended — the ledger records the previous head. This makes destructive rewrites safe: branches can be freely amended with the ledger silently accumulating every state they ever had. The undo path exists without polluting the branch structure.
 
 The ledger is a storage implementation detail. The application layer never reasons about it directly — it is just there, making nothing permanently lost.
+
+### Global Snapshot Branch
+
+A single snapshot branch accumulates one commit per write operation, pointing to all current branch heads at that moment. This is nearly free to maintain and provides two properties:
+
+- **Global undo** — roll back to any snapshot to restore all branch heads simultaneously to a consistent prior state, reversing rebases and any other changes.
+- **GC anchor** — every object reachable from any snapshot commit is pinned. Objects rebased away from active branches remain reachable and are not garbage collected as long as a snapshot references them.
+
+The snapshot branch uses normal commit semantics: each commit's parent is the previous snapshot, and the current branch heads are encoded in the message or refs. No new storage machinery required.
 
 ---
 

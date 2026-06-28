@@ -6,6 +6,14 @@ Storyteller is an LLM-powered story development system that treats narrative as 
 
 For the full data model — git structure semantics, entity branches, causal graph, worktree/submodule layout — see **[DATA-MODEL.md](DATA-MODEL.md)**.
 
+### What This Is For
+
+The target use case is not serious literary authors — a Brandon Sanderson gains little from LLM assistance regardless of how well the context is managed. The target is the much larger, mostly silent audience of people who use LLMs to *explore* stories: fanfiction writers who never publish, people running long-form character interactions, anyone who wants to read the story they want to read without writing every word themselves.
+
+This audience already uses tools like SillyTavern and similar. Their problems are not quality — the bar is "entertaining and coherent," not "artistically defensible." Their problems are structural: character drift over long sessions, context limits causing degradation and looping, no persistent state between sessions, no way to fix a character that has gone wrong at the root rather than patching around it each time.
+
+Storyteller doesn't make LLM output better or faster. It provides a framework that makes these structural problems solvable incrementally, without building a monolithic agent loop that becomes harder to modify the more features it accumulates. The data model handles persistence and consistency; the agent architecture stays composable; the author stays in control of how much or how little the system does.
+
 ---
 
 ## Core Principles
@@ -134,6 +142,12 @@ The author decides. The system doesn't require any particular depth. "Entity" is
 
 Users can use pre-built agents or define their own.
 
+**Agents are just functions over effects.** An agent that only needs `LLM` is a pure LLM call with no storage side effects. One that needs `FileSystemRead` is read-only by construction — the compiler enforces it. One that needs `StoryBranch` is explicitly reaching into the narrative structure. The effect constraints are the API surface; capability boundaries are not conventions, they are types.
+
+Most useful agents don't need to know anything about ticks or branches. A style checker, a research tool, a scene outline generator — these are just `LLM + FileSystemRead`. They work identically whether the filesystem underneath is a git-backed branch, a local directory, or anything else. The narrative structure is opt-in, only for agents that genuinely need it.
+
+**Agents, tools, and workflows are the same thing.** Any function over effects can be called directly, composed into a pipeline, or exposed as an LLM tool. There is no architectural distinction between "an agent" and "an LLM-powered function" — a single-shot LLM call, a multi-step pipeline, and a decision loop with tool use are all just `Sem r a`. This is what makes the composability structural rather than aspirational.
+
 ### Input Modes
 
 The core axis is: **how is input interpreted, and what does it produce?**
@@ -168,6 +182,8 @@ Specialized agents for specific pipeline tasks:
 - Output: Commits to entity branch at correct fiction-time position
 - Runs: Lazily, in batches, or as a maintenance task — git branch state shows exactly what's pending
 - Baseline alternative: copy produced prose to active character branches directly, no LLM needed; refine selectively or post-hoc
+
+The baseline (carbon-copy) is already doing real work: a character who was present for a scene has that scene's prose in their branch, which is enough for the LLM to write them consistently in subsequent scenes. LLMs have contextual understanding of what a character notices based on how the prose is written — a character written as oblivious will be treated as oblivious even if the information they're missing appears nearby. Knowledge leaks that do occur are caught on author read and fixed by amending the entity branch at the point of the leak; the fix is permanent. Whether a leak goes unnoticed... if it doesn't cause a visible problem in the prose, it doesn't matter.
 
 **Summarizer Agent**
 - Input: Set of commits (paragraphs, scenes, chapters) and the applicable summarization rule
