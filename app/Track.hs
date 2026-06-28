@@ -67,9 +67,9 @@ runTrackIO
 runTrackIO repoPath endpoint sourceBranch trackerBranch files =
   runM . runError
   . runInfrastructure repoPath endpoint
+  . runStoryStorageGit
   . runBranchAndFS @Source sourceBranch
   . runBranchAndFS @Tracker trackerBranch
-  . runStoryStorageGit
   $ do
       getBranch trackerBranch >>= \case
         Nothing -> void $ createBranch trackerBranch

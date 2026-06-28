@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -16,19 +17,21 @@
 -- correct position in the chain.
 module Main (main) where
 
+import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 import Polysemy
+import Polysemy.Error (runError)
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
-import Storyteller.Git (BranchTag)
-import Storyteller.Runtime (Main, runBranchIO)
-import Storyteller.Storage (StoryBranch, StoryStorage)
+import Storyteller.Git (BranchTag, runBranchAndFS)
+import Storyteller.Runtime (Main, runInfrastructure, runStoryStorageGit)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 import Storyteller.Types (BranchName(..), TickId(..))
 import Storyteller.Agent.SplitDiffMerge (splitDiffMerge)
 import Storyteller.CLI.Env (StoryEnv(..), loadEnv)
@@ -36,12 +39,18 @@ import Storyteller.CLI.Env (StoryEnv(..), loadEnv)
 main :: IO ()
 main = do
   env <- loadEnv
+  let branch = BranchName (envBranch env)
 
-  result <- runBranchIO @Main
-    (envRepo env)
-    (envEndpoint env)
-    (BranchName (envBranch env))
-    rebaseAction
+  result <-
+    runM . runError
+    . runInfrastructure (envRepo env) (envEndpoint env)
+    . runStoryStorageGit
+    . runBranchAndFS @Main branch
+    $ do
+        getBranch branch >>= \case
+          Nothing -> void $ createBranch branch
+          Just _  -> return ()
+        rebaseAction
 
   case result of
     Left err      -> hPutStrLn stderr ("Error: " <> err) >> exitFailure

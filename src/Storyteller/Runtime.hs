@@ -19,8 +19,7 @@ module Storyteller.Runtime
 
     -- * Runners
   , runInfrastructure
-  , runBranchIO
-  , runStoryGitIO
+  , runStoryGit
 
     -- * Re-exported for custom stacks
   , module Storyteller.Git
@@ -99,33 +98,8 @@ runInfrastructure repoPath _endpoint =
   . sleepIO
   . httpIO (withRequestTimeout 600)
 
--- | One branch, storage, no LLM. Creates the branch if it doesn't exist.
-runBranchIO
-  :: forall branch a.
-     FilePath
-  -> String
-  -> BranchName
-  -> ( forall r. Members '[ FileSystem      (BranchTag branch)
-                           , FileSystemRead  (BranchTag branch)
-                           , FileSystemWrite (BranchTag branch)
-                           , StoryBranch branch
-                           , StoryStorage
-                           , Git, Logging, Fail ] r
-       => Sem r a )
-  -> IO (Either String a)
-runBranchIO repoPath endpoint branch action =
-  runM . runError
-  . runInfrastructure repoPath endpoint
-  . runBranchAndFS @branch branch
-  . runStoryStorageGit
-  $ do
-      getBranch branch >>= \case
-        Nothing -> void $ createBranch branch
-        Just _  -> return ()
-      action
-
 -- | One branch, storage, LLM. Creates the branch if it doesn't exist.
-runStoryGitIO
+runStoryGit
   :: FilePath
   -> String
   -> BranchName
@@ -136,14 +110,15 @@ runStoryGitIO
                            , FileSystemWrite (BranchTag Main)
                            , StoryBranch Main
                            , StoryStorage
-                           , Git, Logging, Fail ] r
+                           , Git
+                           , Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)
-runStoryGitIO repoPath endpoint branch configs action =
+runStoryGit repoPath endpoint branch configs action =
   runM . runError
   . runInfrastructure repoPath endpoint
-  . runBranchAndFS @Main branch
   . runStoryStorageGit
+  . runBranchAndFS @Main branch
   . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
   $ do
       getBranch branch >>= \case

@@ -37,7 +37,7 @@ import Runix.Logging (Logging)
 
 import Prelude hiding (readFile, writeFile)
 
-import Storyteller.Runtime ( Main, StoryModel, runStoryGitIO
+import Storyteller.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
 import Storyteller.Storage (StoryBranch, StoryStorage, store)
 import Storyteller.Types (BranchName(..))
@@ -58,7 +58,7 @@ main = do
     _   -> hPutStrLn stderr "Usage: story-write <file>" >> exitFailure
   instruction <- fmap T.strip TIO.getContents
 
-  result <- runStoryGitIO
+  result <- runStoryGit
     (envRepo env)
     (envEndpoint env)
     (BranchName (envBranch env))
