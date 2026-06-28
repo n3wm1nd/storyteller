@@ -9,16 +9,6 @@
 {-# LANGUAGE TypeOperators #-}
 
 -- | Shared runtime: model, interpreters, and IO effect stacks.
---
--- Design: effects are layered bottom-up. The infrastructure layer (git, HTTP,
--- logging) is common. Branch interpreters sit above that. LLM sits above the
--- branch interpreters (so it shares the HTTP stack).
---
--- 'runBranchIO' provides one branch with no LLM — for tools like story-rebase
--- and story-track that don't call an LLM.
--- 'runStoryGitIO' adds the LLM layer on top — for tools like story-write.
--- Multi-branch tools (story-track) assemble their own stack from primitives
--- re-exported here.
 module Storyteller.Runtime
   ( -- * Model
     StoryModel
@@ -33,8 +23,6 @@ module Storyteller.Runtime
 
     -- * Re-exported primitives for multi-branch runners
   , module Storyteller.Git
-  , emptyWorkingTree
-  , Git
   , runGitIO
   , loggingIO
   , failLog
@@ -46,6 +34,7 @@ module Storyteller.Runtime
   , interpretCmd
   , runError
   , evalState
+  , Git
   , State
   ) where
 
@@ -85,7 +74,6 @@ storyModel = Model Qwen35_40B LlamaCpp
 -- Phantom tag
 -- ---------------------------------------------------------------------------
 
--- | Phantom tag for the primary story branch in single-branch tools.
 data Main
 
 -- ---------------------------------------------------------------------------
@@ -103,18 +91,11 @@ instance RestEndpoint StoryLlamaCppAuth where
 -- Base runner: one branch, no LLM
 -- ---------------------------------------------------------------------------
 
--- | Run an action against a single git branch.
---
--- Provides:
---   FileSystem / FileSystemRead / FileSystemWrite for (BranchTag branch)
---   StoryBranch branch, StoryStorage, Logging, Fail
---
--- The branch is created if it doesn't exist. No LLM is wired.
 runBranchIO
   :: forall branch a.
-     String      -- ^ LLAMACPP_ENDPOINT (feeds the HTTP stack even if LLM unused)
-  -> FilePath    -- ^ path to git repository
-  -> BranchName  -- ^ branch name
+     String
+  -> FilePath
+  -> BranchName
   -> ( forall r. Members '[ FileSystem      (BranchTag branch)
                            , FileSystemRead  (BranchTag branch)
                            , FileSystemWrite (BranchTag branch)
@@ -130,10 +111,8 @@ runBranchIO endpoint repoPath branch action =
   . failLog
   . cmdsIO
   . interpretCmd @"git"
-  . evalState (emptyWorkingTree :: WorkingTree)
   . runGitIO repoPath
-  . runStoryFSGit @branch branch
-  . runStoryBranchGit @branch branch
+  . runBranchAndFS @branch branch
   . runStoryStorageGit
   . timeIO
   . sleepIO
@@ -150,8 +129,8 @@ runBranchIO endpoint repoPath branch action =
 
 -- | Run an action against a single git branch with full LLM access.
 --
--- Exposes 'Git' and 'State WorkingTree' so that actions can temporarily
--- install additional branch interpreters (e.g. for loading character context).
+-- Exposes 'Git' so that actions can temporarily install additional branch
+-- interpreters (e.g. for loading character context via 'runBranchAndFS').
 runStoryGitIO
   :: String
   -> FilePath
@@ -164,7 +143,6 @@ runStoryGitIO
                            , StoryBranch Main
                            , StoryStorage
                            , Git
-                           , State WorkingTree
                            , Logging, Fail ] r
        => Sem r a )
   -> IO (Either String a)
@@ -175,10 +153,8 @@ runStoryGitIO endpoint repoPath branch configs action =
   . failLog
   . cmdsIO
   . interpretCmd @"git"
-  . evalState (emptyWorkingTree :: WorkingTree)
   . runGitIO repoPath
-  . runStoryFSGit @Main branch
-  . runStoryBranchGit @Main branch
+  . runBranchAndFS @Main branch
   . runStoryStorageGit
   . timeIO
   . sleepIO

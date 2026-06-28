@@ -6,8 +6,10 @@
 {-# LANGUAGE TypeOperators #-}
 
 -- | Pure in-memory mock interpreter for the Git effect.
---   Uses monotonically increasing integer hashes so commits are
---   distinguishable and deterministic in tests.
+--   All objects are content-addressed, exactly as in real git: writing the
+--   same content twice returns the same hash.  This means a no-op replayTail
+--   (e.g. the tail of a pure-read At) produces the same commit hashes and
+--   leaves branch refs unchanged.
 module Git.Mock
   ( GitState(..)
   , emptyGitState
@@ -19,6 +21,9 @@ import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import Data.Hashable (hash, Hashable)
+import Data.Word (Word64)
+import Numeric (showHex)
 
 import Polysemy
 import Polysemy.Fail
@@ -38,18 +43,13 @@ data GitState = GitState
   , gsCommits  :: Map ObjectHash CommitData
   , gsBlobs    :: Map ObjectHash ByteString
   , gsTrees    :: Map ObjectHash [TreeEntry]
-  , gsNextId   :: Int
   } deriving (Show, Eq)
 
 emptyGitState :: GitState
-emptyGitState = GitState Map.empty Map.empty Map.empty Map.empty 0
+emptyGitState = GitState Map.empty Map.empty Map.empty Map.empty
 
-freshHash :: Member (State GitState) r => Sem r ObjectHash
-freshHash = do
-  s <- get
-  let n = gsNextId s
-  put s { gsNextId = n + 1 }
-  return $ ObjectHash $ T.pack (show n)
+toHex :: Int -> String
+toHex x = showHex (fromIntegral x :: Word64) ""
 
 -- ---------------------------------------------------------------------------
 -- Interpreter
@@ -64,13 +64,13 @@ runGitMock = interpret $ \case
     s <- get
     return $ Map.lookup name (gsRefs s)
 
-  CreateRef name hash -> do
+  CreateRef name h -> do
     s <- get
-    put s { gsRefs = Map.insert name hash (gsRefs s) }
+    put s { gsRefs = Map.insert name h (gsRefs s) }
 
-  UpdateRef name hash -> do
+  UpdateRef name h -> do
     s <- get
-    put s { gsRefs = Map.insert name hash (gsRefs s) }
+    put s { gsRefs = Map.insert name h (gsRefs s) }
 
   DeleteRef name -> do
     s <- get
@@ -83,47 +83,72 @@ runGitMock = interpret $ \case
           (gsRefs s)
     return matching
 
-  ReadCommit hash -> do
+  ReadCommit h -> do
     s <- get
-    case Map.lookup hash (gsCommits s) of
+    case Map.lookup h (gsCommits s) of
       Just cd -> return cd
-      Nothing -> fail $ "ReadCommit: unknown hash " <> T.unpack (unObjectHash hash)
+      Nothing -> fail $ "ReadCommit: unknown hash " <> T.unpack (unObjectHash h)
 
   WriteCommit cd -> do
-    hash <- freshHash
+    let h = commitContentHash cd
     s <- get
-    put s { gsCommits = Map.insert hash cd (gsCommits s) }
-    return hash
+    put s { gsCommits = Map.insert h cd (gsCommits s) }
+    return h
 
-  ReadBlob hash -> do
+  ReadBlob h -> do
     s <- get
-    case Map.lookup hash (gsBlobs s) of
+    case Map.lookup h (gsBlobs s) of
       Just bs -> return bs
-      Nothing -> fail $ "ReadBlob: unknown hash " <> T.unpack (unObjectHash hash)
+      Nothing -> fail $ "ReadBlob: unknown hash " <> T.unpack (unObjectHash h)
 
   WriteBlob content -> do
-    hash <- freshHash
+    let h = blobContentHash content
     s <- get
-    put s { gsBlobs = Map.insert hash content (gsBlobs s) }
-    return hash
+    put s { gsBlobs = Map.insert h content (gsBlobs s) }
+    return h
 
-  ReadTree hash -> do
+  ReadTree h -> do
     s <- get
-    case Map.lookup hash (gsTrees s) of
+    case Map.lookup h (gsTrees s) of
       Just entries -> return entries
       Nothing
-        | hash == emptyTreeHash -> return []
-        | otherwise -> fail $ "ReadTree: unknown hash " <> T.unpack (unObjectHash hash)
+        | h == emptyTreeHash -> return []
+        | otherwise -> fail $ "ReadTree: unknown hash " <> T.unpack (unObjectHash h)
 
   WriteTree entries -> do
-    hash <- freshHash
+    let h = treeContentHash entries
     s <- get
-    put s { gsTrees = Map.insert hash entries (gsTrees s) }
-    return hash
+    put s { gsTrees = Map.insert h entries (gsTrees s) }
+    return h
 
-  LookupPath hash path -> do
+  LookupPath h path -> do
     s <- get
-    case Map.lookup hash (gsTrees s) of
-      Nothing -> fail $ "LookupPath: unknown tree hash " <> T.unpack (unObjectHash hash)
+    case Map.lookup h (gsTrees s) of
+      Nothing -> fail $ "LookupPath: unknown tree hash " <> T.unpack (unObjectHash h)
       Just entries ->
         return $ entryHash <$> find (\e -> entryName e == path) entries
+
+-- ---------------------------------------------------------------------------
+-- Content hashing
+-- ---------------------------------------------------------------------------
+
+-- Each object type uses a distinct prefix so hashes from different domains
+-- never collide even if the underlying Hashable values happen to be equal.
+
+blobContentHash :: ByteString -> ObjectHash
+blobContentHash bs = ObjectHash $ "blob:" <> T.pack (toHex (hash bs))
+
+treeContentHash :: [TreeEntry] -> ObjectHash
+treeContentHash entries =
+  ObjectHash $ "tree:" <> T.pack (toHex (hash (map hashEntry entries)))
+  where
+    hashEntry e = hash (entryName e, unObjectHash (entryHash e))
+
+commitContentHash :: CommitData -> ObjectHash
+commitContentHash cd =
+  ObjectHash $ "commit:" <> T.pack (toHex (hash key))
+  where
+    key = ( map unObjectHash (commitParents cd)
+          , unObjectHash (commitTree cd)
+          , commitMessage cd
+          )

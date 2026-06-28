@@ -52,19 +52,19 @@ data Main
 -- Test runners
 -- ---------------------------------------------------------------------------
 
--- | Runner for tests that only use StoryStorage and StoryBranch.
+-- | Runner for tests that only use StoryStorage and StoryBranch (no FS).
 runTest
-  :: Sem '[StoryStorage, StoryBranch Main, Git, State GitState, State WorkingTree, Fail] a
+  :: Sem '[ StoryStorage
+          , StoryBranch Main
+          , FileSystemWrite (BranchTag Main)
+          , FileSystemRead  (BranchTag Main)
+          , FileSystem      (BranchTag Main)
+          , Git
+          , State GitState
+          , Fail
+          ] a
   -> Either String a
-runTest action =
-  run
-  . runFail
-  . evalState emptyWorkingTree
-  . evalState emptyGitState
-  . runGitMock
-  . runStoryBranchGit @Main (BranchName "main")
-  . runStoryStorageGit
-  $ action
+runTest = runTestFS
 
 -- | Runner for tests that also use the filesystem effects.
 runTestFS
@@ -75,18 +75,15 @@ runTestFS
           , FileSystem      (BranchTag Main)
           , Git
           , State GitState
-          , State WorkingTree
           , Fail
           ] a
   -> Either String a
 runTestFS action =
   run
   . runFail
-  . evalState emptyWorkingTree
   . evalState emptyGitState
   . runGitMock
-  . runStoryFSGit @Main (BranchName "main")
-  . runStoryBranchGit @Main (BranchName "main")
+  . runBranchAndFS @Main (BranchName "main")
   . runStoryStorageGit
   $ action
 

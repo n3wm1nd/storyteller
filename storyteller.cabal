@@ -113,6 +113,8 @@ test-suite storyteller-test
   other-modules:    Git.Mock
                   , Storyteller.StorageSpec
                   , Storyteller.SplitDiffMergeSpec
+                  , Storyteller.SplitterSpec
+                  , Storyteller.TrackerSpec
   build-depends:    base >=4.18 && <5
                   , storyteller
                   , storyteller:gitlib-effect
@@ -124,6 +126,7 @@ test-suite storyteller-test
                   , runix
                   , hspec >=2.11
                   , QuickCheck >=2.14
+                  , hashable
   hs-source-dirs:   test
   default-language: Haskell2010
   ghc-options:      -Wall

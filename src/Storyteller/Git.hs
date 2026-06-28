@@ -36,6 +36,9 @@ module Storyteller.Git
   , FSNode(..)
   , WorkingTree
   , emptyWorkingTree
+
+    -- * Combined branch + filesystem interpreter (storage-agnostic interface)
+  , runBranchAndFS
   ) where
 
 import Prelude
@@ -48,7 +51,8 @@ import qualified Data.Text as T
 import System.FilePath (splitDirectories, joinPath)
 import Polysemy
 import Polysemy.Fail
-import Polysemy.State
+import Polysemy.State (State, get, put, modify, evalState)
+import Polysemy.Internal (raiseUnder3)
 
 import Runix.Git
 import Runix.FileSystem
@@ -438,6 +442,31 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       let parts = splitDirectories path
           -- all prefixes except the full path itself
       in [ joinPath (take n parts) | n <- [1 .. length parts - 1] ]
+
+-- ---------------------------------------------------------------------------
+-- Combined interpreter
+-- ---------------------------------------------------------------------------
+
+-- | Interpret 'StoryBranch branch' and all three filesystem effects for a branch.
+--
+-- This is the preferred entry point for callers. It introduces and eliminates
+-- 'State WorkingTree' internally — each branch gets its own isolated working
+-- tree state, invisible to callers and to other branch interpreters on the stack.
+runBranchAndFS
+  :: forall branch r a
+  .  Members '[Git, Fail] r
+  => BranchName
+  -> Sem ( StoryBranch branch
+         : FileSystemWrite (BranchTag branch)
+         : FileSystemRead  (BranchTag branch)
+         : FileSystem      (BranchTag branch)
+         : r ) a
+  -> Sem r a
+runBranchAndFS name =
+    evalState emptyWorkingTree
+  . runStoryFSGit @branch name
+  . runStoryBranchGit @branch name
+  . subsume_
 
 -- ---------------------------------------------------------------------------
 -- Helpers

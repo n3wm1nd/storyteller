@@ -29,6 +29,7 @@
 --   and @trackerProject ~ BranchTag trackerBranch@.
 module Storyteller.Agent.Tracker
   ( trackBranch
+  , dropUntilAfterLastSynced
   ) where
 
 import Data.ByteString (ByteString)

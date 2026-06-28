@@ -24,6 +24,9 @@ module Storyteller.Agent.Splitter
 
     -- * Interpreters
   , splitByParagraph
+
+    -- * Exported for tests
+  , byParagraph
   ) where
 
 import Data.Text (Text)

@@ -38,8 +38,7 @@ import Runix.Logging (Logging)
 import Prelude hiding (readFile, writeFile)
 
 import Storyteller.Runtime ( Main, StoryModel, runStoryGitIO
-                           , BranchTag(..), WorkingTree, State, Git
-                           , runStoryFSGit, runStoryBranchGit )
+                           , BranchTag(..), Git, runBranchAndFS )
 import Storyteller.Storage (StoryBranch, StoryStorage, store)
 import Storyteller.Types (BranchName(..))
 import Storyteller.Agent.Continuation (continuationAgent)
@@ -79,14 +78,12 @@ writeAction
               , StoryStorage
               , Splitter
               , Git
-              , State WorkingTree
               , Logging, Fail] r
   => FilePath -> T.Text -> [T.Text] -> Sem r T.Text
 writeAction outFile instruction activeChars = do
   charContexts <- fmap concat $ forM activeChars $ \charBranch -> do
     let branchName = BranchName charBranch
-    blocks <- runStoryFSGit @Char_ branchName
-            $ runStoryBranchGit @Char_ branchName
+    blocks <- runBranchAndFS @Char_ branchName
             $ loadCharContext @(BranchTag Char_)
     return $ ("## Character: " <> charBranch) : blocks
 

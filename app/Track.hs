@@ -30,10 +30,10 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
 import Storyteller.Runtime
-  ( emptyWorkingTree, runGitIO, loggingIO, failLog, httpIO, withRequestTimeout
-  , timeIO, sleepIO, cmdsIO, interpretCmd, runError, evalState
-  , runStoryFSGit, runStoryBranchGit, runStoryStorageGit
-  , BranchTag(..), WorkingTree
+  ( runGitIO, loggingIO, failLog, httpIO, withRequestTimeout
+  , timeIO, sleepIO, cmdsIO, interpretCmd, runError
+  , runBranchAndFS, runStoryStorageGit
+  , BranchTag(..)
   )
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 import Storyteller.Types (BranchName(..), TickId)
@@ -74,12 +74,9 @@ runTrackIO endpoint repoPath sourceBranch trackerBranch files =
   . failLog
   . cmdsIO
   . interpretCmd @"git"
-  . evalState (emptyWorkingTree :: WorkingTree)
   . runGitIO repoPath
-  . runStoryFSGit @Source sourceBranch
-  . runStoryBranchGit @Source sourceBranch
-  . runStoryFSGit @Tracker trackerBranch
-  . runStoryBranchGit @Tracker trackerBranch
+  . runBranchAndFS @Source sourceBranch
+  . runBranchAndFS @Tracker trackerBranch
   . runStoryStorageGit
   . timeIO
   . sleepIO
