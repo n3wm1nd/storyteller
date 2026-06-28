@@ -52,27 +52,29 @@ data Main
 -- Test runners
 -- ---------------------------------------------------------------------------
 
--- | Runner for tests that only use StoryStorage and StoryBranch (no FS).
+-- | Runner for tests that only use StoryStorage (no branch or FS effects).
 runTest
   :: Sem '[ StoryStorage
-          , StoryBranch Main
-          , FileSystemWrite (BranchTag Main)
-          , FileSystemRead  (BranchTag Main)
-          , FileSystem      (BranchTag Main)
           , Git
           , State GitState
           , Fail
           ] a
   -> Either String a
-runTest = runTestFS
+runTest action =
+  run
+  . runFail
+  . evalState emptyGitState
+  . runGitMock
+  . runStoryStorageGit
+  $ action
 
--- | Runner for tests that also use the filesystem effects.
+-- | Runner for tests that use StoryBranch and filesystem effects.
 runTestFS
-  :: Sem '[ StoryStorage
-          , StoryBranch Main
+  :: Sem '[ StoryBranch Main
           , FileSystemWrite (BranchTag Main)
           , FileSystemRead  (BranchTag Main)
           , FileSystem      (BranchTag Main)
+          , StoryStorage
           , Git
           , State GitState
           , Fail
@@ -83,9 +85,10 @@ runTestFS action =
   . runFail
   . evalState emptyGitState
   . runGitMock
-  . runBranchAndFS @Main (BranchName "main")
   . runStoryStorageGit
-  $ action
+  $ do
+      _ <- createBranch (BranchName "main")
+      runBranchAndFS @Main (BranchName "main") action
 
 -- ---------------------------------------------------------------------------
 -- Spec
@@ -119,16 +122,14 @@ spec = do
 
   describe "StoryBranch" $ do
     it "store advances the head" $ do
-      let result = runTest $ do
-            _ <- createBranch (BranchName "main")
+      let result = runTestFS $ do
             t1 <- store "first paragraph"
             t2 <- store "second paragraph"
             return (t1 /= t2)
       result `shouldBe` Right True
 
     it "get returns the most recently stored tick" $ do
-      let result = runTest $ do
-            _ <- createBranch (BranchName "main")
+      let result = runTestFS $ do
             _ <- store "first"
             _ <- store "second"
             tick <- S.get
@@ -136,8 +137,7 @@ spec = do
       result `shouldBe` Right "second"
 
     it "drop rewinds the tick pointer to the previous tick" $ do
-      let result = runTest $ do
-            _ <- createBranch (BranchName "main")
+      let result = runTestFS $ do
             _ <- store "first"
             _ <- store "second"
             S.drop
@@ -146,8 +146,7 @@ spec = do
       result `shouldBe` Right "first"
 
     it "drop at root is a no-op" $ do
-      let result = runTest $ do
-            _ <- createBranch (BranchName "main")
+      let result = runTestFS $ do
             t0 <- fmap tickId S.get
             S.drop
             t1 <- fmap tickId S.get
@@ -155,8 +154,7 @@ spec = do
       result `shouldBe` Right True
 
     it "follow collects all messages in order from head" $ do
-      let result = runTest $ do
-            _ <- createBranch (BranchName "main")
+      let result = runTestFS $ do
             _ <- store "one"
             _ <- store "two"
             _ <- store "three"
@@ -168,16 +166,14 @@ spec = do
 
     it "stored tick ids are unique" $
       property $ \(Positive n) -> n <= 20 ==>
-        let result = runTest $ do
-              _ <- createBranch (BranchName "main")
-              mapM (\i -> store (T.pack ("paragraph " <> show (i :: Int)))) [1..n]
+        let result = runTestFS $ do
+                mapM (\i -> store (T.pack ("paragraph " <> show (i :: Int)))) [1..n]
         in case result of
           Left err  -> counterexample err False
           Right ids -> length ids === length (nub ids)
 
     it "at rewrites a tick and replays the tail" $ do
-      let result = runTest $ do
-            _ <- createBranch (BranchName "main")
+      let result = runTestFS $ do
             t1 <- store "one"
             _  <- store "two"
             _  <- store "three"
@@ -191,27 +187,23 @@ spec = do
   describe "FileSystem" $ do
     it "written file can be read back" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             writeFile @(BranchTag Main) "hello.txt" "hello world"
             readFile  @(BranchTag Main) "hello.txt"
       result `shouldBe` Right "hello world"
 
     it "file exists after write" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             writeFile @(BranchTag Main) "foo.txt" "content"
             fileExists @(BranchTag Main) "foo.txt"
       result `shouldBe` Right True
 
     it "file does not exist before write" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             fileExists @(BranchTag Main) "missing.txt"
       result `shouldBe` Right False
 
     it "listFiles returns written files in directory" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             writeFile @(BranchTag Main) "a.txt" "a"
             writeFile @(BranchTag Main) "b.txt" "b"
             fmap sort $ listFiles @(BranchTag Main) "/"
@@ -219,7 +211,6 @@ spec = do
 
     it "remove deletes a file" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             writeFile  @(BranchTag Main) "gone.txt" "bye"
             remove @(BranchTag Main) False "gone.txt"
             fileExists @(BranchTag Main) "gone.txt"
@@ -227,7 +218,6 @@ spec = do
 
     it "createDirectory creates an explicit directory entry" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             createDirectory @(BranchTag Main) False "subdir"
             fileExists @(BranchTag Main) "subdir"
       result `shouldBe` Right True
@@ -235,7 +225,6 @@ spec = do
   describe "FileSystem + StoryBranch interaction" $ do
     it "store persists file content across ticks" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "paragraph one\n"
             _ <- store "tick one"
             appendFile @Main "scene.md" "paragraph two\n"
@@ -245,7 +234,6 @@ spec = do
 
     it "drop preserves working tree (soft reset)" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "paragraph one\n"
             _ <- store "tick one"
             appendFile @Main "scene.md" "paragraph two\n"
@@ -256,7 +244,6 @@ spec = do
 
     it "drop >> store is an amend" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "paragraph one\n"
             t1 <- store "tick one"
             appendFile @Main "scene.md" "paragraph one-b\n"
@@ -268,7 +255,6 @@ spec = do
 
     it "at checks out target tick's filesystem for the inner action" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "p1\n"
             t1 <- store "tick one"
             appendFile @Main "scene.md" "p2\n"
@@ -279,7 +265,6 @@ spec = do
 
     it "at restores the caller's working tree after completion" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "p1\n"
             t1 <- store "tick one"
             appendFile @Main "scene.md" "p2\n"
@@ -297,14 +282,12 @@ spec = do
 
     it "unstored writes are visible before store" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "draft.md" "in progress"
             readFile @(BranchTag Main) "draft.md"
       result `shouldBe` Right "in progress"
 
     it "reset discards pending changes and restores head tick's tree" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "committed\n"
             _ <- store "tick one"
             appendFile @Main "scene.md" "pending\n"
@@ -314,7 +297,6 @@ spec = do
 
     it "drop preserves unstored writes" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "committed\n"
             _ <- store "tick one"
             appendFile @Main "scene.md" "uncommitted\n"
@@ -324,7 +306,6 @@ spec = do
 
     it "store rejects non-append modification" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "original\n"
             _ <- store "tick one"
             writeFile @(BranchTag Main) "scene.md" "replaced\n"
@@ -336,7 +317,6 @@ spec = do
     it "file deleted then recreated: content at each tick is correct" $ do
       -- Check current state and t1 content in one run
       let result1 = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "outfit.md" "red dress\n"
             t1 <- store "wearing red dress"
             remove @(BranchTag Main) False "outfit.md"
@@ -349,7 +329,6 @@ spec = do
       result1 `shouldBe` Right ("black coat\n", "red dress\n")
       -- Check that file was absent at t2 in a separate run
       let result2 = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "outfit.md" "red dress\n"
             _  <- store "wearing red dress"
             remove @(BranchTag Main) False "outfit.md"
@@ -362,7 +341,6 @@ spec = do
 
     it "at fails cleanly when tick is not in branch history" $ do
       let result = runTestFS $ do
-            _ <- createBranch (BranchName "main")
             appendFile @Main "scene.md" "p1\n"
             _ <- store "tick one"
             at (TickId "nonexistent") $ return ()

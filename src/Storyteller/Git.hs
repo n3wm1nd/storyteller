@@ -449,12 +449,16 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
 
 -- | Interpret 'StoryBranch branch' and all three filesystem effects for a branch.
 --
--- This is the preferred entry point for callers. It introduces and eliminates
--- 'State WorkingTree' internally — each branch gets its own isolated working
--- tree state, invisible to callers and to other branch interpreters on the stack.
+-- Takes a 'Branch' obtained from 'StoryStorage' — the storage layer is the
+-- authority on which branches exist and are accessible.  Callers must go
+-- through 'getBranch' or 'createBranch' before opening a branch here.
+--
+-- Introduces and eliminates 'State WorkingTree' internally — each branch gets
+-- its own isolated working tree state, invisible to callers and to other branch
+-- interpreters on the stack.
 runBranchAndFS
   :: forall branch r a
-  .  Members '[Git, Fail] r
+  .  Members '[Git, StoryStorage, Fail] r
   => BranchName
   -> Sem ( StoryBranch branch
          : FileSystemWrite (BranchTag branch)
@@ -462,11 +466,15 @@ runBranchAndFS
          : FileSystem      (BranchTag branch)
          : r ) a
   -> Sem r a
-runBranchAndFS name =
-    evalState emptyWorkingTree
-  . runStoryFSGit @branch name
-  . runStoryBranchGit @branch name
-  . subsume_
+runBranchAndFS name action = do
+  getBranch name >>= \case
+    Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName name)
+    Just _  -> pure ()
+  evalState emptyWorkingTree
+    . runStoryFSGit @branch name
+    . runStoryBranchGit @branch name
+    . subsume_
+    $ action
 
 -- ---------------------------------------------------------------------------
 -- Helpers

@@ -46,10 +46,13 @@ runTwoTrack action =
   . runFail
   . evalState emptyGitState
   . runGitMock
-  . runBranchAndFS @Source  (BranchName "source")
-  . runBranchAndFS @Tracker (BranchName "tracker")
   . runStoryStorageGit
-  $ action
+  $ do
+      _ <- createBranch (BranchName "source")
+      _ <- createBranch (BranchName "tracker")
+      runBranchAndFS @Source  (BranchName "source")
+        . runBranchAndFS @Tracker (BranchName "tracker")
+        $ action
 
 -- ---------------------------------------------------------------------------
 -- Pure tests
@@ -93,8 +96,6 @@ spec = do
   describe "trackBranch (effect)" $ do
     it "copies atoms from source to tracker when tracker is empty" $ do
       let result = runTwoTrack $ do
-            _ <- createBranch (BranchName "source")
-            _ <- createBranch (BranchName "tracker")
             -- Write two atoms to source.
             writeFile @(BranchTag Source) "story.md" "paragraph one"
             _ <- store @Source "atom 1"
@@ -114,8 +115,6 @@ spec = do
 
     it "does not re-copy already tracked atoms" $ do
       let result = runTwoTrack $ do
-            _ <- createBranch (BranchName "source")
-            _ <- createBranch (BranchName "tracker")
             writeFile @(BranchTag Source) "story.md" "atom one"
             _ <- store @Source "atom 1"
             -- First track.
@@ -138,8 +137,6 @@ spec = do
 
     it "tracker with own ticks does not confuse sync state" $ do
       let result = runTwoTrack $ do
-            _ <- createBranch (BranchName "source")
-            _ <- createBranch (BranchName "tracker")
             writeFile @(BranchTag Source) "story.md" "source atom"
             _ <- store @Source "atom 1"
             -- First track.
@@ -166,8 +163,6 @@ spec = do
 
     it "nothing to track when source has no new atoms" $ do
       let result = runTwoTrack $ do
-            _ <- createBranch (BranchName "source")
-            _ <- createBranch (BranchName "tracker")
             writeFile @(BranchTag Source) "story.md" "atom one"
             _ <- store @Source "atom 1"
             _ <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
