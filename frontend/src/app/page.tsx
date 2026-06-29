@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useStory, type ConnInfo } from "@/lib/store";
+import ReactMarkdown from "react-markdown";
+import { useStory, type ConnInfo, type FileAtom } from "@/lib/store";
 
 export default function Home() {
   const {
@@ -21,8 +22,9 @@ export default function Home() {
   useEffect(() => { connect(); }, []);
 
   const selectedFileConn = selectedFile ? openFiles[selectedFile] : null;
-  const fileContent = selectedFileConn?.content ?? null;
   const hasOpenFile = selectedFile !== null && openFiles[selectedFile] !== undefined;
+  const isAbsent = selectedFileConn?.absent ?? false;
+  const atoms = selectedFileConn?.atoms ?? [];
 
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) {
@@ -150,7 +152,7 @@ export default function Home() {
                 ))}
               </div>
 
-              {/* File content */}
+              {/* File content — atom chain */}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                 {selectedFile ? (
                   <>
@@ -159,18 +161,22 @@ export default function Home() {
                       background: "var(--surface-deep)", display: "flex", alignItems: "center", gap: 8, height: 34,
                     }}>
                       <span style={{ fontSize: 11, color: "var(--text-muted)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedFile}</span>
+                      {atoms.length > 0 && (
+                        <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{atoms.length} atom{atoms.length !== 1 ? "s" : ""}</span>
+                      )}
                       <button onClick={handleDeselectFile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-dim)", fontSize: 14, padding: "0 2px" }}>✕</button>
                     </div>
-                    {fileContent !== null ? (
-                      <pre style={{
-                        flex: 1, overflow: "auto", margin: 0, padding: 16,
-                        fontSize: 12, lineHeight: 1.7, fontFamily: "Georgia, serif",
-                        color: "var(--text-body)", whiteSpace: "pre-wrap", wordBreak: "break-word",
-                      }}>{fileContent}</pre>
-                    ) : (
+
+                    {isAbsent ? (
                       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                         File does not exist yet — append to create it
                       </div>
+                    ) : atoms.length === 0 ? (
+                      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+                        Loading…
+                      </div>
+                    ) : (
+                      <AtomChain atoms={atoms} />
                     )}
                   </>
                 ) : (
@@ -210,6 +216,68 @@ export default function Home() {
     </div>
   );
 }
+
+// ── Atom chain renderer ───────────────────────────────────────────────────────
+
+function AtomChain({ atoms }: { atoms: FileAtom[] }) {
+  return (
+    <div style={{ flex: 1, overflow: "auto" }}>
+      <div style={{ maxWidth: 680, margin: "0 auto", padding: "24px 28px 40px" }}>
+        {atoms.map((atom, i) => (
+          <AtomBlock key={atom.tickId} atom={atom} isLast={i === atoms.length - 1} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+  p: ({ children }) => (
+    <p style={{ margin: "0 0 0.9em", fontSize: 13, lineHeight: 1.8, fontFamily: "Georgia, serif", color: "var(--text-body)" }}>
+      {children}
+    </p>
+  ),
+  h1: ({ children }) => <h1 style={{ margin: "0 0 0.6em", fontSize: 20, fontFamily: "Georgia, serif", color: "var(--text-heading)", fontWeight: 600 }}>{children}</h1>,
+  h2: ({ children }) => <h2 style={{ margin: "0 0 0.5em", fontSize: 16, fontFamily: "Georgia, serif", color: "var(--text-heading)", fontWeight: 600 }}>{children}</h2>,
+  h3: ({ children }) => <h3 style={{ margin: "0 0 0.4em", fontSize: 14, fontFamily: "Georgia, serif", color: "var(--text-heading)", fontWeight: 600 }}>{children}</h3>,
+  blockquote: ({ children }) => (
+    <blockquote style={{ margin: "0 0 0.9em", paddingLeft: 12, borderLeft: "3px solid var(--border)", color: "var(--text-muted)", fontStyle: "italic" }}>
+      {children}
+    </blockquote>
+  ),
+  code: ({ children }) => (
+    <code style={{ fontFamily: "monospace", fontSize: 11, background: "oklch(0.18 0.01 60)", padding: "1px 4px", borderRadius: 3, color: "var(--text-label)" }}>
+      {children}
+    </code>
+  ),
+  pre: ({ children }) => (
+    <pre style={{ margin: "0 0 0.9em", padding: "8px 10px", background: "oklch(0.18 0.01 60)", borderRadius: 5, overflowX: "auto", fontSize: 11, lineHeight: 1.6 }}>
+      {children}
+    </pre>
+  ),
+};
+
+function AtomBlock({ atom, isLast }: { atom: FileAtom; isLast: boolean }) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        borderLeft: hovered ? "2px solid oklch(0.78 0.10 65 / 0.4)" : "2px solid transparent",
+        paddingLeft: 10,
+        marginLeft: -12,
+        transition: "border-color 0.15s",
+        marginBottom: isLast ? 0 : undefined,
+      }}
+    >
+      <ReactMarkdown components={mdComponents}>{atom.content}</ReactMarkdown>
+    </div>
+  );
+}
+
+// ── Supporting components ─────────────────────────────────────────────────────
 
 function BranchItem({ name, active, onSelect, onDelete }: { name: string; active: boolean; onSelect: () => void; onDelete: () => void }) {
   const [hover, setHover] = useState(false);

@@ -4,10 +4,13 @@ import { create } from "zustand";
 import {
   sessionConn, branchConn, fileConn,
   type StoryWS,
+  type FileAtom,
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
   type FileCommand,    type FileEvent,
 } from "./ws";
+
+export type { FileAtom };
 
 export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 
@@ -16,10 +19,11 @@ export interface ConnInfo {
   status: ConnStatus;
 }
 
-// A file connection: the WS handle plus the last known content.
+// A file connection: the WS handle plus the atom chain.
 export interface FileConn {
   path: string;
-  content: string | null;  // null = file.absent
+  atoms: FileAtom[];   // empty + absent=true means file.absent
+  absent: boolean;
   conn: StoryWS<FileCommand, FileEvent>;
 }
 
@@ -176,31 +180,29 @@ export const useStory = create<StoryState>((set, get) => ({
     });
 
     fc.subscribe((evt) => {
-      if (evt.type === "file.content") {
+      if (evt.type === "file.atoms") {
         set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, content: evt.content, conn: fc } },
+          openFiles: { ...s.openFiles, [path]: { path, atoms: evt.atoms, absent: false, conn: fc } },
           conns: setConnStatus(s.conns, label, "connected"),
         }));
       } else if (evt.type === "file.absent") {
         set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, content: null, conn: fc } },
+          openFiles: { ...s.openFiles, [path]: { path, atoms: [], absent: true, conn: fc } },
           conns: setConnStatus(s.conns, label, "connected"),
         }));
-      } else if (evt.type === "file.updated") {
-        set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, content: evt.content, conn: fc } },
-        }));
-      } else if (evt.type === "file.deleted") {
-        set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, content: null, conn: fc } },
-        }));
+      } else if (evt.type === "atom.appended") {
+        set((s) => {
+          const prev = s.openFiles[path];
+          const atoms = prev ? [...prev.atoms, evt.atom] : [evt.atom];
+          return { openFiles: { ...s.openFiles, [path]: { path, atoms, absent: false, conn: fc } } };
+        });
       } else if (evt.type === "error") {
         set({ error: evt.message });
       }
     });
 
     await fc.connect();
-    set((s) => ({ openFiles: { ...s.openFiles, [path]: { path, content: null, conn: fc } } }));
+    set((s) => ({ openFiles: { ...s.openFiles, [path]: { path, atoms: [], absent: false, conn: fc } } }));
   },
 
   closeFile: (path) => {

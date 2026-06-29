@@ -7,11 +7,12 @@
 -- blob. The file may be created, deleted, and recreated within the same
 -- connection — the path is the identity.
 --
--- On connect: server sends FileContent if the file exists, FileAbsent if not.
+-- On connect: server sends file.atoms (oldest-first atom chain) if the file
+-- exists, or file.absent if not. New atoms arrive via atom.appended.
 -- Commands: operations on this specific file (no path parameter needed).
--- Events:   file content, updates, deletion, errors.
 module Server.File.Protocol
   ( FileCommand(..)
+  , FileAtom(..)
   , FileEvent(..)
   ) where
 
@@ -35,9 +36,25 @@ instance FromJSON FileCommand where
       "delete" -> pure (Delete i)
       _        -> fail ("unknown file command: " <> T.unpack t)
 
+data FileAtom = FileAtom
+  { atomTickId  :: T.Text
+  , atomContent :: T.Text
+  , atomMessage :: T.Text
+  , atomParent  :: Maybe T.Text
+  } deriving (Show)
+
+instance ToJSON FileAtom where
+  toJSON fa = object
+    [ "tickId"  .= atomTickId  fa
+    , "content" .= atomContent fa
+    , "message" .= atomMessage fa
+    , "parent"  .= atomParent  fa
+    ]
+
 data FileEvent
-  = FileContent { feId :: Maybe T.Text, feContent :: T.Text }
+  = FileAtoms   { feAtoms :: [FileAtom] }
   | FileAbsent  { feId :: Maybe T.Text }
+  | AtomAppended { feAtom :: FileAtom }
   | FileUpdated { feId :: Maybe T.Text, feContent :: T.Text }
   | FileDeleted { feId :: Maybe T.Text }
   | FileError   T.Text
@@ -45,10 +62,12 @@ data FileEvent
 
 instance ToJSON FileEvent where
   toJSON = \case
-    FileContent mid content ->
-      object $ withId mid [ "type" .= ("file.content" :: T.Text), "content" .= content ]
+    FileAtoms atoms ->
+      object [ "type" .= ("file.atoms" :: T.Text), "atoms" .= atoms ]
     FileAbsent mid ->
       object $ withId mid [ "type" .= ("file.absent" :: T.Text) ]
+    AtomAppended atom ->
+      object [ "type" .= ("atom.appended" :: T.Text), "atom" .= atom ]
     FileUpdated mid content ->
       object $ withId mid [ "type" .= ("file.updated" :: T.Text), "content" .= content ]
     FileDeleted mid ->

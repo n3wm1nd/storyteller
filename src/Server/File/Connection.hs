@@ -3,9 +3,8 @@
 
 -- | /branch/{name}/{path...} connection lifecycle.
 --
--- On connect: send current file content, or file.absent if the path doesn't exist.
+-- On connect: send file.atoms (oldest-first) if the file exists, file.absent if not.
 -- Loop: receive FileCommand → dispatch → send FileEvent(s).
--- Branch name and file path are implicit from the URL — not repeated in commands.
 module Server.File.Connection
   ( runFile
   ) where
@@ -24,9 +23,9 @@ runFile :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runFile env branch path conn = do
   snap <- snapshot env branch path
   case snap of
-    Left err        -> WS.sendTextData conn (encode (FileError (T.pack err)))
-    Right Nothing   -> WS.sendTextData conn (encode (FileAbsent Nothing))
-    Right (Just c)  -> WS.sendTextData conn (encode (FileContent Nothing c))
+    Left err          -> WS.sendTextData conn (encode (FileError (T.pack err)))
+    Right Nothing     -> WS.sendTextData conn (encode (FileAbsent Nothing))
+    Right (Just atoms) -> WS.sendTextData conn (encode (FileAtoms atoms))
   loop
   where
     loop = do

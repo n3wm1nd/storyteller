@@ -39,11 +39,19 @@ export type FileCommand =
   | { type: "read";   id?: string }
   | { type: "delete"; id?: string };
 
+export interface FileAtom {
+  tickId:  string;
+  content: string;
+  message: string;
+  parent:  string | null;
+}
+
 export type FileEvent =
-  | { type: "file.content"; id?: string; content: string }
-  | { type: "file.absent";  id?: string }
-  | { type: "file.updated"; id?: string; content: string }
-  | { type: "file.deleted"; id?: string }
+  | { type: "file.atoms";    atoms: FileAtom[] }
+  | { type: "file.absent";   id?: string }
+  | { type: "atom.appended"; atom: FileAtom }
+  | { type: "file.updated";  id?: string; content: string }
+  | { type: "file.deleted";  id?: string }
   | { type: "error"; message: string };
 
 // ── Connection ────────────────────────────────────────────────────────────────
