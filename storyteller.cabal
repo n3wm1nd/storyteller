@@ -124,26 +124,22 @@ executable story-chargen
                   , random
 
 
--- | HTTP REST API server.
+-- | WebSocket server.
 executable story-server
   import:           exe-common
   main-is:          Server.hs
   hs-source-dirs:   app
-  other-modules:    Server.API
-                  , Server.Env
-                  , Server.Handlers
+  other-modules:    Server.Env
                   , Server.Run
-                  , Server.Types
                   , Server.Util
-                  , Server.Agent.Append
-                  , Server.Agent.CharGen
-                  , Server.Agent.Rebase
-                  , Server.Agent.Track
-                  , Server.Agent.Write
-  build-depends:    servant             >= 0.20
-                  , servant-server      >= 0.20
-                  , wai
+                  , Server.Protocol
+                  , Server.Session
+                  , Server.Dispatch
+  build-depends:    wai
                   , warp
+                  , websockets
+                  , wai-websockets
+                  , http-types
                   , aeson
                   , yaml
                   , random
