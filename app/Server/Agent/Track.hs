@@ -8,9 +8,7 @@ module Server.Agent.Track
   ( TrackReq(..)
   , TrackResp(..)
   , TrackFile(..)
-  , AgentTrackReq(..)
-  , handleBranchTrack
-  , handleAgentTrack
+  , handleTrack
   ) where
 
 import Control.Monad (void)
@@ -52,28 +50,11 @@ data TrackResp = TrackResp
 instance ToJSON TrackResp
 instance FromJSON TrackResp
 
-data AgentTrackReq = AgentTrackReq
-  { agentTrackBranch :: T.Text
-  , agentTrackSource :: T.Text
-  , agentTrackFiles  :: [TrackFile]
-  } deriving (Show, Generic)
-
-instance FromJSON AgentTrackReq
-instance ToJSON AgentTrackReq
-
-handleBranchTrack :: ServerEnv -> T.Text -> TrackReq -> Handler TrackResp
-handleBranchTrack env branch req =
-  handleAgentTrack env AgentTrackReq
-    { agentTrackBranch = branch
-    , agentTrackSource = trackSource req
-    , agentTrackFiles  = trackFiles req
-    }
-
-handleAgentTrack :: ServerEnv -> AgentTrackReq -> Handler TrackResp
-handleAgentTrack env req = runRequest env $ do
-  let target = BranchName (agentTrackBranch req)
-      source = BranchName (agentTrackSource req)
-      files  = map (\f -> (trackFrom f, trackTo f)) (agentTrackFiles req)
+handleTrack :: ServerEnv -> T.Text -> Bool -> TrackReq -> Handler TrackResp
+handleTrack env branch _flag req = runRequest env $ do
+  let target = BranchName branch
+      source = BranchName (trackSource req)
+      files  = map (\f -> (trackFrom f, trackTo f)) (trackFiles req)
   getBranch target >>= \case
     Nothing -> void $ createBranch target
     Just _  -> return ()

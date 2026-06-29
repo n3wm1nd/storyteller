@@ -7,9 +7,7 @@
 module Server.Agent.Append
   ( AppendReq(..)
   , AppendResp(..)
-  , AgentAppendReq(..)
-  , handleBranchAppend
-  , handleAgentAppend
+  , handleAppend
   ) where
 
 import Data.Aeson (FromJSON, ToJSON)
@@ -41,26 +39,10 @@ data AppendResp = AppendResp
 instance ToJSON AppendResp
 instance FromJSON AppendResp
 
-data AgentAppendReq = AgentAppendReq
-  { agentAppendBranch  :: T.Text
-  , agentAppendFile    :: FilePath
-  , agentAppendContent :: T.Text
-  } deriving (Show, Generic)
-
-instance FromJSON AgentAppendReq
-instance ToJSON AgentAppendReq
-
-handleBranchAppend :: ServerEnv -> T.Text -> [String] -> AppendReq -> Handler AppendResp
-handleBranchAppend env branch pathParts req =
-  handleAgentAppend env AgentAppendReq
-    { agentAppendBranch  = branch
-    , agentAppendFile    = intercalate "/" pathParts
-    , agentAppendContent = appendContent req
-    }
-
-handleAgentAppend :: ServerEnv -> AgentAppendReq -> Handler AppendResp
-handleAgentAppend env req = runRequest env $
-  withBranchSplitter @Main env (agentAppendBranch req) $ do
-    tids <- appendAgent @(BranchTag Main) @Main
-              (agentAppendFile req) (agentAppendContent req)
-    return AppendResp { appendTicks = map unTickId tids }
+handleAppend :: ServerEnv -> T.Text -> [String] -> Bool -> AppendReq -> Handler AppendResp
+handleAppend env branch pathParts _flag req =
+  runRequest env $
+    withBranchSplitter @Main env branch $ do
+      let path = intercalate "/" pathParts
+      tids <- appendAgent @(BranchTag Main) @Main path (appendContent req)
+      return AppendResp { appendTicks = map unTickId tids }

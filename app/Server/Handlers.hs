@@ -8,13 +8,10 @@
 
 -- | Top-level server wiring.
 --
--- Two responsibilities:
---   1. Branch & tick management handlers (no dedicated agent module needed).
---   2. Wire all agent handlers into the Servant server.
---
--- Each agent group lives in its own Server.Agent.* module. To add a new
--- agent: implement it there, import the handler here, add it to the API type
--- in Server.API, and wire it into 'agentsServer' or 'branchesServer'.
+-- Branch & tick management handlers live here.
+-- Each agent lives in its own Server.Agent.* module.
+-- To add a new agent: implement it there, import the handler here,
+-- add it to the API type in Server.API, and wire it into 'server'.
 module Server.Handlers
   ( server
   ) where
@@ -26,11 +23,10 @@ import Polysemy.Error (throw)
 import Runix.FileSystem (fileExists, readFile)
 import Servant
 
-import Server.Agent.Append  (handleBranchAppend, handleAgentAppend)
+import Server.Agent.Append  (handleAppend)
 import Server.Agent.CharGen (handleCharGen)
-import Server.Agent.Track   (handleBranchTrack, handleAgentTrack)
-import Server.Agent.Write   (handleBranchWrite, handleAgentWrite)
-import Server.API (API, BranchesAPI, AgentsAPI)
+import Server.Agent.Track   (handleTrack)
+import Server.API (API)
 import Server.Env (ServerEnv(..))
 import Server.Run (runRequest)
 import Server.Types
@@ -44,34 +40,21 @@ import Prelude hiding (readFile)
 
 data Main
 
--- ---------------------------------------------------------------------------
--- Server
--- ---------------------------------------------------------------------------
-
 server :: ServerEnv -> Server API
-server env = branchesServer env :<|> agentsServer env
-
-branchesServer :: ServerEnv -> Server BranchesAPI
-branchesServer env
+server env
   =    handleListBranches   env
   :<|> handleCreateBranch   env
   :<|> handleDeleteBranch   env
   :<|> handleListTicks      env
   :<|> handleGetTick        env
-  :<|> handleBranchAppend   env
-  :<|> handleBranchReadFile env
-  :<|> handleBranchWrite    env
-  :<|> handleBranchTrack    env
-
-agentsServer :: ServerEnv -> Server AgentsAPI
-agentsServer env
-  =    handleAgentAppend env
-  :<|> handleAgentWrite  env
-  :<|> handleAgentTrack  env
-  :<|> handleCharGen     env
+  :<|> handleTrack          env
+  :<|> handleReadFile       env
+  :<|> handleDeleteFile     env
+  :<|> handleAppend         env
+  :<|> handleCharGen        env
 
 -- ---------------------------------------------------------------------------
--- Branch & tick management
+-- Branch management
 -- ---------------------------------------------------------------------------
 
 handleListBranches :: ServerEnv -> Handler [BranchInfo]
@@ -92,6 +75,10 @@ handleDeleteBranch env b = runRequest env $ do
     Nothing -> throw ("branch not found: " <> T.unpack b)
     Just _  -> deleteBranch name >> return NoContent
 
+-- ---------------------------------------------------------------------------
+-- Tick stream
+-- ---------------------------------------------------------------------------
+
 handleListTicks :: ServerEnv -> BranchParam -> Handler [TickInfo]
 handleListTicks env b = runRequest env $
   withBranch @Main env b $
@@ -108,11 +95,11 @@ handleGetTick env b t = runRequest env $
       []     -> throw ("tick not found: " <> T.unpack t)
 
 -- ---------------------------------------------------------------------------
--- File read (no agent — read-only)
+-- File resource
 -- ---------------------------------------------------------------------------
 
-handleBranchReadFile :: ServerEnv -> BranchParam -> [String] -> Handler FileResp
-handleBranchReadFile env b pathParts = runRequest env $
+handleReadFile :: ServerEnv -> BranchParam -> [String] -> Handler FileResp
+handleReadFile env b pathParts = runRequest env $
   withBranch @Main env b $ do
     let path = intercalate "/" pathParts
     fileExists @(BranchTag Main) path >>= \case
@@ -123,6 +110,14 @@ handleBranchReadFile env b pathParts = runRequest env $
           { fileRespPath    = T.pack path
           , fileRespContent = TE.decodeUtf8 content
           }
+
+handleDeleteFile :: ServerEnv -> BranchParam -> [String] -> Handler NoContent
+handleDeleteFile env b pathParts = runRequest env $
+  withBranch @Main env b $ do
+    let path = intercalate "/" pathParts
+    fileExists @(BranchTag Main) path >>= \case
+      False -> throw ("file not found: " <> path)
+      True  -> throw ("file delete not yet implemented: " <> path)
 
 -- ---------------------------------------------------------------------------
 -- Conversion helpers
