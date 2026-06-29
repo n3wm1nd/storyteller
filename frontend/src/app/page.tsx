@@ -299,8 +299,8 @@ function BranchItem({ name, active, onSelect, onDelete }: {
 
 function Toolbar({
   leftOpen, onToggleLeft,
-  selectedFile, atomCount, onCloseFile,
-  onNewFile,
+  selectedFile, atomCount, onCloseFile, onNewFile,
+  centerTab, onCenterTab,
 }: {
   leftOpen: boolean;
   onToggleLeft: () => void;
@@ -308,45 +308,70 @@ function Toolbar({
   atomCount: number;
   onCloseFile: () => void;
   onNewFile: () => void;
+  centerTab: "file" | "ticks";
+  onCenterTab: (t: "file" | "ticks") => void;
 }) {
   return (
     <div style={{
       height: 36, flexShrink: 0,
       background: "var(--surface-deep)",
       borderBottom: "1px solid var(--border-subtle)",
-      display: "flex", alignItems: "center", gap: 4, padding: "0 8px",
+      display: "flex", alignItems: "stretch", gap: 0, padding: "0 4px 0 6px",
     }}>
-      <button onClick={onToggleLeft} style={iconBtnStyle}>
+      {/* Sidebar toggle */}
+      <button onClick={onToggleLeft} style={{ ...iconBtnStyle, alignSelf: "center", marginRight: 2 }}>
         {leftOpen
           ? <PanelLeftClose style={{ width: 14, height: 14 }} />
           : <PanelLeftOpen style={{ width: 14, height: 14 }} />}
       </button>
 
-      <div style={{ width: 1, height: 14, background: "var(--border-subtle)", margin: "0 4px" }} />
+      <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
 
-      {selectedFile ? (
-        <>
-          <span style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-            {selectedFile}
-          </span>
+      {/* File tab — label includes filename when open */}
+      <button onClick={() => onCenterTab("file")} style={{
+        padding: "0 10px", fontSize: 11, fontWeight: 500, display: "flex", alignItems: "center", gap: 6,
+        border: "none", borderBottom: centerTab === "file" ? "2px solid var(--amber)" : "2px solid transparent",
+        borderTop: "2px solid transparent", background: "transparent",
+        color: centerTab === "file" ? "var(--amber)" : "var(--text-disabled)",
+        cursor: "pointer", transition: "color 0.15s, border-color 0.15s", maxWidth: 320, minWidth: 0,
+      }}>
+        <span style={{ flexShrink: 0 }}>File</span>
+        {selectedFile && <>
+          <span style={{ color: "var(--border)", flexShrink: 0 }}>·</span>
+          <span style={{
+            fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            color: centerTab === "file" ? "var(--text-muted)" : "var(--text-dim)",
+            fontWeight: 400,
+          }}>{selectedFile.split("/").pop()}</span>
           {atomCount > 0 && (
-            <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>
-              {atomCount} atom{atomCount !== 1 ? "s" : ""}
+            <span style={{ fontSize: 9, color: "var(--text-dim)", flexShrink: 0, fontWeight: 400 }}>
+              {atomCount}
             </span>
           )}
-          <button onClick={onCloseFile} style={{ ...iconBtnStyle, marginLeft: 4 }}>
-            <span style={{ fontSize: 14, lineHeight: 1 }}>✕</span>
-          </button>
-        </>
-      ) : (
-        <>
-          <span style={{ flex: 1, fontSize: 11, color: "var(--text-dim)" }} />
-          <button onClick={onNewFile} style={{
-            fontSize: 10, padding: "3px 8px",
-            background: "transparent", border: "1px solid var(--border)",
-            borderRadius: 5, color: "var(--text-label)", cursor: "pointer",
-          }}>+ new file</button>
-        </>
+          <span onClick={(e) => { e.stopPropagation(); onCloseFile(); }} style={{
+            fontSize: 13, lineHeight: 1, flexShrink: 0, opacity: 0.5, cursor: "pointer",
+          }}>✕</span>
+        </>}
+      </button>
+
+      {/* Ticks tab */}
+      <button onClick={() => onCenterTab("ticks")} style={{
+        padding: "0 10px", fontSize: 11, fontWeight: 500,
+        border: "none", borderBottom: centerTab === "ticks" ? "2px solid var(--amber)" : "2px solid transparent",
+        borderTop: "2px solid transparent", background: "transparent",
+        color: centerTab === "ticks" ? "var(--amber)" : "var(--text-disabled)",
+        cursor: "pointer", transition: "color 0.15s, border-color 0.15s",
+      }}>Ticks</button>
+
+      <span style={{ flex: 1 }} />
+
+      {/* New file button */}
+      {!selectedFile && (
+        <button onClick={onNewFile} style={{
+          alignSelf: "center", fontSize: 10, padding: "3px 8px",
+          background: "transparent", border: "1px solid var(--border)",
+          borderRadius: 5, color: "var(--text-label)", cursor: "pointer",
+        }}>+ new file</button>
       )}
     </div>
   );
@@ -494,6 +519,23 @@ function AppendBar({ enabled, fileName, onAppend }: {
 }
 
 
+// ── Ticks view ────────────────────────────────────────────────────────────────
+
+function TicksView({ activeBranch }: { activeBranch: string | null }) {
+  if (!activeBranch) return (
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+      Select a branch to view ticks
+    </div>
+  );
+  return (
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, color: "var(--text-ghost)", fontSize: 12 }}>
+      <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{activeBranch}</span>
+      <span>Tick log — coming soon</span>
+      <span style={{ fontSize: 10, color: "var(--text-faint)" }}>Will show all branch ticks in chronological order, across all files</span>
+    </div>
+  );
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -506,6 +548,7 @@ export default function Home() {
   const [leftWidth, setLeftWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches">("branches");
+  const [centerTab, setCenterTab] = useState<"file" | "ticks">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [showNewFile, setShowNewFile] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
@@ -523,6 +566,7 @@ export default function Home() {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
     setSelectedFile(path);
     openFile(path);
+    setCenterTab("file");
   }
 
   function handleCloseFile() {
@@ -601,61 +645,67 @@ export default function Home() {
             selectedFile={selectedFile} atomCount={atoms.length}
             onCloseFile={handleCloseFile}
             onNewFile={() => setShowNewFile((v) => !v)}
+            centerTab={centerTab} onCenterTab={setCenterTab}
           />
 
-          {/* New file bar */}
-          {showNewFile && (
-            <div style={{
-              flexShrink: 0, padding: "7px 14px",
-              borderBottom: "1px solid var(--border-subtle)",
-              background: "var(--card)", display: "flex", gap: 8, alignItems: "center",
-            }}>
-              <input
-                value={newFilePath}
-                onChange={(e) => setNewFilePath(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreateFile();
-                  if (e.key === "Escape") setShowNewFile(false);
-                }}
-                placeholder="path/to/file.md"
-                autoFocus
-                style={{
-                  flex: 1, fontSize: 11, padding: "4px 8px",
-                  background: "var(--card)", border: "1px solid var(--border)",
-                  borderRadius: 5, color: "var(--foreground)", outline: "none",
-                }}
-              />
-              <button onClick={handleCreateFile} style={{ fontSize: 11, padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5, color: "oklch(0.15 0.01 60)", fontWeight: 600, cursor: "pointer" }}>Open</button>
-              <button onClick={() => setShowNewFile(false)} style={{ fontSize: 11, padding: "4px 8px", background: "transparent", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-label)", cursor: "pointer" }}>✕</button>
-            </div>
-          )}
+          {centerTab === "file" && <>
+            {/* New file bar */}
+            {showNewFile && (
+              <div style={{
+                flexShrink: 0, padding: "7px 14px",
+                borderBottom: "1px solid var(--border-subtle)",
+                background: "var(--card)", display: "flex", gap: 8, alignItems: "center",
+              }}>
+                <input
+                  value={newFilePath}
+                  onChange={(e) => setNewFilePath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateFile();
+                    if (e.key === "Escape") setShowNewFile(false);
+                  }}
+                  placeholder="path/to/file.md"
+                  autoFocus
+                  style={{
+                    flex: 1, fontSize: 11, padding: "4px 8px",
+                    background: "var(--card)", border: "1px solid var(--border)",
+                    borderRadius: 5, color: "var(--foreground)", outline: "none",
+                  }}
+                />
+                <button onClick={handleCreateFile} style={{ fontSize: 11, padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5, color: "oklch(0.15 0.01 60)", fontWeight: 600, cursor: "pointer" }}>Open</button>
+                <button onClick={() => setShowNewFile(false)} style={{ fontSize: 11, padding: "4px 8px", background: "transparent", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-label)", cursor: "pointer" }}>✕</button>
+              </div>
+            )}
 
-          {/* Content */}
-          {!activeBranch ? (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-              {sessionStatus === "connecting" ? "Connecting…" : sessionStatus === "connected" ? "Select a branch" : "Disconnected"}
-            </div>
-          ) : !selectedFile ? (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-              Select a file or create a new one
-            </div>
-          ) : isAbsent ? (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-              File does not exist yet — append to create it
-            </div>
-          ) : atoms.length === 0 ? (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-              Loading…
-            </div>
-          ) : (
-            <AtomChain atoms={atoms} />
-          )}
+            {!activeBranch ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+                {sessionStatus === "connecting" ? "Connecting…" : sessionStatus === "connected" ? "Select a branch" : "Disconnected"}
+              </div>
+            ) : !selectedFile ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+                Select a file or create a new one
+              </div>
+            ) : isAbsent ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+                File does not exist yet — append to create it
+              </div>
+            ) : atoms.length === 0 ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+                Loading…
+              </div>
+            ) : (
+              <AtomChain atoms={atoms} />
+            )}
 
-          <AppendBar
-            enabled={selectedFile !== null}
-            fileName={selectedFile}
-            onAppend={(content) => selectedFile && appendToFile(selectedFile, content)}
-          />
+            <AppendBar
+              enabled={selectedFile !== null}
+              fileName={selectedFile}
+              onAppend={(content) => selectedFile && appendToFile(selectedFile, content)}
+            />
+          </>}
+
+          {centerTab === "ticks" && (
+            <TicksView activeBranch={activeBranch} />
+          )}
         </div>
       </div>
 
