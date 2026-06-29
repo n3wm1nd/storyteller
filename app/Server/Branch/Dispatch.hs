@@ -5,13 +5,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Command dispatcher.
+-- | Dispatch for /branch/{name} connections.
 --
--- Dispatch is a pure router: each line names the handler, names what comes
--- back, and names the event it becomes. Handlers live below and are
--- responsible only for doing the work and returning a value — they never
--- emit events themselves.
-module Server.Dispatch
+-- Branch name is implicit — taken from the connection URL, never repeated
+-- in commands. Handlers operate with StoryStorage + StoryBranch in scope.
+module Server.Branch.Dispatch
   ( dispatch
   , snapshot
   ) where
@@ -29,8 +27,8 @@ import Polysemy (Members, Sem)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 
+import Server.Branch.Protocol
 import Server.Env (ServerEnv)
-import Server.Protocol
 import Server.Run (runAction, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
@@ -55,12 +53,12 @@ data CharBranch
 -- Dispatch
 -- ---------------------------------------------------------------------------
 
-dispatch :: ServerEnv -> T.Text -> WS.Connection -> Command -> IO ()
+dispatch :: ServerEnv -> T.Text -> WS.Connection -> BranchCommand -> IO ()
 dispatch env branch conn cmd = do
   let emit = WS.sendTextData conn . encode
-      orErr (Left err) _ = emit (Error (T.pack err))
+      orErr (Left err) _ = emit (BranchError (T.pack err))
       orErr (Right v)  f = emit (f v)
-      orErrN (Left err) _ = emit (Error (T.pack err))
+      orErrN (Left err) _ = emit (BranchError (T.pack err))
       orErrN (Right vs) f = mapM_ (emit . f) vs
 
   case cmd of
@@ -81,27 +79,21 @@ dispatch env branch conn cmd = do
       orErr r (FileContent mid path)
 
     DeleteFile _mid _path ->
-      emit (Error "delete.file not yet implemented")
+      emit (BranchError "delete.file not yet implemented")
 
 -- ---------------------------------------------------------------------------
 -- Handlers — do the work, return a value, never emit
 -- ---------------------------------------------------------------------------
 
--- | Append content to a file; return updated file content.
-handleAppend
-  :: SessionEffects r
-  => T.Text -> FilePath -> T.Text -> Sem r T.Text
+handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r T.Text
 handleAppend branch path content =
   withBranchSplitter @Main branch $ do
     void $ appendAgent @(BranchTag Main) @Main path content
     decodeFile @(BranchTag Main) path
 
--- | Track atoms from source branch into target files; return (destPath, content) pairs.
-handleTrack
-  :: SessionEffects r
-  => T.Text -> T.Text -> [TrackFile] -> Sem r [(FilePath, T.Text)]
+handleTrack :: SessionEffects r => T.Text -> T.Text -> [TrackFile] -> Sem r [(FilePath, T.Text)]
 handleTrack branch source files = do
-  let target    = BranchName branch
+  let target     = BranchName branch
       sourceName = BranchName source
       filePairs  = map (\f -> (trackFrom f, trackTo f)) files
       destPaths  = map snd filePairs
@@ -113,10 +105,7 @@ handleTrack branch source files = do
         void $ trackBranch @Source @Tracker @(BranchTag Tracker) filePairs
         mapM (\p -> (p,) <$> decodeFile @(BranchTag Tracker) p) destPaths
 
--- | Generate a character sheet; return the written file content.
-handleCharGen
-  :: SessionEffects r
-  => T.Text -> FilePath -> T.Text -> Maybe Int -> Sem r T.Text
+handleCharGen :: SessionEffects r => T.Text -> FilePath -> T.Text -> Maybe Int -> Sem r T.Text
 handleCharGen branch path scenario seed = do
   let name = BranchName branch
   template <- case Yaml.decodeEither' (TE.encodeUtf8 scenario) of
@@ -129,10 +118,7 @@ handleCharGen branch path scenario seed = do
     void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
     decodeFile @(BranchTag CharBranch) path
 
--- | Read a file; return its content.
-handleReadFile
-  :: SessionEffects r
-  => T.Text -> FilePath -> Sem r T.Text
+handleReadFile :: SessionEffects r => T.Text -> FilePath -> Sem r T.Text
 handleReadFile branch path =
   withBranch @Main branch $ do
     fileExists @(BranchTag Main) path >>= \case
@@ -140,7 +126,7 @@ handleReadFile branch path =
       True  -> decodeFile @(BranchTag Main) path
 
 -- ---------------------------------------------------------------------------
--- Snapshot (used by Session on connect)
+-- Snapshot — sent immediately on connect
 -- ---------------------------------------------------------------------------
 
 snapshot :: ServerEnv -> T.Text -> IO (Either String (Map FilePath T.Text))

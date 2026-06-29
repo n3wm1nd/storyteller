@@ -132,9 +132,12 @@ executable story-server
   other-modules:    Server.Env
                   , Server.Run
                   , Server.Util
-                  , Server.Protocol
-                  , Server.Session
-                  , Server.Dispatch
+                  , Server.Session.Protocol
+                  , Server.Session.Connection
+                  , Server.Session.Dispatch
+                  , Server.Branch.Protocol
+                  , Server.Branch.Connection
+                  , Server.Branch.Dispatch
   build-depends:    wai
                   , warp
                   , websockets

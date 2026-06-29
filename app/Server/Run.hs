@@ -6,13 +6,13 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Polysemy-to-IO bridge.
+-- | Polysemy interpreter stacks for each connection level.
 --
--- Actions are written as rank-2 polymorphic Sem values:
+-- SessionEffects: storage-level effects, no branch open.
+-- BranchEffects:  extends SessionEffects with an open StoryBranch + FS.
 --
---   forall r. SessionEffects r => Sem r a
---
--- 'runAction' supplies the concrete interpreter stack and returns Either.
+-- Handlers are written against these constraints and never see IO, HTTP,
+-- or websocket types.
 module Server.Run
   ( runAction
   , SessionEffects
@@ -44,6 +44,7 @@ instance RestEndpoint ServerAuth where
   authheaders _             = []
   useragent  _              = "storyteller-server/0.1"
 
+-- | Effects available at the session level (no branch open).
 type SessionEffects r =
   Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel] r
 
