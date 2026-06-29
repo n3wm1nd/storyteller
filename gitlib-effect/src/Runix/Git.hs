@@ -173,7 +173,7 @@ runGitIO repo = interpret $ \case
       _ -> fail $ "git commit-tree failed: " <> T.unpack (stderr out)
 
   ReadObject hash -> do
-    out <- git repo ["cat-file", "--batch-check=%(objecttype)", T.unpack (unObjectHash hash)]
+    out <- gitStdin repo ["cat-file", "--batch-check=%(objecttype)"] (TE.encodeUtf8 (unObjectHash hash))
     case T.strip (stdout out) of
       "blob" -> do
         raw <- git repo ["cat-file", "blob", T.unpack (unObjectHash hash)]

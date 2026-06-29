@@ -17,7 +17,7 @@
 module Main (main) where
 
 import Network.Wai (Application, responseLBS)
-import Network.Wai.Handler.Warp (run)
+import Network.Wai.Handler.Warp (runSettings, defaultSettings, setTimeout, setPort)
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.WebSockets (ServerApp, PendingConnection(..), RequestHead(..), defaultConnectionOptions, acceptRequest, withPingThread, rejectRequest)
 import Network.HTTP.Types (status200)
@@ -34,7 +34,8 @@ main = do
   env <- loadServerEnv
   let port = envPort env
   hPutStrLn stderr $ "storyteller-server listening on port " <> show port
-  run port (websocketsOr defaultConnectionOptions (wsRouter env) httpApp)
+  let settings = setPort port . setTimeout 0 $ defaultSettings
+  runSettings settings (websocketsOr defaultConnectionOptions (wsRouter env) httpApp)
 
 wsRouter :: ServerEnv -> ServerApp
 wsRouter env pending =

@@ -15,6 +15,7 @@ module Server.Branch.Dispatch
   ) where
 
 import Control.Monad (void, forM)
+import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -60,9 +61,12 @@ dispatch env branch conn cmd = do
       orErr (Right v)  f = emit (f v)
       orErrN (Left err) _ = emit (BranchError (T.pack err))
       orErrN (Right vs) f = mapM_ (emit . f) vs
+      withPath path k
+        | "/" `isPrefixOf` path = emit (BranchError ("path must be relative: " <> T.pack path))
+        | otherwise             = k
 
   case cmd of
-    Append mid path content -> do
+    Append mid path content -> withPath path $ do
       r <- runAction env (handleAppend branch path content)
       orErr r (FileUpdated mid path)
 
@@ -70,11 +74,11 @@ dispatch env branch conn cmd = do
       r <- runAction env (handleTrack branch source files)
       orErrN r (uncurry (FileUpdated mid))
 
-    CharGen mid path scenario seed -> do
+    CharGen mid path scenario seed -> withPath path $ do
       r <- runAction env (handleCharGen branch path scenario seed)
       orErr r (FileUpdated mid path)
 
-    ReadFile mid path -> do
+    ReadFile mid path -> withPath path $ do
       r <- runAction env (handleReadFile branch path)
       orErr r (FileContent mid path)
 
@@ -158,5 +162,5 @@ currentWorkingTree
 currentWorkingTree = do
   ticks <- follow @branch [] $ \acc tick -> (tick : acc, tickParent tick)
   case ticks of
-    []    -> return Map.empty
-    (t:_) -> loadWorkingTree (ObjectHash (unTickId (tickId t)))
+    [] -> return Map.empty
+    _  -> loadWorkingTree (ObjectHash (unTickId (tickId (last ticks))))

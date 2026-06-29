@@ -41,13 +41,13 @@ appendAgent path content = do
   existing <- fileExists @project path >>= \case
     True  -> TE.decodeUtf8 <$> readFile @project path
     False -> return ""
-  atoms <- splitAtoms content
+  atoms <- splitAtoms (if T.isSuffixOf "\n" content then content else content <> "\n")
   let sep = if T.null existing || T.isSuffixOf "\n\n" existing then ""
             else if T.isSuffixOf "\n" existing then "\n"
             else "\n\n"
       atomSuffixes = case atoms of
         []     -> []
-        (a:as) -> (sep <> a) : map ("\n\n" <>) as
+        (a:as) -> (sep <> a) : map ("\n\n" <>) as <> ["\n"]
       atomContents = tail $ scanl (<>) existing atomSuffixes
   mapM (\(atom, full) -> do
     writeFile @project path (TE.encodeUtf8 full)
