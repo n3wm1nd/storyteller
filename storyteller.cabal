@@ -80,7 +80,7 @@ library
                   , http-types
                   , yaml
                   , stm
-  hs-source-dirs:   src app
+  hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall
                     -Wcompat
@@ -147,7 +147,7 @@ executable story-chargen
 executable story-server
   import:           exe-common
   main-is:          Server.hs
-  hs-source-dirs:   app-server
+  hs-source-dirs:   app
   build-depends:    wai
                   , warp
                   , websockets
