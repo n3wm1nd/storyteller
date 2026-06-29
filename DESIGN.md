@@ -397,8 +397,11 @@ Git branches for routes/endings, merge when routes reconverge. Consistency check
 ### Language: Haskell
 Strong typing, good git libraries, excellent for DSLs and agent definitions, parser combinators for commit message parsing.
 
-### Interface: TUI
-Primary interface similar to Claude Code. Text-focused, mode switching, external editor integration (`$EDITOR`), file watching. Works with existing tools (vim, emacs, git).
+### Interface: Frontend-agnostic
+The backend exposes a WebSocket server that any frontend can connect to. The WebSocket model is a natural fit for the domain: sessions are stateful, connections are scoped to a branch, and the server pushes updates rather than waiting to be polled. Currently in progress: `story-server` (WebSocket) and CLI tools for individual agent operations. A React-based web UI is the primary frontend target; TUI and other surfaces remain possible without backend changes.
+
+### WebSocket Architecture
+Each connection is scoped by URL: `/session` for storage-level operations (branch management), `/branch/{name}` for branch-level operations (file access, agents). The branch name is implicit from the URL — commands never repeat it. On connect, the server sends a full snapshot of the branch's current file contents; subsequent events are deltas. Multiple connections to the same branch all receive updates, enabling multiple windows to stay in sync without coordination. Background agents write to the branch and fan out to all connected clients via STM pubsub.
 
 ### Import/Export
 - **Import:** Blank project (templates), existing manuscript (parse and commit), character cards

@@ -61,6 +61,14 @@ The filesystem at any point in the chain is the product of replaying all ticks f
 
 A tick that adds content to files is called an **atom** — the finest granularity at which content is addressable. Atoms can be anything from a phrase to a complete generation block; the choice determines how precisely history can be navigated and how finely other ticks (summaries, annotations, cross-branch references) can point into it. Ticks that carry no filesystem change are not atoms — they sit *between* atoms in the chain, logically anchored to the atom that immediately precedes them.
 
+### Tick ID Stability
+
+Tick IDs are content-addressed object hashes — like git commit hashes, they identify a specific object in the store permanently. A tick ID is always valid: the object it points to exists and its content never changes.
+
+However, a tick ID is not a stable reference to a position in a branch. After a rebase, the same logical position in the chain has a new tick ID — the content of the diff may be identical, but the object is new because its parent changed. The old tick ID still resolves to the original object, which is no longer on the active chain.
+
+The practical consequence: tick IDs are safe to use within a tight fetch-work-use cycle, or for historical reference ("this specific object"). They should not be stored as durable handles to "the current third atom of chapter 2" — that position's ID will change whenever anything before it is rebased.
+
 ### Invariants
 
 Two invariants the storage layer enforces:

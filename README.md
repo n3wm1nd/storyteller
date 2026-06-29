@@ -81,6 +81,8 @@ The interface comes in three flavors optimized for different workflows:
 
 All three share the same storage backend. A campaign run in RP mode and documented in Wiki mode are looking at the same underlying story.
 
+The backend is frontend-agnostic: a WebSocket server exposes the full agent and storage layer, and any frontend can connect to it. The WebSocket model is a natural fit — each window opens a connection scoped to a branch, receives a full snapshot on connect, and stays live for the duration of the session. Multiple windows on the same branch all receive updates as they happen.
+
 ---
 
 ## What it isn't
@@ -93,4 +95,4 @@ The LLM is still the one writing. Storyteller is the framework that makes what i
 
 ## Status
 
-Early development. The data model and design are documented in `DESIGN.md` and `DATA-MODEL.md`. A UI mockup exists in `mockup/`. The backend is being built in Haskell using the `runix` effect system.
+Early development. The data model and design are documented in `DESIGN.md` and `DATA-MODEL.md`. A UI mockup exists in `mockup/`. The backend is being built in Haskell using the `runix` effect system. Currently in progress: a WebSocket server (`story-server`) and CLI tools for individual agent operations.
