@@ -15,6 +15,23 @@ export default function Home() {
   const [appendContent, setAppendContent] = useState("");
   const [newFilePath, setNewFilePath] = useState("");
   const [showNewFile, setShowNewFile] = useState(false);
+  const [appendBarHeight, setAppendBarHeight] = useState(90);
+
+  function onDragHandleMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = appendBarHeight;
+    function onMove(ev: MouseEvent) {
+      const delta = startY - ev.clientY;
+      setAppendBarHeight(Math.max(60, Math.min(400, startH + delta)));
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
@@ -189,19 +206,30 @@ export default function Home() {
 
             {/* Append bar — only active when a file is open */}
             <div style={{
-              padding: "10px 16px", borderTop: "1px solid var(--border-subtle)",
-              background: "var(--surface-deep)", display: "flex", gap: 8, alignItems: "flex-start",
+              borderTop: "1px solid var(--border-subtle)",
+              background: "var(--surface-deep)",
               opacity: hasOpenFile ? 1 : 0.4, pointerEvents: hasOpenFile ? "auto" : "none",
+              display: "flex", flexDirection: "column", height: appendBarHeight, flexShrink: 0,
             }}>
-              <textarea value={appendContent} onChange={(e) => setAppendContent(e.target.value)}
-                placeholder={hasOpenFile ? `Append to ${selectedFile}…` : "Open a file to append"}
-                rows={2} style={{ ...inputStyle, flex: 1, resize: "vertical", fontFamily: "Georgia, serif" }} />
-              <button onClick={() => {
-                if (selectedFile && appendContent.trim()) {
-                  appendToFile(selectedFile, appendContent.trim());
-                  setAppendContent("");
-                }
-              }} style={buttonStyle("var(--amber)")}>Append</button>
+              {/* Drag handle */}
+              <div
+                onMouseDown={onDragHandleMouseDown}
+                style={{
+                  height: 4, cursor: "ns-resize", flexShrink: 0,
+                  background: "transparent",
+                }}
+              />
+              <div style={{ flex: 1, display: "flex", gap: 8, alignItems: "stretch", padding: "0 16px 10px", minHeight: 0 }}>
+                <textarea value={appendContent} onChange={(e) => setAppendContent(e.target.value)}
+                  placeholder={hasOpenFile ? `Append to ${selectedFile}…` : "Open a file to append"}
+                  style={{ ...inputStyle, flex: 1, resize: "none", fontFamily: "Georgia, serif" }} />
+                <button onClick={() => {
+                  if (selectedFile && appendContent.trim()) {
+                    appendToFile(selectedFile, appendContent.trim());
+                    setAppendContent("");
+                  }
+                }} style={{ ...buttonStyle("var(--amber)"), alignSelf: "flex-end" }}>Append</button>
+              </div>
             </div>
           </>
         ) : (
