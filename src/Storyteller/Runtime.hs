@@ -35,6 +35,7 @@ import Runix.Cmd (Cmds, Cmd, cmdsIO, interpretCmd)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
+import Runix.Random (Random, randomIO)
 import Runix.RestAPI (RestEndpoint(..))
 import Runix.Runner (httpIO, withRequestTimeout, loggingIO, failLog)
 import Runix.HTTP (HTTP)
@@ -86,7 +87,7 @@ runInfrastructure
   :: Members '[Error String, Embed IO] r
   => FilePath
   -> String
-  -> Sem (HTTP : Sleep : Time : Git : Cmd "git" : Cmds : Fail : Logging : r) a
+  -> Sem (Random : HTTP : Sleep : Time : Git : Cmd "git" : Cmds : Fail : Logging : r) a
   -> Sem r a
 runInfrastructure repoPath _endpoint =
     loggingIO
@@ -97,6 +98,7 @@ runInfrastructure repoPath _endpoint =
   . timeIO
   . sleepIO
   . httpIO (withRequestTimeout 600)
+  . randomIO
 
 -- | One branch, storage, LLM. Creates the branch if it doesn't exist.
 runStoryGit

@@ -1,19 +1,28 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Character generation agent.
 --
 --   Given a scenario template (parsed YAML) and a seed, resolves random
 --   selections and numeric rolls into a character sheet.
 --
---   Pure: the only non-determinism is the seed, threaded via State StdGen.
+--   'charGenAgent' is pure. 'charGenCommit' is the Polysemy action that
+--   generates the sheet and commits it to a branch.
 module Storyteller.Agent.CharGen
   ( charGenAgent
+  , charGenCommit
   , ScenarioTemplate(..)
   , RngSeed(..)
   , CharSheet(..)
+  , unSheet
   ) where
 
-import           Control.Monad (replicateM, when)
+import           Control.Monad (replicateM, void, when)
 import           Control.Monad.State.Strict
 import           Data.Aeson (Value(..))
 import qualified Data.Aeson.Key    as K
@@ -25,9 +34,21 @@ import           Data.Maybe (fromMaybe)
 import           Data.Scientific (Scientific, toBoundedInteger)
 import           Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import           System.Random (StdGen, mkStdGen, uniformR)
 import           Text.Read (readMaybe)
+
+import Polysemy
+import Polysemy.Fail (Fail)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile)
+import Runix.Random (Random, randomInt)
+
+import Storyteller.Git (BranchTag(..))
+import Storyteller.Storage (StoryBranch, StoryStorage, store)
+import Storyteller.Types (TickId)
+
+import Prelude hiding (writeFile)
 
 -- ---------------------------------------------------------------------------
 -- Public API
@@ -36,6 +57,29 @@ import           Text.Read (readMaybe)
 newtype ScenarioTemplate = ScenarioTemplate { unTemplate :: Value }
 newtype RngSeed          = RngSeed          { unSeed     :: Int  }
 newtype CharSheet        = CharSheet        { unSheet    :: Text }
+
+-- | Effectful entry point: generate a character sheet and commit it to a branch.
+--   If the branch doesn't exist it is created. The seed is drawn from
+--   'Runix.Random' so callers never need 'Embed IO'.
+-- | Generate a character sheet and commit it to the current branch.
+--   If no seed is provided, one is drawn from 'Random'.
+charGenCommit
+  :: forall branch r
+  .  Members '[ FileSystem      (BranchTag branch)
+              , FileSystemRead  (BranchTag branch)
+              , FileSystemWrite (BranchTag branch)
+              , StoryBranch branch
+              , StoryStorage
+              , Random
+              , Fail
+              ] r
+  => ScenarioTemplate -> Maybe RngSeed -> FilePath -> Sem r (CharSheet, RngSeed, TickId)
+charGenCommit template mSeed file = do
+  seed <- maybe (RngSeed <$> randomInt) (return) mSeed
+  let sheet = charGenAgent template seed
+  writeFile @(BranchTag branch) file (TE.encodeUtf8 (unSheet sheet))
+  tid <- store @branch "character sheet"
+  return (sheet, seed, tid)
 
 charGenAgent :: ScenarioTemplate -> RngSeed -> CharSheet
 charGenAgent (ScenarioTemplate raw) (RngSeed seed) =
