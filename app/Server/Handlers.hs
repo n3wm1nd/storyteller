@@ -22,14 +22,12 @@ module Server.Handlers
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.List (intercalate)
-import Polysemy
 import Polysemy.Error (throw)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists, readFile)
+import Runix.FileSystem (fileExists, readFile)
 import Servant
 
 import Server.Agent.Append  (handleBranchAppend, handleAgentAppend)
 import Server.Agent.CharGen (handleCharGen)
-import Server.Agent.Rebase  (handleBranchRebase, handleAgentRebase)
 import Server.Agent.Track   (handleBranchTrack, handleAgentTrack)
 import Server.Agent.Write   (handleBranchWrite, handleAgentWrite)
 import Server.API (API, BranchesAPI, AgentsAPI)
@@ -39,8 +37,7 @@ import Server.Types
 import Server.Util (withBranch)
 
 import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage ( StoryBranch, StoryStorage
-                           , createBranch, getBranch, deleteBranch, listBranches, follow )
+import Storyteller.Storage (createBranch, getBranch, deleteBranch, listBranches, follow)
 import Storyteller.Types ( BranchName(..), Branch(..), Tick(..), TickId(..) )
 
 import Prelude hiding (readFile)
@@ -65,14 +62,12 @@ branchesServer env
   :<|> handleBranchReadFile env
   :<|> handleBranchWrite    env
   :<|> handleBranchTrack    env
-  :<|> handleBranchRebase   env
 
 agentsServer :: ServerEnv -> Server AgentsAPI
 agentsServer env
   =    handleAgentAppend env
   :<|> handleAgentWrite  env
   :<|> handleAgentTrack  env
-  :<|> handleAgentRebase env
   :<|> handleCharGen     env
 
 -- ---------------------------------------------------------------------------
@@ -141,8 +136,8 @@ toBranchInfo br = BranchInfo
 
 toTickInfo :: Tick -> TickInfo
 toTickInfo tk = TickInfo
-  { tickInfoId      = unTickId (tickId tk)
-  , tickInfoParent  = unTickId <$> tickParent tk
-  , tickInfoRefs    = map unTickId (tickRefs tk)
-  , tickInfoMessage = tickMessage tk
+  { tickInfoId          = unTickId (tickId tk)
+  , tickInfoParent      = unTickId <$> tickParent tk
+  , tickInfoLinkedTicks = map unTickId (tickRefs tk)
+  , tickInfoMessage     = tickMessage tk
   }

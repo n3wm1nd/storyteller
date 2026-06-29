@@ -16,14 +16,12 @@ module Server.API
   , api
   ) where
 
-import Data.Proxy (Proxy(..))
 import Servant
 
 import Server.Types
 import Server.Agent.Append  (AppendReq, AppendResp, AgentAppendReq)
 import Server.Agent.Write   (WriteReq, WriteResp, AgentWriteReq)
 import Server.Agent.Track   (TrackReq, TrackResp, AgentTrackReq)
-import Server.Agent.Rebase  (RebaseResp, AgentRebaseReq)
 import Server.Agent.CharGen (CharGenReq, CharGenResp)
 
 type API = BranchesAPI :<|> AgentsAPI
@@ -49,8 +47,6 @@ type BranchesAPI
        :> "write" :> ReqBody '[JSON] WriteReq :> Post '[JSON] WriteResp
   :<|> "branches" :> Capture "branch" BranchParam
        :> "track" :> ReqBody '[JSON] TrackReq :> Post '[JSON] TrackResp
-  :<|> "branches" :> Capture "branch" BranchParam
-       :> "rebase" :> Post '[JSON] RebaseResp
 
 -- ---------------------------------------------------------------------------
 -- /agents
@@ -60,8 +56,8 @@ type AgentsAPI
   =    "agents" :> "append"  :> ReqBody '[JSON] AgentAppendReq  :> Post '[JSON] AppendResp
   :<|> "agents" :> "write"   :> ReqBody '[JSON] AgentWriteReq   :> Post '[JSON] WriteResp
   :<|> "agents" :> "track"   :> ReqBody '[JSON] AgentTrackReq   :> Post '[JSON] TrackResp
-  :<|> "agents" :> "rebase"  :> ReqBody '[JSON] AgentRebaseReq  :> Post '[JSON] RebaseResp
   :<|> "agents" :> "chargen" :> ReqBody '[JSON] CharGenReq      :> Post '[JSON] CharGenResp
 
 api :: Proxy API
 api = Proxy
+

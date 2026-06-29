@@ -11,7 +11,7 @@
 module Main (main) where
 
 import Network.Wai.Handler.Warp (run)
-import Servant (serve, hoistServer)
+import Servant (serve)
 import System.IO (hPutStrLn, stderr)
 
 import Server.API (api)

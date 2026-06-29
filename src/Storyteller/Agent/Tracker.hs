@@ -23,8 +23,6 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
-import qualified Data.Text as T
-
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
@@ -37,9 +35,8 @@ import Storyteller.Types (Tick(..), TickDraft(..), TickId(..))
 import Prelude hiding (readFile, writeFile)
 
 trackBranch
-  :: forall trackeeBranch trackeeProject trackerBranch trackerProject r
-  .  ( trackeeProject ~ BranchTag trackeeBranch
-     , trackerProject ~ BranchTag trackerBranch
+  :: forall trackeeBranch trackerBranch trackerProject r
+  .  ( trackerProject ~ BranchTag trackerBranch
      , Members '[ StoryBranch trackeeBranch
                 , FileSystem     trackerProject
                 , FileSystemRead trackerProject
@@ -49,7 +46,7 @@ trackBranch
                 , Git
                 , Fail
                 ] r )
-  => [FilePath]
+  => [(FilePath, FilePath)]
   -> Sem r [TickId]
 trackBranch files = do
   trackeeTicks <- follow @trackeeBranch [] $ \acc tick ->
@@ -85,7 +82,7 @@ copyAtom
               , Git
               , Fail
               ] r
-  => [FilePath]
+  => [(FilePath, FilePath)]
   -> Tick
   -> Sem r [TickId]
 copyAtom files tick = do
@@ -94,13 +91,14 @@ copyAtom files tick = do
     Nothing  -> return Map.empty
     Just pid -> loadWorkingTree (ObjectHash (unTickId pid))
 
-  thisContents   <- readFiles thisWt   files
-  parentContents <- readFiles parentWt files
+  let fromFiles = map fst files
+  thisContents   <- readFiles thisWt   fromFiles
+  parentContents <- readFiles parentWt fromFiles
 
-  let deltas = [ (f, BS.drop (BS.length parentBytes) thisBytes)
-               | f <- files
-               , let thisBytes   = Map.findWithDefault BS.empty f thisContents
-               , let parentBytes = Map.findWithDefault BS.empty f parentContents
+  let deltas = [ (toFile, BS.drop (BS.length parentBytes) thisBytes)
+               | (fromFile, toFile) <- files
+               , let thisBytes   = Map.findWithDefault BS.empty fromFile thisContents
+               , let parentBytes = Map.findWithDefault BS.empty fromFile parentContents
                ]
 
   anyWritten <- fmap or $ mapM (appendDelta @trackerProject) deltas

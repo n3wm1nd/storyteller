@@ -34,10 +34,10 @@ instance FromJSON CreateBranchReq
 instance ToJSON CreateBranchReq
 
 data TickInfo = TickInfo
-  { tickInfoId      :: Text
-  , tickInfoParent  :: Maybe Text
-  , tickInfoRefs    :: [Text]
-  , tickInfoMessage :: Text
+  { tickInfoId          :: Text
+  , tickInfoParent      :: Maybe Text
+  , tickInfoLinkedTicks :: [Text]
+  , tickInfoMessage     :: Text
   } deriving (Show, Generic)
 
 instance ToJSON TickInfo
