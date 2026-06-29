@@ -44,6 +44,18 @@ library
                   , Storyteller.Agent.CharGen
                   , Storyteller.Agent.Append
                   , Storyteller.Agent.Write
+                  , Server.Env
+                  , Server.Run
+                  , Server.Util
+                  , Server.Session.Protocol
+                  , Server.Session.Connection
+                  , Server.Session.Dispatch
+                  , Server.Branch.Protocol
+                  , Server.Branch.Connection
+                  , Server.Branch.Dispatch
+                  , Server.File.Protocol
+                  , Server.File.Connection
+                  , Server.File.Dispatch
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
@@ -61,7 +73,14 @@ library
                   , vector
                   , random
                   , mtl
-  hs-source-dirs:   src
+                  , websockets
+                  , wai
+                  , warp
+                  , wai-websockets
+                  , http-types
+                  , yaml
+                  , stm
+  hs-source-dirs:   src app
   default-language: Haskell2010
   ghc-options:      -Wall
                     -Wcompat
@@ -128,28 +147,12 @@ executable story-chargen
 executable story-server
   import:           exe-common
   main-is:          Server.hs
-  hs-source-dirs:   app
-  other-modules:    Server.Env
-                  , Server.Run
-                  , Server.Util
-                  , Server.Session.Protocol
-                  , Server.Session.Connection
-                  , Server.Session.Dispatch
-                  , Server.Branch.Protocol
-                  , Server.Branch.Connection
-                  , Server.Branch.Dispatch
-                  , Server.File.Protocol
-                  , Server.File.Connection
-                  , Server.File.Dispatch
+  hs-source-dirs:   app-server
   build-depends:    wai
                   , warp
                   , websockets
                   , wai-websockets
                   , http-types
-                  , aeson
-                  , yaml
-                  , random
-                  , stm
 
 test-suite storyteller-test
   type:             exitcode-stdio-1.0
