@@ -10,6 +10,7 @@ author:             storyteller authors
 maintainer:         authors@storyteller.dev
 category:           Development
 build-type:         Simple
+data-files:         test/fixtures/minimal.yaml
 
 -- | General-purpose git effect + libgit2 interpreter.
 --   Intended to migrate to runix proper once stable.
@@ -40,6 +41,7 @@ library
                   , Storyteller.Agent.Splitter
                   , Storyteller.Agent.Tracker
                   , Storyteller.Agent.SplitDiffMerge
+                  , Storyteller.Agent.CharGen
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
@@ -52,6 +54,11 @@ library
                   , template-haskell
                   , storyteller:gitlib-effect
                   , polysemy-plugin
+                  , aeson
+                  , scientific
+                  , vector
+                  , random
+                  , mtl
   hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -106,15 +113,26 @@ executable story-rebase
   main-is:          Rebase.hs
   hs-source-dirs:   app
 
+-- | Resolve a scenario template into a character sheet and commit it to an entity branch.
+executable story-chargen
+  import:           exe-common
+  main-is:          CharGen.hs
+  hs-source-dirs:   app
+  build-depends:    yaml
+                  , random
+
 
 test-suite storyteller-test
   type:             exitcode-stdio-1.0
   main-is:          Main.hs
   other-modules:    Git.Mock
+                  , Paths_storyteller
                   , Storyteller.StorageSpec
                   , Storyteller.SplitDiffMergeSpec
                   , Storyteller.SplitterSpec
                   , Storyteller.TrackerSpec
+                  , Storyteller.CharGenSpec
+  autogen-modules:  Paths_storyteller
   build-depends:    base >=4.18 && <5
                   , storyteller
                   , storyteller:gitlib-effect
@@ -127,6 +145,8 @@ test-suite storyteller-test
                   , hspec >=2.11
                   , QuickCheck >=2.14
                   , hashable
+                  , aeson
+                  , yaml
   hs-source-dirs:   test
   default-language: Haskell2010
   ghc-options:      -Wall

@@ -1,0 +1,36 @@
+name: Minimal
+description: Minimal fixture for unit tests.
+
+# Numeric category: two stats, rolled and assigned freely.
+stats:
+  value: "1d6"
+  assign: free
+  str:
+    name: Strength
+  dex:
+    name: Dexterity
+
+# Selection category: pick one background from a pool of two.
+# The chosen background grants a stat bump via a category ref.
+background:
+  roll: 1
+  scholar:
+    name: Scholar
+    description: Spent years in libraries.
+    stats:
+      dex: +2
+  soldier:
+    name: Soldier
+    description: Trained for combat.
+    stats:
+      str: +2
+
+# Second selection: single roll from a small pool, no refs.
+trait:
+  roll: 1
+  brave:
+    name: Brave
+  cautious:
+    name: Cautious
+  curious:
+    name: Curious
