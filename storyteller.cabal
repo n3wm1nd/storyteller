@@ -138,6 +138,9 @@ executable story-server
                   , Server.Branch.Protocol
                   , Server.Branch.Connection
                   , Server.Branch.Dispatch
+                  , Server.File.Protocol
+                  , Server.File.Connection
+                  , Server.File.Dispatch
   build-depends:    wai
                   , warp
                   , websockets

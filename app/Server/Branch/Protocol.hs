@@ -3,9 +3,9 @@
 
 -- | Protocol for /branch/{name} connections.
 --
--- Commands: file and agent operations within an open branch.
--- Events:   file content, updates, errors.
--- The branch name is implicit — it comes from the connection URL.
+-- Branch connections carry branch-level state only: the file tree (paths, no
+-- content). File content lives in /branch/{name}/{path} connections.
+-- The branch name is implicit from the connection URL.
 module Server.Branch.Protocol
   ( BranchCommand(..)
   , BranchEvent(..)
@@ -14,7 +14,6 @@ module Server.Branch.Protocol
 
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser, Pair)
-import Data.Map.Strict (Map)
 import qualified Data.Text as T
 
 data TrackFile = TrackFile
@@ -30,11 +29,8 @@ instance ToJSON TrackFile where
   toJSON tf = object [ "from" .= trackFrom tf, "to" .= trackTo tf ]
 
 data BranchCommand
-  = Append     { bcId :: Maybe T.Text, bcPath :: FilePath, bcContent :: T.Text }
-  | Track      { bcId :: Maybe T.Text, bcSource :: T.Text, bcFiles :: [TrackFile] }
+  = Track      { bcId :: Maybe T.Text, bcSource :: T.Text, bcFiles :: [TrackFile] }
   | CharGen    { bcId :: Maybe T.Text, bcPath :: FilePath, bcScenario :: T.Text, bcSeed :: Maybe Int }
-  | ReadFile   { bcId :: Maybe T.Text, bcPath :: FilePath }
-  | DeleteFile { bcId :: Maybe T.Text, bcPath :: FilePath }
   deriving (Show)
 
 instance FromJSON BranchCommand where
@@ -42,31 +38,26 @@ instance FromJSON BranchCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "append"       -> Append     i <$> o .: "path" <*> o .: "content"
-      "track"        -> Track      i <$> o .: "source" <*> o .: "files"
-      "chargen"      -> CharGen    i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
-      "read"         -> ReadFile   i <$> o .: "path"
-      "delete.file"  -> DeleteFile i <$> o .: "path"
-      _              -> fail ("unknown branch command: " <> T.unpack t)
+      "track"   -> Track   i <$> o .: "source" <*> o .: "files"
+      "chargen" -> CharGen i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
+      _         -> fail ("unknown branch command: " <> T.unpack t)
 
 data BranchEvent
-  = BranchReady  { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: Map FilePath T.Text }
-  | FileContent  { beId :: Maybe T.Text, bePath :: FilePath, beContent :: T.Text }
-  | FileUpdated  { beId :: Maybe T.Text, bePath :: FilePath, beContent :: T.Text }
-  | BranchError  T.Text
+  = BranchReady { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
+  | FileAdded   { beId :: Maybe T.Text, bePath :: FilePath }
+  | FileRemoved { beId :: Maybe T.Text, bePath :: FilePath }
+  | BranchError T.Text
   deriving (Show)
 
 instance ToJSON BranchEvent where
   toJSON = \case
     BranchReady mid branch files ->
-      object $ withId mid [ "type" .= ("branch.ready"  :: T.Text)
+      object $ withId mid [ "type" .= ("branch.ready"   :: T.Text)
                            , "branch" .= branch, "files" .= files ]
-    FileContent mid path content ->
-      object $ withId mid [ "type" .= ("file.content"  :: T.Text)
-                           , "path" .= path, "content" .= content ]
-    FileUpdated mid path content ->
-      object $ withId mid [ "type" .= ("file.updated"  :: T.Text)
-                           , "path" .= path, "content" .= content ]
+    FileAdded mid path ->
+      object $ withId mid [ "type" .= ("file.added"     :: T.Text), "path" .= path ]
+    FileRemoved mid path ->
+      object $ withId mid [ "type" .= ("file.removed"   :: T.Text), "path" .= path ]
     BranchError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]
 

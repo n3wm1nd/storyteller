@@ -31,9 +31,19 @@ export type BranchCommand =
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number };
 
 export type BranchEvent =
-  | { type: "branch.ready"; id?: string; branch: string; files: Record<string, string> }
-  | { type: "file.content"; id?: string; path: string; content: string }
-  | { type: "file.updated"; id?: string; path: string; content: string }
+  | { type: "branch.ready"; id?: string; branch: string; files: string[] }
+  | { type: "error"; message: string };
+
+export type FileCommand =
+  | { type: "append"; id?: string; content: string }
+  | { type: "read";   id?: string }
+  | { type: "delete"; id?: string };
+
+export type FileEvent =
+  | { type: "file.content"; id?: string; content: string }
+  | { type: "file.absent";  id?: string }
+  | { type: "file.updated"; id?: string; content: string }
+  | { type: "file.deleted"; id?: string }
   | { type: "error"; message: string };
 
 // ── Connection ────────────────────────────────────────────────────────────────
@@ -89,8 +99,10 @@ export class StoryWS<Cmd, Evt> {
       ws.onclose = (e) => {
         console.log(`[ws] closed ${this.url} code=${e.code} reason=${e.reason} wasClean=${e.wasClean}`);
         this.ws = null;
-        this._emit("disconnected");
-        if (!this.stopped) this._scheduleReconnect();
+        if (!this.stopped) {
+          this._emit("disconnected");
+          this._scheduleReconnect();
+        }
       };
     });
   }
@@ -139,4 +151,10 @@ export function sessionConn() {
 
 export function branchConn(name: string) {
   return new StoryWS<BranchCommand, BranchEvent>(`${WS_BASE}/branch/${encodeURIComponent(name)}`);
+}
+
+export function fileConn(branch: string, path: string) {
+  // Path components are encoded individually to preserve the slash hierarchy.
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return new StoryWS<FileCommand, FileEvent>(`${WS_BASE}/branch/${encodeURIComponent(branch)}/${encodedPath}`);
 }

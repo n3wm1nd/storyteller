@@ -27,6 +27,7 @@ import System.IO (hPutStrLn, stderr)
 import qualified Data.Text as T
 import Server.Env (ServerEnv, loadServerEnv, envPort)
 import Server.Branch.Connection (runBranch)
+import Server.File.Connection (runFile)
 import Server.Session.Connection (runSession)
 
 main :: IO ()
@@ -40,9 +41,12 @@ main = do
 wsRouter :: ServerEnv -> ServerApp
 wsRouter env pending =
   case BC.split '/' . BC.dropWhile (== '/') . Network.WebSockets.requestPath $ pendingRequest pending of
-    ["session"]          -> accept $ runSession env
-    ["branch", name]     -> accept $ runBranch  env (T.pack (BC.unpack name))
-    _                    -> rejectRequest pending "not found"
+    ["session"]              -> accept $ runSession env
+    ["branch", name]         -> accept $ runBranch  env (T.pack (BC.unpack name))
+    ("branch" : name : path) -> accept $ runFile env
+                                           (T.pack (BC.unpack name))
+                                           (foldl1 (\a b -> a <> "/" <> b) (map BC.unpack path))
+    _                        -> rejectRequest pending "not found"
   where
     accept handler = do
       conn <- acceptRequest pending
