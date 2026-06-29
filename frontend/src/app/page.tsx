@@ -265,14 +265,19 @@ function AtomBlock({ atom, isLast }: { atom: FileAtom; isLast: boolean }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
+        position: "relative",
         borderLeft: hovered ? "2px solid oklch(0.78 0.10 65 / 0.4)" : "2px solid transparent",
         paddingLeft: 10,
         marginLeft: -12,
         transition: "border-color 0.15s",
-        marginBottom: isLast ? 0 : undefined,
       }}
     >
       <ReactMarkdown components={mdComponents}>{atom.content}</ReactMarkdown>
+      <div style={{ position: "absolute", bottom: 0, right: 0 }}>
+        <span style={{ fontSize: 9, fontFamily: "monospace", color: hovered ? "var(--text-ghost)" : "transparent", userSelect: "all", transition: "color 0.15s" }}>
+          {atom.tickId.slice(0, 12)}
+        </span>
+      </div>
     </div>
   );
 }
