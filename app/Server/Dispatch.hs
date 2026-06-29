@@ -65,11 +65,11 @@ dispatch env branch conn cmd = do
 
   case cmd of
     Append mid path content -> do
-      r <- runAction env (handleAppend env branch path content)
+      r <- runAction env (handleAppend branch path content)
       orErr r (FileUpdated mid path)
 
     Track mid source files -> do
-      r <- runAction env (handleTrack env branch source files)
+      r <- runAction env (handleTrack branch source files)
       orErrN r (uncurry (FileUpdated mid))
 
     CharGen mid path scenario seed -> do
@@ -77,7 +77,7 @@ dispatch env branch conn cmd = do
       orErr r (FileUpdated mid path)
 
     ReadFile mid path -> do
-      r <- runAction env (handleReadFile env branch path)
+      r <- runAction env (handleReadFile branch path)
       orErr r (FileContent mid path)
 
     DeleteFile _mid _path ->
@@ -90,17 +90,17 @@ dispatch env branch conn cmd = do
 -- | Append content to a file; return updated file content.
 handleAppend
   :: SessionEffects r
-  => ServerEnv -> T.Text -> FilePath -> T.Text -> Sem r T.Text
-handleAppend env branch path content =
-  withBranchSplitter @Main env branch $ do
-    appendAgent @(BranchTag Main) @Main path content
+  => T.Text -> FilePath -> T.Text -> Sem r T.Text
+handleAppend branch path content =
+  withBranchSplitter @Main branch $ do
+    void $ appendAgent @(BranchTag Main) @Main path content
     decodeFile @(BranchTag Main) path
 
 -- | Track atoms from source branch into target files; return (destPath, content) pairs.
 handleTrack
   :: SessionEffects r
-  => ServerEnv -> T.Text -> T.Text -> [TrackFile] -> Sem r [(FilePath, T.Text)]
-handleTrack _env branch source files = do
+  => T.Text -> T.Text -> [TrackFile] -> Sem r [(FilePath, T.Text)]
+handleTrack branch source files = do
   let target    = BranchName branch
       sourceName = BranchName source
       filePairs  = map (\f -> (trackFrom f, trackTo f)) files
@@ -110,7 +110,7 @@ handleTrack _env branch source files = do
     Just _  -> return ()
   runBranchAndFS @Source sourceName
     $ runBranchAndFS @Tracker target $ do
-        trackBranch @Source @Tracker @(BranchTag Tracker) filePairs
+        void $ trackBranch @Source @Tracker @(BranchTag Tracker) filePairs
         mapM (\p -> (p,) <$> decodeFile @(BranchTag Tracker) p) destPaths
 
 -- | Generate a character sheet; return the written file content.
@@ -126,15 +126,15 @@ handleCharGen branch path scenario seed = do
     Nothing -> void $ createBranch name
     Just _  -> return ()
   runBranchAndFS @CharBranch name $ do
-    charGenCommit @CharBranch template (RngSeed <$> seed) path
+    void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
     decodeFile @(BranchTag CharBranch) path
 
 -- | Read a file; return its content.
 handleReadFile
   :: SessionEffects r
-  => ServerEnv -> T.Text -> FilePath -> Sem r T.Text
-handleReadFile env branch path =
-  withBranch @Main env branch $ do
+  => T.Text -> FilePath -> Sem r T.Text
+handleReadFile branch path =
+  withBranch @Main branch $ do
     fileExists @(BranchTag Main) path >>= \case
       False -> throw ("file not found: " <> path)
       True  -> decodeFile @(BranchTag Main) path
@@ -148,7 +148,7 @@ snapshot env branch = runAction env $ do
   let name = BranchName branch
   getBranch name >>= \case
     Nothing -> return Map.empty
-    Just _  -> withBranch @Main env branch $ do
+    Just _  -> withBranch @Main branch $ do
       wt <- currentWorkingTree @Main
       fmap Map.fromList $ forM (textFiles wt) $ \(path, hash) ->
         (path,) . TE.decodeUtf8With TE.lenientDecode <$> readBlob hash
