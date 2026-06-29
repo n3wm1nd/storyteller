@@ -1,0 +1,81 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-sidebar: var(--sidebar);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-amber: var(--amber);
+  --color-teal: var(--teal);
+  --color-rose: var(--rose);
+  --color-emerald: var(--emerald);
+  --color-violet: var(--violet);
+}
+
+:root {
+  /* Surfaces */
+  --background:    oklch(0.12 0.01 60);
+  --surface-deep:  oklch(0.13 0.01 60);
+  --surface:       oklch(0.18 0.012 60);
+  --surface-raised:oklch(0.2  0.012 60);
+  --sidebar:       oklch(0.14 0.012 60);
+  --card:          oklch(0.16 0.012 60);
+  --muted:         oklch(0.2  0.015 60);
+  --topbar:        oklch(0.1  0.01  60);
+
+  /* Text */
+  --foreground:      oklch(0.93 0.01  60);
+  --text-heading:    oklch(0.88 0.01  60);
+  --text-body:       oklch(0.80 0.01  60);
+  --text-secondary:  oklch(0.75 0.01  60);
+  --text-label:      oklch(0.70 0.01  60);
+  --text-muted:      oklch(0.60 0.02  60);
+  --text-subtle:     oklch(0.55 0.02  60);
+  --text-disabled:   oklch(0.50 0.02  60);
+  --text-ghost:      oklch(0.45 0.02  60);
+  --text-dim:        oklch(0.40 0.02  60);
+  --text-faint:      oklch(0.35 0.02  60);
+
+  /* Borders */
+  --border-subtle: oklch(0.25 0.015 60);
+  --border:        oklch(0.28 0.015 60);
+  --border-hover:  oklch(0.35 0.02  60);
+
+  /* Accents */
+  --amber:   oklch(0.78 0.10 65);
+  --teal:    oklch(0.65 0.12 170);
+  --violet:  oklch(0.70 0.15 310);
+  --emerald: oklch(0.72 0.16 140);
+  --rose:    oklch(0.68 0.18 25);
+
+  --radius: 0.625rem;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
