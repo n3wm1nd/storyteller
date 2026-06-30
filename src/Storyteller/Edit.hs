@@ -14,12 +14,15 @@
 -- or splitter involvement — but above raw storage, since they understand
 -- file content.
 module Storyteller.Edit
-  ( deleteTick
+  ( storeAtom
+  , deleteTick
   , editAtom
   ) where
 
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TE
 import Polysemy
 import Polysemy.Fail
 
@@ -29,6 +32,21 @@ import Storyteller.Storage (StoryBranch, StoryStorage, at, withFS, drop, reset, 
 import Storyteller.Types (TickId)
 
 import Prelude hiding (appendFile, drop)
+
+-- | Write @content@ to @path@ and commit it as an atom tick.
+--   The commit message is the content truncated to 60 chars.
+storeAtom
+  :: forall branch r
+  .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , FileSystemWrite (BranchTag branch)
+                , StoryStorage
+                , Fail ] r )
+  => FilePath -> BS.ByteString -> Sem r TickId
+storeAtom path newBytes = do
+  appendFile @(BranchTag branch) path newBytes
+  store @branch (T.take 60 (TE.decodeUtf8With TE.lenientDecode newBytes))
 
 -- | Remove a tick from the chain. At rewinds to it, Drop removes it,
 --   At replays the tail onto the parent. Reset syncs the working tree.
@@ -58,13 +76,10 @@ editAtom
   => TickId
   -> FilePath
   -> BS.ByteString   -- ^ new atom content (raw bytes, suffix only)
-  -> T.Text          -- ^ commit message
   -> Sem r (TickId, [(TickId, TickId)])
-editAtom tid path newBytes msg = do
+editAtom tid path newBytes = do
   (newTid, mapping) <- at @branch tid $ do
     drop @branch
-    withFS @branch $ do
-      appendFile @(BranchTag branch) path newBytes
-      store @branch msg
+    withFS @branch $ storeAtom @branch path newBytes
   reset @branch
   return (newTid, mapping)

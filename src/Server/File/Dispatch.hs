@@ -154,7 +154,6 @@ handleEditAtom branch path tickIdTxt newContent =
   withBranch @Main branch $ do
     (_newTid, _mapping) <- editAtom @Main
       (TickId tickIdTxt) path (TE.encodeUtf8 newContent)
-      ("atom: " <> T.take 60 newContent)
     atom <- atomAtHead branch path
     return (tickIdTxt, atom)
 
