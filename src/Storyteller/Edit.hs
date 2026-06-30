@@ -66,18 +66,16 @@ import Polysemy.Fail
 import qualified Data.List as List
 import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
-  , appendFile, fileExists, readFile, listFiles, isDirectory
+  , appendFile, fileExists, readFile, writeFile, listFiles, isDirectory
   )
-import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, atWithFS, withFS, drop, reset, store, storeData, storeAs, follow, get, updateReferences
+  , at, atWithFS, withFS, drop, reset, store, storeData, follow, get, updateReferences
   )
 import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
-import Runix.Git (Git)
 
-import Prelude hiding (appendFile, drop, get, readFile)
+import Prelude hiding (appendFile, drop, get, readFile, writeFile)
 
 -- ---------------------------------------------------------------------------
 -- Position-free tick representation
@@ -180,8 +178,10 @@ deleteTick tid = do
 editAtom
   :: forall branch r
   .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , FileSystemWrite (BranchTag branch)
                 , StoryStorage
-                , Git
                 , Fail ] r )
   => TickId
   -> FilePath
@@ -190,10 +190,9 @@ editAtom
 editAtom tid path newBytes = do
   (newTid, mapping) <- at @branch tid $ do
     drop @branch
-    parentTick <- get @branch
-    parentTree <- treeRef (tickId parentTick)
-    atom       <- storeAtomDiff parentTree (AtomDiff path newBytes)
-    storeAs @branch atom
+    withFS @branch $ do
+      writeFile @(BranchTag branch) path newBytes
+      store @branch "edit"
   reset @branch
   return (newTid, mapping)
 
