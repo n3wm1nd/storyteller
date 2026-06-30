@@ -165,12 +165,17 @@ runGitIO repo = interpret $ \case
     parseCommit (stdout out)
 
   WriteCommit cd -> do
-    let parentArgs = concatMap (\p -> ["-p", T.unpack (unObjectHash p)]) (commitParents cd)
-        args = ["commit-tree", T.unpack (unObjectHash (commitTree cd))] ++ parentArgs
-    out <- gitStdin repo args (TE.encodeUtf8 (commitMessage cd))
+    let parentLines = T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
+        raw = "tree " <> unObjectHash (commitTree cd) <> "\n"
+           <> parentLines
+           <> "author . <.> 0 +0000\n"
+           <> "committer . <.> 0 +0000\n"
+           <> "\n"
+           <> commitMessage cd <> "\n"
+    out <- gitStdin repo ["hash-object", "-t", "commit", "-w", "--stdin"] (TE.encodeUtf8 raw)
     case T.lines (stdout out) of
       (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
-      _ -> fail $ "git commit-tree failed: " <> T.unpack (stderr out)
+      _ -> fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
 
   ReadObject hash -> do
     out <- gitStdin repo ["cat-file", "--batch-check=%(objecttype)"] (TE.encodeUtf8 (unObjectHash hash))

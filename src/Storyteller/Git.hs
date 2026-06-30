@@ -199,32 +199,23 @@ emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 --     <message body>
 encodeTickData :: TickData -> Text
 encodeTickData td =
-  let refLine    = case tickRefs td of
-                     [] -> []
-                     rs -> ["refs: " <> T.unwords (map unTickId rs)]
-      fieldLines = map (\(k, v) -> k <> ":" <> v) (tickFields td)
-      headers    = refLine <> fieldLines
+  let fieldLines = map (\(k, v) -> k <> ":" <> v) (tickFields td)
       body       = tickMessage td
-  in if null headers
+  in if null fieldLines
        then body
-       else T.intercalate "\n" headers <> "\n\n" <> body
+       else T.intercalate "\n" fieldLines <> "\n\n" <> body
 
 -- | Decode a git commit message back into refs, fields, and message body.
 decodeTickData :: Text -> TickData
 decodeTickData raw =
   let ls              = T.lines raw
       (headers, body) = splitHeaders ls
-      refs            = [ TickId tid
-                        | l <- headers
-                        , "refs: " `T.isPrefixOf` l
-                        , tid <- T.words (T.drop 6 l) ]
       fields          = [ (k, v)
                         | l <- headers
-                        , not ("refs: " `T.isPrefixOf` l)
                         , let (k, rest) = T.breakOn ":" l
                         , not (T.null rest)
                         , let v = T.drop 1 rest ]
-  in TickData { tickRefs = refs, tickFields = fields, tickMessage = T.intercalate "\n" body }
+  in TickData { tickRefs = [], tickFields = fields, tickMessage = T.intercalate "\n" body }
 
 -- | Split commit message lines into header lines and body lines.
 --   Headers end at the first blank line; body is everything after.
@@ -241,13 +232,14 @@ splitHeaders ls =
 
 commitToTick :: ObjectHash -> CommitData -> Tick
 commitToTick hash cd =
-  let td  = decodeTickData (commitMessage cd)
+  let td      = decodeTickData (commitMessage cd)
+      parents = commitParents cd
       pos = TickPos
               { posId     = TickId (unObjectHash hash)
-              , posParent = TickId . unObjectHash <$> listToMaybe (commitParents cd)
-              , posRefs   = tickRefs td
+              , posParent = TickId . unObjectHash <$> listToMaybe parents
+              , posRefs   = map (TickId . unObjectHash) (drop 1 parents)
               }
-  in Tick { tickPos = pos, tickData = td }
+  in Tick { tickPos = pos, tickData = td { tickRefs = posRefs pos } }
   where
     listToMaybe []    = Nothing
     listToMaybe (x:_) = Just x
@@ -326,7 +318,7 @@ runStoryBranchGit branch action = do
         Left err     -> pureT (Left err)
         Right treeHash -> do
           newHash <- raise $ writeCommit CommitData
-            { commitParents = [headHash']
+            { commitParents = headHash' : map (ObjectHash . unTickId) (tickRefs d)
             , commitTree    = treeHash
             , commitMessage = encodeTickData d
             }

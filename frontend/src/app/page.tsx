@@ -718,15 +718,18 @@ function TickRow({
       const prevIdx = prevTick ? allTicks.findIndex((t) => t.tickId === prevTick.tickId) : -1;
       return refIdx < prevIdx;
     }
-    // Atom: can't move before any note that refs it.
+    // Atom: can't move past the tick immediately above if it's a note referencing this atom.
     const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
-    return !allTicks.slice(0, myIdx).some((t) => t.kind === "note" && t.ref === tick.tickId);
+    const aboveTick = allTicks[myIdx - 1];
+    return !(aboveTick?.kind === "note" && aboveTick.ref === tick.tickId);
   })();
 
   const canMoveDown = !isLast && (() => {
     if (tick.kind === "note") {
-      // Notes can move down freely (nothing depends on a note).
-      return true;
+      // Note can't move past its referenced tick.
+      const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);
+      const below  = allTicks[myIdx + 1];
+      return !(below?.tickId === tick.ref);
     }
     // Atom: can't move after a note that refs it.
     const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);

@@ -60,7 +60,7 @@ import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, withFS, drop, reset, store, storeData, storeAs, follow, get
+  , at, withFS, drop, reset, store, storeData, storeAs, follow, get, updateReferences
   )
 import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
 import Runix.Git (Git)
@@ -83,6 +83,10 @@ data TDraft = TDraft
 
 toTickData :: TDraft -> TickData
 toTickData d = TickData { tickRefs = tdRefs d, tickFields = [], tickMessage = tdMessage d }
+
+remapDraftRefs :: [(TickId, TickId)] -> TDraft -> TDraft
+remapDraftRefs mapping d = d { tdRefs = map remap (tdRefs d) }
+  where remap tid = maybe tid id (lookup tid mapping)
 
 -- | Pop the tick currently at HEAD, returning its draft with file diffs.
 --   Must be called as the inner action of @at tid@ — that puts @tid@ at HEAD.
@@ -228,7 +232,9 @@ moveTick tid mAfter = do
           return (newTid, innerMap)
 
   reset @branch
-  return (outerMapping <> innerMapping <> [(tid, newTid)])
+  let fullMapping = outerMapping <> innerMapping <> [(tid, newTid)]
+  updateReferences fullMapping
+  return fullMapping
 
 -- ---------------------------------------------------------------------------
 -- Ordering invariant

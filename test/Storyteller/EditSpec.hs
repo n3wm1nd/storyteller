@@ -329,6 +329,28 @@ spec = do
         Right _  -> fail "expected ordering invariant failure"
 
   -- ---------------------------------------------------------------------------
+  -- Note ref preservation across moves
+  -- ---------------------------------------------------------------------------
+
+  describe "moveTick note ref" $ do
+    it "note retains its ref when moved down one place" $ do
+      -- chain: [a1, a2, a3, n1]  n1 refs a2
+      -- move n1 down one: [a1, a2, n1, a3]
+      -- a3 is replayed; n1 must still reference a2's new id
+      let result = runEdit $ do
+            [a1, a2, a3] <- storeN 3
+            n1 <- storeData @Main (TickData { tickRefs = [a2], tickFields = [("type","note")], tickMessage = "a comment" })
+            mapping <- moveTick @Main n1 (Just a2)
+            let newN1 = maybe n1 id (lookup n1 mapping)
+                newA2 = maybe a2 id (lookup a2 mapping)
+            (tick, _) <- at @Main newN1 (S.get @Main)
+            return (tickRefs (tickData tick), newA2)
+      case result of
+        Left err            -> fail err
+        Right (refs, newA2) -> refs `shouldBe` [newA2]
+
+
+  -- ---------------------------------------------------------------------------
   -- QuickCheck properties
   -- ---------------------------------------------------------------------------
 
