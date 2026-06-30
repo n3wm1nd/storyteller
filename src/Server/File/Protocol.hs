@@ -7,16 +7,17 @@
 -- blob. The file may be created, deleted, and recreated within the same
 -- connection — the path is the identity.
 --
--- On connect: server sends file.atoms (oldest-first atom chain) if the file
--- exists, or file.absent if not. New atoms arrive via atom.appended.
+-- On connect: server sends file.ticks (oldest-first tick list) if the file
+-- exists, or file.absent if not. New ticks arrive via tick.appended.
 -- Commands: operations on this specific file (no path parameter needed).
 module Server.File.Protocol
   ( FileCommand(..)
-  , FileAtom(..)
+  , FileTick(..)
   , FileEvent(..)
   ) where
 
 import Data.Aeson hiding (Error)
+import Data.Aeson.Key (fromText)
 import Data.Aeson.Types (Parser, Pair)
 import qualified Data.Text as T
 
@@ -46,28 +47,34 @@ instance FromJSON FileCommand where
       "move.atom"   -> MoveAtom   i <$> o .: "tickId" <*> o .:? "afterTickId"
       _             -> fail ("unknown file command: " <> T.unpack t)
 
-data FileAtom = FileAtom
-  { atomTickId  :: T.Text
-  , atomContent :: T.Text
-  , atomMessage :: T.Text
-  , atomParent  :: Maybe T.Text
+data FileTick = FileTick
+  { ftTickId  :: T.Text
+  , ftKind    :: T.Text
+  , ftRefs    :: [T.Text]
+  , ftFields  :: [(T.Text, T.Text)]
+  , ftMessage :: T.Text
+  , ftContent :: Maybe T.Text
+  , ftParent  :: Maybe T.Text
   } deriving (Show)
 
-instance ToJSON FileAtom where
-  toJSON fa = object
-    [ "tickId"  .= atomTickId  fa
-    , "content" .= atomContent fa
-    , "message" .= atomMessage fa
-    , "parent"  .= atomParent  fa
-    ]
+instance ToJSON FileTick where
+  toJSON ft = object $
+    [ "tickId"  .= ftTickId  ft
+    , "kind"    .= ftKind    ft
+    , "refs"    .= ftRefs    ft
+    , "message" .= ftMessage ft
+    , "parent"  .= ftParent  ft
+    ] <>
+    (if null (ftFields ft) then [] else ["fields" .= object (map (\(k,v) -> fromText k .= v) (ftFields ft))]) <>
+    maybe [] (\c -> ["content" .= c]) (ftContent ft)
 
 data FileEvent
-  = FileAtoms    { feAtoms :: [FileAtom] }
+  = FileTicks    { feTicks :: [FileTick] }
   | FileAbsent   { feId :: Maybe T.Text }
-  | AtomAppended { feAtom :: FileAtom }
-  -- Atom mutation responses:
-  | AtomReplaced { feId :: Maybe T.Text, feOldTickId :: T.Text, feAtom :: FileAtom }
-    -- ^ An atom was edited. Old tickId is replaced by a new one; atom carries the new data.
+  | TickAppended { feTick :: FileTick }
+  -- Atom mutation responses (still operate on atoms by tickId):
+  | AtomReplaced { feId :: Maybe T.Text, feOldTickId :: T.Text, feTick :: FileTick }
+    -- ^ An atom was edited. Old tickId is replaced by a new one; tick carries the new data.
   | AtomDeleted  { feId :: Maybe T.Text, feOldTickId :: T.Text, feMapping :: [(T.Text, T.Text)] }
     -- ^ An atom was deleted. feMapping contains old→new id changes for atoms after the deleted one.
   | AtomMoved    { feId :: Maybe T.Text, feMapping :: [(T.Text, T.Text)] }
@@ -79,17 +86,17 @@ data FileEvent
 
 instance ToJSON FileEvent where
   toJSON = \case
-    FileAtoms atoms ->
-      object [ "type" .= ("file.atoms" :: T.Text), "atoms" .= atoms ]
+    FileTicks ticks ->
+      object [ "type" .= ("file.ticks" :: T.Text), "ticks" .= ticks ]
     FileAbsent mid ->
       object $ withId mid [ "type" .= ("file.absent" :: T.Text) ]
-    AtomAppended atom ->
-      object [ "type" .= ("atom.appended" :: T.Text), "atom" .= atom ]
-    AtomReplaced mid oldId atom ->
+    TickAppended tick ->
+      object [ "type" .= ("tick.appended" :: T.Text), "tick" .= tick ]
+    AtomReplaced mid oldId tick ->
       object $ withId mid
         [ "type"      .= ("atom.replaced" :: T.Text)
         , "oldTickId" .= oldId
-        , "atom"      .= atom ]
+        , "tick"      .= tick ]
     AtomDeleted mid oldId mapping ->
       object $ withId mid
         [ "type"      .= ("atom.deleted" :: T.Text)

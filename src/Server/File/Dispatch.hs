@@ -19,13 +19,15 @@ import Polysemy (Sem, Members)
 import Polysemy.Fail (Fail)
 
 import Server.Env (ServerEnv)
-import Server.File.Protocol
+import Server.File.Protocol (FileCommand(..), FileEvent(..))
+import qualified Server.File.Protocol as Protocol
 import Server.Run (runAction, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Runtime (Main)
-import Storyteller.Storage (AtomEntry(..), StoryBranch, fileAtoms, getBranch)
+import Storyteller.Storage (StoryBranch, fileTicks, getBranch)
+import qualified Storyteller.Storage as Storage
 import Storyteller.Edit (deleteTick, editAtom)
 import Storyteller.Types (BranchName(..), TickId(..))
 
@@ -35,8 +37,8 @@ import Prelude hiding (readFile, writeFile)
 -- Snapshot + dispatch
 -- ---------------------------------------------------------------------------
 
-snapshot :: ServerEnv -> T.Text -> FilePath -> IO (Either String (Maybe [FileAtom]))
-snapshot env branch path = runAction env $ queryFileAtoms branch path
+snapshot :: ServerEnv -> T.Text -> FilePath -> IO (Either String (Maybe [Protocol.FileTick]))
+snapshot env branch path = runAction env $ queryFileTicks branch path
 
 dispatch :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> FileCommand -> IO ()
 dispatch env branch path conn cmd = do
@@ -46,14 +48,14 @@ dispatch env branch path conn cmd = do
       r <- runAction env (handleAppend branch path content)
       case r of
         Left err   -> emit (FileError (T.pack err))
-        Right atom -> emit (AtomAppended atom)
+        Right tick -> emit (TickAppended tick)
 
     Read _mid -> do
-      r <- runAction env (queryFileAtoms branch path)
+      r <- runAction env (queryFileTicks branch path)
       case r of
         Left err           -> emit (FileError (T.pack err))
         Right Nothing      -> emit (FileAbsent Nothing)
-        Right (Just atoms) -> emit (FileAtoms atoms)
+        Right (Just ticks) -> emit (FileTicks ticks)
 
     Delete _mid ->
       emit (FileError "file delete not yet implemented")
@@ -62,7 +64,7 @@ dispatch env branch path conn cmd = do
       r <- runAction env (handleEditAtom branch path tickIdTxt newContent)
       case r of
         Left err            -> emit (FileError (T.pack err))
-        Right (oldId, atom) -> emit (AtomReplaced mid oldId atom)
+        Right (oldId, tick) -> emit (AtomReplaced mid oldId tick)
 
     DeleteAtom mid tickIdTxt -> do
       r <- runAction env (handleDeleteAtom branch path tickIdTxt)
@@ -80,45 +82,48 @@ dispatch env branch path conn cmd = do
 -- Query helpers
 -- ---------------------------------------------------------------------------
 
--- | Fetch file atoms via the StoryBranch effect.
+-- | Fetch file ticks via the StoryBranch effect.
 --   Returns Nothing if the branch doesn't exist, Just [] if the file is absent.
-queryFileAtoms
+queryFileTicks
   :: SessionEffects r
-  => T.Text -> FilePath -> Sem r (Maybe [FileAtom])
-queryFileAtoms branch path =
+  => T.Text -> FilePath -> Sem r (Maybe [Protocol.FileTick])
+queryFileTicks branch path =
   getBranch (BranchName branch) >>= \case
     Nothing -> return Nothing
     Just _  -> withBranch @Main branch $
-      fmap (Just . map toFileAtom) (fileAtoms @Main path)
+      fmap (Just . map toProtocolTick) (fileTicks @Main path)
 
-toFileAtom :: AtomEntry -> FileAtom
-toFileAtom ae = FileAtom
-  { atomTickId  = aeTickId  ae
-  , atomContent = aeContent ae
-  , atomMessage = aeMessage ae
-  , atomParent  = aeParent  ae
+toProtocolTick :: Storage.FileTick -> Protocol.FileTick
+toProtocolTick ft = Protocol.FileTick
+  { Protocol.ftTickId  = Storage.ftTickId  ft
+  , Protocol.ftKind    = Storage.ftKind    ft
+  , Protocol.ftRefs    = Storage.ftRefs    ft
+  , Protocol.ftFields  = Storage.ftFields  ft
+  , Protocol.ftMessage = Storage.ftMessage ft
+  , Protocol.ftContent = Storage.ftContent ft
+  , Protocol.ftParent  = Storage.ftParent  ft
   }
 
 -- ---------------------------------------------------------------------------
 -- Handlers
 -- ---------------------------------------------------------------------------
 
-handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r FileAtom
+handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r Protocol.FileTick
 handleAppend branch path content =
   withBranchSplitter @Main branch $ do
     _tids <- appendAgent @Main path content
-    headAtom path
+    headTick path
 
 handleEditAtom
   :: SessionEffects r
   => T.Text -> FilePath -> T.Text -> T.Text
-  -> Sem r (T.Text, FileAtom)
+  -> Sem r (T.Text, Protocol.FileTick)
 handleEditAtom branch path tickIdTxt newContent =
   withBranch @Main branch $ do
     (_newTid, _mapping) <- editAtom @Main
       (TickId tickIdTxt) path (TE.encodeUtf8 newContent)
-    atom <- headAtom path
-    return (tickIdTxt, atom)
+    tick <- headTick path
+    return (tickIdTxt, tick)
 
 handleDeleteAtom
   :: SessionEffects r
@@ -140,13 +145,13 @@ handleMoveAtom _branch _path _tickIdTxt _mAfterTickId =
 -- Helpers
 -- ---------------------------------------------------------------------------
 
--- | Return the head (most recent) atom for @path@. Must be called inside
+-- | Return the head (most recent) tick for @path@. Must be called inside
 --   a 'withBranch @Main' / 'withBranchSplitter @Main' context.
-headAtom
+headTick
   :: Members '[StoryBranch Main, Fail] r
-  => FilePath -> Sem r FileAtom
-headAtom path = do
-  atoms <- fileAtoms @Main path
-  case reverse atoms of
-    []     -> fail "no atoms at HEAD for this file"
-    (ae:_) -> return (toFileAtom ae)
+  => FilePath -> Sem r Protocol.FileTick
+headTick path = do
+  tks <- fileTicks @Main path
+  case reverse tks of
+    []     -> fail "no ticks at HEAD for this file"
+    (ft:_) -> return (toProtocolTick ft)

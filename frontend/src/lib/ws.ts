@@ -55,20 +55,23 @@ export type FileCommand =
   | { type: "delete.atom"; id?: string; tickId: string }
   | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string };
 
-export interface FileAtom {
+export interface FileTick {
   tickId:  string;
-  content: string;
+  kind:    string;
+  refs:    string[];
+  fields:  Record<string, string>;
   message: string;
+  content: string | null;   // only present for atoms
   parent:  string | null;
 }
 
 export type IdMapping = { old: string; new: string };
 
 export type FileEvent =
-  | { type: "file.atoms";    atoms: FileAtom[] }
+  | { type: "file.ticks";    ticks: FileTick[] }
   | { type: "file.absent";   id?: string }
-  | { type: "atom.appended"; atom: FileAtom }
-  | { type: "atom.replaced"; id?: string; oldTickId: string; atom: FileAtom }
+  | { type: "tick.appended"; tick: FileTick }
+  | { type: "atom.replaced"; id?: string; oldTickId: string; tick: FileTick }
   | { type: "atom.deleted";  id?: string; oldTickId: string; mapping: IdMapping[] }
   | { type: "atom.moved";    id?: string; mapping: IdMapping[] }
   | { type: "file.updated";  id?: string; content: string }

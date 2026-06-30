@@ -22,10 +22,10 @@ module Storyteller.Storage
   , withFS
   , atWithFS
   , follow
-  , fileAtoms
+  , fileTicks
 
-    -- * File atom projection
-  , AtomEntry(..)
+    -- * File tick projection
+  , FileTick(..)
 
     -- * Storage-level effect
   , StoryStorage(..)
@@ -43,13 +43,17 @@ import Polysemy.Fail
 import Data.Text (Text)
 import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickData(..), TickType(..), draft)
 
--- | A single atom entry from the file-atom projection of a branch.
---   Oldest-first when returned by 'fileAtoms'.
-data AtomEntry = AtomEntry
-  { aeTickId  :: Text
-  , aeContent :: Text
-  , aeMessage :: Text
-  , aeParent  :: Maybe Text
+-- | A single tick entry from the file-tick projection of a branch.
+--   Oldest-first when returned by 'fileTicks'.
+--   Atoms have 'ftContent = Just blobSuffix'; non-atom ticks have 'Nothing'.
+data FileTick = FileTick
+  { ftTickId  :: Text
+  , ftKind    :: Text           -- "atom", "note", "prompt", etc.
+  , ftRefs    :: [Text]
+  , ftFields  :: [(Text, Text)]
+  , ftMessage :: Text
+  , ftContent :: Maybe Text     -- Just for atoms, Nothing otherwise
+  , ftParent  :: Maybe Text
   } deriving (Show, Eq)
 
 -- | Operations on a single named branch (a chain of ticks).
@@ -91,10 +95,11 @@ data StoryBranch (branch :: k) m a where
   --   'at' to get historical filesystem access: @at tid (withFS action)@.
   WithFS    :: m a -> StoryBranch branch m a
 
-  -- | Walk the branch history from HEAD and extract all atoms for @path@.
-  --   An atom is a commit that changed the blob at that path.
+  -- | Walk the branch history from HEAD and extract all ticks relevant to @path@.
+  --   A tick is included if it is an atom (changed the blob at that path) or
+  --   if any of its refs point to an atom for that path.
   --   Returns oldest-first; the list is empty if the file has never existed.
-  FileAtoms :: FilePath -> StoryBranch branch m [AtomEntry]
+  FileTicks :: FilePath -> StoryBranch branch m [FileTick]
 
 -- | Store the current working tree as a new tick with a plain message.
 --   Fails if any file is not a pure append of its previous content.
@@ -143,9 +148,9 @@ atWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
          => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 atWithFS tid action = at @branch tid (withFS @branch action)
 
--- | Extract the atom chain for @path@ from the branch history (oldest-first).
-fileAtoms :: forall branch r. Member (StoryBranch branch) r => FilePath -> Sem r [AtomEntry]
-fileAtoms path = send @(StoryBranch branch) (FileAtoms path)
+-- | Extract the file-relevant tick list for @path@ from the branch history (oldest-first).
+fileTicks :: forall branch r. Member (StoryBranch branch) r => FilePath -> Sem r [FileTick]
+fileTicks path = send @(StoryBranch branch) (FileTicks path)
 
 -- | Operations across all branches.
 data StoryStorage m a where

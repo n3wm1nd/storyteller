@@ -3,7 +3,7 @@
 
 -- | /branch/{name}/{path...} connection lifecycle.
 --
--- On connect: send file.atoms (oldest-first) if the file exists, file.absent if not.
+-- On connect: send file.ticks (oldest-first) if the file exists, file.absent if not.
 -- Loop: receive FileCommand → dispatch → send FileEvent(s).
 module Server.File.Connection
   ( runFile
@@ -25,7 +25,7 @@ runFile env branch path conn = do
   case snap of
     Left err          -> WS.sendTextData conn (encode (FileError (T.pack err)))
     Right Nothing     -> WS.sendTextData conn (encode (FileAbsent Nothing))
-    Right (Just atoms) -> WS.sendTextData conn (encode (FileAtoms atoms))
+    Right (Just ticks) -> WS.sendTextData conn (encode (FileTicks ticks))
   loop
   where
     loop = do

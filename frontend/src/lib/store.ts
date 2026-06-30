@@ -4,7 +4,7 @@ import { create } from "zustand";
 import {
   sessionConn, branchConn, fileConn,
   type StoryWS,
-  type FileAtom,
+  type FileTick,
   type BranchTick,
   type IdMapping,
   type SessionCommand, type SessionEvent,
@@ -14,7 +14,7 @@ import {
 
 export type { BranchTick };
 
-export type { FileAtom };
+export type { FileTick };
 
 export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 
@@ -23,10 +23,10 @@ export interface ConnInfo {
   status: ConnStatus;
 }
 
-// A file connection: the WS handle plus the atom chain.
+// A file connection: the WS handle plus the tick list.
 export interface FileConn {
   path: string;
-  atoms: FileAtom[];   // empty + absent=true means file.absent
+  ticks: FileTick[];   // empty + absent=true means file.absent
   absent: boolean;
   conn: StoryWS<FileCommand, FileEvent>;
 }
@@ -42,7 +42,6 @@ interface StoryState {
   activeBranch: string | null;
   files: string[];   // file paths only — content lives in openFiles
   ticks: BranchTick[];
-  showNotes: boolean;
 
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
@@ -60,7 +59,6 @@ interface StoryState {
   addNote: (refTickId: string, text: string) => void;
   moveTick: (tickId: string, afterTickId?: string) => void;
   deleteTickEntry: (tickId: string) => void;
-  toggleNotes: () => void;
   chatPrompt: (path: string, text: string) => void;
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
@@ -88,7 +86,6 @@ export const useStory = create<StoryState>((set, get) => ({
   activeBranch: null,
   files: [],
   ticks: [],
-  showNotes: true,
   openFiles: {},
   _session: null,
   _branch: null,
@@ -211,34 +208,34 @@ export const useStory = create<StoryState>((set, get) => ({
     });
 
     fc.subscribe((evt) => {
-      if (evt.type === "file.atoms") {
+      if (evt.type === "file.ticks") {
         set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, atoms: evt.atoms, absent: false, conn: fc } },
+          openFiles: { ...s.openFiles, [path]: { path, ticks: evt.ticks, absent: false, conn: fc } },
           conns: setConnStatus(s.conns, label, "connected"),
         }));
       } else if (evt.type === "file.absent") {
         set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, atoms: [], absent: true, conn: fc } },
+          openFiles: { ...s.openFiles, [path]: { path, ticks: [], absent: true, conn: fc } },
           conns: setConnStatus(s.conns, label, "connected"),
         }));
-      } else if (evt.type === "atom.appended") {
+      } else if (evt.type === "tick.appended") {
         set((s) => {
           const prev = s.openFiles[path];
-          const atoms = prev ? [...prev.atoms, evt.atom] : [evt.atom];
-          return { openFiles: { ...s.openFiles, [path]: { path, atoms, absent: false, conn: fc } } };
+          const ticks = prev ? [...prev.ticks, evt.tick] : [evt.tick];
+          return { openFiles: { ...s.openFiles, [path]: { path, ticks, absent: false, conn: fc } } };
         });
       } else if (evt.type === "atom.replaced") {
-        // tickId changes on edit, so patch by oldTickId then reload to get consistent ids.
+        // tickId changes on edit, so re-fetch to get consistent ids.
         fc.send({ type: "read" });
       } else if (evt.type === "atom.deleted") {
         set((s) => {
           const prev = s.openFiles[path];
           if (!prev) return {};
           const remap = new Map(evt.mapping.map((m: IdMapping) => [m.old, m.new]));
-          const atoms = prev.atoms
-            .filter((a) => a.tickId !== evt.oldTickId)
-            .map((a) => remap.has(a.tickId) ? { ...a, tickId: remap.get(a.tickId)! } : a);
-          return { openFiles: { ...s.openFiles, [path]: { ...prev, atoms } } };
+          const ticks = prev.ticks
+            .filter((t) => t.tickId !== evt.oldTickId)
+            .map((t) => remap.has(t.tickId) ? { ...t, tickId: remap.get(t.tickId)! } : t);
+          return { openFiles: { ...s.openFiles, [path]: { ...prev, ticks } } };
         });
       } else if (evt.type === "atom.moved") {
         // Full re-fetch is safest — the chain order changed and all ids shifted.
@@ -249,7 +246,7 @@ export const useStory = create<StoryState>((set, get) => ({
     });
 
     await fc.connect();
-    set((s) => ({ openFiles: { ...s.openFiles, [path]: { path, atoms: [], absent: false, conn: fc } } }));
+    set((s) => ({ openFiles: { ...s.openFiles, [path]: { path, ticks: [], absent: false, conn: fc } } }));
   },
 
   closeFile: (path) => {
@@ -290,10 +287,6 @@ export const useStory = create<StoryState>((set, get) => ({
 
   deleteTickEntry: (tickId) => {
     get()._branch?.send({ type: "delete.tick", tickId });
-  },
-
-  toggleNotes: () => {
-    set((s) => ({ showNotes: !s.showNotes }));
   },
 
   chatPrompt: (path, text) => {

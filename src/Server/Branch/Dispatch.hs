@@ -68,9 +68,9 @@ dispatch env branch conn cmd = do
       ts <- handleReadTicks branch
       return [BranchTicks ts]
 
-    AddNote _mid refTickId noteText_ -> do
-      tick <- handleAddNote branch refTickId noteText_
-      return [BranchTicks [tick]]
+    AddNote mid refTickId noteText_ -> do
+      _tick <- handleAddNote branch refTickId noteText_
+      return [TicksInvalidated mid []]
 
     MoveTick mid tickId_ mAfterTickId -> do
       mapping <- handleMoveTick branch tickId_ mAfterTickId

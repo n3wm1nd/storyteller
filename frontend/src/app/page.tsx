@@ -7,7 +7,7 @@ import {
   Folder, FolderOpen, FileText, GitBranch, ChevronRight,
   Sparkles, Plus,
 } from "lucide-react";
-import { useStory, type ConnInfo, type FileAtom, type BranchTick } from "@/lib/store";
+import { useStory, type ConnInfo, type FileTick, type BranchTick } from "@/lib/store";
 import { MessageSquare, StickyNote, Trash2, MoveUp, MoveDown } from "lucide-react";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
@@ -300,13 +300,14 @@ function BranchItem({ name, active, onSelect, onDelete }: {
 
 function Toolbar({
   leftOpen, onToggleLeft,
-  selectedFile, atomCount, onCloseFile, onNewFile,
+  selectedFile, atomCount, annotationCount, onCloseFile, onNewFile,
   centerTab, onCenterTab,
 }: {
   leftOpen: boolean;
   onToggleLeft: () => void;
   selectedFile: string | null;
   atomCount: number;
+  annotationCount: number;
   onCloseFile: () => void;
   onNewFile: () => void;
   centerTab: "file" | "ticks";
@@ -346,7 +347,7 @@ function Toolbar({
           }}>{selectedFile.split("/").pop()}</span>
           {atomCount > 0 && (
             <span style={{ fontSize: 9, color: "var(--text-dim)", flexShrink: 0, fontWeight: 400 }}>
-              {atomCount}
+              {atomCount} atom{atomCount !== 1 ? "s" : ""}
             </span>
           )}
           <span onClick={(e) => { e.stopPropagation(); onCloseFile(); }} style={{
@@ -384,7 +385,7 @@ const iconBtnStyle: React.CSSProperties = {
   color: "var(--text-dim)", borderRadius: 5, flexShrink: 0,
 };
 
-// ── Atom chain ────────────────────────────────────────────────────────────────
+// ── File tick list ────────────────────────────────────────────────────────────
 
 const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   p: ({ children }) => (
@@ -412,30 +413,97 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   ),
 };
 
-function AtomChain({ atoms, onEdit, onDelete }: {
-  atoms: FileAtom[];
+function FileTickList({ ticks, showAnnotations, onEdit, onDelete }: {
+  ticks: FileTick[];
+  showAnnotations: boolean;
   onEdit: (tickId: string, content: string) => void;
   onDelete: (tickId: string) => void;
 }) {
+  const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
+
+  // For each non-atom tick, find the atom it should appear after:
+  // - if it has refs that are atoms, use the last such ref in chain order
+  // - otherwise use the atom that immediately precedes it in the tick list
+  const annotationsFor = new Map<string, FileTick[]>();
+  let lastAtomId: string | null = null;
+  for (const tick of ticks) {
+    if (tick.kind === "atom") {
+      lastAtomId = tick.tickId;
+    } else {
+      const refAtom = [...tick.refs].reverse().find((r) => atomIds.has(r));
+      const anchor = refAtom ?? lastAtomId;
+      if (anchor) {
+        const arr = annotationsFor.get(anchor) ?? [];
+        arr.push(tick);
+        annotationsFor.set(anchor, arr);
+      }
+    }
+  }
+
+  const atoms = ticks.filter((t) => t.kind === "atom");
+
   return (
     <div style={{ flex: 1, overflow: "auto" }}>
       <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
         {atoms.map((atom, i) => (
-          <AtomBlock
-            key={atom.tickId}
-            atom={atom}
-            isLast={i === atoms.length - 1}
-            onEdit={(content) => onEdit(atom.tickId, content)}
-            onDelete={() => onDelete(atom.tickId)}
-          />
+          <div key={atom.tickId}>
+            <AtomBlock
+              atom={atom}
+              isLast={i === atoms.length - 1 && (!showAnnotations || (annotationsFor.get(atom.tickId) ?? []).length === 0)}
+              onEdit={(content) => onEdit(atom.tickId, content)}
+              onDelete={() => onDelete(atom.tickId)}
+            />
+            {showAnnotations && (annotationsFor.get(atom.tickId) ?? []).map((ann) => (
+              <AnnotationBlock key={ann.tickId} tick={ann} />
+            ))}
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
+function AnnotationBlock({ tick }: { tick: FileTick }) {
+  if (tick.kind === "note") {
+    return (
+      <div style={{
+        display: "flex", alignItems: "flex-start", gap: 7,
+        margin: "4px 0 10px 12px",
+        padding: "5px 10px",
+        background: "oklch(0.22 0.01 240 / 0.6)",
+        border: "1px solid oklch(0.35 0.04 240 / 0.4)",
+        borderRadius: 5,
+      }}>
+        <StickyNote style={{ width: 12, height: 12, color: "oklch(0.55 0.15 240)", flexShrink: 0, marginTop: 1 }} />
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", lineHeight: 1.5 }}>
+          {tick.message}
+        </span>
+      </div>
+    );
+  }
+  if (tick.kind === "prompt") {
+    return (
+      <div style={{
+        display: "flex", alignItems: "flex-start", gap: 7,
+        margin: "4px 0 10px 12px",
+        padding: "5px 10px",
+        background: "oklch(0.78 0.10 65 / 0.08)",
+        border: "1px solid oklch(0.78 0.10 65 / 0.25)",
+        borderRadius: 5,
+      }}>
+        <Sparkles style={{ width: 12, height: 12, color: "var(--amber)", flexShrink: 0, marginTop: 1 }} />
+        <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic", lineHeight: 1.5, opacity: 0.85 }}>
+          {tick.message}
+        </span>
+      </div>
+    );
+  }
+  // Unknown annotation kinds: not rendered
+  return null;
+}
+
 function AtomBlock({ atom, isLast, onEdit, onDelete }: {
-  atom: FileAtom;
+  atom: FileTick;
   isLast: boolean;
   onEdit: (content: string) => void;
   onDelete: () => void;
@@ -445,15 +513,17 @@ function AtomBlock({ atom, isLast, onEdit, onDelete }: {
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const content = atom.content ?? "";
+
   function startEdit() {
-    setDraft(atom.content);
+    setDraft(content);
     setEditing(true);
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
   function commitEdit() {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== atom.content.trim()) onEdit(trimmed);
+    if (trimmed && trimmed !== content.trim()) onEdit(trimmed);
     setEditing(false);
   }
 
@@ -506,7 +576,7 @@ function AtomBlock({ atom, isLast, onEdit, onDelete }: {
         </div>
       ) : (
         <div onDoubleClick={startEdit}>
-          <ReactMarkdown components={mdComponents}>{atom.content}</ReactMarkdown>
+          <ReactMarkdown components={mdComponents}>{content}</ReactMarkdown>
         </div>
       )}
 
@@ -629,13 +699,11 @@ function InputBar({ enabled, onAppend, onWrite }: {
 // ── Ticks view ────────────────────────────────────────────────────────────────
 
 function TicksView({
-  activeBranch, ticks, showNotes,
-  onToggleNotes, onAddNote, onMoveTick, onDeleteTick,
+  activeBranch, ticks,
+  onAddNote, onMoveTick, onDeleteTick,
 }: {
   activeBranch: string | null;
   ticks: BranchTick[];
-  showNotes: boolean;
-  onToggleNotes: () => void;
   onAddNote: (refTickId: string, text: string) => void;
   onMoveTick: (tickId: string, afterTickId?: string) => void;
   onDeleteTick: (tickId: string) => void;
@@ -646,8 +714,6 @@ function TicksView({
     </div>
   );
 
-  const visible = showNotes ? ticks : ticks.filter((t) => t.kind === "atom");
-
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Toolbar */}
@@ -655,36 +721,22 @@ function TicksView({
         flexShrink: 0, padding: "5px 16px", borderBottom: "1px solid var(--border-subtle)",
         display: "flex", alignItems: "center", gap: 8,
       }}>
-        <button
-          onClick={onToggleNotes}
-          title={showNotes ? "Hide notes" : "Show notes"}
-          style={{
-            display: "flex", alignItems: "center", gap: 4, fontSize: 10,
-            padding: "2px 7px", borderRadius: 4, cursor: "pointer",
-            background: showNotes ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
-            border: showNotes ? "1px solid oklch(0.78 0.10 65 / 0.3)" : "1px solid var(--border-subtle)",
-            color: showNotes ? "var(--amber)" : "var(--text-dim)",
-          }}
-        >
-          <StickyNote style={{ width: 10, height: 10 }} />
-          Notes
-        </button>
         <span style={{ fontSize: 10, color: "var(--text-ghost)", marginLeft: "auto" }}>
-          {visible.length} tick{visible.length !== 1 ? "s" : ""}
+          {ticks.length} tick{ticks.length !== 1 ? "s" : ""}
         </span>
       </div>
 
-      {visible.length === 0 ? (
+      {ticks.length === 0 ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
           No ticks yet
         </div>
       ) : (
         <div style={{ flex: 1, overflow: "auto" }}>
           <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 32px 48px" }}>
-            {visible.map((tick, i) => {
+            {ticks.map((tick, i) => {
               const isFirst = i === 0;
-              const isLast  = i === visible.length - 1;
-              const prevTick = i > 0 ? visible[i - 1] : undefined;
+              const isLast  = i === ticks.length - 1;
+              const prevTick = i > 0 ? ticks[i - 1] : undefined;
               return (
                 <TickRow
                   key={tick.tickId}
@@ -695,7 +747,7 @@ function TicksView({
                   prevTick={prevTick}
                   onAddNote={onAddNote}
                   onMoveUp={() => onMoveTick(tick.tickId, prevTick?.tickId)}
-                  onMoveDown={() => !isLast && onMoveTick(tick.tickId, i + 2 < visible.length ? visible[i + 2].tickId : undefined)}
+                  onMoveDown={() => !isLast && onMoveTick(tick.tickId, i + 2 < ticks.length ? ticks[i + 2].tickId : undefined)}
                   onDelete={() => onDeleteTick(tick.tickId)}
                 />
               );
@@ -880,11 +932,13 @@ function MoveButton({ disabled, onClick, title, danger, children }: {
 
 export default function Home() {
   const {
-    conns, error, branches, activeBranch, files, ticks, openFiles, showNotes,
+    conns, error, branches, activeBranch, files, ticks, openFiles,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
-    appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry, toggleNotes,
+    appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
     chatPrompt,
   } = useStory();
+
+  const [showAnnotations, setShowAnnotations] = useState(true);
 
   const [leftOpen, setLeftOpen] = useState(true);
   const [leftWidth, setLeftWidth] = useState(260);
@@ -901,8 +955,10 @@ export default function Home() {
   useEffect(() => { connect(); }, []);
 
   const fileConn = selectedFile ? openFiles[selectedFile] : null;
-  const atoms = fileConn?.atoms ?? [];
+  const fileTicks = fileConn?.ticks ?? [];
   const isAbsent = fileConn?.absent ?? false;
+  const atomCount       = fileTicks.filter((t) => t.kind === "atom").length;
+  const annotationCount = fileTicks.filter((t) => t.kind !== "atom").length;
 
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
@@ -984,7 +1040,7 @@ export default function Home() {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
           <Toolbar
             leftOpen={leftOpen} onToggleLeft={() => setLeftOpen((v) => !v)}
-            selectedFile={selectedFile} atomCount={atoms.length}
+            selectedFile={selectedFile} atomCount={atomCount} annotationCount={annotationCount}
             onCloseFile={handleCloseFile}
             onNewFile={() => setShowNewFile((v) => !v)}
             centerTab={centerTab} onCenterTab={setCenterTab}
@@ -1018,6 +1074,30 @@ export default function Home() {
               </div>
             )}
 
+            {/* File view toolbar: annotations toggle */}
+            {selectedFile && !isAbsent && fileTicks.length > 0 && (
+              <div style={{
+                flexShrink: 0, padding: "4px 14px",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <button
+                  onClick={() => setShowAnnotations((v) => !v)}
+                  title={showAnnotations ? "Hide annotations" : "Show annotations"}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 4, fontSize: 10,
+                    padding: "2px 7px", borderRadius: 4, cursor: "pointer",
+                    background: showAnnotations ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+                    border: showAnnotations ? "1px solid oklch(0.78 0.10 65 / 0.3)" : "1px solid var(--border-subtle)",
+                    color: showAnnotations ? "var(--amber)" : "var(--text-dim)",
+                  }}
+                >
+                  <StickyNote style={{ width: 10, height: 10 }} />
+                  Annotations{annotationCount > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>{annotationCount}</span>}
+                </button>
+              </div>
+            )}
+
             {!activeBranch ? (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 {sessionStatus === "connecting" ? "Connecting…" : sessionStatus === "connected" ? "Select a branch" : "Disconnected"}
@@ -1030,13 +1110,14 @@ export default function Home() {
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 File does not exist yet — append to create it
               </div>
-            ) : atoms.length === 0 ? (
+            ) : fileTicks.length === 0 && !isAbsent ? (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 Loading…
               </div>
             ) : (
-              <AtomChain
-                atoms={atoms}
+              <FileTickList
+                ticks={fileTicks}
+                showAnnotations={showAnnotations}
                 onEdit={(tickId, content) => selectedFile && editAtom(selectedFile, tickId, content)}
                 onDelete={(tickId) => selectedFile && deleteAtom(selectedFile, tickId)}
               />
@@ -1053,8 +1134,6 @@ export default function Home() {
             <TicksView
               activeBranch={activeBranch}
               ticks={ticks}
-              showNotes={showNotes}
-              onToggleNotes={toggleNotes}
               onAddNote={addNote}
               onMoveTick={moveTick}
               onDeleteTick={deleteTickEntry}

@@ -226,8 +226,8 @@ decodeTickData raw =
 splitHeaders :: [Text] -> ([Text], [Text])
 splitHeaders ls =
   case break T.null ls of
-    (headers, []        ) -> ([], ls)      -- no blank line → all body
-    (headers, _ : body  ) -> (headers, body)
+    (_, []        ) -> ([], ls)           -- no blank line → all body
+    (headers, _ : body) -> (headers, body)
 
 -- ---------------------------------------------------------------------------
 -- Conversion between git and tick vocabulary
@@ -384,12 +384,12 @@ runStoryBranchGit branch action = do
       raise $ put outerWt
       return fa
 
-    S.FileAtoms path -> do
+    S.FileTicks path -> do
       mHead <- raise $ resolveRef (storyRef branch)
-      atoms <- case mHead of
+      ticks <- case mHead of
         Nothing       -> return []
-        Just headHash -> raise $ walkFileAtoms path headHash []
-      pureT atoms
+        Just headHash -> raise $ walkFileTicks path headHash
+      pureT ticks
     ) action
 
 -- ---------------------------------------------------------------------------
@@ -682,42 +682,79 @@ runAtH branch tid current action
                   newId = TickId (unObjectHash newHash)
               return $ Right (fa, innerMapping <> [(oldId, newId)])
 
--- | Walk a branch from @headHash@ backwards, collecting 'AtomEntry' values
---   for commits that changed the blob at @path@.  Returns oldest-first.
-walkFileAtoms
+-- | Walk the branch from HEAD and collect all ticks belonging to @path@.
+--
+-- First builds the atom set by walking the chain with 'walkFrom', diffing blobs
+-- at each step. Then calls 'walkFrom' again to expand the member set: any tick
+-- whose extra-parent refs intersect the current member set is included, repeated
+-- until stable (two passes suffices for current tick types).
+-- Returns oldest-first.
+walkFileTicks
   :: Members '[Git, Fail] r
   => FilePath
   -> ObjectHash
-  -> [AtomEntry]
-  -> Sem r [AtomEntry]
-walkFileAtoms path hash acc = do
-  cd   <- readCommit hash
-  mNew <- blobAt (commitTree cd)
-  mOld <- case commitParents cd of
-    []      -> return Nothing
-    (p : _) -> readCommit p >>= blobAt . commitTree
-  let acc' = maybe acc (: acc) (buildEntry hash cd mNew mOld)
-  case commitParents cd of
-    []      -> return acc'
-    (p : _) -> walkFileAtoms path p acc'
+  -> Sem r [FileTick]
+walkFileTicks path headHash = do
+  raw      <- collectChain headHash []  -- oldest-first (prepend walks root to front)
+  allTicks <- diffChain Nothing raw    -- oldest-first, with blob suffix
+  let fileHint  = T.pack path
+      atomIds   = [ ftTickId ft | ft <- allTicks, ftContent ft /= Nothing ]
+      memberIds = expandRefs atomIds allTicks
+      -- Also include ticks with a matching file field (e.g. prompts that don't ref atoms)
+      fileHinted = [ ftTickId ft | ft <- allTicks
+                                 , ftContent ft == Nothing
+                                 , lookup "file" (ftFields ft) == Just fileHint ]
+  return [ ft | ft <- allTicks, ftTickId ft `elem` memberIds || ftTickId ft `elem` fileHinted ]
   where
-    blobAt treeHash = do
-      mHash <- lookupPath treeHash path
-      case mHash of
-        Nothing -> return Nothing
-        Just h  -> Just <$> readBlob h
+    collectChain :: Members '[Git, Fail] r => ObjectHash -> [(ObjectHash, CommitData)] -> Sem r [(ObjectHash, CommitData)]
+    collectChain hash acc = do
+      cd <- readCommit hash
+      case commitParents cd of
+        []      -> return ((hash, cd) : acc)
+        (p : _) -> collectChain p ((hash, cd) : acc)
 
-    buildEntry hash cd mNew mOld = do
-      new <- mNew
-      let old = maybe BS.empty id mOld
-      if new == old then Nothing else Just AtomEntry
-        { aeTickId  = unObjectHash hash
-        , aeContent = TE.decodeUtf8With TEE.lenientDecode (BS.drop (BS.length old) new)
-        , aeMessage = commitMessage cd
-        , aeParent  = case commitParents cd of
-            (p : _) -> Just (unObjectHash p)
-            []      -> Nothing
+    diffChain :: Members '[Git, Fail] r => Maybe BS.ByteString -> [(ObjectHash, CommitData)] -> Sem r [FileTick]
+    diffChain _ [] = return []
+    diffChain prev ((hash, cd) : rest) = do
+      mBH     <- lookupPath (commitTree cd) path
+      curBlob <- case mBH of { Nothing -> return Nothing; Just h -> Just <$> readBlob h }
+      let mSuffix = curBlob >>= \cur ->
+            let old = maybe BS.empty id prev
+            in if cur == old then Nothing
+               else Just (TE.decodeUtf8With TEE.lenientDecode (BS.drop (BS.length old) cur))
+      tl <- diffChain curBlob rest
+      return (toFileTick hash cd mSuffix : tl)
+
+    expandRefs :: [Text] -> [FileTick] -> [Text]
+    expandRefs members ticks =
+      let step ms = ms ++ [ ftTickId ft
+                           | ft <- ticks
+                           , ftTickId ft `notElem` ms
+                           , any (`elem` ms) (ftRefs ft) ]
+      in step (step members)
+
+    toFileTick :: ObjectHash -> CommitData -> Maybe Text -> FileTick
+    toFileTick hash cd mSuffix =
+      let tick = commitToTick hash cd
+          td   = tickData tick
+          kind = case tickTypeOf tick of
+                   Just t  -> t
+                   Nothing -> if mSuffix /= Nothing then "atom" else "unknown"
+          msg  = stripTypeTag kind (tickMessage td)
+      in FileTick
+        { ftTickId  = unObjectHash hash
+        , ftKind    = kind
+        , ftRefs    = map unObjectHash (drop 1 (commitParents cd))
+        , ftFields  = tickFields td
+        , ftMessage = msg
+        , ftContent = mSuffix
+        , ftParent  = case commitParents cd of { [] -> Nothing; (p:_) -> Just (unObjectHash p) }
         }
+
+    stripTypeTag :: Text -> Text -> Text
+    stripTypeTag kind msg =
+      let prefix = "type:" <> kind <> "\n"
+      in if prefix `T.isPrefixOf` msg then T.drop (T.length prefix) msg else msg
 
 walkFrom
   :: Members '[Git, Fail] r
