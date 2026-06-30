@@ -7,14 +7,17 @@
 
 -- | Dispatch for /branch/{name} connections.
 --
--- Handles branch-level operations: file tree snapshot on connect, track, chargen.
+-- Handles branch-level operations: file tree snapshot on connect, track, chargen,
+-- note ticks, and tick move/delete.
 -- Per-file operations (append, read, delete) live in Server.File.Dispatch.
 module Server.Branch.Dispatch
   ( dispatch
   , snapshot
   , tickSnapshot
+  , notify
   ) where
 
+import Control.Concurrent.STM (atomically, writeTChan)
 import Control.Monad (void)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -28,22 +31,29 @@ import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 
 import Server.Branch.Protocol
-import Server.Env (ServerEnv)
+import Server.Env (ServerEnv(..))
+import Server.Notification (BranchNotification(..))
 import Server.Run (runAction, SessionEffects)
 import Server.Util (withBranch)
 
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Agent.Tracker (trackBranch)
+import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), WorkingTree, FSNode(..), runBranchAndFS, loadWorkingTree)
-import Storyteller.Storage (StoryBranch, createBranch, getBranch, follow)
-import Storyteller.Types (BranchName(..), TickId(..), Tick(..))
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, storeDraft)
+import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickDraft(..), tickKind, noteText, noteDraft, TickKind(..))
 
 import Runix.Git (Git, ObjectHash(..))
+
 
 data Main
 data Source
 data Tracker
 data CharBranch
+
+-- ---------------------------------------------------------------------------
+-- Dispatch
+-- ---------------------------------------------------------------------------
 
 dispatch :: ServerEnv -> T.Text -> WS.Connection -> BranchCommand -> IO ()
 dispatch env branch conn cmd = do
@@ -61,6 +71,36 @@ dispatch env branch conn cmd = do
       case r of
         Left err -> emit (BranchError (T.pack err))
         Right _  -> emit (FileAdded mid path)
+
+    ReadTicks _mid -> do
+      ticks <- tickSnapshot env branch
+      case ticks of
+        Left err -> emit (BranchError (T.pack err))
+        Right ts -> emit (BranchTicks ts)
+
+    AddNote mid refTickId noteText_ -> do
+      r <- runAction env (handleAddNote branch refTickId noteText_)
+      case r of
+        Left err   -> emit (BranchError (T.pack err))
+        Right tick -> do
+          notify env branch []
+          emit (BranchTicks [tick])
+
+    MoveTick mid tickId_ mAfterTickId -> do
+      r <- runAction env (handleMoveTick branch tickId_ mAfterTickId)
+      case r of
+        Left err      -> emit (BranchError (T.pack err))
+        Right mapping -> do
+          notify env branch mapping
+          emit (TicksInvalidated mid mapping)
+
+    DeleteTick mid tickId_ -> do
+      r <- runAction env (handleDeleteTick branch tickId_)
+      case r of
+        Left err      -> emit (BranchError (T.pack err))
+        Right mapping -> do
+          notify env branch mapping
+          emit (TicksInvalidated mid mapping)
 
 -- ---------------------------------------------------------------------------
 -- Handlers
@@ -92,6 +132,55 @@ handleCharGen branch path scenario seed = do
   runBranchAndFS @CharBranch name $
     void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
 
+-- | Add an annotation note tick referencing @refTickId@ on branch @branch@.
+--   The note tick is appended at head; the invariant (note comes after its ref)
+--   is satisfied because the ref must already exist in history.
+handleAddNote
+  :: SessionEffects r
+  => T.Text -> T.Text -> T.Text
+  -> Sem r BranchTick
+handleAddNote branch refTickIdTxt text =
+  withBranch @Main branch $ do
+    let refId = TickId refTickIdTxt
+    -- Verify the ref exists in this branch's history.
+    ticks <- follow @Main [] $ \acc t -> (t : acc, tickParent t)
+    case filter (\t -> tickId t == refId) ticks of
+      [] -> fail $ "ref tick not found in branch: " <> T.unpack refTickIdTxt
+      _  -> do
+        let headId = case ticks of { (h:_) -> Just (unTickId (tickId h)); [] -> Nothing }
+        newId <- storeDraft @Main (noteDraft refId text)
+        return $ BranchTickNote
+          { btTickId = unTickId newId
+          , btParent = headId
+          , btRef    = refTickIdTxt
+          , btText   = text
+          }
+
+-- | Move a tick to a new position in the chain.
+--   Delegates to 'Storyteller.Edit.moveTick' which enforces ordering invariants
+--   and performs the move as a single nested At.
+handleMoveTick
+  :: SessionEffects r
+  => T.Text -> T.Text -> Maybe T.Text
+  -> Sem r [(T.Text, T.Text)]
+handleMoveTick branch tickIdTxt mAfterTickIdTxt =
+  withBranch @Main branch $ do
+    let tid    = TickId tickIdTxt
+        mAfter = TickId <$> mAfterTickIdTxt
+    mapping <- moveTick @Main tid mAfter
+    return (toTextPairs mapping)
+
+-- | Delete a tick from the chain. Any note ticks referencing it are left with
+--   a dangling ref. Returns the old→new id mapping for the rebase.
+handleDeleteTick
+  :: SessionEffects r
+  => T.Text -> T.Text
+  -> Sem r [(T.Text, T.Text)]
+handleDeleteTick branch tickIdTxt =
+  withBranch @Main branch $ do
+    mapping <- deleteTick @Main (TickId tickIdTxt)
+    return (toTextPairs mapping)
+
 -- ---------------------------------------------------------------------------
 -- Snapshots — sent on connect
 -- ---------------------------------------------------------------------------
@@ -111,18 +200,39 @@ tickSnapshot env branch = runAction env $ do
     Nothing -> return []
     Just _  -> withBranch @Main branch $ do
       ticks <- follow @Main [] $ \acc tick -> (tick : acc, tickParent tick)
-      return $ map toBranchTick (reverse ticks)
+      -- Exclude the root tick (tickParent = Nothing) — it's an internal
+      -- implementation detail, not a content tick visible to the client.
+      let contentTicks = filter ((/= Nothing) . tickParent) ticks
+      return $ map toBranchTick (reverse contentTicks)
   where
-    toBranchTick tick = BranchTick
-      { btTickId  = unTickId (tickId tick)
-      , btParent  = unTickId <$> tickParent tick
-      , btMessage = tickMessage tick
-      , btRefs    = map unTickId (tickRefs tick)
-      }
+    toBranchTick tick =
+      let tid = unTickId (tickId tick)
+          par = unTickId <$> tickParent tick
+          msg = tickMessage tick
+          rs  = map unTickId (tickRefs tick)
+      in case tickKind msg of
+           NoteTick -> BranchTickNote tid par (head rs) (noteText msg)
+           AtomTick -> BranchTickAtom tid par rs msg
+
+-- ---------------------------------------------------------------------------
+-- Pub/sub broadcast
+-- ---------------------------------------------------------------------------
+
+-- | Broadcast a branch-invalidated notification to all subscribed connections.
+--   Called after any operation that mutates the tick chain.
+notify :: ServerEnv -> T.Text -> [(T.Text, T.Text)] -> IO ()
+notify env branch mapping =
+  atomically $ writeTChan (envNotifyChan env) BranchNotification
+    { bnBranch  = branch
+    , bnMapping = mapping
+    }
 
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
+
+toTextPairs :: [(TickId, TickId)] -> [(T.Text, T.Text)]
+toTextPairs = map (\(o, n) -> (unTickId o, unTickId n))
 
 textFiles :: WorkingTree -> [(FilePath, ObjectHash)]
 textFiles wt = [ (path, hash) | (path, FSFile hash) <- Map.toList wt ]

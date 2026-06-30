@@ -8,6 +8,7 @@ import {
   Sparkles, Plus,
 } from "lucide-react";
 import { useStory, type ConnInfo, type FileAtom, type BranchTick } from "@/lib/store";
+import { MessageSquare, StickyNote, Trash2, MoveUp, MoveDown } from "lucide-react";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -611,56 +612,276 @@ function AppendBar({ enabled, fileName, onAppend }: {
 
 // ── Ticks view ────────────────────────────────────────────────────────────────
 
-function TicksView({ activeBranch, ticks }: { activeBranch: string | null; ticks: BranchTick[] }) {
+function TicksView({
+  activeBranch, ticks, showNotes,
+  onToggleNotes, onAddNote, onMoveTick, onDeleteTick,
+}: {
+  activeBranch: string | null;
+  ticks: BranchTick[];
+  showNotes: boolean;
+  onToggleNotes: () => void;
+  onAddNote: (refTickId: string, text: string) => void;
+  onMoveTick: (tickId: string, afterTickId?: string) => void;
+  onDeleteTick: (tickId: string) => void;
+}) {
   if (!activeBranch) return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
       Select a branch to view ticks
     </div>
   );
-  if (ticks.length === 0) return (
-    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-      No ticks yet
-    </div>
-  );
+
+  const visible = showNotes ? ticks : ticks.filter((t) => t.kind === "atom");
+
   return (
-    <div style={{ flex: 1, overflow: "auto" }}>
-      <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
-        {ticks.map((tick) => (
-          <TickRow key={tick.tickId} tick={tick} />
-        ))}
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Toolbar */}
+      <div style={{
+        flexShrink: 0, padding: "5px 16px", borderBottom: "1px solid var(--border-subtle)",
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <button
+          onClick={onToggleNotes}
+          title={showNotes ? "Hide notes" : "Show notes"}
+          style={{
+            display: "flex", alignItems: "center", gap: 4, fontSize: 10,
+            padding: "2px 7px", borderRadius: 4, cursor: "pointer",
+            background: showNotes ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+            border: showNotes ? "1px solid oklch(0.78 0.10 65 / 0.3)" : "1px solid var(--border-subtle)",
+            color: showNotes ? "var(--amber)" : "var(--text-dim)",
+          }}
+        >
+          <StickyNote style={{ width: 10, height: 10 }} />
+          Notes
+        </button>
+        <span style={{ fontSize: 10, color: "var(--text-ghost)", marginLeft: "auto" }}>
+          {visible.length} tick{visible.length !== 1 ? "s" : ""}
+        </span>
       </div>
+
+      {visible.length === 0 ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+          No ticks yet
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 32px 48px" }}>
+            {visible.map((tick, i) => {
+              const isFirst = i === 0;
+              const isLast  = i === visible.length - 1;
+              const prevTick = i > 0 ? visible[i - 1] : undefined;
+              return (
+                <TickRow
+                  key={tick.tickId}
+                  tick={tick}
+                  allTicks={ticks}
+                  isFirst={isFirst}
+                  isLast={isLast}
+                  prevTick={prevTick}
+                  onAddNote={onAddNote}
+                  onMoveUp={() => onMoveTick(tick.tickId, prevTick?.tickId)}
+                  onMoveDown={() => !isLast && onMoveTick(tick.tickId, i + 2 < visible.length ? visible[i + 2].tickId : undefined)}
+                  onDelete={() => onDeleteTick(tick.tickId)}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function TickRow({ tick }: { tick: BranchTick }) {
+function TickRow({
+  tick, allTicks, isFirst, isLast, prevTick,
+  onAddNote, onMoveUp, onMoveDown, onDelete,
+}: {
+  tick: BranchTick;
+  allTicks: BranchTick[];
+  isFirst: boolean;
+  isLast: boolean;
+  prevTick: BranchTick | undefined;
+  onAddNote: (refTickId: string, text: string) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDelete: () => void;
+}) {
   const [hovered, setHovered] = useState(false);
+  const [addingNote, setAddingNote] = useState(false);
+  const [noteText, setNoteText] = useState("");
+
+  // Ordering invariant check: can this tick move up/down?
+  const canMoveUp = !isFirst && (() => {
+    if (tick.kind === "note") {
+      // Note can't move before its referenced tick.
+      const refIdx = allTicks.findIndex((t) => t.tickId === tick.ref);
+      const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);
+      const prevIdx = prevTick ? allTicks.findIndex((t) => t.tickId === prevTick.tickId) : -1;
+      return refIdx < prevIdx;
+    }
+    // Atom: can't move before any note that refs it.
+    const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
+    return !allTicks.slice(0, myIdx).some((t) => t.kind === "note" && t.ref === tick.tickId);
+  })();
+
+  const canMoveDown = !isLast && (() => {
+    if (tick.kind === "note") {
+      // Notes can move down freely (nothing depends on a note).
+      return true;
+    }
+    // Atom: can't move after a note that refs it.
+    const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);
+    const nextTick = allTicks[myIdx + 1];
+    if (!nextTick) return true;
+    // If the next tick is a note referencing this atom, can't swap.
+    return !(nextTick.kind === "note" && nextTick.ref === tick.tickId);
+  })();
+
+  if (tick.kind === "note") {
+    return (
+      <div
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          display: "flex", alignItems: "flex-start", gap: 8,
+          padding: "4px 0 4px 12px",
+          borderLeft: "2px solid oklch(0.55 0.08 240 / 0.4)",
+          marginLeft: 8, marginBottom: 2,
+          opacity: 0.85,
+        }}
+      >
+        <StickyNote style={{ width: 11, height: 11, color: "oklch(0.55 0.15 240)", flexShrink: 0, marginTop: 2 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
+            {tick.text}
+          </span>
+          <span style={{
+            display: "block", fontSize: 9, fontFamily: "monospace",
+            color: hovered ? "var(--text-ghost)" : "transparent",
+            transition: "color 0.15s",
+          }}>
+            → {tick.ref.slice(0, 12)}
+          </span>
+        </div>
+        {hovered && (
+          <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+            {!isFirst && (
+              <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up">
+                <MoveUp style={{ width: 10, height: 10 }} />
+              </MoveButton>
+            )}
+            {!isLast && (
+              <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down">
+                <MoveDown style={{ width: 10, height: 10 }} />
+              </MoveButton>
+            )}
+            <MoveButton disabled={false} onClick={onDelete} title="Delete note" danger>
+              <Trash2 style={{ width: 10, height: 10 }} />
+            </MoveButton>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: "flex", alignItems: "baseline", gap: 10,
-        padding: "5px 0",
         borderBottom: "1px solid var(--border-subtle)",
-        fontFamily: "monospace",
+        marginBottom: 2,
       }}
     >
-      <span style={{
-        fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)",
-        flexShrink: 0, userSelect: "all", transition: "color 0.15s",
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 10,
+        padding: "5px 0",
+        fontFamily: "monospace",
       }}>
-        {tick.tickId.slice(0, 12)}
-      </span>
-      <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, fontFamily: "inherit" }}>
-        {tick.message}
-      </span>
-      {tick.refs.length > 0 && (
-        <span style={{ fontSize: 9, color: "var(--text-ghost)", flexShrink: 0 }}>
-          {tick.refs.length} ref{tick.refs.length > 1 ? "s" : ""}
+        <span style={{
+          fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)",
+          flexShrink: 0, userSelect: "all", transition: "color 0.15s",
+        }}>
+          {tick.tickId.slice(0, 12)}
         </span>
+        <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, fontFamily: "inherit", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {tick.message}
+        </span>
+        {tick.refs.length > 0 && (
+          <span style={{ fontSize: 9, color: "var(--text-ghost)", flexShrink: 0 }}>
+            {tick.refs.length} ref{tick.refs.length > 1 ? "s" : ""}
+          </span>
+        )}
+        {hovered && (
+          <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+            <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up">
+              <MoveUp style={{ width: 10, height: 10 }} />
+            </MoveButton>
+            <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down">
+              <MoveDown style={{ width: 10, height: 10 }} />
+            </MoveButton>
+            <MoveButton disabled={false} onClick={() => setAddingNote((v) => !v)} title="Add note">
+              <MessageSquare style={{ width: 10, height: 10 }} />
+            </MoveButton>
+            <MoveButton disabled={false} onClick={onDelete} title="Delete tick" danger>
+              <Trash2 style={{ width: 10, height: 10 }} />
+            </MoveButton>
+          </div>
+        )}
+      </div>
+
+      {addingNote && (
+        <div style={{ display: "flex", gap: 6, padding: "4px 0 6px 20px", alignItems: "center" }}>
+          <input
+            autoFocus
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && noteText.trim()) {
+                onAddNote(tick.tickId, noteText.trim());
+                setNoteText("");
+                setAddingNote(false);
+              }
+              if (e.key === "Escape") { setAddingNote(false); setNoteText(""); }
+            }}
+            placeholder="Add annotation…"
+            style={{
+              flex: 1, fontSize: 11, padding: "3px 7px",
+              background: "var(--card)", border: "1px solid var(--border-subtle)",
+              borderRadius: 4, color: "var(--foreground)", outline: "none",
+            }}
+          />
+          <button
+            onClick={() => { if (noteText.trim()) { onAddNote(tick.tickId, noteText.trim()); setNoteText(""); setAddingNote(false); } }}
+            style={{
+              fontSize: 10, padding: "3px 8px",
+              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)",
+              borderRadius: 4, color: "var(--amber)", cursor: "pointer",
+            }}
+          >Add</button>
+        </div>
       )}
     </div>
+  );
+}
+
+function MoveButton({ disabled, onClick, title, danger, children }: {
+  disabled: boolean; onClick: () => void; title: string; danger?: boolean; children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      title={title}
+      style={{
+        width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+        background: "none", border: "none", cursor: disabled ? "default" : "pointer",
+        color: disabled ? "var(--text-disabled)" : danger ? "var(--rose)" : "var(--text-ghost)",
+        borderRadius: 3, padding: 0,
+        opacity: disabled ? 0.35 : 1,
+        transition: "color 0.12s, opacity 0.12s",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -668,9 +889,9 @@ function TickRow({ tick }: { tick: BranchTick }) {
 
 export default function Home() {
   const {
-    conns, error, branches, activeBranch, files, ticks, openFiles,
+    conns, error, branches, activeBranch, files, ticks, openFiles, showNotes,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
-    appendToFile, editAtom, deleteAtom,
+    appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry, toggleNotes,
   } = useStory();
 
   const [leftOpen, setLeftOpen] = useState(true);
@@ -837,7 +1058,15 @@ export default function Home() {
           </>}
 
           {centerTab === "ticks" && (
-            <TicksView activeBranch={activeBranch} ticks={ticks} />
+            <TicksView
+              activeBranch={activeBranch}
+              ticks={ticks}
+              showNotes={showNotes}
+              onToggleNotes={toggleNotes}
+              onAddNote={addNote}
+              onMoveTick={moveTick}
+              onDeleteTick={deleteTickEntry}
+            />
           )}
         </div>
       </div>

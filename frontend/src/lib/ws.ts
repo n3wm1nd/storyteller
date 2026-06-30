@@ -26,20 +26,22 @@ export type SessionEvent =
 export type BranchCommand =
   | { type: "append";      id?: string; path: string; content: string }
   | { type: "read";        id?: string; path: string }
+  | { type: "read.ticks";  id?: string }
   | { type: "delete.file"; id?: string; path: string }
   | { type: "track";       id?: string; source: string; files: { from: string; to: string }[] }
-  | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number };
+  | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
+  | { type: "add.note";    id?: string; refTickId: string; text: string }
+  | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
+  | { type: "delete.tick"; id?: string; tickId: string };
 
-export interface BranchTick {
-  tickId:  string;
-  parent:  string | null;
-  message: string;
-  refs:    string[];
-}
+export type BranchTick =
+  | { kind: "atom"; tickId: string; parent: string | null; refs: string[]; message: string }
+  | { kind: "note"; tickId: string; parent: string | null; ref: string;  text: string };
 
 export type BranchEvent =
-  | { type: "branch.ready"; id?: string; branch: string; files: string[] }
-  | { type: "branch.ticks"; ticks: BranchTick[] }
+  | { type: "branch.ready";      id?: string; branch: string; files: string[] }
+  | { type: "branch.ticks";      ticks: BranchTick[] }
+  | { type: "ticks.invalidated"; id?: string; mapping: IdMapping[] }
   | { type: "error"; message: string };
 
 export type FileCommand =

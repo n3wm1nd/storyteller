@@ -42,6 +42,7 @@ interface StoryState {
   activeBranch: string | null;
   files: string[];   // file paths only — content lives in openFiles
   ticks: BranchTick[];
+  showNotes: boolean;
 
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
@@ -56,6 +57,10 @@ interface StoryState {
   appendToFile: (path: string, content: string) => void;
   editAtom: (path: string, tickId: string, content: string) => void;
   deleteAtom: (path: string, tickId: string) => void;
+  addNote: (refTickId: string, text: string) => void;
+  moveTick: (tickId: string, afterTickId?: string) => void;
+  deleteTickEntry: (tickId: string) => void;
+  toggleNotes: () => void;
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
@@ -82,6 +87,7 @@ export const useStory = create<StoryState>((set, get) => ({
   activeBranch: null,
   files: [],
   ticks: [],
+  showNotes: true,
   openFiles: {},
   _session: null,
   _branch: null,
@@ -166,6 +172,15 @@ export const useStory = create<StoryState>((set, get) => ({
         }));
       } else if (evt.type === "branch.ticks") {
         set({ ticks: evt.ticks });
+      } else if (evt.type === "ticks.invalidated") {
+        // Apply id renames optimistically, then re-fetch for accuracy.
+        const remap = new Map(evt.mapping.map((m: IdMapping) => [m.old, m.new]));
+        set((s) => ({
+          ticks: s.ticks.map((t) =>
+            remap.has(t.tickId) ? { ...t, tickId: remap.get(t.tickId)! } : t
+          ),
+        }));
+        get()._branch?.send({ type: "read.ticks" });
       } else if (evt.type === "error") {
         set({ error: evt.message });
       }
@@ -258,5 +273,21 @@ export const useStory = create<StoryState>((set, get) => ({
 
   deleteAtom: (path, tickId) => {
     get().openFiles[path]?.conn.send({ type: "delete.atom", tickId });
+  },
+
+  addNote: (refTickId, text) => {
+    get()._branch?.send({ type: "add.note", refTickId, text });
+  },
+
+  moveTick: (tickId, afterTickId) => {
+    get()._branch?.send({ type: "move.tick", tickId, afterTickId });
+  },
+
+  deleteTickEntry: (tickId) => {
+    get()._branch?.send({ type: "delete.tick", tickId });
+  },
+
+  toggleNotes: () => {
+    set((s) => ({ showNotes: !s.showNotes }));
   },
 }));

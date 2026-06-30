@@ -46,6 +46,7 @@ library
                   , Storyteller.Agent.Write
                   , Storyteller.Edit
                   , Server.Env
+                  , Server.Notification
                   , Server.Run
                   , Server.Util
                   , Server.Session.Protocol
@@ -161,6 +162,7 @@ test-suite storyteller-test
   other-modules:    Git.Mock
                   , Paths_storyteller
                   , Storyteller.StorageSpec
+                  , Storyteller.EditSpec
                   , Storyteller.SplitDiffMergeSpec
                   , Storyteller.SplitterSpec
                   , Storyteller.TrackerSpec

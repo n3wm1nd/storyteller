@@ -7,34 +7,145 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Chain editing operations: delete, edit, and move atoms in a branch.
+-- | Chain editing operations: delete, edit, and move ticks in a branch.
 --
--- These compose the storage primitives (At, Drop, WithFS, Reset) into
--- coherent chain mutations. They belong below the agent layer — no LLM
--- or splitter involvement — but above raw storage, since they understand
--- file content.
+-- Composed from storage primitives (At, Drop, WithFS, Reset). No LLM or
+-- splitter involvement.
+--
+-- == Move semantics
+--
+-- Moving tick A to after tick B is always a single nested At.  Two cases:
+--
+--   Backward (A currently after B):
+--     at A $ do d <- popTick A; at B $ pushTick d
+--
+--   Forward (A currently before B):
+--     at B $ do (d, _) <- at A $ popTick A; pushTick d
+--
+-- popTick reads the file diff the tick introduced (via two atWithFS reads:
+-- the tick's snapshot minus its parent's snapshot) so that pushTick can
+-- re-apply exactly those bytes at the new position, regardless of what the
+-- outer WorkingTree state is.
 module Storyteller.Edit
-  ( storeAtom
+  ( -- * Position-free tick representation
+    TDraft(..)
+  , popTick
+  , pushTick
+
+    -- * File-level atom operations
+  , storeAtom
   , deleteTick
   , editAtom
+
+    -- * Chain-level move
+  , moveTick
+
+    -- * Ordering invariant check (exported for use in Dispatch)
+  , checkMoveOrder
   ) where
 
 import qualified Data.ByteString as BS
+import Control.Monad (foldM)
+import Data.List (findIndex)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 import Polysemy
 import Polysemy.Fail
 
-import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite, appendFile )
+import Runix.FileSystem
+  ( FileSystem, FileSystemRead, FileSystemWrite
+  , appendFile, readFile, listFiles, isDirectory
+  )
 import Storyteller.Git (BranchTag)
-import Storyteller.Storage (StoryBranch, StoryStorage, at, withFS, drop, reset, store)
-import Storyteller.Types (TickId)
+import Storyteller.Storage
+  ( StoryBranch, StoryStorage
+  , at, withFS, drop, reset, store, storeDraft, follow, get
+  )
+import Storyteller.Types (TickId(..), Tick(..), TickDraft(..))
 
-import Prelude hiding (appendFile, drop)
+import Prelude hiding (appendFile, drop, get, readFile)
+
+-- ---------------------------------------------------------------------------
+-- Position-free tick representation
+-- ---------------------------------------------------------------------------
+
+-- | A tick extracted from the chain, ready to be re-inserted elsewhere.
+--   Carries the metadata (message, refs) and the concrete file diffs the
+--   tick introduced, so it can be faithfully replayed at a new position
+--   without depending on the current WorkingTree state.
+data TDraft = TDraft
+  { tdRefs      :: [TickId]
+  , tdMessage   :: T.Text
+  , tdFileDiffs :: Map FilePath BS.ByteString  -- ^ per-file suffix this tick added
+  } deriving (Show, Eq)
+
+toTickDraft :: TDraft -> TickDraft
+toTickDraft d = TickDraft { draftRefs = tdRefs d, draftMessage = tdMessage d }
+
+-- | Pop the tick currently at HEAD, returning its draft with file diffs.
+--   Must be called as the inner action of @at tid@ — that puts @tid@ at HEAD.
+--
+--   Uses withFS to snapshot HEAD's files, drops to the parent, then snapshots
+--   again. The diff is the suffix each file gained in this tick.
+popTick
+  :: forall branch r
+  .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , StoryStorage
+                , Fail ] r )
+  => Sem r TDraft
+popTick = do
+  tick <- get @branch
+
+  -- Snapshot at HEAD (this tick's tree).
+  tickFiles <- withFS @branch $ readAllFiles @branch
+
+  -- Rewind to parent.
+  drop @branch
+
+  -- Snapshot at the new HEAD (this tick's parent's tree).
+  parentFiles <- withFS @branch $ readAllFiles @branch
+
+  -- Diff: bytes this tick added beyond its parent, per file.
+  let diffs = Map.mapWithKey
+        (\path tickContent ->
+          let parentContent = Map.findWithDefault BS.empty path parentFiles
+          in  BS.drop (BS.length parentContent) tickContent)
+        tickFiles
+
+  return TDraft
+    { tdRefs      = tickRefs tick
+    , tdMessage   = tickMessage tick
+    , tdFileDiffs = diffs
+    }
+
+-- | Re-insert a popped tick at the current head by appending its file diffs
+--   and committing with the original message and refs.
+--   The current WorkingTree is irrelevant — we apply the diffs on top of
+--   whatever the head commit's snapshot is (via withFS), then store.
+pushTick
+  :: forall branch r
+  .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , FileSystemWrite (BranchTag branch)
+                , StoryStorage
+                , Fail ] r )
+  => TDraft -> Sem r TickId
+pushTick d = withFS @branch $ do
+  mapM_ (\(path, suffix) -> appendFile @(BranchTag branch) path suffix)
+        (Map.toList (tdFileDiffs d))
+  storeDraft @branch (toTickDraft d)
+
+-- ---------------------------------------------------------------------------
+-- File-level atom operations
+-- ---------------------------------------------------------------------------
 
 -- | Write @content@ to @path@ and commit it as an atom tick.
---   The commit message is the content truncated to 60 chars.
 storeAtom
   :: forall branch r
   .  ( Members '[ StoryBranch branch
@@ -48,9 +159,8 @@ storeAtom path newBytes = do
   appendFile @(BranchTag branch) path newBytes
   store @branch (T.take 60 (TE.decodeUtf8With TE.lenientDecode newBytes))
 
--- | Remove a tick from the chain. At rewinds to it, Drop removes it,
---   At replays the tail onto the parent. Reset syncs the working tree.
---   Returns the old→new id mapping for all tail ticks.
+-- | Remove a tick from the chain entirely.
+--   Returns the old→new id mapping for all replayed ticks.
 deleteTick
   :: forall branch r
   .  Members '[StoryBranch branch, StoryStorage, Fail] r
@@ -61,10 +171,8 @@ deleteTick tid = do
   reset @branch
   return mapping
 
--- | Replace an atom's content in-place. Rewinds to the tick, drops it,
---   enters the FS at the parent state, appends the new content and stores.
---   At replays the tail onto the new atom. Reset syncs the working tree.
---   Returns (oldTickId, newTickId) plus the tail mapping.
+-- | Replace an atom's content in-place, preserving its chain position.
+--   Returns (newTickId, tail-mapping).
 editAtom
   :: forall branch r
   .  ( Members '[ StoryBranch branch
@@ -75,7 +183,7 @@ editAtom
                 , Fail ] r )
   => TickId
   -> FilePath
-  -> BS.ByteString   -- ^ new atom content (raw bytes, suffix only)
+  -> BS.ByteString
   -> Sem r (TickId, [(TickId, TickId)])
 editAtom tid path newBytes = do
   (newTid, mapping) <- at @branch tid $ do
@@ -83,3 +191,119 @@ editAtom tid path newBytes = do
     withFS @branch $ storeAtom @branch path newBytes
   reset @branch
   return (newTid, mapping)
+
+-- ---------------------------------------------------------------------------
+-- Chain-level move
+-- ---------------------------------------------------------------------------
+
+-- | Move @tid@ to immediately after @mAfter@ (@Nothing@ = move to front).
+--
+--   Backward (tid currently after target):
+--     @at tid $ do d <- popTick tid; at after $ pushTick d@
+--
+--   Forward (tid currently before target):
+--     @at after $ do (d,_) <- at tid $ popTick tid; pushTick d@
+--
+--   Both are a single nested At — one coherent rebase pass.
+--   Returns the complete old→new id mapping for every tick that changed.
+moveTick
+  :: forall branch r
+  .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , FileSystemWrite (BranchTag branch)
+                , StoryStorage
+                , Fail ] r )
+  => TickId
+  -> Maybe TickId
+  -> Sem r [(TickId, TickId)]
+moveTick tid mAfter = do
+  chain <- follow @branch [] (\acc t -> (t : acc, tickParent t))
+  -- chain is oldest-first: [root, t1, t2, t3]
+  let root           = head chain
+      contentOrdered = tail chain
+
+  tidPos   <- findPos "tick to move" tid contentOrdered
+  afterPos <- case mAfter of
+    Nothing  -> return (-1)
+    Just aid -> findPos "afterTickId" aid contentOrdered
+
+  checkMoveOrder tid mAfter tidPos afterPos contentOrdered
+
+  let resolvedAfter = maybe (tickId root) id mAfter
+
+  ((newTid, innerMapping), outerMapping) <-
+    if tidPos > afterPos
+      then -- Backward: at tid (pop >>= \d -> at after (push d))
+        at @branch tid $ do
+          d                  <- popTick @branch
+          (newTid, innerMap) <- at @branch resolvedAfter $ pushTick @branch d
+          return (newTid, innerMap)
+      else -- Forward: at after (at tid pop >>= push)
+        at @branch resolvedAfter $ do
+          (d, innerMap) <- at @branch tid $ popTick @branch
+          newTid        <- pushTick @branch d
+          return (newTid, innerMap)
+
+  reset @branch
+  return (outerMapping <> innerMapping <> [(tid, newTid)])
+
+-- ---------------------------------------------------------------------------
+-- Ordering invariant
+-- ---------------------------------------------------------------------------
+
+checkMoveOrder
+  :: Members '[Fail] r
+  => TickId -> Maybe TickId -> Int -> Int -> [Tick] -> Sem r ()
+checkMoveOrder tid _mAfter tidPos afterPos ordered = do
+  let movingTick = ordered !! tidPos
+      newPos     = afterPos + 1
+
+  mapM_ (checkRefBefore newPos) (tickRefs movingTick)
+
+  let precedingSlice = filter (\t -> tickId t /= tid) (take (afterPos + 1) ordered)
+  mapM_ (checkNotRefTo tid) precedingSlice
+  where
+    checkRefBefore newPos refId =
+      case findIndex (\t -> tickId t == refId) ordered of
+        Nothing -> return ()
+        Just rp ->
+          if rp < newPos then return ()
+          else fail $ "cannot move tick before its own reference "
+                    <> T.unpack (unTickId refId)
+
+    checkNotRefTo movingId t =
+      if movingId `elem` tickRefs t
+        then fail $ "cannot move tick after tick that references it: "
+                  <> T.unpack (unTickId (tickId t))
+        else return ()
+
+-- ---------------------------------------------------------------------------
+-- Internal helpers
+-- ---------------------------------------------------------------------------
+
+findPos :: Members '[Fail] r => String -> TickId -> [Tick] -> Sem r Int
+findPos label tid ordered =
+  maybe (fail $ label <> " not found: " <> T.unpack (unTickId tid)) return
+    (findIndex (\t -> tickId t == tid) ordered)
+
+-- | Read all file paths and their contents from the current WorkingTree snapshot.
+--   Recursively lists directories. Only returns files (not directory entries).
+readAllFiles
+  :: forall branch r
+  .  Members '[FileSystem (BranchTag branch), FileSystemRead (BranchTag branch), Fail] r
+  => Sem r (Map FilePath BS.ByteString)
+readAllFiles = go "/" Map.empty
+  where
+    go dir acc = do
+      entries <- listFiles @(BranchTag branch) dir
+      foldM (visit dir) acc entries
+
+    visit dir acc name = do
+      let path = if dir == "/" then name else dir <> "/" <> name
+      isDir <- isDirectory @(BranchTag branch) path
+      if isDir
+        then go path acc
+        else do
+          content <- readFile @(BranchTag branch) path
+          return (Map.insert path content acc)

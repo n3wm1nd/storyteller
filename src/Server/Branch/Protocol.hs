@@ -32,6 +32,10 @@ instance ToJSON TrackFile where
 data BranchCommand
   = Track      { bcId :: Maybe T.Text, bcSource :: T.Text, bcFiles :: [TrackFile] }
   | CharGen    { bcId :: Maybe T.Text, bcPath :: FilePath, bcScenario :: T.Text, bcSeed :: Maybe Int }
+  | ReadTicks  { bcId :: Maybe T.Text }
+  | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
+  | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
+  | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
   deriving (Show)
 
 instance FromJSON BranchCommand where
@@ -39,30 +43,56 @@ instance FromJSON BranchCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "track"   -> Track   i <$> o .: "source" <*> o .: "files"
-      "chargen" -> CharGen i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
-      _         -> fail ("unknown branch command: " <> T.unpack t)
+      "track"       -> Track      i <$> o .: "source" <*> o .: "files"
+      "chargen"     -> CharGen    i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
+      "read.ticks"  -> pure (ReadTicks i)
+      "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
+      "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
+      "delete.tick" -> DeleteTick i <$> o .: "tickId"
+      _             -> fail ("unknown branch command: " <> T.unpack t)
 
-data BranchTick = BranchTick
-  { btTickId  :: T.Text
-  , btParent  :: Maybe T.Text
-  , btMessage :: T.Text
-  , btRefs    :: [T.Text]
-  } deriving (Show)
+-- | A tick as seen by the client — a sum type so the frontend can pattern-match
+--   on kind and access only the fields that make sense for each variant.
+--
+--   'BranchTickAtom': a content tick; refs are cross-branch entity references.
+--   'BranchTickNote': an annotation tick; ref is the single annotated atom tick id.
+data BranchTick
+  = BranchTickAtom
+      { btTickId  :: T.Text
+      , btParent  :: Maybe T.Text
+      , btRefs    :: [T.Text]
+      , btMessage :: T.Text
+      }
+  | BranchTickNote
+      { btTickId  :: T.Text
+      , btParent  :: Maybe T.Text
+      , btRef     :: T.Text   -- ^ the annotated atom tick id (first of tickRefs)
+      , btText    :: T.Text   -- ^ the annotation text (message with "note: " stripped)
+      }
+  deriving (Show)
 
 instance ToJSON BranchTick where
-  toJSON bt = object
-    [ "tickId"  .= btTickId  bt
-    , "parent"  .= btParent  bt
-    , "message" .= btMessage bt
-    , "refs"    .= btRefs    bt
+  toJSON (BranchTickAtom tid par refs msg) = object
+    [ "kind"    .= ("atom" :: T.Text)
+    , "tickId"  .= tid
+    , "parent"  .= par
+    , "refs"    .= refs
+    , "message" .= msg
+    ]
+  toJSON (BranchTickNote tid par ref txt) = object
+    [ "kind"   .= ("note" :: T.Text)
+    , "tickId" .= tid
+    , "parent" .= par
+    , "ref"    .= ref
+    , "text"   .= txt
     ]
 
 data BranchEvent
-  = BranchReady { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
-  | BranchTicks { beTicks :: [BranchTick] }
-  | FileAdded   { beId :: Maybe T.Text, bePath :: FilePath }
-  | FileRemoved { beId :: Maybe T.Text, bePath :: FilePath }
+  = BranchReady        { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
+  | BranchTicks        { beTicks :: [BranchTick] }
+  | FileAdded          { beId :: Maybe T.Text, bePath :: FilePath }
+  | FileRemoved        { beId :: Maybe T.Text, bePath :: FilePath }
+  | TicksInvalidated   { beId :: Maybe T.Text, beMapping :: [(T.Text, T.Text)] }
   | BranchError T.Text
   deriving (Show)
 
@@ -77,6 +107,10 @@ instance ToJSON BranchEvent where
       object $ withId mid [ "type" .= ("file.added"   :: T.Text), "path" .= path ]
     FileRemoved mid path ->
       object $ withId mid [ "type" .= ("file.removed" :: T.Text), "path" .= path ]
+    TicksInvalidated mid mapping ->
+      object $ withId mid
+        [ "type"    .= ("ticks.invalidated" :: T.Text)
+        , "mapping" .= map (\(a,b) -> object ["old" .= a, "new" .= b]) mapping ]
     BranchError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]
 

@@ -12,12 +12,12 @@ module Server.Env
   , loadServerEnv
   ) where
 
-import Control.Concurrent.STM (TVar, newTVarIO)
-import Data.Text (Text)
-import qualified Data.Text as T
+import Control.Concurrent.STM (TVar, TChan, newTVarIO, newBroadcastTChanIO)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
+
+import Server.Notification (BranchNotification)
 
 -- | Mutable shared state across requests. Starts empty; extended as needed.
 data AppState = AppState
@@ -28,10 +28,11 @@ emptyAppState :: AppState
 emptyAppState = AppState
 
 data ServerEnv = ServerEnv
-  { envRepoPath    :: FilePath     -- ^ STORY_REPO
-  , envLLMEndpoint :: String       -- ^ LLAMACPP_ENDPOINT
-  , envPort        :: Int          -- ^ PORT (default 8090)
+  { envRepoPath    :: FilePath                    -- ^ STORY_REPO
+  , envLLMEndpoint :: String                      -- ^ LLAMACPP_ENDPOINT
+  , envPort        :: Int                         -- ^ PORT (default 8090)
   , appState       :: TVar AppState
+  , envNotifyChan  :: TChan BranchNotification    -- ^ broadcast channel; connections dupTChan to subscribe
   }
 
 loadServerEnv :: IO ServerEnv
@@ -40,11 +41,13 @@ loadServerEnv = do
   endpoint <- maybe "http://localhost:8080/v1" id <$> lookupEnv "LLAMACPP_ENDPOINT"
   port     <- maybe 8090 read <$> lookupEnv "PORT"
   state    <- newTVarIO emptyAppState
+  notify   <- newBroadcastTChanIO
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint
     , envPort        = port
     , appState       = state
+    , envNotifyChan  = notify
     }
 
 requireEnv :: String -> IO String
