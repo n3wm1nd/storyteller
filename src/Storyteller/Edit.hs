@@ -135,7 +135,12 @@ popTick = do
 
   return TDraft
     { tdRefs      = tickRefs (tickData tick)
-    , tdFields    = tickFields (tickData tick)
+    -- Strip atom-specific storage fields: "tree" (pre-built git tree hash) and
+    -- "file" (path hint). Both are position-dependent and must not carry over
+    -- when the tick is re-inserted at a new chain position by pushTick.
+    -- Keeping "tree" would cause Store to reuse the old hash, writing the wrong
+    -- content to the rebased tick.
+    , tdFields    = filter ((`notElem` ["tree", "file"]) . fst) (tickFields (tickData tick))
     , tdMessage   = tickMessage (tickData tick)
     , tdFileDiffs = diffs
     }
