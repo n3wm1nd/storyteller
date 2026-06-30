@@ -18,8 +18,10 @@ library gitlib-effect
   exposed-modules:  Runix.Git
   build-depends:    base >=4.18 && <5
                   , polysemy
+                  , polysemy-plugin
                   , text
                   , bytestring
+                  , containers
                   , runix
   hs-source-dirs:   gitlib-effect/src
   default-language: Haskell2010

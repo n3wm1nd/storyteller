@@ -48,6 +48,9 @@ module Runix.Git
 
     -- * Interpreter
   , runGitIO
+
+    -- * Object cache interceptor
+  , withGitCache
   ) where
 
 import Data.ByteString (ByteString)
@@ -55,9 +58,12 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Text (Text)
 import Data.Maybe (mapMaybe)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 
 import Polysemy
 import Polysemy.Fail
+import Polysemy.State (State, get, modify, evalState)
 
 import Runix.Cmd (Cmd, callIn, callStdinIn, CmdOutput(..))
 
@@ -210,6 +216,65 @@ runGitIO repo = interpret $ \case
     case mapMaybe parseTreeLine (T.lines (stdout out)) of
       (e:_) -> return $ Just (entryHash e)
       []    -> return Nothing
+
+-- ---------------------------------------------------------------------------
+-- Object cache interceptor
+-- ---------------------------------------------------------------------------
+
+data GitCache = GitCache
+  { cacheObjects :: Map ObjectHash GitObject
+  , cacheCommits :: Map ObjectHash CommitData
+  }
+
+emptyGitCache :: GitCache
+emptyGitCache = GitCache Map.empty Map.empty
+
+-- | Intercept 'Git' and cache all content-addressed reads and writes.
+--   Refs are never cached — they are mutable and must always hit the
+--   underlying interpreter.  Objects and commits are immutable by hash,
+--   so a cache hit is always correct.
+withGitCache
+  :: Member Git r
+  => Sem r a
+  -> Sem r a
+withGitCache action = evalState emptyGitCache $ intercept (\case
+      -- Refs are mutable — always pass through.
+      ResolveRef ref        -> raise $ send (ResolveRef ref)
+      CreateRef  ref hash   -> raise $ send (CreateRef  ref hash)
+      UpdateRef  ref hash   -> raise $ send (UpdateRef  ref hash)
+      DeleteRef  ref        -> raise $ send (DeleteRef  ref)
+      ListRefs   prefix     -> raise $ send (ListRefs   prefix)
+
+      ReadObject hash -> do
+        cache <- get
+        case Map.lookup hash (cacheObjects cache) of
+          Just obj -> return obj
+          Nothing  -> do
+            obj <- raise $ send (ReadObject hash)
+            modify $ \c -> c { cacheObjects = Map.insert hash obj (cacheObjects c) }
+            return obj
+
+      WriteObject obj -> do
+        hash <- raise $ send (WriteObject obj)
+        modify $ \c -> c { cacheObjects = Map.insert hash obj (cacheObjects c) }
+        return hash
+
+      ReadCommit hash -> do
+        cache <- get
+        case Map.lookup hash (cacheCommits cache) of
+          Just cd -> return cd
+          Nothing -> do
+            cd <- raise $ send (ReadCommit hash)
+            modify $ \c -> c { cacheCommits = Map.insert hash cd (cacheCommits c) }
+            return cd
+
+      WriteCommit cd -> do
+        hash <- raise $ send (WriteCommit cd)
+        modify $ \c -> c { cacheCommits = Map.insert hash cd (cacheCommits c) }
+        return hash
+
+      LookupPath tree path -> raise $ send (LookupPath tree path)
+    ) (raise action)
 
 -- ---------------------------------------------------------------------------
 -- Internal helpers

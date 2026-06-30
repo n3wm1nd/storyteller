@@ -42,7 +42,7 @@ import Runix.HTTP (HTTP)
 import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
-import Runix.Git (Git, runGitIO)
+import Runix.Git (Git, runGitIO, withGitCache)
 import Storyteller.Types (BranchName(..))
 import Storyteller.Git
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
@@ -95,6 +95,7 @@ runInfrastructure repoPath _endpoint =
   . cmdsIO
   . interpretCmd @"git"
   . runGitIO repoPath
+  . withGitCache
   . timeIO
   . sleepIO
   . httpIO (withRequestTimeout 600)
