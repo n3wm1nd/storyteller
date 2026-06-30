@@ -28,7 +28,7 @@ import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Runtime (Main)
 import Storyteller.Storage (StoryBranch, fileTicks, getBranch)
 import qualified Storyteller.Storage as Storage
-import Storyteller.Edit (deleteTick, editAtom)
+import Storyteller.Edit (deleteTick, editAtom, moveTick)
 import Storyteller.Types (BranchName(..), TickId(..))
 
 import Prelude hiding (readFile, writeFile)
@@ -138,8 +138,10 @@ handleMoveAtom
   :: SessionEffects r
   => T.Text -> FilePath -> T.Text -> Maybe T.Text
   -> Sem r [(T.Text, T.Text)]
-handleMoveAtom _branch _path _tickIdTxt _mAfterTickId =
-  fail "move not yet implemented"
+handleMoveAtom branch _path tickIdTxt mAfterTickId =
+  withBranch @Main branch $ do
+    mapping <- moveTick @Main (TickId tickIdTxt) (TickId <$> mAfterTickId)
+    return [ (unTickId o, unTickId n) | (o, n) <- mapping ]
 
 -- ---------------------------------------------------------------------------
 -- Helpers
