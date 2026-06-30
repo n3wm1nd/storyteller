@@ -9,6 +9,7 @@
 module Server.Branch.Protocol
   ( BranchCommand(..)
   , BranchEvent(..)
+  , BranchTick(..)
   , TrackFile(..)
   ) where
 
@@ -42,8 +43,24 @@ instance FromJSON BranchCommand where
       "chargen" -> CharGen i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
       _         -> fail ("unknown branch command: " <> T.unpack t)
 
+data BranchTick = BranchTick
+  { btTickId  :: T.Text
+  , btParent  :: Maybe T.Text
+  , btMessage :: T.Text
+  , btRefs    :: [T.Text]
+  } deriving (Show)
+
+instance ToJSON BranchTick where
+  toJSON bt = object
+    [ "tickId"  .= btTickId  bt
+    , "parent"  .= btParent  bt
+    , "message" .= btMessage bt
+    , "refs"    .= btRefs    bt
+    ]
+
 data BranchEvent
   = BranchReady { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
+  | BranchTicks { beTicks :: [BranchTick] }
   | FileAdded   { beId :: Maybe T.Text, bePath :: FilePath }
   | FileRemoved { beId :: Maybe T.Text, bePath :: FilePath }
   | BranchError T.Text
@@ -52,12 +69,14 @@ data BranchEvent
 instance ToJSON BranchEvent where
   toJSON = \case
     BranchReady mid branch files ->
-      object $ withId mid [ "type" .= ("branch.ready"   :: T.Text)
+      object $ withId mid [ "type" .= ("branch.ready" :: T.Text)
                            , "branch" .= branch, "files" .= files ]
+    BranchTicks ticks ->
+      object [ "type" .= ("branch.ticks" :: T.Text), "ticks" .= ticks ]
     FileAdded mid path ->
-      object $ withId mid [ "type" .= ("file.added"     :: T.Text), "path" .= path ]
+      object $ withId mid [ "type" .= ("file.added"   :: T.Text), "path" .= path ]
     FileRemoved mid path ->
-      object $ withId mid [ "type" .= ("file.removed"   :: T.Text), "path" .= path ]
+      object $ withId mid [ "type" .= ("file.removed" :: T.Text), "path" .= path ]
     BranchError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]
 

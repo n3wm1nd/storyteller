@@ -7,7 +7,7 @@ import {
   Folder, FolderOpen, FileText, GitBranch, ChevronRight,
   Sparkles, Plus,
 } from "lucide-react";
-import { useStory, type ConnInfo, type FileAtom } from "@/lib/store";
+import { useStory, type ConnInfo, type FileAtom, type BranchTick } from "@/lib/store";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -611,17 +611,55 @@ function AppendBar({ enabled, fileName, onAppend }: {
 
 // ── Ticks view ────────────────────────────────────────────────────────────────
 
-function TicksView({ activeBranch }: { activeBranch: string | null }) {
+function TicksView({ activeBranch, ticks }: { activeBranch: string | null; ticks: BranchTick[] }) {
   if (!activeBranch) return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
       Select a branch to view ticks
     </div>
   );
+  if (ticks.length === 0) return (
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+      No ticks yet
+    </div>
+  );
   return (
-    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, color: "var(--text-ghost)", fontSize: 12 }}>
-      <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{activeBranch}</span>
-      <span>Tick log — coming soon</span>
-      <span style={{ fontSize: 10, color: "var(--text-faint)" }}>Will show all branch ticks in chronological order, across all files</span>
+    <div style={{ flex: 1, overflow: "auto" }}>
+      <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
+        {ticks.map((tick) => (
+          <TickRow key={tick.tickId} tick={tick} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TickRow({ tick }: { tick: BranchTick }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: "flex", alignItems: "baseline", gap: 10,
+        padding: "5px 0",
+        borderBottom: "1px solid var(--border-subtle)",
+        fontFamily: "monospace",
+      }}
+    >
+      <span style={{
+        fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)",
+        flexShrink: 0, userSelect: "all", transition: "color 0.15s",
+      }}>
+        {tick.tickId.slice(0, 12)}
+      </span>
+      <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, fontFamily: "inherit" }}>
+        {tick.message}
+      </span>
+      {tick.refs.length > 0 && (
+        <span style={{ fontSize: 9, color: "var(--text-ghost)", flexShrink: 0 }}>
+          {tick.refs.length} ref{tick.refs.length > 1 ? "s" : ""}
+        </span>
+      )}
     </div>
   );
 }
@@ -630,7 +668,7 @@ function TicksView({ activeBranch }: { activeBranch: string | null }) {
 
 export default function Home() {
   const {
-    conns, error, branches, activeBranch, files, openFiles,
+    conns, error, branches, activeBranch, files, ticks, openFiles,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     appendToFile, editAtom, deleteAtom,
   } = useStory();
@@ -799,7 +837,7 @@ export default function Home() {
           </>}
 
           {centerTab === "ticks" && (
-            <TicksView activeBranch={activeBranch} />
+            <TicksView activeBranch={activeBranch} ticks={ticks} />
           )}
         </div>
       </div>

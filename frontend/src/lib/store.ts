@@ -5,11 +5,14 @@ import {
   sessionConn, branchConn, fileConn,
   type StoryWS,
   type FileAtom,
+  type BranchTick,
   type IdMapping,
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
   type FileCommand,    type FileEvent,
 } from "./ws";
+
+export type { BranchTick };
 
 export type { FileAtom };
 
@@ -38,6 +41,7 @@ interface StoryState {
   // Branch level
   activeBranch: string | null;
   files: string[];   // file paths only — content lives in openFiles
+  ticks: BranchTick[];
 
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
@@ -77,6 +81,7 @@ export const useStory = create<StoryState>((set, get) => ({
   branches: [],
   activeBranch: null,
   files: [],
+  ticks: [],
   openFiles: {},
   _session: null,
   _branch: null,
@@ -141,6 +146,7 @@ export const useStory = create<StoryState>((set, get) => ({
     set((s) => ({
       activeBranch: name,
       files: [],
+      ticks: [],
       openFiles: {},
       conns: setConnStatus(s.conns, label, "connecting"),
     }));
@@ -158,6 +164,8 @@ export const useStory = create<StoryState>((set, get) => ({
           files: [...evt.files].sort(),
           conns: setConnStatus(s.conns, label, "connected"),
         }));
+      } else if (evt.type === "branch.ticks") {
+        set({ ticks: evt.ticks });
       } else if (evt.type === "error") {
         set({ error: evt.message });
       }

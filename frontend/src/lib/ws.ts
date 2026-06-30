@@ -30,8 +30,16 @@ export type BranchCommand =
   | { type: "track";       id?: string; source: string; files: { from: string; to: string }[] }
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number };
 
+export interface BranchTick {
+  tickId:  string;
+  parent:  string | null;
+  message: string;
+  refs:    string[];
+}
+
 export type BranchEvent =
   | { type: "branch.ready"; id?: string; branch: string; files: string[] }
+  | { type: "branch.ticks"; ticks: BranchTick[] }
   | { type: "error"; message: string };
 
 export type FileCommand =

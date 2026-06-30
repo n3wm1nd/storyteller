@@ -12,6 +12,7 @@
 module Server.Branch.Dispatch
   ( dispatch
   , snapshot
+  , tickSnapshot
   ) where
 
 import Control.Monad (void)
@@ -92,7 +93,7 @@ handleCharGen branch path scenario seed = do
     void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
 
 -- ---------------------------------------------------------------------------
--- Snapshot — file tree only, sent on connect
+-- Snapshots — sent on connect
 -- ---------------------------------------------------------------------------
 
 snapshot :: ServerEnv -> T.Text -> IO (Either String [FilePath])
@@ -103,6 +104,21 @@ snapshot env branch = runAction env $ do
     Just _  -> withBranch @Main branch $ do
       wt <- currentWorkingTree @Main
       return $ map fst (textFiles wt)
+
+tickSnapshot :: ServerEnv -> T.Text -> IO (Either String [BranchTick])
+tickSnapshot env branch = runAction env $ do
+  getBranch (BranchName branch) >>= \case
+    Nothing -> return []
+    Just _  -> withBranch @Main branch $ do
+      ticks <- follow @Main [] $ \acc tick -> (tick : acc, tickParent tick)
+      return $ map toBranchTick (reverse ticks)
+  where
+    toBranchTick tick = BranchTick
+      { btTickId  = unTickId (tickId tick)
+      , btParent  = unTickId <$> tickParent tick
+      , btMessage = tickMessage tick
+      , btRefs    = map unTickId (tickRefs tick)
+      }
 
 -- ---------------------------------------------------------------------------
 -- Helpers

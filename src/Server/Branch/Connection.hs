@@ -16,7 +16,7 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as T
 import qualified Network.WebSockets as WS
 
-import Server.Branch.Dispatch (dispatch, snapshot)
+import Server.Branch.Dispatch (dispatch, snapshot, tickSnapshot)
 import Server.Branch.Protocol
 import Server.Env (ServerEnv)
 
@@ -25,7 +25,12 @@ runBranch env branch conn = do
   snap <- snapshot env branch
   case snap of
     Left err    -> WS.sendTextData conn (encode (BranchError (T.pack err)))
-    Right files -> WS.sendTextData conn (encode (BranchReady Nothing branch files))
+    Right files -> do
+      WS.sendTextData conn (encode (BranchReady Nothing branch files))
+      ticks <- tickSnapshot env branch
+      case ticks of
+        Left _  -> return ()
+        Right ts -> WS.sendTextData conn (encode (BranchTicks ts))
   loop
   where
     loop = do
