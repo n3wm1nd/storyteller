@@ -77,12 +77,13 @@ import Prelude hiding (appendFile, drop, get, readFile)
 --   without depending on the current WorkingTree state.
 data TDraft = TDraft
   { tdRefs      :: [TickId]
+  , tdFields    :: [(T.Text, T.Text)]
   , tdMessage   :: T.Text
   , tdFileDiffs :: Map FilePath BS.ByteString  -- ^ per-file suffix this tick added
   } deriving (Show, Eq)
 
 toTickData :: TDraft -> TickData
-toTickData d = TickData { tickRefs = tdRefs d, tickFields = [], tickMessage = tdMessage d }
+toTickData d = TickData { tickRefs = tdRefs d, tickFields = tdFields d, tickMessage = tdMessage d }
 
 remapDraftRefs :: [(TickId, TickId)] -> TDraft -> TDraft
 remapDraftRefs mapping d = d { tdRefs = map remap (tdRefs d) }
@@ -122,6 +123,7 @@ popTick = do
 
   return TDraft
     { tdRefs      = tickRefs (tickData tick)
+    , tdFields    = tickFields (tickData tick)
     , tdMessage   = tickMessage (tickData tick)
     , tdFileDiffs = diffs
     }

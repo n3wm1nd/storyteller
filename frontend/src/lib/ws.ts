@@ -32,11 +32,13 @@ export type BranchCommand =
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
-  | { type: "delete.tick"; id?: string; tickId: string };
+  | { type: "delete.tick"; id?: string; tickId: string }
+  | { type: "chat.prompt"; id?: string; path: string; text: string };
 
 export type BranchTick =
-  | { kind: "atom"; tickId: string; parent: string | null; refs: string[]; message: string }
-  | { kind: "note"; tickId: string; parent: string | null; ref: string;  text: string };
+  | { kind: "atom";   tickId: string; parent: string | null; refs: string[]; message: string }
+  | { kind: "note";   tickId: string; parent: string | null; ref: string; text: string }
+  | { kind: "prompt"; tickId: string; parent: string | null; file: string; text: string };
 
 export type BranchEvent =
   | { type: "branch.ready";      id?: string; branch: string; files: string[] }

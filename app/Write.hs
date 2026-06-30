@@ -41,6 +41,7 @@ import Storyteller.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
 import Storyteller.Storage (StoryBranch, StoryStorage, store)
 import Storyteller.Types (BranchName(..))
+import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
 import Storyteller.Agent.Continuation (continuationAgent)
 import Storyteller.Agent.CharContext (loadCharContext)
 import Storyteller.Agent.Splitter (Splitter, splitAtoms, splitByParagraph)
@@ -63,7 +64,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (splitByParagraph $ writeAction outFile instruction (envActiveChars env))
+    (splitByParagraph $ writeAction outFile (Instruction instruction) (envActiveChars env))
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -79,32 +80,29 @@ writeAction
               , Splitter
               , Git
               , Logging, Fail] r
-  => FilePath -> T.Text -> [T.Text] -> Sem r T.Text
+  => FilePath -> Instruction -> [T.Text] -> Sem r T.Text
 writeAction outFile instruction activeChars = do
   charContexts <- fmap concat $ forM activeChars $ \charBranch -> do
     let branchName = BranchName charBranch
     blocks <- runBranchAndFS @Char_ branchName
             $ loadCharContext @(BranchTag Char_)
-    return $ ("## Character: " <> charBranch) : blocks
+    return $ CharContextBlock ("## Character: " <> charBranch) : blocks
 
   existing <- fileExists @(BranchTag Main) outFile >>= \case
     True  -> TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile
     False -> return ""
-  appended <- continuationAgent @(BranchTag Main) @StoryModel
-                modelConfigs (Just 300) charContexts existing instruction
+  Prose generated <- continuationAgent @(BranchTag Main) @StoryModel
+                               modelConfigs (Just (WordCount 300)) charContexts existing instruction
 
   -- Split the generated content into atoms and commit each separately,
   -- growing the file one atom at a time so each store sees a valid append.
-  atoms <- splitAtoms appended
+  atoms <- splitAtoms generated
   let sep = if T.null existing || T.isSuffixOf "\n\n" existing then ""
             else if T.isSuffixOf "\n" existing then "\n"
             else "\n\n"
-      -- Each atom is appended as a paragraph: prefix with "\n\n" except
-      -- the very first which uses the join separator against existing content.
       atomSuffixes = case atoms of
         []     -> []
         (a:as) -> (sep <> a) : map ("\n\n" <>) as
-      -- Cumulative file contents after each atom.
       atomContents = tail $ scanl (<>) existing atomSuffixes
 
   mapM_ (\(atom, content) -> do
@@ -112,4 +110,4 @@ writeAction outFile instruction activeChars = do
     store @Main (T.take 60 atom)
     ) (zip atoms atomContents)
 
-  return appended
+  return generated

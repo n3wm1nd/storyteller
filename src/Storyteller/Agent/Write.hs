@@ -23,6 +23,7 @@ import Runix.Git (Git)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
+import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.CharContext (loadCharContext)
 import Storyteller.Agent.Continuation (continuationAgent)
@@ -45,18 +46,18 @@ writeAgent
                 , FileSystem project, FileSystemRead project, FileSystemWrite project
                 , StoryBranch branch, StoryStorage, Splitter, Git, Logging, Fail ] r )
   => FilePath    -- ^ file to append to
-  -> T.Text      -- ^ user instruction
+  -> Instruction
   -> [T.Text]    -- ^ active character branch names
   -> Sem r (T.Text, [TickId])
 writeAgent path instruction activeChars = do
   charContexts <- fmap concat $ mapM (\cb -> do
     blocks <- runBranchAndFS @CharCtx (BranchName cb)
             $ loadCharContext @(BranchTag CharCtx)
-    return $ ("## Character: " <> cb) : blocks) activeChars
+    return $ CharContextBlock ("## Character: " <> cb) : blocks) activeChars
   existing <- fileExists @project path >>= \case
     True  -> TE.decodeUtf8 <$> readFile @project path
     False -> return ""
-  generated <- continuationAgent @project @StoryModel
-                 modelConfigs (Just 300) charContexts existing instruction
+  Prose generated <- continuationAgent @project @StoryModel
+                       modelConfigs (Just (WordCount 300)) charContexts existing instruction
   tids <- appendAgent @branch path generated
   return (generated, tids)

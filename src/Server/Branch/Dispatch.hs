@@ -34,14 +34,17 @@ import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
 import Server.Notification (BranchNotification(..))
 import Server.Run (runAction, SessionEffects)
-import Server.Util (withBranch)
+import Server.Util (withBranch, withBranchSplitter)
 
+import Storyteller.Agent (Prompt(..), Instruction(..))
+import Storyteller.Atom (Atom(..))
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Agent.Tracker (trackBranch)
+import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), WorkingTree, FSNode(..), runBranchAndFS, loadWorkingTree)
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, storeAs)
-import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickData(..), Note(..), TickType(..), tickId, tickParent)
+import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickData(..), Note(..), TickType(..), tickId, tickParent, tickTypeOf)
 
 import Runix.Git (Git, ObjectHash(..))
 
@@ -58,49 +61,40 @@ data CharBranch
 dispatch :: ServerEnv -> T.Text -> WS.Connection -> BranchCommand -> IO ()
 dispatch env branch conn cmd = do
   let emit = WS.sendTextData conn . encode
-
-  case cmd of
+  r <- runAction env $ case cmd of
     Track mid source files -> do
-      r <- runAction env (handleTrack branch source files)
-      case r of
-        Left err -> emit (BranchError (T.pack err))
-        Right ps -> mapM_ (\p -> emit (FileAdded mid p)) ps
+      ps <- handleTrack branch source files
+      return ([] :: [(T.Text, T.Text)], map (FileAdded mid) ps)
 
     CharGen mid path scenario seed -> do
-      r <- runAction env (handleCharGen branch path scenario seed)
-      case r of
-        Left err -> emit (BranchError (T.pack err))
-        Right _  -> emit (FileAdded mid path)
+      handleCharGen branch path scenario seed
+      return ([], [FileAdded mid path])
 
     ReadTicks _mid -> do
-      ticks <- tickSnapshot env branch
-      case ticks of
-        Left err -> emit (BranchError (T.pack err))
-        Right ts -> emit (BranchTicks ts)
+      ts <- handleReadTicks branch
+      return ([], [BranchTicks ts])
 
-    AddNote mid refTickId noteText_ -> do
-      r <- runAction env (handleAddNote branch refTickId noteText_)
-      case r of
-        Left err   -> emit (BranchError (T.pack err))
-        Right tick -> do
-          notify env branch []
-          emit (BranchTicks [tick])
+    AddNote _mid refTickId noteText_ -> do
+      tick <- handleAddNote branch refTickId noteText_
+      return ([], [BranchTicks [tick]])
 
     MoveTick mid tickId_ mAfterTickId -> do
-      r <- runAction env (handleMoveTick branch tickId_ mAfterTickId)
-      case r of
-        Left err      -> emit (BranchError (T.pack err))
-        Right mapping -> do
-          notify env branch mapping
-          emit (TicksInvalidated mid mapping)
+      mapping <- handleMoveTick branch tickId_ mAfterTickId
+      return (mapping, [TicksInvalidated mid mapping])
 
     DeleteTick mid tickId_ -> do
-      r <- runAction env (handleDeleteTick branch tickId_)
-      case r of
-        Left err      -> emit (BranchError (T.pack err))
-        Right mapping -> do
-          notify env branch mapping
-          emit (TicksInvalidated mid mapping)
+      mapping <- handleDeleteTick branch tickId_
+      return (mapping, [TicksInvalidated mid mapping])
+
+    ChatPrompt _mid path promptText_ -> do
+      handleChatPrompt branch path promptText_
+      return ([], [] :: [BranchEvent])
+
+  case r of
+    Left err             -> emit (BranchError (T.pack err))
+    Right (mapping, evs) -> do
+      notify env branch mapping
+      mapM_ emit evs
 
 -- ---------------------------------------------------------------------------
 -- Handlers
@@ -170,6 +164,16 @@ handleMoveTick branch tickIdTxt mAfterTickIdTxt =
     mapping <- moveTick @Main tid mAfter
     return (toTextPairs mapping)
 
+handleChatPrompt
+  :: SessionEffects r
+  => T.Text -> FilePath -> T.Text
+  -> Sem r ()
+handleChatPrompt branch path promptText_ =
+  withBranchSplitter @Main branch $ do
+    storeAs @Main (Prompt path promptText_)
+    writeAgent @(BranchTag Main) @Main path (Instruction promptText_) []
+    return ()
+
 -- | Delete a tick from the chain. Any note ticks referencing it are left with
 --   a dangling ref. Returns the old→new id mapping for the rebase.
 handleDeleteTick
@@ -194,24 +198,17 @@ snapshot env branch = runAction env $ do
       wt <- currentWorkingTree @Main
       return $ map fst (textFiles wt)
 
-tickSnapshot :: ServerEnv -> T.Text -> IO (Either String [BranchTick])
-tickSnapshot env branch = runAction env $ do
+handleReadTicks :: SessionEffects r => T.Text -> Sem r [BranchTick]
+handleReadTicks branch =
   getBranch (BranchName branch) >>= \case
     Nothing -> return []
     Just _  -> withBranch @Main branch $ do
       ticks <- follow @Main [] $ \acc tick -> (tick : acc, tickParent tick)
-      -- Exclude the root tick (tickParent = Nothing) — it's an internal
-      -- implementation detail, not a content tick visible to the client.
       let contentTicks = filter ((/= Nothing) . tickParent) ticks
-      return $ map toBranchTick (reverse contentTicks)
-  where
-    toBranchTick tick =
-      let tid = unTickId (tickId tick)
-          par = unTickId <$> tickParent tick
-          rs  = map unTickId (tickRefs (tickData tick))
-      in case fromTick tick of
-           Just (Note ref body) -> BranchTickNote tid par (unTickId ref) body
-           Nothing              -> BranchTickAtom tid par rs (tickMessage (tickData tick))
+      return $ map tickToBranchTick (reverse contentTicks)
+
+tickSnapshot :: ServerEnv -> T.Text -> IO (Either String [BranchTick])
+tickSnapshot env branch = runAction env (handleReadTicks branch)
 
 -- ---------------------------------------------------------------------------
 -- Pub/sub broadcast
@@ -232,6 +229,20 @@ notify env branch mapping =
 
 toTextPairs :: [(TickId, TickId)] -> [(T.Text, T.Text)]
 toTextPairs = map (\(o, n) -> (unTickId o, unTickId n))
+
+tickToBranchTick :: Tick -> BranchTick
+tickToBranchTick tick =
+  let tid = unTickId (tickId tick)
+      par = unTickId <$> tickParent tick
+      rs  = map unTickId (tickRefs (tickData tick))
+  in case tickTypeOf tick of
+       Just "note"   | Just (Note ref body)   <- fromTick tick
+                     -> BranchTickNote   tid par (unTickId ref) body
+       Just "prompt" | Just (Prompt file txt) <- fromTick tick
+                     -> BranchTickPrompt tid par (T.pack file) txt
+       Just "atom"   | Just atom <- fromTick tick
+                     -> BranchTickAtom   tid par rs (atomMessage atom)
+       _             -> BranchTickAtom   tid par rs (tickMessage (tickData tick))
 
 textFiles :: WorkingTree -> [(FilePath, ObjectHash)]
 textFiles wt = [ (path, hash) | (path, FSFile hash) <- Map.toList wt ]

@@ -61,6 +61,7 @@ interface StoryState {
   moveTick: (tickId: string, afterTickId?: string) => void;
   deleteTickEntry: (tickId: string) => void;
   toggleNotes: () => void;
+  chatPrompt: (path: string, text: string) => void;
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
@@ -293,5 +294,9 @@ export const useStory = create<StoryState>((set, get) => ({
 
   toggleNotes: () => {
     set((s) => ({ showNotes: !s.showNotes }));
+  },
+
+  chatPrompt: (path, text) => {
+    get()._branch?.send({ type: "chat.prompt", path, text });
   },
 }));

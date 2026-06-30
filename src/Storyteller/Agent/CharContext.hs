@@ -15,13 +15,14 @@ module Storyteller.Agent.CharContext
   ) where
 
 import qualified Data.List as List
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, getCwd, listFiles, readFile)
+
+import Storyteller.Agent (CharContextBlock(..))
 
 import Prelude hiding (readFile)
 
@@ -34,7 +35,7 @@ import Prelude hiding (readFile)
 loadCharContext
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => Sem r [Text]
+  => Sem r [CharContextBlock]
 loadCharContext = do
   cwd   <- getCwd @project
   files <- List.sort <$> listFiles @project cwd
@@ -44,7 +45,7 @@ readBlock
   :: forall project r
   .  Members '[FileSystemRead project, Fail] r
   => FilePath
-  -> Sem r Text
+  -> Sem r CharContextBlock
 readBlock path = do
   bytes <- readFile @project path
-  return $ "### " <> T.pack path <> "\n\n" <> TE.decodeUtf8 bytes
+  return $ CharContextBlock $ "### " <> T.pack path <> "\n\n" <> TE.decodeUtf8 bytes

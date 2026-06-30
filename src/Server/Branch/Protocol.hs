@@ -36,6 +36,7 @@ data BranchCommand
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
+  | ChatPrompt { bcId :: Maybe T.Text, bcPath :: FilePath, bcPromptText :: T.Text }
   deriving (Show)
 
 instance FromJSON BranchCommand where
@@ -49,6 +50,7 @@ instance FromJSON BranchCommand where
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
+      "chat.prompt" -> ChatPrompt i <$> o .: "path" <*> o .: "text"
       _             -> fail ("unknown branch command: " <> T.unpack t)
 
 -- | A tick as seen by the client — a sum type so the frontend can pattern-match
@@ -69,6 +71,12 @@ data BranchTick
       , btRef     :: T.Text   -- ^ the annotated atom tick id (first of tickRefs)
       , btText    :: T.Text   -- ^ the annotation text (message with "note: " stripped)
       }
+  | BranchTickPrompt
+      { btTickId  :: T.Text
+      , btParent  :: Maybe T.Text
+      , btFile    :: T.Text
+      , btText    :: T.Text
+      }
   deriving (Show)
 
 instance ToJSON BranchTick where
@@ -84,6 +92,13 @@ instance ToJSON BranchTick where
     , "tickId" .= tid
     , "parent" .= par
     , "ref"    .= ref
+    , "text"   .= txt
+    ]
+  toJSON (BranchTickPrompt tid par file txt) = object
+    [ "kind"   .= ("prompt" :: T.Text)
+    , "tickId" .= tid
+    , "parent" .= par
+    , "file"   .= file
     , "text"   .= txt
     ]
 

@@ -542,15 +542,20 @@ function AtomBlock({ atom, isLast, onEdit, onDelete }: {
   );
 }
 
-// ── Append bar ────────────────────────────────────────────────────────────────
+// ── Input bar ─────────────────────────────────────────────────────────────────
 
-function AppendBar({ enabled, fileName, onAppend }: {
+function InputBar({ enabled, onAppend, onWrite }: {
   enabled: boolean;
-  fileName: string | null;
-  onAppend: (content: string) => void;
+  onAppend: (text: string) => void;
+  onWrite:  (text: string) => void;
 }) {
-  const [content, setContent] = useState("");
+  const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
+
+  function send(action: (t: string) => void) {
+    const t = text.trim();
+    if (t) { action(t); setText(""); }
+  }
 
   function onDragHandleMouseDown(e: React.MouseEvent) {
     e.preventDefault();
@@ -578,37 +583,48 @@ function AppendBar({ enabled, fileName, onAppend }: {
       <div onMouseDown={onDragHandleMouseDown} style={{ height: 4, cursor: "ns-resize", flexShrink: 0 }} />
       <div style={{ flex: 1, display: "flex", gap: 8, alignItems: "stretch", padding: "0 16px 10px", minHeight: 0 }}>
         <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && content.trim()) {
-              onAppend(content.trim());
-              setContent("");
-            }
+            if (e.key === "Enter" && e.metaKey  && !e.shiftKey) { e.preventDefault(); send(onAppend); }
+            if (e.key === "Enter" && e.metaKey  &&  e.shiftKey) { e.preventDefault(); send(onWrite);  }
+            if (e.key === "Enter" && e.ctrlKey  && !e.shiftKey) { e.preventDefault(); send(onAppend); }
+            if (e.key === "Enter" && e.ctrlKey  &&  e.shiftKey) { e.preventDefault(); send(onWrite);  }
           }}
-          placeholder={enabled ? `Append to ${fileName}…` : "Open a file to append"}
+          placeholder={enabled ? "⌘↵ append · ⌘⇧↵ write" : "Open a file to write"}
           style={{
             flex: 1, resize: "none", fontFamily: "Georgia, serif", fontSize: 12,
             background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
             color: "var(--foreground)", padding: "6px 8px", outline: "none",
           }}
         />
-        <button
-          onClick={() => { if (content.trim()) { onAppend(content.trim()); setContent(""); } }}
-          style={{
-            alignSelf: "flex-end", padding: "5px 12px",
-            background: "var(--amber)", border: "none", borderRadius: 6,
-            color: "oklch(0.15 0.01 60)", fontWeight: 600, fontSize: 11,
-            cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap",
-          }}
-        >
-          Append
-        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "flex-end" }}>
+          <button
+            onClick={() => send(onAppend)}
+            title="Append verbatim (⌘↵)"
+            style={{
+              padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5,
+              color: "oklch(0.15 0.01 60)", fontWeight: 600, fontSize: 11, cursor: "pointer",
+            }}
+          >Append</button>
+          <button
+            onClick={() => send(onWrite)}
+            title="Send to writer agent (⌘⇧↵)"
+            style={{
+              padding: "4px 10px",
+              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)",
+              borderRadius: 5, color: "var(--amber)", fontWeight: 600, fontSize: 11, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 4,
+            }}
+          >
+            <Sparkles style={{ width: 10, height: 10 }} />
+            Write
+          </button>
+        </div>
       </div>
     </div>
   );
 }
-
 
 // ── Ticks view ────────────────────────────────────────────────────────────────
 
@@ -713,7 +729,7 @@ function TickRow({
   // all ticks that reference you must be above you (newer).
   // Moving one step: blocked if the adjacent tick would violate this.
   const refsOf = (t: BranchTick): string[] =>
-    t.kind === "note" ? [t.ref] : t.refs;
+    t.kind === "note" ? [t.ref] : t.kind === "atom" ? t.refs : [];
 
   const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
   const above = allTicks[myIdx - 1];
@@ -724,52 +740,45 @@ function TickRow({
   const canMoveUp   = !isFirst && !refsOf(above).includes(tick.tickId);
   const canMoveDown = !isLast  && !refsOf(below).includes(tick.tickId) && !refsOf(tick).includes(below?.tickId);
 
-  if (tick.kind === "note") {
-    return (
-      <div
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        style={{
-          display: "flex", alignItems: "flex-start", gap: 8,
-          padding: "4px 0 4px 12px",
-          borderLeft: "2px solid oklch(0.55 0.08 240 / 0.4)",
-          marginLeft: 8, marginBottom: 2,
-          opacity: 0.85,
-        }}
-      >
+  const tickContent = () => {
+    if (tick.kind === "note") return (
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flex: 1, minWidth: 0 }}>
         <StickyNote style={{ width: 11, height: 11, color: "oklch(0.55 0.15 240)", flexShrink: 0, marginTop: 2 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
-            {tick.text}
-          </span>
-          <span style={{
-            display: "block", fontSize: 9, fontFamily: "monospace",
-            color: hovered ? "var(--text-ghost)" : "transparent",
-            transition: "color 0.15s",
-          }}>
+        <div style={{ minWidth: 0 }}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>{tick.text}</span>
+          <span style={{ display: "block", fontSize: 9, fontFamily: "monospace", color: hovered ? "var(--text-ghost)" : "transparent", transition: "color 0.15s" }}>
             → {tick.ref.slice(0, 12)}
           </span>
         </div>
-        {hovered && (
-          <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-            {!isFirst && (
-              <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up">
-                <MoveUp style={{ width: 10, height: 10 }} />
-              </MoveButton>
-            )}
-            {!isLast && (
-              <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down">
-                <MoveDown style={{ width: 10, height: 10 }} />
-              </MoveButton>
-            )}
-            <MoveButton disabled={false} onClick={onDelete} title="Delete note" danger>
-              <Trash2 style={{ width: 10, height: 10 }} />
-            </MoveButton>
-          </div>
+      </div>
+    );
+    if (tick.kind === "prompt") return (
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flex: 1, minWidth: 0 }}>
+        <Sparkles style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0, marginTop: 2 }} />
+        <div style={{ minWidth: 0 }}>
+          <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic" }}>{tick.text}</span>
+          <span style={{ display: "block", fontSize: 9, fontFamily: "monospace", color: hovered ? "var(--text-ghost)" : "transparent", transition: "color 0.15s" }}>
+            {tick.file}
+          </span>
+        </div>
+      </div>
+    );
+    return (
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
+        <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>
+          {tick.tickId.slice(0, 12)}
+        </span>
+        <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {tick.message}
+        </span>
+        {tick.refs.length > 0 && (
+          <span style={{ fontSize: 9, color: "var(--text-ghost)", flexShrink: 0 }}>
+            {tick.refs.length} ref{tick.refs.length > 1 ? "s" : ""}
+          </span>
         )}
       </div>
     );
-  }
+  };
 
   return (
     <div
@@ -780,25 +789,8 @@ function TickRow({
         marginBottom: 2,
       }}
     >
-      <div style={{
-        display: "flex", alignItems: "baseline", gap: 10,
-        padding: "5px 0",
-        fontFamily: "monospace",
-      }}>
-        <span style={{
-          fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)",
-          flexShrink: 0, userSelect: "all", transition: "color 0.15s",
-        }}>
-          {tick.tickId.slice(0, 12)}
-        </span>
-        <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, fontFamily: "inherit", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {tick.message}
-        </span>
-        {tick.refs.length > 0 && (
-          <span style={{ fontSize: 9, color: "var(--text-ghost)", flexShrink: 0 }}>
-            {tick.refs.length} ref{tick.refs.length > 1 ? "s" : ""}
-          </span>
-        )}
+      <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 0" }}>
+        {tickContent()}
         {hovered && (
           <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
             <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up">
@@ -807,9 +799,11 @@ function TickRow({
             <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down">
               <MoveDown style={{ width: 10, height: 10 }} />
             </MoveButton>
-            <MoveButton disabled={false} onClick={() => setAddingNote((v) => !v)} title="Add note">
-              <MessageSquare style={{ width: 10, height: 10 }} />
-            </MoveButton>
+            {tick.kind === "atom" && (
+              <MoveButton disabled={false} onClick={() => setAddingNote((v) => !v)} title="Add note">
+                <MessageSquare style={{ width: 10, height: 10 }} />
+              </MoveButton>
+            )}
             <MoveButton disabled={false} onClick={onDelete} title="Delete tick" danger>
               <Trash2 style={{ width: 10, height: 10 }} />
             </MoveButton>
@@ -880,6 +874,7 @@ export default function Home() {
     conns, error, branches, activeBranch, files, ticks, openFiles, showNotes,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry, toggleNotes,
+    chatPrompt,
   } = useStory();
 
   const [leftOpen, setLeftOpen] = useState(true);
@@ -1038,10 +1033,10 @@ export default function Home() {
               />
             )}
 
-            <AppendBar
+            <InputBar
               enabled={selectedFile !== null}
-              fileName={selectedFile}
-              onAppend={(content) => selectedFile && appendToFile(selectedFile, content)}
+              onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
+              onWrite={(text)  => selectedFile && chatPrompt(selectedFile, text)}
             />
           </>}
 
