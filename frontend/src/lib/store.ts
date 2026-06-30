@@ -200,12 +200,8 @@ export const useStory = create<StoryState>((set, get) => ({
           return { openFiles: { ...s.openFiles, [path]: { path, atoms, absent: false, conn: fc } } };
         });
       } else if (evt.type === "atom.replaced") {
-        set((s) => {
-          const prev = s.openFiles[path];
-          if (!prev) return {};
-          const atoms = prev.atoms.map((a) => a.tickId === evt.oldTickId ? evt.atom : a);
-          return { openFiles: { ...s.openFiles, [path]: { ...prev, atoms } } };
-        });
+        // tickId changes on edit, so patch by oldTickId then reload to get consistent ids.
+        fc.send({ type: "read" });
       } else if (evt.type === "atom.deleted") {
         set((s) => {
           const prev = s.openFiles[path];

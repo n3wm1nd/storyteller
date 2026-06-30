@@ -25,14 +25,13 @@ import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
-                        , fileExists, readFile, writeFile )
+import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite, appendFile )
 import Runix.Git (Git, ObjectHash(..), readBlob)
 import Storyteller.Git (BranchTag(..), loadWorkingTree, FSNode(..), WorkingTree)
 import Storyteller.Storage (StoryBranch, StoryStorage, follow, storeDraft)
 import Storyteller.Types (Tick(..), TickDraft(..), TickId(..))
 
-import Prelude hiding (readFile, writeFile)
+import Prelude hiding (appendFile)
 
 trackBranch
   :: forall trackeeBranch trackerBranch trackerProject r
@@ -132,15 +131,5 @@ appendDelta
   -> Sem r Bool
 appendDelta (_, delta) | BS.null delta = return False
 appendDelta (path, delta) = do
-  existing <- readFromBranch @trackerProject path
-  writeFile @trackerProject path (existing <> delta)
+  appendFile @trackerProject path delta
   return True
-
-readFromBranch
-  :: forall project r
-  .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => FilePath
-  -> Sem r ByteString
-readFromBranch path = do
-  exists <- fileExists @project path
-  if exists then readFile @project path else return BS.empty

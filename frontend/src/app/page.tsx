@@ -473,24 +473,36 @@ function AtomBlock({ atom, isLast, onEdit, onDelete }: {
       }}
     >
       {editing ? (
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitEdit(); }
-            if (e.key === "Escape") cancelEdit();
-          }}
-          style={{
-            width: "100%", boxSizing: "border-box",
-            minHeight: 80, resize: "vertical",
-            background: "var(--surface-deep)",
-            border: "1px solid oklch(0.78 0.10 65 / 0.4)",
-            borderRadius: 4, padding: "6px 8px",
-            color: "var(--text-primary)", fontSize: 14, lineHeight: 1.6,
-            fontFamily: "inherit", outline: "none",
-          }}
-        />
+        <div>
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitEdit(); }
+              if (e.key === "Escape") cancelEdit();
+            }}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              minHeight: 80, resize: "vertical",
+              background: "var(--surface-deep)",
+              border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+              borderRadius: 4, padding: "6px 8px",
+              color: "var(--text-primary)", fontSize: 14, lineHeight: 1.6,
+              fontFamily: "inherit", outline: "none",
+            }}
+          />
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+            <button onClick={cancelEdit} style={{
+              background: "none", border: "1px solid var(--border-subtle)", borderRadius: 3,
+              color: "var(--text-ghost)", fontSize: 11, padding: "2px 8px", cursor: "pointer",
+            }}>Cancel</button>
+            <button onClick={commitEdit} style={{
+              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+              borderRadius: 3, color: "var(--text-secondary)", fontSize: 11, padding: "2px 8px", cursor: "pointer",
+            }}>Save</button>
+          </div>
+        </div>
       ) : (
         <div onDoubleClick={startEdit}>
           <ReactMarkdown components={mdComponents}>{atom.content}</ReactMarkdown>

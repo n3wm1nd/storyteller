@@ -59,12 +59,12 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
-                        , getCwd, listFiles, readFile, writeFile, fileExists )
+                        , getCwd, listFiles, readFile, writeFile, appendFile, fileExists )
 import Storyteller.Git (BranchTag(..))
 import Storyteller.Storage (StoryBranch, StoryStorage, store, at, get, follow)
 import Storyteller.Types (Tick(..), TickId(..))
 
-import Prelude hiding (readFile, writeFile)
+import Prelude hiding (readFile, writeFile, appendFile)
 
 -- | A block of new bytes to be inserted after a specific tick.
 data AppendBlock = AppendBlock
@@ -237,9 +237,7 @@ applyBlock
   -> Sem r [(TickId, TickId)]
 applyBlock (AppendBlock file afterTick content) = do
   (_tid, mapping) <- at @branchTag afterTick $ do
-    exists   <- fileExists @project file
-    existing <- if exists then readFile @project file else return BS.empty
-    writeFile @project file (existing <> content)
+    appendFile @project file content
     store @branchTag ("atom: " <> T.pack file)
   return mapping
 
