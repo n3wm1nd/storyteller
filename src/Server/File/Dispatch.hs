@@ -22,12 +22,14 @@ import Polysemy (Sem)
 import Server.Env (ServerEnv)
 import Server.File.Protocol
 import Server.Run (runAction, SessionEffects)
-import Server.Util (withBranchSplitter)
+import Server.Util (withBranch, withBranchSplitter)
 
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Git (BranchTag)
+import Storyteller.Runtime (Main)
 import Storyteller.Storage (getBranch)
-import Storyteller.Types (BranchName(..))
+import Storyteller.Edit (deleteTick, editAtom)
+import Storyteller.Types (BranchName(..), TickId(..))
 
 import Runix.Git
   ( ObjectHash(..), CommitData(..)
@@ -35,9 +37,7 @@ import Runix.Git
   , RefName(..)
   )
 
-import Prelude
-
-data Main
+import Prelude hiding (readFile, writeFile)
 
 -- ---------------------------------------------------------------------------
 -- Atom walk
@@ -45,32 +45,26 @@ data Main
 
 -- | Walk the branch from HEAD and extract all atoms for @path@.
 --   Returns Nothing if the branch doesn't exist, Just [] if file is absent.
---   Atoms are returned oldest-first; content is the suffix beyond parent's blob.
+--   Atoms are returned oldest-first.
 fileAtoms
   :: SessionEffects r
-  => T.Text    -- ^ branch name
-  -> FilePath
-  -> Sem r (Maybe [FileAtom])
-fileAtoms branch path = do
+  => T.Text -> FilePath -> Sem r (Maybe [FileAtom])
+fileAtoms branch path =
   getBranch (BranchName branch) >>= \case
     Nothing -> return Nothing
     Just _  -> do
       mHead <- resolveRef (RefName ("refs/heads/story/" <> branch))
       case mHead of
         Nothing       -> return (Just [])
-        Just headHash -> do
-          atoms <- walkAtoms headHash []
-          return $ Just atoms
+        Just headHash -> fmap Just (walkAtoms headHash [])
   where
-    -- Walk backwards from @hash@, prepend atoms (yielding newest-first); reverse at top.
     walkAtoms hash acc = do
-      cd <- readCommit hash
-      mNewBlob <- blobAt (commitTree cd)
-      mOldBlob <- case commitParents cd of
+      cd       <- readCommit hash
+      mNew     <- blobAt (commitTree cd)
+      mOld     <- case commitParents cd of
         []      -> return Nothing
         (p : _) -> readCommit p >>= blobAt . commitTree
-      let atom = buildAtom hash cd mNewBlob mOldBlob
-          acc' = maybe acc (: acc) atom
+      let acc' = maybe acc (: acc) (buildAtom hash cd mNew mOld)
       case commitParents cd of
         []      -> return acc'
         (p : _) -> walkAtoms p acc'
@@ -81,20 +75,17 @@ fileAtoms branch path = do
         Nothing -> return Nothing
         Just h  -> Just <$> readBlob h
 
-    buildAtom hash cd mNew mOld =
-      case mNew of
-        Nothing  -> Nothing
-        Just new ->
-          let old     = maybe BS.empty id mOld
-              changed = new /= old
-          in if not changed then Nothing else Just FileAtom
-            { atomTickId  = unObjectHash hash
-            , atomContent = TE.decodeUtf8With TE.lenientDecode (BS.drop (BS.length old) new)
-            , atomMessage = stripRefs (commitMessage cd)
-            , atomParent  = case commitParents cd of
-                (p : _) -> Just (unObjectHash p)
-                []      -> Nothing
-            }
+    buildAtom hash cd mNew mOld = do
+      new <- mNew
+      let old     = maybe BS.empty id mOld
+      if new == old then Nothing else Just FileAtom
+        { atomTickId  = unObjectHash hash
+        , atomContent = TE.decodeUtf8With TE.lenientDecode (BS.drop (BS.length old) new)
+        , atomMessage = stripRefs (commitMessage cd)
+        , atomParent  = case commitParents cd of
+            (p : _) -> Just (unObjectHash p)
+            []      -> Nothing
+        }
 
     stripRefs raw = case T.lines raw of
       (l : rest) | "refs: " `T.isPrefixOf` l -> T.intercalate "\n" rest
@@ -104,7 +95,6 @@ fileAtoms branch path = do
 -- Snapshot + dispatch
 -- ---------------------------------------------------------------------------
 
--- | Initial snapshot sent on connect.
 snapshot :: ServerEnv -> T.Text -> FilePath -> IO (Either String (Maybe [FileAtom]))
 snapshot env branch path = runAction env $ fileAtoms branch path
 
@@ -126,37 +116,94 @@ dispatch env branch path conn cmd = do
         Right (Just atoms) -> emit (FileAtoms atoms)
 
     Delete _mid ->
-      emit (FileError "delete not yet implemented")
+      emit (FileError "file delete not yet implemented")
+
+    EditAtom mid tickIdTxt newContent -> do
+      r <- runAction env (handleEditAtom branch path tickIdTxt newContent)
+      case r of
+        Left err            -> emit (FileError (T.pack err))
+        Right (oldId, atom) -> emit (AtomReplaced mid oldId atom)
+
+    DeleteAtom mid tickIdTxt -> do
+      r <- runAction env (handleDeleteAtom branch path tickIdTxt)
+      case r of
+        Left err      -> emit (FileError (T.pack err))
+        Right mapping -> emit (AtomDeleted mid tickIdTxt mapping)
+
+    MoveAtom mid tickIdTxt mAfterTickId -> do
+      r <- runAction env (handleMoveAtom branch path tickIdTxt mAfterTickId)
+      case r of
+        Left err      -> emit (FileError (T.pack err))
+        Right mapping -> emit (AtomMoved mid mapping)
 
 -- ---------------------------------------------------------------------------
 -- Handlers
 -- ---------------------------------------------------------------------------
 
 handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r FileAtom
-handleAppend branch path _content =
+handleAppend branch path content =
   withBranchSplitter @Main branch $ do
-    _tickId <- appendAgent @(BranchTag Main) @Main path _content
-    mHead   <- resolveRef (RefName ("refs/heads/story/" <> branch))
-    case mHead of
-      Nothing       -> fail "branch head disappeared after append"
-      Just headHash -> do
-        cd       <- readCommit headHash
-        mNewBlob <- blobAt (commitTree cd)
-        mOldBlob <- case commitParents cd of
-          []      -> return Nothing
-          (p : _) -> readCommit p >>= blobAt . commitTree
-        case mNewBlob of
-          Nothing -> fail "appended file has no blob"
-          Just new -> do
-            let old = maybe BS.empty id mOldBlob
-            return FileAtom
-              { atomTickId  = unObjectHash headHash
-              , atomContent = TE.decodeUtf8With TE.lenientDecode (BS.drop (BS.length old) new)
-              , atomMessage = stripRefs (commitMessage cd)
-              , atomParent  = case commitParents cd of
-                  (p : _) -> Just (unObjectHash p)
-                  []      -> Nothing
-              }
+    _tids <- appendAgent @(BranchTag Main) @Main path content
+    atomAtHead branch path
+
+handleEditAtom
+  :: SessionEffects r
+  => T.Text -> FilePath -> T.Text -> T.Text
+  -> Sem r (T.Text, FileAtom)
+handleEditAtom branch path tickIdTxt newContent =
+  withBranch @Main branch $ do
+    (_newTid, _mapping) <- editAtom @Main
+      (TickId tickIdTxt) path (TE.encodeUtf8 newContent)
+      ("atom: " <> T.take 60 newContent)
+    atom <- atomAtHead branch path
+    return (tickIdTxt, atom)
+
+handleDeleteAtom
+  :: SessionEffects r
+  => T.Text -> FilePath -> T.Text
+  -> Sem r [(T.Text, T.Text)]
+handleDeleteAtom branch _path tickIdTxt =
+  withBranch @Main branch $ do
+    mapping <- deleteTick @Main (TickId tickIdTxt)
+    return [ (unTickId o, unTickId n) | (o, n) <- mapping ]
+
+-- | Move an atom to a new position: delete it from its current position and
+--   re-insert after the target tick using At + store.
+handleMoveAtom
+  :: SessionEffects r
+  => T.Text -> FilePath -> T.Text -> Maybe T.Text
+  -> Sem r [(T.Text, T.Text)]
+handleMoveAtom _branch _path _tickIdTxt _mAfterTickId =
+  fail "move not yet implemented"
+
+-- ---------------------------------------------------------------------------
+-- Helpers
+-- ---------------------------------------------------------------------------
+
+-- | Read the atom at HEAD for @path@ — used after any mutation to return the result.
+atomAtHead :: SessionEffects r => T.Text -> FilePath -> Sem r FileAtom
+atomAtHead branch path = do
+  mHead <- resolveRef (RefName ("refs/heads/story/" <> branch))
+  case mHead of
+    Nothing       -> fail "branch head not found"
+    Just headHash -> do
+      cd   <- readCommit headHash
+      mNew <- blobAt (commitTree cd)
+      mOld <- case commitParents cd of
+        []      -> return Nothing
+        (p : _) -> readCommit p >>= blobAt . commitTree
+      case mNew of
+        Nothing -> fail "no blob at HEAD for this file"
+        Just new -> do
+          let old = maybe BS.empty id mOld
+          return FileAtom
+            { atomTickId  = unObjectHash headHash
+            , atomContent = TE.decodeUtf8With TE.lenientDecode (BS.drop (BS.length old) new)
+            , atomMessage = stripRefs (commitMessage cd)
+            , atomParent  = case commitParents cd of
+                (p : _) -> Just (unObjectHash p)
+                []      -> Nothing
+            }
   where
     blobAt treeHash = do
       mHash <- lookupPath treeHash path

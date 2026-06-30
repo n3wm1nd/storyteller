@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   PanelLeftClose, PanelLeftOpen,
@@ -411,20 +411,54 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   ),
 };
 
-function AtomChain({ atoms }: { atoms: FileAtom[] }) {
+function AtomChain({ atoms, onEdit, onDelete }: {
+  atoms: FileAtom[];
+  onEdit: (tickId: string, content: string) => void;
+  onDelete: (tickId: string) => void;
+}) {
   return (
     <div style={{ flex: 1, overflow: "auto" }}>
       <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
         {atoms.map((atom, i) => (
-          <AtomBlock key={atom.tickId} atom={atom} isLast={i === atoms.length - 1} />
+          <AtomBlock
+            key={atom.tickId}
+            atom={atom}
+            isLast={i === atoms.length - 1}
+            onEdit={(content) => onEdit(atom.tickId, content)}
+            onDelete={() => onDelete(atom.tickId)}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function AtomBlock({ atom, isLast }: { atom: FileAtom; isLast: boolean }) {
+function AtomBlock({ atom, isLast, onEdit, onDelete }: {
+  atom: FileAtom;
+  isLast: boolean;
+  onEdit: (content: string) => void;
+  onDelete: () => void;
+}) {
   const [hovered, setHovered] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  function startEdit() {
+    setDraft(atom.content);
+    setEditing(true);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+
+  function commitEdit() {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== atom.content.trim()) onEdit(trimmed);
+    setEditing(false);
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+  }
 
   return (
     <div
@@ -438,7 +472,51 @@ function AtomBlock({ atom, isLast }: { atom: FileAtom; isLast: boolean }) {
         marginBottom: isLast ? 0 : undefined,
       }}
     >
-      <ReactMarkdown components={mdComponents}>{atom.content}</ReactMarkdown>
+      {editing ? (
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitEdit(); }
+            if (e.key === "Escape") cancelEdit();
+          }}
+          style={{
+            width: "100%", boxSizing: "border-box",
+            minHeight: 80, resize: "vertical",
+            background: "var(--surface-deep)",
+            border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+            borderRadius: 4, padding: "6px 8px",
+            color: "var(--text-primary)", fontSize: 14, lineHeight: 1.6,
+            fontFamily: "inherit", outline: "none",
+          }}
+        />
+      ) : (
+        <div onDoubleClick={startEdit}>
+          <ReactMarkdown components={mdComponents}>{atom.content}</ReactMarkdown>
+        </div>
+      )}
+
+      {/* Hover controls */}
+      {hovered && !editing && (
+        <button
+          onClick={onDelete}
+          title="Delete atom"
+          style={{
+            position: "absolute", top: 0, right: 0,
+            background: "none", border: "none", cursor: "pointer",
+            color: "var(--text-ghost)", fontSize: 12, lineHeight: 1,
+            padding: "2px 4px", opacity: 0.6,
+            transition: "opacity 0.15s, color 0.15s",
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; (e.currentTarget as HTMLElement).style.color = "oklch(0.65 0.18 25)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = "0.6"; (e.currentTarget as HTMLElement).style.color = "var(--text-ghost)"; }}
+        >
+          ×
+        </button>
+      )}
+
+      {/* Tick id */}
       <span style={{
         position: "absolute", bottom: 0, right: 0,
         fontSize: 9, fontFamily: "monospace", lineHeight: 1,
@@ -541,7 +619,8 @@ function TicksView({ activeBranch }: { activeBranch: string | null }) {
 export default function Home() {
   const {
     conns, error, branches, activeBranch, files, openFiles,
-    connect, createBranch, deleteBranch, selectBranch, openFile, closeFile, appendToFile,
+    connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
+    appendToFile, editAtom, deleteAtom,
   } = useStory();
 
   const [leftOpen, setLeftOpen] = useState(true);
@@ -693,7 +772,11 @@ export default function Home() {
                 Loading…
               </div>
             ) : (
-              <AtomChain atoms={atoms} />
+              <AtomChain
+                atoms={atoms}
+                onEdit={(tickId, content) => selectedFile && editAtom(selectedFile, tickId, content)}
+                onDelete={(tickId) => selectedFile && deleteAtom(selectedFile, tickId)}
+              />
             )}
 
             <AppendBar

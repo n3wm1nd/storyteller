@@ -35,9 +35,12 @@ export type BranchEvent =
   | { type: "error"; message: string };
 
 export type FileCommand =
-  | { type: "append"; id?: string; content: string }
-  | { type: "read";   id?: string }
-  | { type: "delete"; id?: string };
+  | { type: "append";      id?: string; content: string }
+  | { type: "read";        id?: string }
+  | { type: "delete";      id?: string }
+  | { type: "edit.atom";   id?: string; tickId: string; content: string }
+  | { type: "delete.atom"; id?: string; tickId: string }
+  | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string };
 
 export interface FileAtom {
   tickId:  string;
@@ -46,10 +49,15 @@ export interface FileAtom {
   parent:  string | null;
 }
 
+export type IdMapping = { old: string; new: string };
+
 export type FileEvent =
   | { type: "file.atoms";    atoms: FileAtom[] }
   | { type: "file.absent";   id?: string }
   | { type: "atom.appended"; atom: FileAtom }
+  | { type: "atom.replaced"; id?: string; oldTickId: string; atom: FileAtom }
+  | { type: "atom.deleted";  id?: string; oldTickId: string; mapping: IdMapping[] }
+  | { type: "atom.moved";    id?: string; mapping: IdMapping[] }
   | { type: "file.updated";  id?: string; content: string }
   | { type: "file.deleted";  id?: string }
   | { type: "error"; message: string };

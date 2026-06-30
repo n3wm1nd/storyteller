@@ -5,6 +5,7 @@ import {
   sessionConn, branchConn, fileConn,
   type StoryWS,
   type FileAtom,
+  type IdMapping,
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
   type FileCommand,    type FileEvent,
@@ -49,6 +50,8 @@ interface StoryState {
   openFile: (path: string) => Promise<void>;
   closeFile: (path: string) => void;
   appendToFile: (path: string, content: string) => void;
+  editAtom: (path: string, tickId: string, content: string) => void;
+  deleteAtom: (path: string, tickId: string) => void;
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
@@ -196,6 +199,26 @@ export const useStory = create<StoryState>((set, get) => ({
           const atoms = prev ? [...prev.atoms, evt.atom] : [evt.atom];
           return { openFiles: { ...s.openFiles, [path]: { path, atoms, absent: false, conn: fc } } };
         });
+      } else if (evt.type === "atom.replaced") {
+        set((s) => {
+          const prev = s.openFiles[path];
+          if (!prev) return {};
+          const atoms = prev.atoms.map((a) => a.tickId === evt.oldTickId ? evt.atom : a);
+          return { openFiles: { ...s.openFiles, [path]: { ...prev, atoms } } };
+        });
+      } else if (evt.type === "atom.deleted") {
+        set((s) => {
+          const prev = s.openFiles[path];
+          if (!prev) return {};
+          const remap = new Map(evt.mapping.map((m: IdMapping) => [m.old, m.new]));
+          const atoms = prev.atoms
+            .filter((a) => a.tickId !== evt.oldTickId)
+            .map((a) => remap.has(a.tickId) ? { ...a, tickId: remap.get(a.tickId)! } : a);
+          return { openFiles: { ...s.openFiles, [path]: { ...prev, atoms } } };
+        });
+      } else if (evt.type === "atom.moved") {
+        // Full re-fetch is safest — the chain order changed and all ids shifted.
+        get().openFiles[path]?.conn.send({ type: "read" });
       } else if (evt.type === "error") {
         set({ error: evt.message });
       }
@@ -223,5 +246,13 @@ export const useStory = create<StoryState>((set, get) => ({
     if (fc) {
       fc.conn.send({ type: "append", content: content.replace(/^\/+/, "") });
     }
+  },
+
+  editAtom: (path, tickId, content) => {
+    get().openFiles[path]?.conn.send({ type: "edit.atom", tickId, content });
+  },
+
+  deleteAtom: (path, tickId) => {
+    get().openFiles[path]?.conn.send({ type: "delete.atom", tickId });
   },
 }));
