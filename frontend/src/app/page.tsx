@@ -709,35 +709,20 @@ function TickRow({
   const [addingNote, setAddingNote] = useState(false);
   const [noteText, setNoteText] = useState("");
 
-  // Ordering invariant check: can this tick move up/down?
-  const canMoveUp = !isFirst && (() => {
-    if (tick.kind === "note") {
-      // Note can't move before its referenced tick.
-      const refIdx = allTicks.findIndex((t) => t.tickId === tick.ref);
-      const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);
-      const prevIdx = prevTick ? allTicks.findIndex((t) => t.tickId === prevTick.tickId) : -1;
-      return refIdx < prevIdx;
-    }
-    // Atom: can't move past the tick immediately above if it's a note referencing this atom.
-    const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
-    const aboveTick = allTicks[myIdx - 1];
-    return !(aboveTick?.kind === "note" && aboveTick.ref === tick.tickId);
-  })();
+  // Ordering invariant: all ticks you reference must be below you (older);
+  // all ticks that reference you must be above you (newer).
+  // Moving one step: blocked if the adjacent tick would violate this.
+  const refsOf = (t: BranchTick): string[] =>
+    t.kind === "note" ? [t.ref] : t.refs;
 
-  const canMoveDown = !isLast && (() => {
-    if (tick.kind === "note") {
-      // Note can't move past its referenced tick.
-      const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);
-      const below  = allTicks[myIdx + 1];
-      return !(below?.tickId === tick.ref);
-    }
-    // Atom: can't move after a note that refs it.
-    const myIdx  = allTicks.findIndex((t) => t.tickId === tick.tickId);
-    const nextTick = allTicks[myIdx + 1];
-    if (!nextTick) return true;
-    // If the next tick is a note referencing this atom, can't swap.
-    return !(nextTick.kind === "note" && nextTick.ref === tick.tickId);
-  })();
+  const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
+  const above = allTicks[myIdx - 1];
+  const below = allTicks[myIdx + 1];
+
+  // Can't move up if the tick above references us (it must stay above us).
+  // Can't move down if the tick below references us, or if we reference it (it must stay below us).
+  const canMoveUp   = !isFirst && !refsOf(above).includes(tick.tickId);
+  const canMoveDown = !isLast  && !refsOf(below).includes(tick.tickId) && !refsOf(tick).includes(below?.tickId);
 
   if (tick.kind === "note") {
     return (
