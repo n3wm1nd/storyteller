@@ -34,17 +34,16 @@ import Storyteller.Types (Tick(..), TickDraft(..), TickId(..))
 import Prelude hiding (appendFile)
 
 trackBranch
-  :: forall trackeeBranch trackerBranch trackerProject r
-  .  ( trackerProject ~ BranchTag trackerBranch
-     , Members '[ StoryBranch trackeeBranch
-                , FileSystem     trackerProject
-                , FileSystemRead trackerProject
-                , FileSystemWrite trackerProject
-                , StoryBranch trackerBranch
-                , StoryStorage
-                , Git
-                , Fail
-                ] r )
+  :: forall trackeeBranch trackerBranch r
+  .  Members '[ StoryBranch trackeeBranch
+              , FileSystem     (BranchTag trackerBranch)
+              , FileSystemRead (BranchTag trackerBranch)
+              , FileSystemWrite (BranchTag trackerBranch)
+              , StoryBranch trackerBranch
+              , StoryStorage
+              , Git
+              , Fail
+              ] r
   => [(FilePath, FilePath)]
   -> Sem r [TickId]
 trackBranch files = do
@@ -57,7 +56,7 @@ trackBranch files = do
   let newTicks = dropUntilAfterLastSynced syncedRefs trackeeTicks
 
   fmap concat $ mapM
-    (copyAtom @trackerProject @trackerBranch files)
+    (copyAtom @(BranchTag trackerBranch) @trackerBranch files)
     newTicks
 
 -- | Drop everything up to and including the last synced tick; return the rest.

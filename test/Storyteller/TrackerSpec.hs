@@ -102,8 +102,8 @@ spec = do
             writeFile @(BranchTag Source) "story.md" "paragraph one\n\nparagraph two"
             _ <- store @Source "atom 2"
             -- Track into tracker.
-            tids <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                      ["story.md"]
+            tids <- trackBranch @Source @Tracker
+                      [("story.md", "story.md")]
             -- Read tracker result.
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids, content)
@@ -118,14 +118,14 @@ spec = do
             writeFile @(BranchTag Source) "story.md" "atom one"
             _ <- store @Source "atom 1"
             -- First track.
-            tids1 <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                       ["story.md"]
+            tids1 <- trackBranch @Source @Tracker
+                       [("story.md", "story.md")]
             -- Add another atom to source.
             writeFile @(BranchTag Source) "story.md" "atom one\n\natom two"
             _ <- store @Source "atom 2"
             -- Second track: should only copy the new atom.
-            tids2 <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                       ["story.md"]
+            tids2 <- trackBranch @Source @Tracker
+                       [("story.md", "story.md")]
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids1, length tids2, content)
       case result of
@@ -140,8 +140,8 @@ spec = do
             writeFile @(BranchTag Source) "story.md" "source atom"
             _ <- store @Source "atom 1"
             -- First track.
-            _ <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                   ["story.md"]
+            _ <- trackBranch @Source @Tracker
+                   [("story.md", "story.md")]
             -- Tracker adds its own tick (no ref to source).
             writeFile @(BranchTag Tracker) "notes.md" "author note"
             _ <- store @Tracker "own tick"
@@ -149,8 +149,8 @@ spec = do
             writeFile @(BranchTag Source) "story.md" "source atom\n\nnew atom"
             _ <- store @Source "atom 2"
             -- Second track: should only copy new source atom.
-            tids <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                      ["story.md"]
+            tids <- trackBranch @Source @Tracker
+                      [("story.md", "story.md")]
             storyContent <- readFile @(BranchTag Tracker) "story.md"
             noteContent  <- fileExists @(BranchTag Tracker) "notes.md"
             return (length tids, storyContent, noteContent)
@@ -165,10 +165,10 @@ spec = do
       let result = runTwoTrack $ do
             writeFile @(BranchTag Source) "story.md" "atom one"
             _ <- store @Source "atom 1"
-            _ <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                   ["story.md"]
+            _ <- trackBranch @Source @Tracker
+                   [("story.md", "story.md")]
             -- Track again with no new source atoms.
-            tids <- trackBranch @Source @(BranchTag Source) @Tracker @(BranchTag Tracker)
-                      ["story.md"]
+            tids <- trackBranch @Source @Tracker
+                      [("story.md", "story.md")]
             return (length tids)
       result `shouldBe` Right 0

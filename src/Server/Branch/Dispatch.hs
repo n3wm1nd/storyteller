@@ -76,7 +76,7 @@ handleTrack branch source files = do
     Just _  -> return ()
   runBranchAndFS @Source sourceName
     $ runBranchAndFS @Tracker target $ do
-        void $ trackBranch @Source @Tracker @(BranchTag Tracker) filePairs
+        void $ trackBranch @Source @Tracker filePairs
         return destPaths
 
 handleCharGen :: SessionEffects r => T.Text -> FilePath -> T.Text -> Maybe Int -> Sem r ()
