@@ -5,10 +5,9 @@ import ReactMarkdown from "react-markdown";
 import {
   PanelLeftClose, PanelLeftOpen,
   Folder, FolderOpen, FileText, GitBranch, ChevronRight,
-  Sparkles, Plus,
+  Sparkles, Plus, MessageSquare, StickyNote, Trash2, MoveUp, MoveDown,
 } from "lucide-react";
 import { useStory, type ConnInfo, type FileTick, type BranchTick } from "@/lib/store";
-import { MessageSquare, StickyNote, Trash2, MoveUp, MoveDown } from "lucide-react";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
