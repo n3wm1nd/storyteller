@@ -42,6 +42,7 @@ export type BranchEvent =
   | { type: "branch.ready";      id?: string; branch: string; files: string[] }
   | { type: "branch.ticks";      ticks: BranchTick[] }
   | { type: "ticks.invalidated"; id?: string; mapping: IdMapping[] }
+  | { type: "file.added";        id?: string; path: string }
   | { type: "error"; message: string };
 
 export type FileCommand =

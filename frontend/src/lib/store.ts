@@ -170,6 +170,10 @@ export const useStory = create<StoryState>((set, get) => ({
           files: [...evt.files].sort(),
           conns: setConnStatus(s.conns, label, "connected"),
         }));
+      } else if (evt.type === "file.added") {
+        set((s) => ({
+          files: s.files.includes(evt.path) ? s.files : [...s.files, evt.path].sort(),
+        }));
       } else if (evt.type === "branch.ticks") {
         set({ ticks: evt.ticks });
       } else if (evt.type === "ticks.invalidated") {
