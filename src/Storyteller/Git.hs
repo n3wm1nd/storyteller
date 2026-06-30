@@ -265,7 +265,7 @@ runStoryStorageGit = interpret $ \case
         rootHash <- writeCommit CommitData
           { commitParents = []
           , commitTree    = emptyTree
-          , commitMessage = "root"
+          , commitMessage = encodeTickData (toDraft (Root name))
           }
         createRef ref rootHash
         return Branch { branchName = name, branchHead = TickId (unObjectHash rootHash) }

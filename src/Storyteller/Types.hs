@@ -24,6 +24,7 @@ module Storyteller.Types
   , decodePayload
 
     -- * Built-in tick kinds
+  , Root(..)
   , Note(..)
 
     -- * Utilities
@@ -135,6 +136,17 @@ tickTypeOf t = case T.lines (tickMessage (tickData t)) of
 -- ---------------------------------------------------------------------------
 -- Built-in tick kinds
 -- ---------------------------------------------------------------------------
+
+-- | The root tick: the first commit on a branch, carrying no content.
+--   Created by 'createBranch'; never visible in normal chain walks.
+data Root = Root
+  { rootBranch :: BranchName
+  } deriving (Show, Eq)
+
+instance TickType Root where
+  tickTypeName = "root"
+  toDraft (Root name) = encodeDraft @Root [] [] (unBranchName name)
+  fromTick t = Root . BranchName <$> decodePayload @Root t
 
 -- | An annotation: a human note referencing another tick.
 data Note = Note
