@@ -680,7 +680,7 @@ function TicksView({
         </div>
       ) : (
         <div style={{ flex: 1, overflow: "auto" }}>
-          <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 32px 48px" }}>
+          <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 32px 48px" }}>
             {visible.map((tick, i) => {
               const isFirst = i === 0;
               const isLast  = i === visible.length - 1;
@@ -742,25 +742,31 @@ function TickRow({
 
   const tickContent = () => {
     if (tick.kind === "note") return (
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flex: 1, minWidth: 0 }}>
-        <StickyNote style={{ width: 11, height: 11, color: "oklch(0.55 0.15 240)", flexShrink: 0, marginTop: 2 }} />
-        <div style={{ minWidth: 0 }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>{tick.text}</span>
-          <span style={{ display: "block", fontSize: 9, fontFamily: "monospace", color: hovered ? "var(--text-ghost)" : "transparent", transition: "color 0.15s" }}>
-            → {tick.ref.slice(0, 12)}
-          </span>
-        </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
+        <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>
+          {tick.tickId.slice(0, 12)}
+        </span>
+        <StickyNote style={{ width: 11, height: 11, color: "oklch(0.55 0.15 240)", flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "inherit" }}>
+          {tick.text}
+        </span>
+        <span style={{ fontSize: 9, color: hovered ? "var(--text-ghost)" : "transparent", flexShrink: 0, transition: "color 0.15s" }}>
+          → {tick.ref.slice(0, 12)}
+        </span>
       </div>
     );
     if (tick.kind === "prompt") return (
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flex: 1, minWidth: 0 }}>
-        <Sparkles style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0, marginTop: 2 }} />
-        <div style={{ minWidth: 0 }}>
-          <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic" }}>{tick.text}</span>
-          <span style={{ display: "block", fontSize: 9, fontFamily: "monospace", color: hovered ? "var(--text-ghost)" : "transparent", transition: "color 0.15s" }}>
-            {tick.file}
-          </span>
-        </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
+        <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>
+          {tick.tickId.slice(0, 12)}
+        </span>
+        <Sparkles style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "inherit" }}>
+          {tick.text}
+        </span>
+        <span style={{ fontSize: 9, color: hovered ? "var(--text-ghost)" : "transparent", flexShrink: 0, transition: "color 0.15s" }}>
+          {tick.file}
+        </span>
       </div>
     );
     return (
@@ -771,6 +777,11 @@ function TickRow({
         <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {tick.message}
         </span>
+        {tick.file && (
+          <span style={{ fontSize: 9, color: hovered ? "var(--text-ghost)" : "transparent", transition: "color 0.15s", flexShrink: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+            {tick.file}
+          </span>
+        )}
         {tick.refs.length > 0 && (
           <span style={{ fontSize: 9, color: "var(--text-ghost)", flexShrink: 0 }}>
             {tick.refs.length} ref{tick.refs.length > 1 ? "s" : ""}
@@ -789,26 +800,24 @@ function TickRow({
         marginBottom: 2,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 0" }}>
+      <div style={{ position: "relative", display: "flex", alignItems: "center", padding: "5px 0", paddingRight: hovered ? 88 : 0, transition: "padding-right 0.12s" }}>
         {tickContent()}
-        {hovered && (
-          <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-            <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up">
-              <MoveUp style={{ width: 10, height: 10 }} />
+        <div style={{ position: "absolute", right: 0, display: "flex", gap: 2, opacity: hovered ? 1 : 0, transition: "opacity 0.12s", pointerEvents: hovered ? "auto" : "none", background: "var(--surface-deep)", paddingLeft: 4 }}>
+          <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up">
+            <MoveUp style={{ width: 10, height: 10 }} />
+          </MoveButton>
+          <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down">
+            <MoveDown style={{ width: 10, height: 10 }} />
+          </MoveButton>
+          {tick.kind === "atom" && (
+            <MoveButton disabled={false} onClick={() => setAddingNote((v) => !v)} title="Add note">
+              <MessageSquare style={{ width: 10, height: 10 }} />
             </MoveButton>
-            <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down">
-              <MoveDown style={{ width: 10, height: 10 }} />
-            </MoveButton>
-            {tick.kind === "atom" && (
-              <MoveButton disabled={false} onClick={() => setAddingNote((v) => !v)} title="Add note">
-                <MessageSquare style={{ width: 10, height: 10 }} />
-              </MoveButton>
-            )}
-            <MoveButton disabled={false} onClick={onDelete} title="Delete tick" danger>
-              <Trash2 style={{ width: 10, height: 10 }} />
-            </MoveButton>
-          </div>
-        )}
+          )}
+          <MoveButton disabled={false} onClick={onDelete} title="Delete tick" danger>
+            <Trash2 style={{ width: 10, height: 10 }} />
+          </MoveButton>
+        </div>
       </div>
 
       {addingNote && (

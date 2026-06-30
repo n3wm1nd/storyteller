@@ -223,8 +223,12 @@ tickToBranchTick tick =
        Just "prompt" | Just (Prompt file txt) <- fromTick tick
                      -> BranchTickPrompt tid par (T.pack file) txt
        Just "atom"   | Just atom <- fromTick tick
-                     -> BranchTickAtom   tid par rs (atomMessage atom)
-       _             -> BranchTickAtom   tid par rs (tickMessage (tickData tick))
+                     -> BranchTickAtom { btTickId = tid, btParent = par, btRefs = rs
+                                       , btMessage = atomMessage atom
+                                       , btAtomFile = Just (T.pack (atomFile atom)) }
+       _             -> BranchTickAtom { btTickId = tid, btParent = par, btRefs = rs
+                                       , btMessage = tickMessage (tickData tick)
+                                       , btAtomFile = Nothing }
 
 branchFiles
   :: forall branch r

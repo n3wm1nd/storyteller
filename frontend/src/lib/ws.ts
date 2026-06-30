@@ -36,7 +36,7 @@ export type BranchCommand =
   | { type: "chat.prompt"; id?: string; path: string; text: string };
 
 export type BranchTick =
-  | { kind: "atom";   tickId: string; parent: string | null; refs: string[]; message: string }
+  | { kind: "atom";   tickId: string; parent: string | null; refs: string[]; message: string; file?: string }
   | { kind: "note";   tickId: string; parent: string | null; ref: string; text: string }
   | { kind: "prompt"; tickId: string; parent: string | null; file: string; text: string };
 

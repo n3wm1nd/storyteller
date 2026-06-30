@@ -64,6 +64,7 @@ data BranchTick
       , btParent  :: Maybe T.Text
       , btRefs    :: [T.Text]
       , btMessage :: T.Text
+      , btAtomFile :: Maybe T.Text  -- ^ file path hint, present when the atom has a "file" field
       }
   | BranchTickNote
       { btTickId  :: T.Text
@@ -80,13 +81,13 @@ data BranchTick
   deriving (Show)
 
 instance ToJSON BranchTick where
-  toJSON (BranchTickAtom tid par refs msg) = object
+  toJSON (BranchTickAtom tid par refs msg mFile) = object $
     [ "kind"    .= ("atom" :: T.Text)
     , "tickId"  .= tid
     , "parent"  .= par
     , "refs"    .= refs
     , "message" .= msg
-    ]
+    ] <> maybe [] (\f -> [("file", toJSON f)]) mFile
   toJSON (BranchTickNote tid par ref txt) = object
     [ "kind"   .= ("note" :: T.Text)
     , "tickId" .= tid

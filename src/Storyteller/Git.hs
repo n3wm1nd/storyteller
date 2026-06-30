@@ -713,15 +713,11 @@ walkFileAtoms path hash acc = do
       if new == old then Nothing else Just AtomEntry
         { aeTickId  = unObjectHash hash
         , aeContent = TE.decodeUtf8With TEE.lenientDecode (BS.drop (BS.length old) new)
-        , aeMessage = stripCommitRefs (commitMessage cd)
+        , aeMessage = commitMessage cd
         , aeParent  = case commitParents cd of
             (p : _) -> Just (unObjectHash p)
             []      -> Nothing
         }
-
-    stripCommitRefs raw = case T.lines raw of
-      (l : rest) | "refs: " `T.isPrefixOf` l -> T.intercalate "\n" rest
-      ls                                       -> T.intercalate "\n" ls
 
 walkFrom
   :: Members '[Git, Fail] r
