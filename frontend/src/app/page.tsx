@@ -299,14 +299,12 @@ function BranchItem({ name, active, onSelect, onDelete }: {
 
 function Toolbar({
   leftOpen, onToggleLeft,
-  selectedFile, atomCount, annotationCount, onCloseFile, onNewFile,
+  selectedFile, onCloseFile, onNewFile,
   centerTab, onCenterTab,
 }: {
   leftOpen: boolean;
   onToggleLeft: () => void;
   selectedFile: string | null;
-  atomCount: number;
-  annotationCount: number;
   onCloseFile: () => void;
   onNewFile: () => void;
   centerTab: "file" | "ticks";
@@ -344,11 +342,6 @@ function Toolbar({
             color: centerTab === "file" ? "var(--text-muted)" : "var(--text-dim)",
             fontWeight: 400,
           }}>{selectedFile.split("/").pop()}</span>
-          {atomCount > 0 && (
-            <span style={{ fontSize: 9, color: "var(--text-dim)", flexShrink: 0, fontWeight: 400 }}>
-              {atomCount} atom{atomCount !== 1 ? "s" : ""}
-            </span>
-          )}
           <span onClick={(e) => { e.stopPropagation(); onCloseFile(); }} style={{
             fontSize: 13, lineHeight: 1, flexShrink: 0, opacity: 0.5, cursor: "pointer",
           }}>✕</span>
@@ -1039,7 +1032,7 @@ export default function Home() {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
           <Toolbar
             leftOpen={leftOpen} onToggleLeft={() => setLeftOpen((v) => !v)}
-            selectedFile={selectedFile} atomCount={atomCount} annotationCount={annotationCount}
+            selectedFile={selectedFile}
             onCloseFile={handleCloseFile}
             onNewFile={() => setShowNewFile((v) => !v)}
             centerTab={centerTab} onCenterTab={setCenterTab}
@@ -1094,6 +1087,9 @@ export default function Home() {
                   <StickyNote style={{ width: 10, height: 10 }} />
                   Annotations{annotationCount > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>{annotationCount}</span>}
                 </button>
+                <span style={{ fontSize: 9, color: "var(--text-ghost)", marginLeft: 4 }}>
+                  {atomCount} atom{atomCount !== 1 ? "s" : ""}
+                </span>
               </div>
             )}
 
