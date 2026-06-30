@@ -60,6 +60,9 @@ import Runix.Git
 import Runix.FileSystem
   ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
 
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
+
 import Storyteller.Types
 import Storyteller.Storage hiding (get, drop, Get)
 import qualified Storyteller.Storage as S
@@ -380,6 +383,13 @@ runStoryBranchGit branch action = do
       fa        <- runTSimple innerAction
       raise $ put outerWt
       return fa
+
+    S.FileAtoms path -> do
+      mHead <- raise $ resolveRef (storyRef branch)
+      atoms <- case mHead of
+        Nothing       -> return []
+        Just headHash -> raise $ walkFileAtoms path headHash []
+      pureT atoms
     ) action
 
 -- ---------------------------------------------------------------------------
@@ -671,6 +681,47 @@ runAtH branch tid current action
               let oldId = TickId (unObjectHash current)
                   newId = TickId (unObjectHash newHash)
               return $ Right (fa, innerMapping <> [(oldId, newId)])
+
+-- | Walk a branch from @headHash@ backwards, collecting 'AtomEntry' values
+--   for commits that changed the blob at @path@.  Returns oldest-first.
+walkFileAtoms
+  :: Members '[Git, Fail] r
+  => FilePath
+  -> ObjectHash
+  -> [AtomEntry]
+  -> Sem r [AtomEntry]
+walkFileAtoms path hash acc = do
+  cd   <- readCommit hash
+  mNew <- blobAt (commitTree cd)
+  mOld <- case commitParents cd of
+    []      -> return Nothing
+    (p : _) -> readCommit p >>= blobAt . commitTree
+  let acc' = maybe acc (: acc) (buildEntry hash cd mNew mOld)
+  case commitParents cd of
+    []      -> return acc'
+    (p : _) -> walkFileAtoms path p acc'
+  where
+    blobAt treeHash = do
+      mHash <- lookupPath treeHash path
+      case mHash of
+        Nothing -> return Nothing
+        Just h  -> Just <$> readBlob h
+
+    buildEntry hash cd mNew mOld = do
+      new <- mNew
+      let old = maybe BS.empty id mOld
+      if new == old then Nothing else Just AtomEntry
+        { aeTickId  = unObjectHash hash
+        , aeContent = TE.decodeUtf8With TEE.lenientDecode (BS.drop (BS.length old) new)
+        , aeMessage = stripCommitRefs (commitMessage cd)
+        , aeParent  = case commitParents cd of
+            (p : _) -> Just (unObjectHash p)
+            []      -> Nothing
+        }
+
+    stripCommitRefs raw = case T.lines raw of
+      (l : rest) | "refs: " `T.isPrefixOf` l -> T.intercalate "\n" rest
+      ls                                       -> T.intercalate "\n" ls
 
 walkFrom
   :: Members '[Git, Fail] r

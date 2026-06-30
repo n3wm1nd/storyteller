@@ -22,6 +22,10 @@ module Storyteller.Storage
   , withFS
   , atWithFS
   , follow
+  , fileAtoms
+
+    -- * File atom projection
+  , AtomEntry(..)
 
     -- * Storage-level effect
   , StoryStorage(..)
@@ -38,6 +42,15 @@ import Polysemy
 import Polysemy.Fail
 import Data.Text (Text)
 import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickData(..), TickType(..), draft)
+
+-- | A single atom entry from the file-atom projection of a branch.
+--   Oldest-first when returned by 'fileAtoms'.
+data AtomEntry = AtomEntry
+  { aeTickId  :: Text
+  , aeContent :: Text
+  , aeMessage :: Text
+  , aeParent  :: Maybe Text
+  } deriving (Show, Eq)
 
 -- | Operations on a single named branch (a chain of ticks).
 --   The @branch@ type parameter is a phantom used to disambiguate multiple
@@ -76,7 +89,12 @@ data StoryBranch (branch :: k) m a where
   -- | Initialise the filesystem to the current head tick's snapshot, run the
   --   inner action, then restore the outer filesystem state.  Compose with
   --   'at' to get historical filesystem access: @at tid (withFS action)@.
-  WithFS  :: m a -> StoryBranch branch m a
+  WithFS    :: m a -> StoryBranch branch m a
+
+  -- | Walk the branch history from HEAD and extract all atoms for @path@.
+  --   An atom is a commit that changed the blob at that path.
+  --   Returns oldest-first; the list is empty if the file has never existed.
+  FileAtoms :: FilePath -> StoryBranch branch m [AtomEntry]
 
 -- | Store the current working tree as a new tick with a plain message.
 --   Fails if any file is not a pure append of its previous content.
@@ -124,6 +142,10 @@ withFS action = send @(StoryBranch branch) (WithFS action)
 atWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
          => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 atWithFS tid action = at @branch tid (withFS @branch action)
+
+-- | Extract the atom chain for @path@ from the branch history (oldest-first).
+fileAtoms :: forall branch r. Member (StoryBranch branch) r => FilePath -> Sem r [AtomEntry]
+fileAtoms path = send @(StoryBranch branch) (FileAtoms path)
 
 -- | Operations across all branches.
 data StoryStorage m a where

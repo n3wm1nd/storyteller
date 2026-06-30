@@ -164,6 +164,7 @@ test-suite storyteller-test
   main-is:          Main.hs
   other-modules:    Git.Mock
                   , Paths_storyteller
+                  , Storyteller.FileAtomsSpec
                   , Storyteller.StorageSpec
                   , Storyteller.EditSpec
                   , Storyteller.SplitDiffMergeSpec

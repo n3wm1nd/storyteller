@@ -110,7 +110,9 @@ runGitMock = interpret $ \case
   LookupPath h path -> do
     s <- get
     case Map.lookup h (gsObjects s) of
-      Nothing -> fail $ "LookupPath: unknown tree hash " <> T.unpack (unObjectHash h)
+      Nothing
+        | h == emptyTreeHash -> return Nothing
+        | otherwise -> fail $ "LookupPath: unknown tree hash " <> T.unpack (unObjectHash h)
       Just (TreeObject entries) -> return $ entryHash <$> find (\e -> entryName e == path) entries
       Just (BlobObject _)       -> fail $ "LookupPath: hash is a blob: " <> T.unpack (unObjectHash h)
 

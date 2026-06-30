@@ -1,6 +1,7 @@
 module Main where
 
 import Test.Hspec
+import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.StorageSpec
 import qualified Storyteller.EditSpec
 import qualified Storyteller.SplitDiffMergeSpec
@@ -10,6 +11,7 @@ import qualified Storyteller.CharGenSpec
 
 main :: IO ()
 main = hspec $ do
+  describe "Storyteller.FileAtoms"      Storyteller.FileAtomsSpec.spec
   describe "Storyteller.Storage"        Storyteller.StorageSpec.spec
   describe "Storyteller.Edit"           Storyteller.EditSpec.spec
   describe "Storyteller.SplitDiffMerge" Storyteller.SplitDiffMergeSpec.spec
