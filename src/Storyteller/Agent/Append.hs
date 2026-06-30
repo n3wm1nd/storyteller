@@ -18,22 +18,29 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import Runix.Git (Git)
 
 import Storyteller.Agent.Splitter (Splitter, splitAtoms)
-import Storyteller.Edit (storeAtom)
-import Storyteller.Git (BranchTag)
-import Storyteller.Storage (StoryBranch, StoryStorage)
-import Storyteller.Types (TickId)
+import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
+import Storyteller.Storage (StoryBranch, StoryStorage, storeAs, get)
+import Storyteller.Types (TickId, TickType(..), tickId)
 
 -- | Split @content@ into paragraph atoms, append each to @path@, and commit
 -- each atom as its own tick. Returns the list of created tick IDs.
 appendAgent
-  :: forall project branch r
-  .  ( project ~ BranchTag branch
-     , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Splitter, Fail ] r )
+  :: forall branch r
+  .  Members '[StoryBranch branch, StoryStorage, Git, Splitter, Fail] r
   => FilePath -> T.Text -> Sem r [TickId]
 appendAgent path content = do
   atoms <- splitAtoms content
-  mapM (\atom -> storeAtom @branch path (TE.encodeUtf8 atom)) atoms
+  mapM (appendOne @branch path) atoms
+
+appendOne
+  :: forall branch r
+  .  Members '[StoryBranch branch, StoryStorage, Git, Fail] r
+  => FilePath -> T.Text -> Sem r TickId
+appendOne path content = do
+  headTick  <- get @branch
+  parentTree <- treeRef (tickId headTick)
+  atom      <- storeAtomDiff parentTree (AtomDiff path (TE.encodeUtf8 content))
+  storeAs @branch atom

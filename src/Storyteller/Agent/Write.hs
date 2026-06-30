@@ -58,5 +58,5 @@ writeAgent path instruction activeChars = do
     False -> return ""
   generated <- continuationAgent @project @StoryModel
                  modelConfigs (Just 300) charContexts existing instruction
-  tids <- appendAgent @project @branch path generated
+  tids <- appendAgent @branch path generated
   return (generated, tids)

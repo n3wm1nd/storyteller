@@ -62,7 +62,7 @@ import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
                         , getCwd, listFiles, readFile, writeFile, appendFile, fileExists )
 import Storyteller.Git (BranchTag(..))
 import Storyteller.Storage (StoryBranch, StoryStorage, store, at, get, follow)
-import Storyteller.Types (Tick(..), TickId(..))
+import Storyteller.Types (Tick, TickId(..), tickId, tickParent)
 
 import Prelude hiding (readFile, writeFile, appendFile)
 

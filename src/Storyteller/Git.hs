@@ -37,6 +37,7 @@ module Storyteller.Git
   , WorkingTree
   , emptyWorkingTree
   , loadWorkingTree
+  , loadTree
 
     -- * Combined branch + filesystem interpreter (storage-agnostic interface)
   , runBranchAndFS
@@ -62,7 +63,6 @@ import Runix.FileSystem
 import Storyteller.Types
 import Storyteller.Storage hiding (get, drop, Get)
 import qualified Storyteller.Storage as S
-import Storyteller.Types (TickDraft(..))
 
 -- ---------------------------------------------------------------------------
 -- In-memory filesystem
@@ -103,6 +103,10 @@ loadWorkingTree :: Members '[Git, Fail] r => ObjectHash -> Sem r WorkingTree
 loadWorkingTree commitHash = do
   cd <- readCommit commitHash
   readTreeRecursive "" (commitTree cd)
+
+-- | Reconstruct a 'WorkingTree' directly from a git tree hash (not a commit).
+loadTree :: Members '[Git, Fail] r => ObjectHash -> Sem r WorkingTree
+loadTree = readTreeRecursive ""
 
 readTreeRecursive
   :: Members '[Git, Fail] r
@@ -187,18 +191,49 @@ emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 -- Message encoding / decoding
 -- ---------------------------------------------------------------------------
 
-encodeMessage :: [TickId] -> Text -> Text
-encodeMessage [] msg  = msg
-encodeMessage refs msg =
-  "refs: " <> T.unwords (map unTickId refs) <> "\n" <> msg
+-- | Encode a 'TickData' into a git commit message.
+--   Format:
+--     refs: <hash1> <hash2>   (omitted when empty)
+--     <key>:<value>           (one line per field, omitted when empty)
+--                             (blank line separating headers from body)
+--     <message body>
+encodeTickData :: TickData -> Text
+encodeTickData td =
+  let refLine    = case tickRefs td of
+                     [] -> []
+                     rs -> ["refs: " <> T.unwords (map unTickId rs)]
+      fieldLines = map (\(k, v) -> k <> ":" <> v) (tickFields td)
+      headers    = refLine <> fieldLines
+      body       = tickMessage td
+  in if null headers
+       then body
+       else T.intercalate "\n" headers <> "\n\n" <> body
 
-decodeMessage :: Text -> ([TickId], Text)
-decodeMessage raw =
-  case T.lines raw of
-    (l:rest) | "refs: " `T.isPrefixOf` l ->
-      let refs = map TickId $ T.words (T.drop 6 l)
-      in (refs, T.intercalate "\n" rest)
-    _ -> ([], raw)
+-- | Decode a git commit message back into refs, fields, and message body.
+decodeTickData :: Text -> TickData
+decodeTickData raw =
+  let ls              = T.lines raw
+      (headers, body) = splitHeaders ls
+      refs            = [ TickId tid
+                        | l <- headers
+                        , "refs: " `T.isPrefixOf` l
+                        , tid <- T.words (T.drop 6 l) ]
+      fields          = [ (k, v)
+                        | l <- headers
+                        , not ("refs: " `T.isPrefixOf` l)
+                        , let (k, rest) = T.breakOn ":" l
+                        , not (T.null rest)
+                        , let v = T.drop 1 rest ]
+  in TickData { tickRefs = refs, tickFields = fields, tickMessage = T.intercalate "\n" body }
+
+-- | Split commit message lines into header lines and body lines.
+--   Headers end at the first blank line; body is everything after.
+--   If there is no blank line, the whole message is treated as body.
+splitHeaders :: [Text] -> ([Text], [Text])
+splitHeaders ls =
+  case break T.null ls of
+    (headers, []        ) -> ([], ls)      -- no blank line → all body
+    (headers, _ : body  ) -> (headers, body)
 
 -- ---------------------------------------------------------------------------
 -- Conversion between git and tick vocabulary
@@ -206,13 +241,13 @@ decodeMessage raw =
 
 commitToTick :: ObjectHash -> CommitData -> Tick
 commitToTick hash cd =
-  let (refs, msg) = decodeMessage (commitMessage cd)
-  in Tick
-     { tickId      = TickId (unObjectHash hash)
-     , tickParent  = TickId . unObjectHash <$> listToMaybe (commitParents cd)
-     , tickRefs    = refs
-     , tickMessage = msg
-     }
+  let td  = decodeTickData (commitMessage cd)
+      pos = TickPos
+              { posId     = TickId (unObjectHash hash)
+              , posParent = TickId . unObjectHash <$> listToMaybe (commitParents cd)
+              , posRefs   = tickRefs td
+              }
+  in Tick { tickPos = pos, tickData = td }
   where
     listToMaybe []    = Nothing
     listToMaybe (x:_) = Just x
@@ -278,17 +313,22 @@ runStoryBranchGit branch action = do
   interpretH (\case
     Store d -> do
       headHash' <- raise $ resolveHead branch
-      wt'       <- raise $ get @WorkingTree
-      parentWt  <- raise $ loadWorkingTree headHash'
-      eCheck    <- raise $ checkAppendOnly parentWt wt'
-      case eCheck of
-        Left err -> pureT (Left err)
-        Right () -> do
-          treeHash <- raise $ flushWorkingTree wt'
-          newHash  <- raise $ writeCommit CommitData
+      eTree <- case lookup "tree" (tickFields d) of
+        Just h  -> return $ Right (ObjectHash h)
+        Nothing -> do
+          wt'      <- raise $ get @WorkingTree
+          parentWt <- raise $ loadWorkingTree headHash'
+          eCheck   <- raise $ checkAppendOnly parentWt wt'
+          case eCheck of
+            Left err -> return (Left err)
+            Right () -> Right <$> raise (flushWorkingTree wt')
+      case eTree of
+        Left err     -> pureT (Left err)
+        Right treeHash -> do
+          newHash <- raise $ writeCommit CommitData
             { commitParents = [headHash']
             , commitTree    = treeHash
-            , commitMessage = encodeMessage (draftRefs d) (draftMessage d)
+            , commitMessage = encodeTickData d
             }
           raise $ updateRef (storyRef branch) newHash
           pureT $ Right (TickId (unObjectHash newHash))
@@ -317,19 +357,24 @@ runStoryBranchGit branch action = do
       pureT result
 
     Replace oldId d -> do
-      wt'      <- raise $ get @WorkingTree
-      oldCd    <- raise $ readCommit (ObjectHash (unTickId oldId))
-      parentWt <- raise $ loadWorkingTree
-                    (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
-      eCheck   <- raise $ checkAppendOnly parentWt wt'
-      case eCheck of
-        Left err -> pureT (Left err)
-        Right () -> do
-          treeHash <- raise $ flushWorkingTree wt'
+      oldCd  <- raise $ readCommit (ObjectHash (unTickId oldId))
+      eTree  <- case lookup "tree" (tickFields d) of
+        Just h  -> return $ Right (ObjectHash h)
+        Nothing -> do
+          wt'      <- raise $ get @WorkingTree
+          parentWt <- raise $ loadWorkingTree
+                        (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
+          eCheck   <- raise $ checkAppendOnly parentWt wt'
+          case eCheck of
+            Left err -> return (Left err)
+            Right () -> Right <$> raise (flushWorkingTree wt')
+      case eTree of
+        Left err       -> pureT (Left err)
+        Right treeHash -> do
           newHash  <- raise $ writeCommit CommitData
             { commitParents = commitParents oldCd
             , commitTree    = treeHash
-            , commitMessage = encodeMessage (draftRefs d) (draftMessage d)
+            , commitMessage = encodeTickData d
             }
           let newId = TickId (unObjectHash newHash)
           -- Cascade to other branches only — the current branch is being

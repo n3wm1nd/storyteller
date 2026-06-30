@@ -1,17 +1,33 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Storyteller.Types
-  ( TickId(..)
+  ( -- * Identity
+    TickId(..)
   , BranchName(..)
   , Branch(..)
+
+    -- * Storage-layer tick
+  , TickPos(..)
+  , TickData(..)
   , Tick(..)
-  , TickKind(..)
-  , tickKind
-  , noteText
-  , TickDraft(..)
+  , tickId
+  , tickParent
   , draft
-  , noteDraft
+
+    -- * Semantic tick typeclass
+  , TickType(..)
+  , encodeDraft
+  , decodePayload
+
+    -- * Built-in tick kinds
+  , Note(..)
+
+    -- * Utilities
+  , tickTypeOf
   ) where
 
 import Data.Text (Text)
@@ -32,48 +48,107 @@ data Branch = Branch
   , branchHead :: TickId
   } deriving (Show, Eq)
 
--- | What kind of tick this is, derived from the commit message prefix.
-data TickKind
-  = AtomTick  -- ^ Prose/content atom: no special prefix
-  | NoteTick  -- ^ Annotation: message starts with "note: "; refs holds the annotated tick
-  deriving (Show, Eq)
+-- | Position of a tick in the chain — assigned by the storage layer.
+--   Not valid across rebases; treat as ephemeral beyond the current operation.
+data TickPos = TickPos
+  { posId     :: TickId
+  , posParent :: Maybe TickId
+  , posRefs   :: [TickId]
+  } deriving (Show, Eq)
 
--- | Derive the kind of a tick from its message.
-tickKind :: Text -> TickKind
-tickKind msg
-  | "note: " `T.isPrefixOf` msg = NoteTick
-  | otherwise                    = AtomTick
-
--- | Extract the annotation text from a note tick's message (strips the prefix).
-noteText :: Text -> Text
-noteText = T.drop (T.length "note: ")
-
--- | A tick: the smallest unit of chain advancement the storage layer knows about.
---   Higher layers interpret the message to determine what kind of tick this is
---   (prose atom, annotation, etc.).
-data Tick = Tick
-  { tickId      :: TickId
-  , tickParent  :: Maybe TickId  -- ^ Nothing only for the initial tick
-  , tickRefs    :: [TickId]      -- ^ Cross-branch references (e.g. story→entity copies, note→atom)
+-- | The data of a tick — everything the author or agent supplies.
+--   The storage layer fills in 'TickPos' when committed.
+--
+--   'tickRefs' must list every TickId referenced. Embedding tick IDs in
+--   'tickMessage' or 'tickFields' violates the invariant that all references
+--   be declared (needed for rebase fixups to be complete).
+data TickData = TickData
+  { tickRefs    :: [TickId]
+  , tickFields  :: [(Text, Text)]  -- ^ structured key/value metadata (e.g. tree ref, file hints)
   , tickMessage :: Text
   } deriving (Show, Eq)
 
--- | The caller-supplied part of a tick — everything the author or agent decides.
---   The storage layer fills in 'tickId' and 'tickParent' when the draft is committed.
---
---   'draftRefs' must list every TickId referenced. Embedding tick IDs in
---   'draftMessage' or anywhere else violates the invariant that all references
---   be declared (needed for rebase fixups to be complete).
-data TickDraft = TickDraft
-  { draftRefs    :: [TickId]  -- ^ References declared by the author/agent
-  , draftMessage :: Text
+-- | A stored tick: a 'TickData' paired with its chain position.
+data Tick = Tick
+  { tickPos  :: TickPos
+  , tickData :: TickData
   } deriving (Show, Eq)
 
--- | Convenience: a plain message draft with no references.
-draft :: Text -> TickDraft
-draft msg = TickDraft { draftRefs = [], draftMessage = msg }
+-- | Convenience accessors for the most commonly needed tick fields.
+tickId :: Tick -> TickId
+tickId = posId . tickPos
 
--- | Convenience: a note draft annotating a specific tick.
---   The annotated tick id goes in refs; the message carries the human text.
-noteDraft :: TickId -> Text -> TickDraft
-noteDraft ref text = TickDraft { draftRefs = [ref], draftMessage = "note: " <> text }
+tickParent :: Tick -> Maybe TickId
+tickParent = posParent . tickPos
+
+-- | Convenience: a plain message with no refs or fields.
+draft :: Text -> TickData
+draft msg = TickData { tickRefs = [], tickFields = [], tickMessage = msg }
+
+-- ---------------------------------------------------------------------------
+-- Semantic tick typeclass
+-- ---------------------------------------------------------------------------
+
+-- | Types that can be encoded into and decoded from a 'Tick'.
+--   Implement this to define a new tick kind.
+--
+--   Message format: @"type:\<tickTypeName\>\n\<payload\>"@.
+--   Use 'encodeDraft' and 'decodePayload' to handle this consistently.
+--
+--   Law: fromTick t == Just a  whenever t was produced by storing (toDraft a)
+class TickType a where
+  -- | Stable string identifier for this tick kind.
+  tickTypeName :: Text
+
+  -- | Encode to a 'TickData'.
+  toDraft :: a -> TickData
+
+  -- | Decode from a full 'Tick'. Returns 'Nothing' if the type tag does not
+  --   match, or if the payload/refs are malformed.
+  --   Receives the full 'Tick' so types backed by a tree ref can use 'tickPos'.
+  fromTick :: Tick -> Maybe a
+
+-- | Build a 'TickData' with the type tag, refs, extra fields, and payload.
+--   Use @encodeDraft \@MyType refs fields payload@ in 'toDraft' implementations.
+encodeDraft :: forall a. TickType a => [TickId] -> [(Text, Text)] -> Text -> TickData
+encodeDraft refs fields payload = TickData
+  { tickRefs    = refs
+  , tickFields  = fields
+  , tickMessage = "type:" <> tickTypeName @a <> "\n" <> payload
+  }
+
+-- | Extract the payload from a tick whose tag matches @a@'s 'tickTypeName'.
+--   Returns 'Nothing' if the tag does not match.
+decodePayload :: forall a. TickType a => Tick -> Maybe Text
+decodePayload t = case T.lines (tickMessage (tickData t)) of
+  (tag : rest) | tag == "type:" <> tickTypeName @a
+               -> Just (T.intercalate "\n" rest)
+  _            -> Nothing
+
+-- | Extract the type tag from any tick, without knowing the type.
+--   Returns 'Nothing' for untagged ticks.
+tickTypeOf :: Tick -> Maybe Text
+tickTypeOf t = case T.lines (tickMessage (tickData t)) of
+  (l : _) | "type:" `T.isPrefixOf` l -> Just (T.drop 5 l)
+  _                                    -> Nothing
+
+-- ---------------------------------------------------------------------------
+-- Built-in tick kinds
+-- ---------------------------------------------------------------------------
+
+-- | An annotation: a human note referencing another tick.
+data Note = Note
+  { noteRef  :: TickId
+  , noteBody :: Text
+  } deriving (Show, Eq)
+
+instance TickType Note where
+  tickTypeName = "note"
+
+  toDraft (Note ref body) = encodeDraft @Note [ref] [] body
+
+  fromTick t = do
+    body <- decodePayload @Note t
+    case tickRefs (tickData t) of
+      [ref] -> Just Note { noteRef = ref, noteBody = body }
+      _     -> Nothing

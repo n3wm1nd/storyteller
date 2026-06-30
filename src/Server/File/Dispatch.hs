@@ -152,7 +152,7 @@ dispatch env branch path conn cmd = do
 handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r FileAtom
 handleAppend branch path content =
   withBranchSplitter @Main branch $ do
-    _tids <- appendAgent @(BranchTag Main) @Main path content
+    _tids <- appendAgent @Main path content
     atomAtHead branch path
 
 handleEditAtom

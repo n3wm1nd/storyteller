@@ -12,7 +12,8 @@ module Storyteller.Storage
   ( -- * Branch-level effect
     StoryBranch(..)
   , store
-  , storeDraft
+  , storeData
+  , storeAs
   , replace
   , drop
   , get
@@ -36,7 +37,7 @@ import Data.List (find)
 import Polysemy
 import Polysemy.Fail
 import Data.Text (Text)
-import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickDraft(..), draft)
+import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickData(..), TickType(..), draft)
 
 -- | Operations on a single named branch (a chain of ticks).
 --   The @branch@ type parameter is a phantom used to disambiguate multiple
@@ -45,7 +46,7 @@ import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickDraft(..
 data StoryBranch (branch :: k) m a where
   -- | Save current filesystem state as a new tick at head.
   --   Returns 'Left' if any file violates the append-only invariant.
-  Store  :: TickDraft -> StoryBranch branch m (Either String TickId)
+  Store  :: TickData -> StoryBranch branch m (Either String TickId)
 
   -- | Rewind the tick pointer to the previous tick. Working tree is untouched.
   --   Dropping the root tick is a no-op.
@@ -65,7 +66,7 @@ data StoryBranch (branch :: k) m a where
   --   The old tick's parent becomes the new tick's parent — the new tick takes
   --   the old one's position in the chain. Returns 'Left' if the append-only
   --   invariant is violated or the old tick is not in the branch history.
-  Replace :: TickId -> TickDraft -> StoryBranch branch m (Either String TickId)
+  Replace :: TickId -> TickData -> StoryBranch branch m (Either String TickId)
 
   -- | Run branch operations at the given position, save/restore working tree,
   --   then replay the tail. Returns 'Left' if the target tick is not in the
@@ -80,16 +81,20 @@ data StoryBranch (branch :: k) m a where
 -- | Store the current working tree as a new tick with a plain message.
 --   Fails if any file is not a pure append of its previous content.
 store :: forall branch r. Members '[StoryBranch branch, Fail] r => Text -> Sem r TickId
-store msg = storeDraft @branch (draft msg)
+store msg = storeData @branch (draft msg)
 
--- | Store with a full 'TickDraft' — use when cross-branch refs must be declared.
-storeDraft :: forall branch r. Members '[StoryBranch branch, Fail] r => TickDraft -> Sem r TickId
-storeDraft d = send @(StoryBranch branch) (Store d) >>= either fail return
+-- | Store with a full 'TickData' — use when cross-branch refs must be declared.
+storeData :: forall branch r. Members '[StoryBranch branch, Fail] r => TickData -> Sem r TickId
+storeData d = send @(StoryBranch branch) (Store d) >>= either fail return
+
+-- | Store a typed tick. The draft is derived via 'toDraft'.
+storeAs :: forall branch a r. (TickType a, Members '[StoryBranch branch, Fail] r) => a -> Sem r TickId
+storeAs = storeData @branch . toDraft
 
 -- | Replace an existing tick with new working tree content. The new tick takes
 --   the old one's position in the chain; all cross-branch references to the
 --   old tick are updated via 'UpdateReferences'.
-replace :: forall branch r. Members '[StoryBranch branch, Fail] r => TickId -> TickDraft -> Sem r TickId
+replace :: forall branch r. Members '[StoryBranch branch, Fail] r => TickId -> TickData -> Sem r TickId
 replace old d = send @(StoryBranch branch) (Replace old d) >>= either fail return
 
 drop :: forall branch r. Member (StoryBranch branch) r => Sem r ()

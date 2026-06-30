@@ -32,12 +32,9 @@ module Storyteller.Edit
   , popTick
   , pushTick
 
-    -- * File-level atom operations
-  , storeAtom
+    -- * Chain editing operations
   , deleteTick
   , editAtom
-
-    -- * Chain-level move
   , moveTick
 
     -- * Ordering invariant check (exported for use in Dispatch)
@@ -59,12 +56,14 @@ import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
   , appendFile, readFile, listFiles, isDirectory
   )
+import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, withFS, drop, reset, store, storeDraft, follow, get
+  , at, withFS, drop, reset, store, storeData, storeAs, follow, get
   )
-import Storyteller.Types (TickId(..), Tick(..), TickDraft(..))
+import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
+import Runix.Git (Git)
 
 import Prelude hiding (appendFile, drop, get, readFile)
 
@@ -82,8 +81,8 @@ data TDraft = TDraft
   , tdFileDiffs :: Map FilePath BS.ByteString  -- ^ per-file suffix this tick added
   } deriving (Show, Eq)
 
-toTickDraft :: TDraft -> TickDraft
-toTickDraft d = TickDraft { draftRefs = tdRefs d, draftMessage = tdMessage d }
+toTickData :: TDraft -> TickData
+toTickData d = TickData { tickRefs = tdRefs d, tickFields = [], tickMessage = tdMessage d }
 
 -- | Pop the tick currently at HEAD, returning its draft with file diffs.
 --   Must be called as the inner action of @at tid@ — that puts @tid@ at HEAD.
@@ -118,8 +117,8 @@ popTick = do
         tickFiles
 
   return TDraft
-    { tdRefs      = tickRefs tick
-    , tdMessage   = tickMessage tick
+    { tdRefs      = tickRefs (tickData tick)
+    , tdMessage   = tickMessage (tickData tick)
     , tdFileDiffs = diffs
     }
 
@@ -139,25 +138,7 @@ pushTick
 pushTick d = withFS @branch $ do
   mapM_ (\(path, suffix) -> appendFile @(BranchTag branch) path suffix)
         (Map.toList (tdFileDiffs d))
-  storeDraft @branch (toTickDraft d)
-
--- ---------------------------------------------------------------------------
--- File-level atom operations
--- ---------------------------------------------------------------------------
-
--- | Write @content@ to @path@ and commit it as an atom tick.
-storeAtom
-  :: forall branch r
-  .  ( Members '[ StoryBranch branch
-                , FileSystem      (BranchTag branch)
-                , FileSystemRead  (BranchTag branch)
-                , FileSystemWrite (BranchTag branch)
-                , StoryStorage
-                , Fail ] r )
-  => FilePath -> BS.ByteString -> Sem r TickId
-storeAtom path newBytes = do
-  appendFile @(BranchTag branch) path newBytes
-  store @branch (T.take 60 (TE.decodeUtf8With TE.lenientDecode newBytes))
+  storeData @branch (toTickData d)
 
 -- | Remove a tick from the chain entirely.
 --   Returns the old→new id mapping for all replayed ticks.
@@ -176,10 +157,8 @@ deleteTick tid = do
 editAtom
   :: forall branch r
   .  ( Members '[ StoryBranch branch
-                , FileSystem      (BranchTag branch)
-                , FileSystemRead  (BranchTag branch)
-                , FileSystemWrite (BranchTag branch)
                 , StoryStorage
+                , Git
                 , Fail ] r )
   => TickId
   -> FilePath
@@ -188,7 +167,10 @@ editAtom
 editAtom tid path newBytes = do
   (newTid, mapping) <- at @branch tid $ do
     drop @branch
-    withFS @branch $ storeAtom @branch path newBytes
+    parentTick <- get @branch
+    parentTree <- treeRef (tickId parentTick)
+    atom       <- storeAtomDiff parentTree (AtomDiff path newBytes)
+    storeAs @branch atom
   reset @branch
   return (newTid, mapping)
 
@@ -259,7 +241,7 @@ checkMoveOrder tid _mAfter tidPos afterPos ordered = do
   let movingTick = ordered !! tidPos
       newPos     = afterPos + 1
 
-  mapM_ (checkRefBefore newPos) (tickRefs movingTick)
+  mapM_ (checkRefBefore newPos) (tickRefs (tickData movingTick))
 
   let precedingSlice = filter (\t -> tickId t /= tid) (take (afterPos + 1) ordered)
   mapM_ (checkNotRefTo tid) precedingSlice
@@ -273,7 +255,7 @@ checkMoveOrder tid _mAfter tidPos afterPos ordered = do
                     <> T.unpack (unTickId refId)
 
     checkNotRefTo movingId t =
-      if movingId `elem` tickRefs t
+      if movingId `elem` tickRefs (tickData t)
         then fail $ "cannot move tick after tick that references it: "
                   <> T.unpack (unTickId (tickId t))
         else return ()

@@ -28,8 +28,8 @@ import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite, appendFile )
 import Runix.Git (Git, ObjectHash(..), readBlob)
 import Storyteller.Git (BranchTag(..), loadWorkingTree, FSNode(..), WorkingTree)
-import Storyteller.Storage (StoryBranch, StoryStorage, follow, storeDraft)
-import Storyteller.Types (Tick(..), TickDraft(..), TickId(..))
+import Storyteller.Storage (StoryBranch, StoryStorage, follow, storeData)
+import Storyteller.Types (Tick(..), TickData(..), TickId(..), tickId, tickParent)
 
 import Prelude hiding (appendFile)
 
@@ -51,7 +51,7 @@ trackBranch files = do
     (tick : acc, tickParent tick)
 
   syncedRefs <- follow @trackerBranch Set.empty $ \acc tick ->
-    (foldr Set.insert acc (tickRefs tick), tickParent tick)
+    (foldr Set.insert acc (tickRefs (tickData tick)), tickParent tick)
 
   let newTicks = dropUntilAfterLastSynced syncedRefs trackeeTicks
 
@@ -104,9 +104,10 @@ copyAtom files tick = do
   if not anyWritten
     then return []
     else do
-      tid <- storeDraft @trackerBranch TickDraft
-        { draftRefs    = [tickId tick]
-        , draftMessage = "track from " <> unTickId (tickId tick)
+      tid <- storeData @trackerBranch TickData
+        { tickRefs    = [tickId tick]
+        , tickFields  = []
+        , tickMessage = "track from " <> unTickId (tickId tick)
         }
       return [tid]
 

@@ -28,6 +28,8 @@ import Storyteller.Git
 import Storyteller.Storage hiding (get, drop)
 import qualified Storyteller.Storage as S
 import Storyteller.Types
+import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
+import Runix.Git (Git)
 import Storyteller.Edit
 
 -- ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ runEdit action =
 
 -- | Store n ticks with messages "t1".."tn", return their ids oldest-first.
 storeN :: Members '[StoryBranch Main, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main), StoryStorage, Fail] r => Int -> Sem r [TickId]
-storeN n = mapM (\i -> storeDraft @Main (draft (T.pack ("t" <> show i)))) [1..n]
+storeN n = mapM (\i -> storeData @Main (draft (T.pack ("t" <> show i)))) [1..n]
 
 -- | Collect all tick messages oldest-first (skipping the root tick).
 -- follow with (t:acc) builds newest-first; reverse gives oldest-first.
@@ -80,17 +82,26 @@ chainMessages :: Members '[StoryBranch Main, Fail] r => Sem r [T.Text]
 chainMessages = do
   ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
   -- ticks = [root, t1, t2, ... head] newest-first, so reverse = oldest-first
-  return [ tickMessage t | t <- ticks, tickParent t /= Nothing ]
+  return [ tickMessage (tickData t) | t <- ticks, tickParent t /= Nothing ]
 
 -- | Collect (tickId, message) pairs oldest-first, skipping root.
 chainPairs :: Members '[StoryBranch Main, Fail] r => Sem r [(TickId, T.Text)]
 chainPairs = do
   ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
-  return [ (tickId t, tickMessage t) | t <- ticks, tickParent t /= Nothing ]
+  return [ (tickId t, tickMessage (tickData t)) | t <- ticks, tickParent t /= Nothing ]
 
 -- | Apply a mapping to a list of ids.
 applyMapping :: [(TickId, TickId)] -> [TickId] -> [TickId]
 applyMapping m = map (\i -> maybe i id (lookup i m))
+
+-- | Append bytes to a file and commit as an atom tick. Convenience for tests.
+appendAtom :: Members '[StoryBranch Main, StoryStorage, Git, Fail] r
+           => FilePath -> BS.ByteString -> Sem r TickId
+appendAtom path content = do
+  headTick   <- S.get @Main
+  parentTree <- treeRef (tickId headTick)
+  atom       <- storeAtomDiff parentTree (AtomDiff path content)
+  storeAs @Main atom
 
 -- ---------------------------------------------------------------------------
 -- Unit tests: popTick / pushTick
@@ -106,7 +117,7 @@ spec = do
             refs <- storeN 2        -- t1, t2
             let [t1, t2] = refs
             -- Store a tick with refs pointing to t1 and t2
-            t3 <- storeDraft @Main (TickDraft { draftRefs = refs, draftMessage = "annotated" })
+            t3 <- storeData @Main (TickData { tickRefs = refs, tickFields = [], tickMessage = "annotated" })
             -- at t3: t3 is at head, pop it
             (d, _) <- at @Main t3 $ popTick @Main
             return d
@@ -301,7 +312,7 @@ spec = do
       -- t2 refs t3 (a note-style tick); can't move t2 before t3
       let result = runEdit $ do
             [t1, _t2, t3] <- storeN 3
-            t2ref <- storeDraft @Main (TickDraft { draftRefs = [t3], draftMessage = "note" })
+            t2ref <- storeData @Main (TickData { tickRefs = [t3], tickFields = [], tickMessage = "note" })
             moveTick @Main t2ref Nothing  -- would place note before t3
       case result of
         Left err -> err `shouldContain` "reference"
@@ -311,7 +322,7 @@ spec = do
       -- t1 is referenced by t2note; can't move t1 after t2note
       let result = runEdit $ do
             [t1, _t2] <- storeN 2
-            t2note <- storeDraft @Main (TickDraft { draftRefs = [t1], draftMessage = "note" })
+            t2note <- storeData @Main (TickData { tickRefs = [t1], tickFields = [], tickMessage = "note" })
             moveTick @Main t1 (Just t2note)  -- t1 after t2note which refs t1
       case result of
         Left err -> err `shouldContain` "references"
@@ -406,9 +417,9 @@ spec = do
       -- Chain: [para1][para2][para3]. Move para3 to front.
       -- Expected file content: para3 para1 para2 (each appended in new order).
       let result = runEdit $ do
-            t1 <- storeAtom @Main "scene.md" "para1\n"
-            t2 <- storeAtom @Main "scene.md" "para2\n"
-            t3 <- storeAtom @Main "scene.md" "para3\n"
+            t1 <- appendAtom "scene.md" "para1\n"
+            t2 <- appendAtom "scene.md" "para2\n"
+            t3 <- appendAtom "scene.md" "para3\n"
             _ <- moveTick @Main t3 Nothing
             readFile @(BranchTag Main) "scene.md"
       case result of
@@ -419,9 +430,9 @@ spec = do
       -- Chain: [para1][para2][para3]. Move para1 to after para3.
       -- Expected: para2 para3 para1.
       let result = runEdit $ do
-            t1 <- storeAtom @Main "scene.md" "para1\n"
-            t2 <- storeAtom @Main "scene.md" "para2\n"
-            t3 <- storeAtom @Main "scene.md" "para3\n"
+            t1 <- appendAtom "scene.md" "para1\n"
+            t2 <- appendAtom "scene.md" "para2\n"
+            t3 <- appendAtom "scene.md" "para3\n"
             _ <- moveTick @Main t1 (Just t3)
             readFile @(BranchTag Main) "scene.md"
       case result of
@@ -431,10 +442,10 @@ spec = do
     it "move to middle preserves correct file content order" $ do
       -- Chain: [A][B][C][D]. Move D to after B. Expected: A B D C.
       let result = runEdit $ do
-            ta <- storeAtom @Main "scene.md" "A\n"
-            tb <- storeAtom @Main "scene.md" "B\n"
-            tc <- storeAtom @Main "scene.md" "C\n"
-            td <- storeAtom @Main "scene.md" "D\n"
+            ta <- appendAtom "scene.md" "A\n"
+            tb <- appendAtom "scene.md" "B\n"
+            tc <- appendAtom "scene.md" "C\n"
+            td <- appendAtom "scene.md" "D\n"
             _ <- moveTick @Main td (Just tb)
             readFile @(BranchTag Main) "scene.md"
       case result of
@@ -448,7 +459,7 @@ spec = do
             to'   = to   `mod` (n' + 1)
         in
         let result = runEdit $ do
-              ids <- mapM (\i -> storeAtom @Main "f.md" (T.encodeUtf8 (T.pack ("p" <> show i <> "\n")))) [1..n']
+              ids <- mapM (\i -> appendAtom "f.md" (T.encodeUtf8 (T.pack ("p" <> show i <> "\n")))) [1..n']
               let tid    = ids !! from'
                   mAfter = if to' == 0 then Nothing else Just (ids !! (to' - 1))
               _ <- moveTick @Main tid mAfter

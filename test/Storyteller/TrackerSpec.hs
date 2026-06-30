@@ -60,10 +60,16 @@ runTwoTrack action =
 
 mkTick :: Int -> [TickId] -> Tick
 mkTick n refs = Tick
-  { tickId      = TickId (T.pack (show n))
-  , tickParent  = if n == 0 then Nothing else Just (TickId (T.pack (show (n-1))))
-  , tickRefs    = refs
-  , tickMessage = "tick " <> T.pack (show n)
+  { tickPos  = TickPos
+      { posId     = TickId (T.pack (show n))
+      , posParent = if n == 0 then Nothing else Just (TickId (T.pack (show (n-1))))
+      , posRefs   = refs
+      }
+  , tickData = TickData
+      { tickRefs    = refs
+      , tickFields  = []
+      , tickMessage = "tick " <> T.pack (show n)
+      }
   }
 
 spec :: Spec

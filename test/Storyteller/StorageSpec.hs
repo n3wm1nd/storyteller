@@ -138,7 +138,7 @@ spec = do
             _ <- store "first"
             _ <- store "second"
             tick <- S.get
-            return (tickMessage tick)
+            return (tickMessage (tickData tick))
       result `shouldBe` Right "second"
 
     it "drop rewinds the tick pointer to the previous tick" $ do
@@ -147,7 +147,7 @@ spec = do
             _ <- store "second"
             S.drop
             tick <- S.get
-            return (tickMessage tick)
+            return (tickMessage (tickData tick))
       result `shouldBe` Right "first"
 
     it "drop at root is a no-op" $ do
@@ -166,7 +166,7 @@ spec = do
             S.follow [] $ \acc tick ->
               case tickParent tick of
                 Nothing -> (acc, Nothing)
-                Just p  -> (tickMessage tick : acc, Just p)
+                Just p  -> (tickMessage (tickData tick) : acc, Just p)
       result `shouldBe` Right ["one", "two", "three"]
 
     it "stored tick ids are unique" $
@@ -186,7 +186,7 @@ spec = do
               _ <- store "one (revised)"
               return ()
             tick <- S.get
-            return (tickMessage tick, length mapping)
+            return (tickMessage (tickData tick), length mapping)
       result `shouldBe` Right ("three", 2)
 
   describe "FileSystem" $ do
@@ -255,7 +255,7 @@ spec = do
             S.drop
             t1' <- store "tick one (amended)"
             tick <- S.get
-            return (t1 /= t1', tickMessage tick)
+            return (t1 /= t1', tickMessage (tickData tick))
       result `shouldBe` Right (True, "tick one (amended)")
 
     it "atWithFS checks out target tick's filesystem for the inner action" $ do

@@ -40,8 +40,8 @@ import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(.
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), WorkingTree, FSNode(..), runBranchAndFS, loadWorkingTree)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, storeDraft)
-import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickDraft(..), tickKind, noteText, noteDraft, TickKind(..))
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, storeAs)
+import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickData(..), Note(..), TickType(..), tickId, tickParent)
 
 import Runix.Git (Git, ObjectHash(..))
 
@@ -148,7 +148,7 @@ handleAddNote branch refTickIdTxt text =
       [] -> fail $ "ref tick not found in branch: " <> T.unpack refTickIdTxt
       _  -> do
         let headId = case ticks of { (h:_) -> Just (unTickId (tickId h)); [] -> Nothing }
-        newId <- storeDraft @Main (noteDraft refId text)
+        newId <- storeAs @Main (Note refId text)
         return $ BranchTickNote
           { btTickId = unTickId newId
           , btParent = headId
@@ -208,11 +208,10 @@ tickSnapshot env branch = runAction env $ do
     toBranchTick tick =
       let tid = unTickId (tickId tick)
           par = unTickId <$> tickParent tick
-          msg = tickMessage tick
-          rs  = map unTickId (tickRefs tick)
-      in case tickKind msg of
-           NoteTick -> BranchTickNote tid par (head rs) (noteText msg)
-           AtomTick -> BranchTickAtom tid par rs msg
+          rs  = map unTickId (tickRefs (tickData tick))
+      in case fromTick tick of
+           Just (Note ref body) -> BranchTickNote tid par (unTickId ref) body
+           Nothing              -> BranchTickAtom tid par rs (tickMessage (tickData tick))
 
 -- ---------------------------------------------------------------------------
 -- Pub/sub broadcast
