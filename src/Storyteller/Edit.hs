@@ -68,10 +68,11 @@ import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
   , appendFile, fileExists, readFile, writeFile, listFiles, isDirectory
   )
+import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, atWithFS, withFS, drop, reset, store, storeData, follow, get, updateReferences
+  , at, atWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
   )
 import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
 
@@ -133,12 +134,7 @@ popTick = do
 
   return TDraft
     { tdRefs      = tickRefs (tickData tick)
-    -- Strip atom-specific storage fields: "tree" (pre-built git tree hash) and
-    -- "file" (path hint). Both are position-dependent and must not carry over
-    -- when the tick is re-inserted at a new chain position by pushTick.
-    -- Keeping "tree" would cause Store to reuse the old hash, writing the wrong
-    -- content to the rebased tick.
-    , tdFields    = filter ((`notElem` ["tree", "file"]) . fst) (tickFields (tickData tick))
+    , tdFields    = tickFields (tickData tick)
     , tdMessage   = tickMessage (tickData tick)
     , tdFileDiffs = diffs
     }
@@ -445,7 +441,7 @@ applyBlock
 applyBlock (AppendBlock file afterTick content) = do
   (_tid, mapping) <- at @branch afterTick $ do
     appendFile @project file content
-    store @branch ("atom: " <> T.pack file)
+    storeAs @branch (Atom file "")
   return mapping
 
 readWorking

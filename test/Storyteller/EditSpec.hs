@@ -22,14 +22,13 @@ import Runix.Git (Git)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Text.Encoding as T
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile)
-import Prelude hiding (readFile)
 
 import Storyteller.Git
 import Storyteller.Storage hiding (get, drop)
 import qualified Storyteller.Storage as S
 import Storyteller.Types
-import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
-import Runix.Git (Git)
+import Runix.FileSystem (appendFile)
+import Prelude hiding (readFile, appendFile)
 import Storyteller.Edit
 
 -- ---------------------------------------------------------------------------
@@ -94,14 +93,12 @@ chainPairs = do
 applyMapping :: [(TickId, TickId)] -> [TickId] -> [TickId]
 applyMapping m = map (\i -> maybe i id (lookup i m))
 
--- | Append bytes to a file and commit as an atom tick. Convenience for tests.
-appendAtom :: Members '[StoryBranch Main, StoryStorage, Git, Fail] r
+-- | Append bytes to a file and commit. Convenience for tests.
+appendAtom :: Members '[StoryBranch Main, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main), StoryStorage, Fail] r
            => FilePath -> BS.ByteString -> Sem r TickId
 appendAtom path content = do
-  headTick   <- S.get @Main
-  parentTree <- treeRef (tickId headTick)
-  atom       <- storeAtomDiff parentTree (AtomDiff path content)
-  storeAs @Main atom
+  appendFile @(BranchTag Main) path content
+  store @Main (T.decodeUtf8 (BS.take 60 content))
 
 -- ---------------------------------------------------------------------------
 -- Unit tests: popTick / pushTick

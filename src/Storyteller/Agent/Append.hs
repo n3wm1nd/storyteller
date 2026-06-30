@@ -21,9 +21,10 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile)
 
 import Storyteller.Agent.Splitter (Splitter, splitAtoms)
+import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
-import Storyteller.Storage (StoryBranch, store)
-import Storyteller.Types (TickId)
+import Storyteller.Storage (StoryBranch, storeAs)
+import Storyteller.Types (TickId, TickType(..))
 
 import Prelude hiding (appendFile)
 
@@ -51,4 +52,4 @@ appendOne
   => FilePath -> T.Text -> Sem r TickId
 appendOne path content = do
   appendFile @(BranchTag branch) path (TE.encodeUtf8 content)
-  store @branch (T.take 60 content)
+  storeAs @branch (Atom path (T.take 60 content))

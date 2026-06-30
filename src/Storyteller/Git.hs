@@ -305,19 +305,14 @@ runStoryBranchGit branch action = do
   interpretH (\case
     Store d -> do
       headHash' <- raise $ resolveHead branch
-      eTree <- case lookup "tree" (tickFields d) of
-        Just h  -> return $ Right (ObjectHash h)
-        Nothing -> do
-          wt'      <- raise $ get @WorkingTree
-          parentWt <- raise $ loadWorkingTree headHash'
-          eCheck   <- raise $ checkAppendOnly parentWt wt'
-          case eCheck of
-            Left err -> return (Left err)
-            Right () -> Right <$> raise (flushWorkingTree wt')
-      case eTree of
-        Left err     -> pureT (Left err)
-        Right treeHash -> do
-          newHash <- raise $ writeCommit CommitData
+      wt'      <- raise $ get @WorkingTree
+      parentWt <- raise $ loadWorkingTree headHash'
+      eCheck   <- raise $ checkAppendOnly parentWt wt'
+      case eCheck of
+        Left err -> pureT (Left err)
+        Right () -> do
+          treeHash <- raise $ flushWorkingTree wt'
+          newHash  <- raise $ writeCommit CommitData
             { commitParents = headHash' : map (ObjectHash . unTickId) (tickRefs d)
             , commitTree    = treeHash
             , commitMessage = encodeTickData d
@@ -349,20 +344,15 @@ runStoryBranchGit branch action = do
       pureT result
 
     Replace oldId d -> do
-      oldCd  <- raise $ readCommit (ObjectHash (unTickId oldId))
-      eTree  <- case lookup "tree" (tickFields d) of
-        Just h  -> return $ Right (ObjectHash h)
-        Nothing -> do
-          wt'      <- raise $ get @WorkingTree
-          parentWt <- raise $ loadWorkingTree
-                        (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
-          eCheck   <- raise $ checkAppendOnly parentWt wt'
-          case eCheck of
-            Left err -> return (Left err)
-            Right () -> Right <$> raise (flushWorkingTree wt')
-      case eTree of
-        Left err       -> pureT (Left err)
-        Right treeHash -> do
+      oldCd    <- raise $ readCommit (ObjectHash (unTickId oldId))
+      wt'      <- raise $ get @WorkingTree
+      parentWt <- raise $ loadWorkingTree
+                    (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
+      eCheck   <- raise $ checkAppendOnly parentWt wt'
+      case eCheck of
+        Left err -> pureT (Left err)
+        Right () -> do
+          treeHash <- raise $ flushWorkingTree wt'
           newHash  <- raise $ writeCommit CommitData
             { commitParents = commitParents oldCd
             , commitTree    = treeHash
