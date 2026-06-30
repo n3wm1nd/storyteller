@@ -33,7 +33,7 @@ import Storyteller.Git (BranchTag, runBranchAndFS)
 import Storyteller.Runtime (Main, runInfrastructure, runStoryStorageGit)
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 import Storyteller.Types (BranchName(..), TickId(..))
-import Storyteller.Agent.SplitDiffMerge (splitDiffMerge)
+import Storyteller.Edit (commitWorkingTree)
 import Storyteller.CLI.Env (StoryEnv(..), loadEnv)
 
 main :: IO ()
@@ -65,4 +65,4 @@ rebaseAction
               , StoryStorage
               , Logging, Fail ] r
   => Sem r [(TickId, TickId)]
-rebaseAction = splitDiffMerge @(BranchTag Main) @Main
+rebaseAction = commitWorkingTree @(BranchTag Main) @Main

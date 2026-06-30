@@ -41,11 +41,11 @@ import           Text.Read (readMaybe)
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile)
+import Runix.FileSystem (FileSystemWrite, writeFile)
 import Runix.Random (Random, randomInt)
 
 import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage (StoryBranch, StoryStorage, store)
+import Storyteller.Storage (StoryBranch, store)
 import Storyteller.Types (TickId)
 
 import Prelude hiding (writeFile)
@@ -65,11 +65,8 @@ newtype CharSheet        = CharSheet        { unSheet    :: Text }
 --   If no seed is provided, one is drawn from 'Random'.
 charGenCommit
   :: forall branch r
-  .  Members '[ FileSystem      (BranchTag branch)
-              , FileSystemRead  (BranchTag branch)
-              , FileSystemWrite (BranchTag branch)
+  .  Members '[ FileSystemWrite (BranchTag branch)
               , StoryBranch branch
-              , StoryStorage
               , Random
               , Fail
               ] r

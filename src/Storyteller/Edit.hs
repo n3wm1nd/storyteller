@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -37,8 +38,18 @@ module Storyteller.Edit
   , editAtom
   , moveTick
 
+    -- * Working-tree commit
+  , commitWorkingTree
+  , AppendBlock(..)
+  , DiffError(..)
+
     -- * Ordering invariant check (exported for use in Dispatch)
   , checkMoveOrder
+
+    -- * Exported for tests
+  , computeBlocks
+  , deriveHistory
+  , blocksFromTimeline
   ) where
 
 import qualified Data.ByteString as BS
@@ -52,15 +63,16 @@ import qualified Data.Text.Encoding.Error as TE
 import Polysemy
 import Polysemy.Fail
 
+import qualified Data.List as List
 import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
-  , appendFile, readFile, listFiles, isDirectory
+  , appendFile, fileExists, readFile, listFiles, isDirectory
   )
 import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, withFS, drop, reset, store, storeData, storeAs, follow, get, updateReferences
+  , at, atWithFS, withFS, drop, reset, store, storeData, storeAs, follow, get, updateReferences
   )
 import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
 import Runix.Git (Git)
@@ -297,3 +309,152 @@ readAllFiles = go "/" Map.empty
         else do
           content <- readFile @(BranchTag branch) path
           return (Map.insert path content acc)
+
+-- ---------------------------------------------------------------------------
+-- Working-tree commit (formerly SplitDiffMerge)
+-- ---------------------------------------------------------------------------
+
+-- | A block of new bytes to be inserted after a specific tick.
+data AppendBlock = AppendBlock
+  { blockFile      :: FilePath
+  , blockAfterTick :: TickId
+  , blockContent   :: BS.ByteString
+  } deriving (Show, Eq)
+
+data DiffError
+  = ModificationDetected FilePath Int Int
+  | GapDetected FilePath Int
+  deriving (Show, Eq)
+
+-- | Inspect the current working tree, diff it against the committed history,
+--   and insert each block of new content at the correct position in the chain
+--   using 'at'. Handles arbitrary mid-chain insertions in a single pass.
+--   Returns the complete old→new tick id mapping.
+commitWorkingTree
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[ FileSystem      project
+                , FileSystemRead  project
+                , FileSystemWrite project
+                , StoryBranch branch
+                , StoryStorage
+                , Fail ] r )
+  => Sem r [(TickId, TickId)]
+commitWorkingTree = do
+  files    <- listFiles @project "/"
+  history  <- buildFileHistory @project @branch
+  working  <- Map.fromList <$> mapM (\f -> (f,) <$> readWorking @project f) files
+  blocks   <- either (fail . renderDiffError) return (computeBlocks history working)
+  if null blocks then return [] else applyBlocks @project @branch blocks
+
+type FileHistory = Map FilePath [(TickId, Int)]
+
+buildFileHistory
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[StoryBranch branch, FileSystemRead project, FileSystem project, Fail] r )
+  => Sem r FileHistory
+buildFileHistory = do
+  ticks     <- follow @branch [] $ \acc tick -> (tick : acc, tickParent tick)
+  snapshots <- mapM (readSnapshotAt @project @branch) (reverse ticks)
+  return $ deriveHistory snapshots
+
+readSnapshotAt
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[StoryBranch branch, FileSystemRead project, FileSystem project, Fail] r )
+  => Tick
+  -> Sem r (TickId, Map FilePath BS.ByteString)
+readSnapshotAt tick = do
+  (fileMap, _) <- atWithFS @branch (tickId tick) $ do
+    files <- listFiles @project "/"
+    Map.fromList <$> mapM (\f -> (f,) <$> readFile @project f) files
+  return (tickId tick, fileMap)
+
+deriveHistory :: [(TickId, Map FilePath BS.ByteString)] -> FileHistory
+deriveHistory snapshots =
+  let allFiles = List.nub [ f | (_, m) <- snapshots, f <- Map.keys m ]
+  in Map.fromList [ (f, fileTimeline f snapshots) | f <- allFiles ]
+  where
+    fileTimeline file snaps =
+      [ (tid, BS.length content)
+      | (tid, fileMap) <- snaps
+      , Just content <- [Map.lookup file fileMap]
+      ]
+
+computeBlocks
+  :: FileHistory
+  -> Map FilePath BS.ByteString
+  -> Either DiffError [AppendBlock]
+computeBlocks history working =
+  fmap concat $ mapM (fileBlocks history) (Map.toList working)
+
+fileBlocks
+  :: FileHistory
+  -> (FilePath, BS.ByteString)
+  -> Either DiffError [AppendBlock]
+fileBlocks history (file, workingContent) =
+  case Map.lookup file history of
+    Nothing -> Right []
+    Just timeline ->
+      let committedLength = case timeline of { [] -> 0; xs -> snd (last xs) }
+          workingLength   = BS.length workingContent
+      in if workingLength < committedLength
+           then Left (ModificationDetected file committedLength workingLength)
+           else blocksFromTimeline file timeline workingContent
+
+blocksFromTimeline
+  :: FilePath
+  -> [(TickId, Int)]
+  -> BS.ByteString
+  -> Either DiffError [AppendBlock]
+blocksFromTimeline file timeline workingContent = go 0 timeline []
+  where
+    go _prevLen [] acc =
+      let lastLen = case timeline of { [] -> 0; xs -> snd (last xs) }
+          suffix  = BS.drop lastLen workingContent
+      in if BS.null suffix then Right (reverse acc)
+         else case timeline of
+           [] -> Right (reverse acc)
+           xs -> Right (reverse (AppendBlock file (fst (last xs)) suffix : acc))
+    go prevLen ((tid, cumulativeLen) : rest) acc =
+      let available = BS.length workingContent - prevLen
+      in if available <= 0 then Right (reverse acc)
+         else go cumulativeLen rest acc
+
+applyBlocks
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[StoryBranch branch, FileSystemRead project, FileSystemWrite project,
+                 FileSystem project, StoryStorage, Fail] r )
+  => [AppendBlock]
+  -> Sem r [(TickId, TickId)]
+applyBlocks = fmap concat . mapM (applyBlock @project @branch)
+
+applyBlock
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[StoryBranch branch, FileSystemRead project, FileSystemWrite project,
+                 FileSystem project, StoryStorage, Fail] r )
+  => AppendBlock
+  -> Sem r [(TickId, TickId)]
+applyBlock (AppendBlock file afterTick content) = do
+  (_tid, mapping) <- at @branch afterTick $ do
+    appendFile @project file content
+    store @branch ("atom: " <> T.pack file)
+  return mapping
+
+readWorking
+  :: forall project r
+  .  Members '[FileSystem project, FileSystemRead project, Fail] r
+  => FilePath -> Sem r BS.ByteString
+readWorking path = do
+  exists <- fileExists @project path
+  if exists then readFile @project path else return BS.empty
+
+renderDiffError :: DiffError -> String
+renderDiffError (ModificationDetected f committed working) =
+  "commitWorkingTree: " <> f <> " shrinks relative to committed content"
+  <> " (committed=" <> show committed <> " working=" <> show working <> ")"
+renderDiffError (GapDetected f offset) =
+  "commitWorkingTree: " <> f <> " has a content gap at byte offset " <> show offset

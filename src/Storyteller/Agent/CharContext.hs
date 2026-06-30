@@ -6,12 +6,12 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Character context loader.
+-- | Character context agent.
 --
--- Reads all files from a character branch and formats them as labelled
--- text blocks for inclusion in the continuation agent's context.
+-- Reads all files from a character branch's filesystem and formats them as
+-- labelled blocks for inclusion in LLM prompts.
 module Storyteller.Agent.CharContext
-  ( loadCharContext
+  ( charSummaryAgent
   ) where
 
 import qualified Data.List as List
@@ -20,7 +20,7 @@ import qualified Data.Text.Encoding as TE
 
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem (FileSystem, FileSystemRead, getCwd, listFiles, readFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 
 import Storyteller.Agent (CharContextBlock(..))
 
@@ -29,16 +29,15 @@ import Prelude hiding (readFile)
 -- | Read all files from a character branch's filesystem and return them as
 --   labelled blocks: @"### \<path\>\n\n\<content\>"@.
 --
---   The @project@ type parameter is the filesystem phantom for this character
---   branch (e.g. @BranchTag CharBranch@). The caller is responsible for
---   having the branch's filesystem interpreter in scope.
-loadCharContext
+--   The @project@ type parameter is the filesystem phantom for the character
+--   branch. The caller is responsible for having that branch's filesystem
+--   interpreter in scope.
+charSummaryAgent
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
   => Sem r [CharContextBlock]
-loadCharContext = do
-  cwd   <- getCwd @project
-  files <- List.sort <$> listFiles @project cwd
+charSummaryAgent = do
+  files <- List.sort <$> listAllFiles @project "/"
   mapM (readBlock @project) files
 
 readBlock

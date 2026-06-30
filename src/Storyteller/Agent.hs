@@ -14,6 +14,9 @@ module Storyteller.Agent
   , Prompt(..)
   , Prose(..)
   , CharContextBlock(..)
+  , CharLabel(..)
+  , ContextBlock(..)
+  , ExistingContent(..)
   , WordCount(..)
   ) where
 
@@ -56,9 +59,24 @@ newtype Prose = Prose Text
   deriving (Show, Eq)
 
 -- | A formatted block of character information, ready for inclusion in an
---   LLM prompt. Produced by 'CharContext.loadCharContext'; passed to
---   'Continuation.continuationAgent' as a list.
+--   LLM prompt. Produced by 'charSummaryAgent'; passed to 'proseAgent' as a list.
 newtype CharContextBlock = CharContextBlock Text
+  deriving (Show, Eq)
+
+-- | Display label for a character — used as a section header in LLM prompts.
+--   Distinct from 'BranchName': a character branch may have a label that
+--   differs from its branch name, and labels are presentation-only.
+newtype CharLabel = CharLabel Text
+  deriving (Show, Eq)
+
+-- | A formatted block of branch context (e.g. "### path\n\ncontent"), ready
+--   for inclusion in an LLM prompt alongside character and file content.
+newtype ContextBlock = ContextBlock Text
+  deriving (Show, Eq)
+
+-- | The current content of the file being continued.
+--   Empty when the file does not yet exist.
+newtype ExistingContent = ExistingContent Text
   deriving (Show, Eq)
 
 -- | Approximate desired output length in words. Passed as a sizing hint to

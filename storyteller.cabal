@@ -41,7 +41,6 @@ library
                   , Storyteller.Agent.CharContext
                   , Storyteller.Agent.Splitter
                   , Storyteller.Agent.Tracker
-                  , Storyteller.Agent.SplitDiffMerge
                   , Storyteller.Agent.CharGen
                   , Storyteller.Agent.Append
                   , Storyteller.Agent.Write

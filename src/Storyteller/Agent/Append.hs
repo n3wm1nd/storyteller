@@ -14,22 +14,28 @@ module Storyteller.Agent.Append
   ( appendAgent
   ) where
 
-import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.Git (Git)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile)
 
 import Storyteller.Agent.Splitter (Splitter, splitAtoms)
-import Storyteller.Atom (AtomDiff(..), storeAtomDiff, treeRef)
-import Storyteller.Storage (StoryBranch, StoryStorage, storeAs, get)
-import Storyteller.Types (TickId, TickType(..), tickId)
+import Storyteller.Git (BranchTag)
+import Storyteller.Storage (StoryBranch, store)
+import Storyteller.Types (TickId)
+
+import Prelude hiding (appendFile)
 
 -- | Split @content@ into paragraph atoms, append each to @path@, and commit
--- each atom as its own tick. Returns the list of created tick IDs.
+-- each as its own tick. Returns the list of created tick IDs.
 appendAgent
   :: forall branch r
-  .  Members '[StoryBranch branch, StoryStorage, Git, Splitter, Fail] r
+  .  Members '[ StoryBranch branch
+              , FileSystem      (BranchTag branch)
+              , FileSystemRead  (BranchTag branch)
+              , FileSystemWrite (BranchTag branch)
+              , Splitter, Fail ] r
   => FilePath -> T.Text -> Sem r [TickId]
 appendAgent path content = do
   atoms <- splitAtoms content
@@ -37,10 +43,12 @@ appendAgent path content = do
 
 appendOne
   :: forall branch r
-  .  Members '[StoryBranch branch, StoryStorage, Git, Fail] r
+  .  Members '[ StoryBranch branch
+              , FileSystem      (BranchTag branch)
+              , FileSystemRead  (BranchTag branch)
+              , FileSystemWrite (BranchTag branch)
+              , Fail ] r
   => FilePath -> T.Text -> Sem r TickId
 appendOne path content = do
-  headTick  <- get @branch
-  parentTree <- treeRef (tickId headTick)
-  atom      <- storeAtomDiff parentTree (AtomDiff path (TE.encodeUtf8 content))
-  storeAs @branch atom
+  appendFile @(BranchTag branch) path (TE.encodeUtf8 content)
+  store @branch (T.take 60 content)

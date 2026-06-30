@@ -14,13 +14,9 @@ module Server.Branch.Dispatch
   ( dispatch
   , snapshot
   , tickSnapshot
-  , notify
   ) where
 
-import Control.Concurrent.STM (atomically, writeTChan)
 import Control.Monad (void)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Aeson (encode)
@@ -29,10 +25,10 @@ import qualified Network.WebSockets as WS
 import Polysemy (Members, Sem)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
 
 import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
-import Server.Notification (BranchNotification(..))
 import Server.Run (runAction, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
@@ -42,11 +38,9 @@ import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(.
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Edit (deleteTick, moveTick)
-import Storyteller.Git (BranchTag(..), WorkingTree, FSNode(..), runBranchAndFS, loadWorkingTree)
+import Storyteller.Git (BranchTag(..), runBranchAndFS)
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, storeAs)
 import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickData(..), Note(..), TickType(..), tickId, tickParent, tickTypeOf)
-
-import Runix.Git (Git, ObjectHash(..))
 
 
 data Main
@@ -64,37 +58,35 @@ dispatch env branch conn cmd = do
   r <- runAction env $ case cmd of
     Track mid source files -> do
       ps <- handleTrack branch source files
-      return ([] :: [(T.Text, T.Text)], map (FileAdded mid) ps)
+      return $ map (FileAdded mid) ps
 
     CharGen mid path scenario seed -> do
       handleCharGen branch path scenario seed
-      return ([], [FileAdded mid path])
+      return [FileAdded mid path]
 
     ReadTicks _mid -> do
       ts <- handleReadTicks branch
-      return ([], [BranchTicks ts])
+      return [BranchTicks ts]
 
     AddNote _mid refTickId noteText_ -> do
       tick <- handleAddNote branch refTickId noteText_
-      return ([], [BranchTicks [tick]])
+      return [BranchTicks [tick]]
 
     MoveTick mid tickId_ mAfterTickId -> do
       mapping <- handleMoveTick branch tickId_ mAfterTickId
-      return (mapping, [TicksInvalidated mid mapping])
+      return [TicksInvalidated mid mapping]
 
     DeleteTick mid tickId_ -> do
       mapping <- handleDeleteTick branch tickId_
-      return (mapping, [TicksInvalidated mid mapping])
+      return [TicksInvalidated mid mapping]
 
     ChatPrompt _mid path promptText_ -> do
       handleChatPrompt branch path promptText_
-      return ([], [] :: [BranchEvent])
+      return []
 
   case r of
-    Left err             -> emit (BranchError (T.pack err))
-    Right (mapping, evs) -> do
-      notify env branch mapping
-      mapM_ emit evs
+    Left err  -> emit (BranchError (T.pack err))
+    Right evs -> mapM_ emit evs
 
 -- ---------------------------------------------------------------------------
 -- Handlers
@@ -194,9 +186,8 @@ snapshot env branch = runAction env $ do
   let name = BranchName branch
   getBranch name >>= \case
     Nothing -> return []
-    Just _  -> withBranch @Main branch $ do
-      wt <- currentWorkingTree @Main
-      return $ map fst (textFiles wt)
+    Just _  -> withBranch @Main branch $
+      branchFiles @Main
 
 handleReadTicks :: SessionEffects r => T.Text -> Sem r [BranchTick]
 handleReadTicks branch =
@@ -213,15 +204,6 @@ tickSnapshot env branch = runAction env (handleReadTicks branch)
 -- ---------------------------------------------------------------------------
 -- Pub/sub broadcast
 -- ---------------------------------------------------------------------------
-
--- | Broadcast a branch-invalidated notification to all subscribed connections.
---   Called after any operation that mutates the tick chain.
-notify :: ServerEnv -> T.Text -> [(T.Text, T.Text)] -> IO ()
-notify env branch mapping =
-  atomically $ writeTChan (envNotifyChan env) BranchNotification
-    { bnBranch  = branch
-    , bnMapping = mapping
-    }
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -244,13 +226,8 @@ tickToBranchTick tick =
                      -> BranchTickAtom   tid par rs (atomMessage atom)
        _             -> BranchTickAtom   tid par rs (tickMessage (tickData tick))
 
-textFiles :: WorkingTree -> [(FilePath, ObjectHash)]
-textFiles wt = [ (path, hash) | (path, FSFile hash) <- Map.toList wt ]
-
-currentWorkingTree
+branchFiles
   :: forall branch r
-  .  Members '[StoryBranch branch, Git, Fail] r
-  => Sem r WorkingTree
-currentWorkingTree = do
-  tick <- get @branch
-  loadWorkingTree (ObjectHash (unTickId (tickId tick)))
+  .  Members '[FileSystem (BranchTag branch), Fail] r
+  => Sem r [FilePath]
+branchFiles = listAllFiles @(BranchTag branch) "/"

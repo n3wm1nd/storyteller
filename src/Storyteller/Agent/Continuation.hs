@@ -1,61 +1,59 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | The continuation agent: given existing content and an instruction,
---   reads context files from a filesystem, then asks the LLM what text
---   to append next.
+-- | Prose generation agents.
 --
---   Deliberately read-only and model-agnostic. The caller is responsible
---   for reading the target file before calling and appending the result after.
+-- 'proseAgent' is the pure LLM core: given assembled context, produce new
+-- text. No filesystem access — all context is passed in explicitly, making
+-- it easy to extend with new effects (style guides, persona, etc.) in isolation.
+--
+-- 'continueFileAgent' wraps 'proseAgent' with the common case of reading the
+-- target file to supply the existing content.
 module Storyteller.Agent.Continuation
-  ( continuationAgent
+  ( proseAgent
+  , continueFileAgent
   ) where
 
 import qualified Data.List as List
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem (FileSystem, FileSystemRead, listFiles, readFile, getCwd)
+import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, listAllFiles, readFile)
 import Runix.LLM (LLM, queryLLM)
 import UniversalLLM (Message(..), ModelConfig(..))
 
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
+import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
 
 import Prelude hiding (readFile)
 
--- | Ask the LLM what text to append, given the current file content and a
---   user instruction. Context files from the branch filesystem are included
---   automatically.
---
---   Returns only the new text to append — never a full rewrite.
-continuationAgent
-  :: forall project model r
-  .  Members '[FileSystem project, FileSystemRead project, LLM model, Fail] r
+-- | Ask the LLM to produce new prose given fully assembled context.
+--   No filesystem access — all inputs are explicit.
+--   This is the composition point for cross-cutting concerns: style guides,
+--   persona, tone constraints, etc. can be added here as new effects.
+proseAgent
+  :: forall model r
+  .  Members '[LLM model, Fail] r
   => [ModelConfig model]
-  -> Maybe WordCount      -- ^ approximate desired output length in words
-  -> [CharContextBlock]   -- ^ character context blocks (from active character branches)
-  -> Text                 -- ^ current content of the file being continued
-  -> Instruction          -- ^ what the agent is supposed to do
+  -> Maybe WordCount        -- ^ approximate desired output length
+  -> [CharContextBlock]     -- ^ character context blocks
+  -> [ContextBlock]         -- ^ branch context file blocks
+  -> ExistingContent        -- ^ current content of the file being continued
+  -> Instruction
   -> Sem r Prose
-continuationAgent configs outputHint charContexts existing (Instruction instruction) = do
-  cwd   <- getCwd @project
-  files <- fmap List.sort $ listFiles @project cwd
-
-  contextBlocks <- mapM (readContextFile @project) files
-
+proseAgent configs outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
   let contextSection
         | null contextBlocks = ""
         | otherwise =
             "Context files:\n\n"
-            <> T.intercalate "\n\n" contextBlocks
+            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
             <> "\n\n"
 
       charSection
@@ -83,11 +81,30 @@ continuationAgent configs outputHint charContexts existing (Instruction instruct
   response <- queryLLM @model configs [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
+-- | Read the target file and all branch context files, then delegate to
+--   'proseAgent'. Requires the target branch's filesystem to be in scope.
+continueFileAgent
+  :: forall project model r
+  .  Members '[FileSystem project, FileSystemRead project, LLM model, Fail] r
+  => [ModelConfig model]
+  -> Maybe WordCount
+  -> [CharContextBlock]
+  -> FilePath               -- ^ file to continue
+  -> Instruction
+  -> Sem r Prose
+continueFileAgent configs outputHint charContexts path instruction = do
+  files         <- List.sort <$> listAllFiles @project "/"
+  contextBlocks <- mapM (readContextFile @project) files
+  existing      <- fileExists @project path >>= \case
+    True  -> ExistingContent . TE.decodeUtf8 <$> readFile @project path
+    False -> return (ExistingContent "")
+  proseAgent @model configs outputHint charContexts contextBlocks existing instruction
+
 readContextFile
   :: forall project r
   .  Members '[FileSystemRead project, Fail] r
   => FilePath
-  -> Sem r Text
+  -> Sem r ContextBlock
 readContextFile path = do
   bytes <- readFile @project path
-  return $ "### " <> T.pack path <> "\n\n" <> TE.decodeUtf8 bytes
+  return $ ContextBlock $ "### " <> T.pack path <> "\n\n" <> TE.decodeUtf8 bytes

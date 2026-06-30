@@ -19,7 +19,6 @@ import Data.Aeson (encode)
 import qualified Network.WebSockets as WS
 import Polysemy (Sem)
 
-import Server.Branch.Dispatch (notify)
 import Server.Env (ServerEnv)
 import Server.File.Protocol
 import Server.Run (runAction, SessionEffects)
@@ -107,9 +106,7 @@ dispatch env branch path conn cmd = do
       r <- runAction env (handleAppend branch path content)
       case r of
         Left err   -> emit (FileError (T.pack err))
-        Right atom -> do
-          notify env branch []   -- new tick appended, no id renames
-          emit (AtomAppended atom)
+        Right atom -> emit (AtomAppended atom)
 
     Read _mid -> do
       r <- runAction env (fileAtoms branch path)
@@ -125,25 +122,19 @@ dispatch env branch path conn cmd = do
       r <- runAction env (handleEditAtom branch path tickIdTxt newContent)
       case r of
         Left err            -> emit (FileError (T.pack err))
-        Right (oldId, atom) -> do
-          notify env branch [(oldId, atomTickId atom)]
-          emit (AtomReplaced mid oldId atom)
+        Right (oldId, atom) -> emit (AtomReplaced mid oldId atom)
 
     DeleteAtom mid tickIdTxt -> do
       r <- runAction env (handleDeleteAtom branch path tickIdTxt)
       case r of
         Left err      -> emit (FileError (T.pack err))
-        Right mapping -> do
-          notify env branch mapping
-          emit (AtomDeleted mid tickIdTxt mapping)
+        Right mapping -> emit (AtomDeleted mid tickIdTxt mapping)
 
     MoveAtom mid tickIdTxt mAfterTickId -> do
       r <- runAction env (handleMoveAtom branch path tickIdTxt mAfterTickId)
       case r of
         Left err      -> emit (FileError (T.pack err))
-        Right mapping -> do
-          notify env branch mapping
-          emit (AtomMoved mid mapping)
+        Right mapping -> emit (AtomMoved mid mapping)
 
 -- ---------------------------------------------------------------------------
 -- Handlers

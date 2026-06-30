@@ -1,63 +1,56 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Write agent: generate new prose via LLM, then commit via 'appendAgent'.
+-- | Write agent: wire charSummaryAgent → continueFileAgent → appendAgent.
 --
--- Composes: character context loading → continuationAgent → appendAgent.
+-- All branch and filesystem interpreters must be in scope at the call site.
+-- This module only composes — no interpreters are launched here.
 module Storyteller.Agent.Write
   ( writeAgent
   ) where
 
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists, readFile)
-import Runix.Git (Git)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
+import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), WordCount(..))
 import Storyteller.Agent.Append (appendAgent)
-import Storyteller.Agent.CharContext (loadCharContext)
-import Storyteller.Agent.Continuation (continuationAgent)
+import Storyteller.Agent.CharContext (charSummaryAgent)
+import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.CLI.Env (modelConfigs)
-import Storyteller.Git (BranchTag(..), runBranchAndFS)
+import Storyteller.Git (BranchTag(..))
 import Storyteller.Runtime (StoryModel)
-import Storyteller.Storage (StoryBranch, StoryStorage)
-import Storyteller.Types (BranchName(..), TickId)
+import Storyteller.Storage (StoryBranch)
+import Storyteller.Types (TickId)
 
-import Prelude hiding (readFile)
-
-data CharCtx
-
--- | Load character context, generate prose, then append-commit each atom.
+-- | Generate prose and commit it, given the target branch and any number of
+--   character branches already open on the effect stack.
+--
+--   @charProjects@ is a list of @(label, charSummaryAgent action)@ — one per
+--   active character branch. Each action runs in the character branch's
+--   filesystem context, which the caller has already opened.
 writeAgent
   :: forall project branch r
   .  ( project ~ BranchTag branch
      , Members '[ LLM StoryModel
                 , FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Splitter, Git, Logging, Fail ] r )
-  => FilePath    -- ^ file to append to
+                , StoryBranch branch, Splitter, Logging, Fail ] r )
+  => FilePath                                       -- ^ file to append to
   -> Instruction
-  -> [T.Text]    -- ^ active character branch names
-  -> Sem r (T.Text, [TickId])
-writeAgent path instruction activeChars = do
-  charContexts <- fmap concat $ mapM (\cb -> do
-    blocks <- runBranchAndFS @CharCtx (BranchName cb)
-            $ loadCharContext @(BranchTag CharCtx)
-    return $ CharContextBlock ("## Character: " <> cb) : blocks) activeChars
-  existing <- fileExists @project path >>= \case
-    True  -> TE.decodeUtf8 <$> readFile @project path
-    False -> return ""
-  Prose generated <- continuationAgent @project @StoryModel
-                       modelConfigs (Just (WordCount 300)) charContexts existing instruction
-  tids <- appendAgent @branch path generated
-  return (generated, tids)
+  -> [(CharLabel, Sem r [CharContextBlock])]         -- ^ (label, summary action) per active char branch
+  -> Sem r [TickId]
+writeAgent path instruction charActions = do
+  charContexts <- fmap concat $ mapM (\(CharLabel name, action) -> do
+    blocks <- action
+    return $ CharContextBlock ("## Character: " <> name) : blocks) charActions
+  Prose generated <- continueFileAgent @project @StoryModel
+                       modelConfigs (Just (WordCount 300)) charContexts path instruction
+  appendAgent @branch path generated

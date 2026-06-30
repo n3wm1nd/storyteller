@@ -31,7 +31,7 @@ import System.IO (hPutStrLn, stderr)
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
-                        , fileExists, readFile, writeFile )
+                        , fileExists, readFile )
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
@@ -39,12 +39,13 @@ import Prelude hiding (readFile, writeFile)
 
 import Storyteller.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
-import Storyteller.Storage (StoryBranch, StoryStorage, store)
+import Storyteller.Storage (StoryBranch, StoryStorage)
 import Storyteller.Types (BranchName(..))
 import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
-import Storyteller.Agent.Continuation (continuationAgent)
-import Storyteller.Agent.CharContext (loadCharContext)
-import Storyteller.Agent.Splitter (Splitter, splitAtoms, splitByParagraph)
+import Storyteller.Agent.Continuation (continueFileAgent)
+import Storyteller.Agent.CharContext (charSummaryAgent)
+import Storyteller.Agent.Append (appendAgent)
+import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
 import Storyteller.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 -- | Phantom tag for character branches opened temporarily within the action.
@@ -85,29 +86,10 @@ writeAction outFile instruction activeChars = do
   charContexts <- fmap concat $ forM activeChars $ \charBranch -> do
     let branchName = BranchName charBranch
     blocks <- runBranchAndFS @Char_ branchName
-            $ loadCharContext @(BranchTag Char_)
+            $ charSummaryAgent @(BranchTag Char_)
     return $ CharContextBlock ("## Character: " <> charBranch) : blocks
 
-  existing <- fileExists @(BranchTag Main) outFile >>= \case
-    True  -> TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile
-    False -> return ""
-  Prose generated <- continuationAgent @(BranchTag Main) @StoryModel
-                               modelConfigs (Just (WordCount 300)) charContexts existing instruction
-
-  -- Split the generated content into atoms and commit each separately,
-  -- growing the file one atom at a time so each store sees a valid append.
-  atoms <- splitAtoms generated
-  let sep = if T.null existing || T.isSuffixOf "\n\n" existing then ""
-            else if T.isSuffixOf "\n" existing then "\n"
-            else "\n\n"
-      atomSuffixes = case atoms of
-        []     -> []
-        (a:as) -> (sep <> a) : map ("\n\n" <>) as
-      atomContents = tail $ scanl (<>) existing atomSuffixes
-
-  mapM_ (\(atom, content) -> do
-    writeFile @(BranchTag Main) outFile (TE.encodeUtf8 content)
-    store @Main (T.take 60 atom)
-    ) (zip atoms atomContents)
-
+  Prose generated <- continueFileAgent @(BranchTag Main) @StoryModel
+                               modelConfigs (Just (WordCount 300)) charContexts outFile instruction
+  _ <- appendAgent @Main outFile generated
   return generated

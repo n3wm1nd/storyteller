@@ -21,7 +21,7 @@ import Test.Hspec
 import Test.QuickCheck
 
 import Storyteller.Types (TickId(..))
-import Storyteller.Agent.SplitDiffMerge
+import Storyteller.Edit
   (computeBlocks, deriveHistory, blocksFromTimeline, AppendBlock(..), DiffError(..))
 
 -- ---------------------------------------------------------------------------
