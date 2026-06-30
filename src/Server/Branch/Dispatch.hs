@@ -40,7 +40,7 @@ import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(.
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), WorkingTree, FSNode(..), runBranchAndFS, loadWorkingTree)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, storeAs)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, storeAs)
 import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickData(..), Note(..), TickType(..), tickId, tickParent)
 
 import Runix.Git (Git, ObjectHash(..))
@@ -117,7 +117,7 @@ handleTrack branch source files = do
     Just _  -> return ()
   runBranchAndFS @Source sourceName
     $ runBranchAndFS @Tracker target $ do
-        void $ trackBranch @Source @Tracker filePairs
+        mapM_ (trackBranch @Source @Tracker) filePairs
         return destPaths
 
 handleCharGen :: SessionEffects r => T.Text -> FilePath -> T.Text -> Maybe Int -> Sem r ()
@@ -241,7 +241,5 @@ currentWorkingTree
   .  Members '[StoryBranch branch, Git, Fail] r
   => Sem r WorkingTree
 currentWorkingTree = do
-  ticks <- follow @branch [] $ \acc tick -> (tick : acc, tickParent tick)
-  case ticks of
-    [] -> return Map.empty
-    _  -> loadWorkingTree (ObjectHash (unTickId (tickId (last ticks))))
+  tick <- get @branch
+  loadWorkingTree (ObjectHash (unTickId (tickId tick)))

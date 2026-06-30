@@ -75,4 +75,4 @@ runTrackIO repoPath endpoint sourceBranch trackerBranch files =
       getBranch trackerBranch >>= \case
         Nothing -> void $ createBranch trackerBranch
         Just _  -> return ()
-      trackBranch @Source @Tracker files
+      fmap concat $ mapM (trackBranch @Source @Tracker) files
