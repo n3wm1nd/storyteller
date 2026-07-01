@@ -13,7 +13,6 @@ import qualified Data.ByteString.Char8 as BS
 import Test.Hspec
 
 import Polysemy
-import Polysemy.Error (Error)
 import Polysemy.Fail (Fail)
 import Polysemy.State (State)
 
@@ -24,6 +23,7 @@ import Prelude hiding (writeFile)
 
 import Storyteller.Git
 import Storyteller.Storage hiding (get, drop)
+import Storyteller.Runtime (Main)
 import Storyteller.Types
 
 import Server.File
@@ -32,12 +32,23 @@ import Server.TestStack
 
 -- ---------------------------------------------------------------------------
 -- Helpers
+--
+-- File functions assume their scope ('FileOpen') is already open, same as a
+-- real connection: it's entered once here, wrapping the whole action,
+-- rather than per call.
 -- ---------------------------------------------------------------------------
 
-withFile_ :: BranchName -> FilePath -> Sem (TestEffects '[]) a -> Either String a
-withFile_ name path action = run $ testStack $ do
+withFile_
+  :: BranchName
+  -> Sem ( StoryBranch Main
+         : FileSystemWrite (BranchTag Main)
+         : FileSystemRead  (BranchTag Main)
+         : FileSystem      (BranchTag Main)
+         : TestEffects '[] ) a
+  -> Either String a
+withFile_ name action = run $ testStack $ do
   _ <- createBranch name
-  action
+  runBranchAndFS @Main name action
 
 tickKinds :: Update -> [T.Text]
 tickKinds = map wtKind . updateTicks
@@ -47,13 +58,11 @@ headIsIn upd = null (updateTicks upd) || updateHead upd `elem` map wtTickId (upd
 
 -- | Write a file into the working tree and store it as an atom tick.
 storeAtom :: Members '[StoryStorage, Git, State GitState, Fail] r
-          => BranchName -> FilePath -> BS.ByteString -> Sem r TickId
-storeAtom name path content =
-  runBranchAndFS @TestBranch name $ do
-    writeFile @(BranchTag TestBranch) path content
-    storeData @TestBranch (draft (T.pack ("type:atom\n" <> BS.unpack content)))
-
-data TestBranch
+          => FilePath -> BS.ByteString -> Sem r TickId
+storeAtom path content =
+  runBranchAndFS @Main (BranchName "b") $ do
+    writeFile @(BranchTag Main) path content
+    storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
 
 -- ---------------------------------------------------------------------------
 -- Specs
@@ -64,40 +73,35 @@ spec = do
 
   describe "fileState" $ do
 
-    it "returns Nothing for a non-existent branch" $
-      (run $ testStack (fileState (BranchName "missing") "file.md"))
-        `shouldBe` Right Nothing
-
-    it "returns Just with empty update for a branch with no file ticks" $
-      (run $ testStack $ createBranch (BranchName "b") >> fileState (BranchName "b") "file.md")
+    it "returns an empty update for a branch with no file ticks" $
+      (run $ testStack $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (fileState "file.md"))
         `shouldSatisfy` \case
-          Right (Just upd) -> null (updateTicks upd)
-          _                -> False
+          Right upd -> null (updateTicks upd)
+          _         -> False
 
     it "head is valid or empty when file has no ticks" $
-      (run $ testStack $ createBranch (BranchName "b") >> fileState (BranchName "b") "file.md")
-        `shouldSatisfy` either (const False) (maybe True headIsIn)
+      (run $ testStack $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (fileState "file.md"))
+        `shouldSatisfy` either (const False) headIsIn
 
   describe "deleteFileAtom" $ do
 
     it "deleted atom no longer appears in fileState" $ do
-      let result = withFile_ (BranchName "b") "f.md" $ do
-            tid <- storeAtom (BranchName "b") "f.md" "hello"
-            deleteFileAtom (BranchName "b") "f.md" tid
-            fileState (BranchName "b") "f.md"
+      let result = withFile_ (BranchName "b") $ do
+            tid <- storeAtom "f.md" "hello"
+            deleteFileAtom tid
+            fileState "f.md"
       case result of
         Left err  -> expectationFailure err
-        Right Nothing -> expectationFailure "expected Just"
-        Right (Just upd) -> updateTicks upd `shouldBe` []
+        Right upd -> updateTicks upd `shouldBe` []
 
   describe "moveFileAtom" $ do
 
     it "moving a single atom to front is a no-op on chain length" $ do
-      let result = withFile_ (BranchName "b") "f.md" $ do
-            t1 <- storeAtom (BranchName "b") "f.md" "atom1"
-            before <- fmap (length . updateTicks) <$> fileState (BranchName "b") "f.md"
-            moveFileAtom (BranchName "b") "f.md" t1 Nothing
-            after <- fmap (length . updateTicks) <$> fileState (BranchName "b") "f.md"
+      let result = withFile_ (BranchName "b") $ do
+            t1 <- storeAtom "f.md" "atom1"
+            before <- length . updateTicks <$> fileState "f.md"
+            moveFileAtom t1 Nothing
+            after <- length . updateTicks <$> fileState "f.md"
             return (before, after)
       case result of
         Left err     -> expectationFailure err
@@ -106,13 +110,12 @@ spec = do
   describe "editFileAtom" $ do
 
     it "edit changes the content of the atom" $ do
-      let result = withFile_ (BranchName "b") "f.md" $ do
-            tid <- storeAtom (BranchName "b") "f.md" "original"
-            editFileAtom (BranchName "b") "f.md" tid "edited"
-            fileState (BranchName "b") "f.md"
+      let result = withFile_ (BranchName "b") $ do
+            tid <- storeAtom "f.md" "original"
+            editFileAtom "f.md" tid "edited"
+            fileState "f.md"
       case result of
         Left err  -> expectationFailure err
-        Right Nothing -> expectationFailure "expected Just"
-        Right (Just upd) ->
+        Right upd ->
           -- content changed; atom count stays the same
           length (updateTicks upd) `shouldBe` 1

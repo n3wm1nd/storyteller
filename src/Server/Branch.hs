@@ -1,4 +1,4 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
@@ -9,11 +9,19 @@
 
 -- | Branch-level business logic.
 --
--- Pure (or limited-effect) functions that implement branch operations.
+-- Most of these functions assume the branch's storage/filesystem scope
+-- ('BranchOpen') is already live in the ambient stack — a branch connection
+-- enters it once, when the connection starts, not per command. Only
+-- 'trackFiles' and 'charGen' open their own (additional) branch scopes on
+-- top of that, because the branch they need (the source to track from, or a
+-- brand-new target) is only known from the command payload at dispatch time.
+--
 -- No JSON, no WebSocket, no T.Text ids — callers handle the boundary.
 -- These functions are the unit under test.
 module Server.Branch
-  ( branchState
+  ( Main
+  , BranchOpen
+  , branchState
   , branchStateSince
   , addNote
   , moveTickInBranch
@@ -26,27 +34,23 @@ module Server.Branch
 import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Members, Sem)
+import Polysemy (Members, Member, Sem)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
 import Runix.Logging (info)
 
-import Polysemy.Error (Error, throw)
-import Runix.Git (Git)
-
 import Server.Protocol (Update(..), tickToWireTick)
 import Server.Run (SessionEffects)
-import Server.Util (withBranch, withBranchSplitter)
-import Storyteller.Storage (StoryStorage)
 
 import Storyteller.Agent (Prompt(..), Instruction(..))
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
+import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, createBranch, getBranch, follow, get, storeAs)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, storeAs)
 import Storyteller.Types (BranchName(..), TickId(..), Note(..), tickId, tickParent, unTickId)
 import qualified Data.Yaml as Yaml
 
@@ -55,14 +59,25 @@ data Source
 data Tracker
 data CharBranch
 
+-- | The effects live once a branch connection has entered its branch's
+--   scope — one 'StoryBranch'/filesystem instance for the connection's
+--   whole lifetime, not reopened per command.
+type BranchOpen r =
+  Members '[ StoryBranch Main
+           , StoryStorage
+           , FileSystemWrite (BranchTag Main)
+           , FileSystemRead  (BranchTag Main)
+           , FileSystem      (BranchTag Main)
+           , Fail
+           ] r
+
 -- ---------------------------------------------------------------------------
 -- State query
 -- ---------------------------------------------------------------------------
 
 -- | Full branch state: all ticks and current HEAD id.
---   Called on connect and after every mutation.
-branchState :: Members '[StoryStorage, Git, Error String, Fail] r => BranchName -> Sem r (Maybe ([FilePath], Update))
-branchState name = branchStateSince name Nothing
+branchState :: BranchOpen r => Sem r ([FilePath], Update)
+branchState = branchStateSince Nothing
 
 -- | Branch state, optionally incremental. When 'since' names a tick still
 --   reachable from HEAD, only ticks newer than it are included — the common
@@ -70,50 +85,57 @@ branchState name = branchStateSince name Nothing
 --   When 'since' is 'Nothing', or no longer reachable (e.g. a move/replace
 --   rewrote history out from under it), the walk runs all the way to root
 --   and the full chain is returned — the correct, if pricier, fallback.
-branchStateSince
-  :: Members '[StoryStorage, Git, Error String, Fail] r
-  => BranchName -> Maybe TickId -> Sem r (Maybe ([FilePath], Update))
-branchStateSince name@(BranchName n) since =
-  getBranch name >>= \case
-    Nothing -> return Nothing
-    Just _  -> withBranch @Main n $ do
-      files  <- listAllFiles @(BranchTag Main) "/"
-      ticks  <- follow @Main [] $ \acc t ->
-        if Just (tickId t) == since
-          then (acc, Nothing)
-          else (t : acc, tickParent t)
-      headTk <- get @Main
-      let upd = Update (map tickToWireTick ticks) (unTickId (tickId headTk))
-      return (Just (files, upd))
+branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
+branchStateSince since = do
+  files  <- listAllFiles @(BranchTag Main) "/"
+  ticks  <- follow @Main [] $ \acc t ->
+    if Just (tickId t) == since
+      then (acc, Nothing)
+      else (t : acc, tickParent t)
+  headTk <- get @Main
+  return (files, Update (map tickToWireTick ticks) (unTickId (tickId headTk)))
 
 -- ---------------------------------------------------------------------------
--- Mutations — each returns Unit; caller fetches updated state via branchState
+-- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
 
 -- | Add an annotation note referencing an existing tick.
-addNote :: Members '[StoryStorage, Git, Error String, Fail] r => BranchName -> TickId -> T.Text -> Sem r ()
-addNote (BranchName n) refId text =
-  withBranch @Main n $ do
-    ticks <- follow @Main [] $ \acc t -> (t : acc, tickParent t)
-    case filter (\t -> tickId t == refId) ticks of
-      [] -> fail $ "ref tick not found: " <> T.unpack (unTickId refId)
-      _  -> void $ storeAs @Main (Note refId text)
+addNote :: BranchOpen r => TickId -> T.Text -> Sem r ()
+addNote refId text = do
+  ticks <- follow @Main [] $ \acc t -> (t : acc, tickParent t)
+  case filter (\t -> tickId t == refId) ticks of
+    [] -> fail $ "ref tick not found: " <> T.unpack (unTickId refId)
+    _  -> void $ storeAs @Main (Note refId text)
 
 -- | Move a tick to a new position in the chain.
-moveTickInBranch :: Members '[StoryStorage, Git, Error String, Fail] r => BranchName -> TickId -> Maybe TickId -> Sem r ()
-moveTickInBranch (BranchName n) tid mAfter =
-  withBranch @Main n $
-    void $ moveTick @Main tid mAfter
+moveTickInBranch :: BranchOpen r => TickId -> Maybe TickId -> Sem r ()
+moveTickInBranch tid mAfter = void $ moveTick @Main tid mAfter
 
 -- | Delete a tick from the chain.
-deleteTickFromBranch :: Members '[StoryStorage, Git, Error String, Fail] r => BranchName -> TickId -> Sem r ()
-deleteTickFromBranch (BranchName n) tid =
-  withBranch @Main n $
-    void $ deleteTick @Main tid
+deleteTickFromBranch :: BranchOpen r => TickId -> Sem r ()
+deleteTickFromBranch tid = void $ deleteTick @Main tid
+
+-- | Store a prompt tick then run the write agent, on the already-open branch.
+chatPrompt :: (BranchOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
+chatPrompt path prompt = do
+  _ <- storeAs @Main (Prompt path prompt)
+  info $ "writer agent starting: " <> T.pack path
+  _ <- writeAgent @(BranchTag Main) @Main path (Instruction prompt) []
+  info $ "writer agent done: " <> T.pack path
+
+-- ---------------------------------------------------------------------------
+-- Operations that open their own (additional) branch scopes
+-- ---------------------------------------------------------------------------
 
 -- | Track files from a source branch into a target branch.
 --   Creates the target branch if it doesn't exist.
 --   Returns the destination paths of tracked files.
+--
+--   Opens its own 'Source'/'Tracker'-tagged scopes rather than using the
+--   ambient 'BranchOpen' one: the source branch is a different branch
+--   entirely, known only from the command payload, and the target may not
+--   exist yet (so it can't reuse a scope that assumes the branch is already
+--   open and unchanging).
 trackFiles
   :: SessionEffects r
   => BranchName           -- ^ target branch
@@ -132,6 +154,9 @@ trackFiles target source pairs = do
 
 -- | Run chargen and commit the result to a branch.
 --   Creates the branch if it doesn't exist.
+--
+--   Opens its own 'CharBranch'-tagged scope for the same reason as
+--   'trackFiles': the target branch may need to be created first.
 charGen
   :: SessionEffects r
   => BranchName
@@ -148,17 +173,3 @@ charGen name path scenario seed = do
     Just _  -> return ()
   runBranchAndFS @CharBranch name $
     void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
-
--- | Store a prompt tick then run the write agent.
-chatPrompt :: SessionEffects r => BranchName -> FilePath -> T.Text -> Sem r ()
-chatPrompt (BranchName n) path prompt =
-  withBranchSplitter @Main n $ do
-    _ <- storeAs @Main (Prompt path prompt)
-    info $ "writer agent starting: " <> T.pack path
-    _ <- writeAgent @(BranchTag Main) @Main path (Instruction prompt) []
-    info $ "writer agent done: " <> T.pack path
-
--- ---------------------------------------------------------------------------
--- Internal
--- ---------------------------------------------------------------------------
-

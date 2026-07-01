@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
@@ -8,11 +9,15 @@
 
 -- | File-level business logic.
 --
--- Pure (or limited-effect) functions that implement file operations.
+-- These functions assume the branch's storage/filesystem scope ('FileOpen')
+-- is already live in the ambient stack — a file connection enters it once,
+-- when the connection starts, not per command.
+--
 -- No JSON, no WebSocket, no T.Text ids — callers handle the boundary.
 -- These functions are the unit under test.
 module Server.File
-  ( fileState
+  ( FileOpen
+  , fileState
   , fileStateSince
   , appendToFile
   , editFileAtom
@@ -23,83 +28,74 @@ module Server.File
 import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Members, Sem)
-import Polysemy.Error (Error)
+import Polysemy (Members, Member, Sem)
 import Polysemy.Fail (Fail)
-import Runix.Git (Git)
-import Runix.Logging (Logging, info)
+import Runix.Logging (info)
 
 import Server.Protocol (Update(..), toWireTick)
 import Server.Run (SessionEffects)
-import Server.Util (withBranch, withBranchSplitter)
 
 import Storyteller.Agent.Append (appendAgent)
+import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Runtime (Main)
 import qualified Storyteller.Storage as Storage
-import Storyteller.Storage (FileTick, StoryStorage, fileTicks, getBranch)
+import Storyteller.Storage (FileTick, StoryBranch, StoryStorage, fileTicks)
 import Storyteller.Edit (deleteTick, editAtom, moveTick)
-import Storyteller.Types (BranchName(..), TickId(..))
+import Storyteller.Types (TickId(..))
+import Storyteller.Git (BranchTag)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+
+-- | The effects live once a file connection has entered its branch's scope —
+--   one 'StoryBranch'/filesystem instance for the connection's whole
+--   lifetime, not reopened per command.
+type FileOpen r =
+  Members '[ StoryBranch Main
+           , StoryStorage
+           , FileSystemWrite (BranchTag Main)
+           , FileSystemRead  (BranchTag Main)
+           , FileSystem      (BranchTag Main)
+           , Fail
+           ] r
 
 -- ---------------------------------------------------------------------------
 -- State query
 -- ---------------------------------------------------------------------------
 
 -- | Full file state: all ticks for this path and current HEAD id.
---   Returns Nothing if the branch doesn't exist, Just (Nothing, _) impossible —
---   absent file returns Just with empty Update (head = "").
-fileState
-  :: Members '[StoryStorage, Git, Error String, Fail] r
-  => BranchName -> FilePath -> Sem r (Maybe Update)
-fileState name path = fileStateSince name path Nothing
+--   An absent file (no ticks yet) is an empty 'Update' (head = "").
+fileState :: FileOpen r => FilePath -> Sem r Update
+fileState path = fileStateSince path Nothing
 
 -- | File state, optionally incremental. When 'since' names a tick still
 --   present in this file's chain, only ticks after it are included. When
 --   'since' is 'Nothing' or no longer present (rewritten out from under it),
 --   the full chain is returned.
-fileStateSince
-  :: Members '[StoryStorage, Git, Error String, Fail] r
-  => BranchName -> FilePath -> Maybe T.Text -> Sem r (Maybe Update)
-fileStateSince (BranchName n) path since =
-  getBranch (BranchName n) >>= \case
-    Nothing -> return Nothing
-    Just _  -> withBranch @Main n $
-      fmap (Just . fileUpdateSince since) (fileTicks @Main path)
+fileStateSince :: FileOpen r => FilePath -> Maybe T.Text -> Sem r Update
+fileStateSince path since = fileUpdateSince since <$> fileTicks @Main path
 
 -- ---------------------------------------------------------------------------
--- Mutations
+-- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
 
 -- | Append content to a file, splitting into atoms via the append agent.
-appendToFile :: SessionEffects r => BranchName -> FilePath -> T.Text -> Sem r ()
-appendToFile (BranchName n) path content =
-  withBranchSplitter @Main n $ do
-    info $ "appending to: " <> T.pack path
-    void $ appendAgent @Main path content
-    info $ "append done: " <> T.pack path
+appendToFile :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
+appendToFile path content = do
+  info $ "appending to: " <> T.pack path
+  void $ appendAgent @Main path content
+  info $ "append done: " <> T.pack path
 
 -- | Replace an atom's content in-place.
-editFileAtom
-  :: Members '[StoryStorage, Git, Error String, Fail] r
-  => BranchName -> FilePath -> TickId -> T.Text -> Sem r ()
-editFileAtom (BranchName n) path tid content =
-  withBranch @Main n $
-    void $ editAtom @Main tid path (TE.encodeUtf8 content)
+editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
+editFileAtom path tid content =
+  void $ editAtom @Main tid path (TE.encodeUtf8 content)
 
 -- | Delete an atom from the file's chain.
-deleteFileAtom
-  :: Members '[StoryStorage, Git, Error String, Fail] r
-  => BranchName -> FilePath -> TickId -> Sem r ()
-deleteFileAtom (BranchName n) _path tid =
-  withBranch @Main n $
-    void $ deleteTick @Main tid
+deleteFileAtom :: FileOpen r => TickId -> Sem r ()
+deleteFileAtom tid = void $ deleteTick @Main tid
 
 -- | Move an atom to a new position in the file's chain.
-moveFileAtom
-  :: Members '[StoryStorage, Git, Error String, Fail] r
-  => BranchName -> FilePath -> TickId -> Maybe TickId -> Sem r ()
-moveFileAtom (BranchName n) _path tid mAfter =
-  withBranch @Main n $
-    void $ moveTick @Main tid mAfter
+moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
+moveFileAtom tid mAfter = void $ moveTick @Main tid mAfter
 
 -- ---------------------------------------------------------------------------
 -- Internal
