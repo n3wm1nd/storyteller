@@ -40,20 +40,14 @@ module Storyteller.Edit
 
     -- * Working-tree commit
   , commitWorkingTree
-  , AppendBlock(..)
-  , DiffError(..)
 
     -- * Ordering invariant check (exported for use in Dispatch)
   , checkMoveOrder
-
-    -- * Exported for tests
-  , computeBlocks
-  , deriveHistory
-  , blocksFromTimeline
   ) where
 
 import qualified Data.ByteString as BS
-import Control.Monad (foldM)
+import Control.Monad (foldM, filterM)
+import Data.Array (Array, listArray, (!))
 import Data.List (findIndex)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -66,7 +60,7 @@ import Polysemy.Fail
 import qualified Data.List as List
 import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
-  , appendFile, fileExists, readFile, listFiles, isDirectory
+  , appendFile, writeFile, fileExists, readFile, listFiles, isDirectory
   )
 import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
@@ -316,25 +310,32 @@ readAllFiles = go "/" Map.empty
           return (Map.insert path content acc)
 
 -- ---------------------------------------------------------------------------
--- Working-tree commit (formerly SplitDiffMerge)
+-- Working-tree commit
 -- ---------------------------------------------------------------------------
+--
+-- Reconciles an arbitrary edited working tree against the committed atom
+-- chain, conservatively: only trimming (removing some of an atom's own
+-- original bytes, from its front and/or back — never its middle) can change
+-- an atom's classification. Padding alone, with no trim, is indistinguishable
+-- from an adjacent insertion and so is never attributed to an untouched atom.
+--
+--   * Untouched (no trim recovered) -> kept as-is: same tick id untouched.
+--   * Trimmed, nonzero content remaining (after folding in any immediately
+--     adjacent new bytes) -> changed: a same-position replacement tick,
+--     same pattern as 'editAtom' (@at tid $ drop >> withFS (write; store)@).
+--   * Trimmed to nothing -> dropped: same pattern as 'deleteTick'
+--     (@at tid drop@).
+--   * New content that isn't absorbed by an adjacent trimmed atom -> a
+--     standalone new tick, inserted after whatever currently precedes it.
+--
+-- See Storyteller.CommitWorkingTreeSpec for the full contract and the
+-- reasoning behind the fold rule.
 
--- | A block of new bytes to be inserted after a specific tick.
-data AppendBlock = AppendBlock
-  { blockFile      :: FilePath
-  , blockAfterTick :: TickId
-  , blockContent   :: BS.ByteString
-  } deriving (Show, Eq)
+-- | One committed atom's own contributed bytes, in the order they were
+--   written — the file's history expressed at atom granularity rather than
+--   as opaque length checkpoints.
+type AtomHistory = [(TickId, BS.ByteString)]
 
-data DiffError
-  = ModificationDetected FilePath Int Int
-  | GapDetected FilePath Int
-  deriving (Show, Eq)
-
--- | Inspect the current working tree, diff it against the committed history,
---   and insert each block of new content at the correct position in the chain
---   using 'at'. Handles arbitrary mid-chain insertions in a single pass.
---   Returns the complete old→new tick id mapping.
 commitWorkingTree
   :: forall project branch r
   .  ( project ~ BranchTag branch
@@ -346,23 +347,129 @@ commitWorkingTree
                 , Fail ] r )
   => Sem r [(TickId, TickId)]
 commitWorkingTree = do
-  files    <- listFiles @project "/"
-  history  <- buildFileHistory @project @branch
-  working  <- Map.fromList <$> mapM (\f -> (f,) <$> readWorking @project f) files
-  blocks   <- either (fail . renderDiffError) return (computeBlocks history working)
-  if null blocks then return [] else applyBlocks @project @branch blocks
+  files   <- listFiles @project "/"
+  mapping <- foldM (commitFile @project @branch) Map.empty files
+  newFiles <- filterM (fmap null . buildAtomHistory @project @branch) files
+  storeNewFiles @project @branch newFiles
+  let fullMapping = Map.toList mapping
+  updateReferences fullMapping
+  return fullMapping
 
-type FileHistory = Map FilePath [(TickId, Int)]
+-- | Commit one file's reconciliation, threading a running old->current tick
+--   id remap table (needed because rebasing one atom's tail can move ids
+--   for atoms processed later, in this file or — since 'at' rebases the
+--   whole branch — any other file too).
+commitFile
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
+                , StoryBranch branch, StoryStorage, Fail ] r )
+  => Map TickId TickId -> FilePath -> Sem r (Map TickId TickId)
+commitFile table file = do
+  history <- buildAtomHistory @project @branch file
+  if null history then return table else do
+    target <- readWorking @project file
+    root   <- rootTickId @branch
+    let matches  = matchAtoms history target
+        n        = length matches
+        gaps     = gapContents matches target
+        fates    = gapFates matches gaps
+        contents = finalAtomContents matches target gaps fates
+        outs     = classify matches contents
+    (table1, anchor1) <-
+      foldM (commitAtom @project @branch file matches gaps fates contents outs)
+            (table, root)
+            [0 .. n - 1]
+    fst <$> emitStandaloneGap @project @branch file table1 anchor1 (gaps !! n) (fates !! n)
 
-buildFileHistory
+-- | Process the gap immediately before atom @i@ (folding it in is handled
+--   as part of that atom's own content — see 'finalAtomContents' — so only
+--   a standalone gap needs its own tick here), then the atom itself: left
+--   untouched if kept, replaced in place if changed, removed if dropped.
+commitAtom
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
+                , StoryBranch branch, StoryStorage, Fail ] r )
+  => FilePath -> [AtomMatch] -> [BS.ByteString] -> [GapFate] -> [BS.ByteString] -> [AtomOutcome]
+  -> (Map TickId TickId, TickId) -> Int -> Sem r (Map TickId TickId, TickId)
+commitAtom file matches gaps fates contents outs (table, anchor) i = do
+  (table1, anchor1) <- emitStandaloneGap @project @branch file table anchor (gaps !! i) (fates !! i)
+  let origId = resolveId table1 (amTickId (matches !! i))
+  case outs !! i of
+    Kept -> return (table1, origId)
+    Dropped -> do
+      (_, tailMapping) <- at @branch origId (drop @branch)
+      return (composeMapping table1 tailMapping, anchor1)
+    Changed -> do
+      (newTid, tailMapping) <- at @branch origId $ do
+        drop @branch
+        withFS @branch $ do
+          appendFile @project file (contents !! i)
+          storeAs @branch (Atom file "")
+      return (composeMapping table1 (tailMapping ++ [(origId, newTid)]), newTid)
+
+-- | A gap that folded onto a neighbor was already absorbed into that atom's
+--   own content by 'finalAtomContents' — nothing to do here. A standalone
+--   gap becomes its own new tick, inserted right after @anchor@ (whatever
+--   currently precedes it in the chain).
+emitStandaloneGap
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
+                , StoryBranch branch, StoryStorage, Fail ] r )
+  => FilePath -> Map TickId TickId -> TickId -> BS.ByteString -> GapFate -> Sem r (Map TickId TickId, TickId)
+emitStandaloneGap file table anchor content fate
+  | fate /= Standalone || BS.null content = return (table, anchor)
+  | otherwise = do
+      (newTid, tailMapping) <- at @branch anchor $ withFS @branch $ do
+        appendFile @project file content
+        storeAs @branch (Atom file "")
+      return (composeMapping table tailMapping, newTid)
+
+resolveId :: Map TickId TickId -> TickId -> TickId
+resolveId table tid = Map.findWithDefault tid tid table
+
+-- | Fold a freshly-returned old->new mapping (from one 'at' call's tail
+--   rebase) into the running table: existing entries whose current id was
+--   itself just remapped follow the new mapping, and brand new entries are
+--   added for ids not previously tracked.
+composeMapping :: Map TickId TickId -> [(TickId, TickId)] -> Map TickId TickId
+composeMapping table new =
+  let newMap       = Map.fromList new
+      updatedOld   = Map.map (\cur -> Map.findWithDefault cur cur newMap) table
+      freshEntries = Map.filterWithKey (\k _ -> not (Map.member k table)) newMap
+  in Map.union updatedOld freshEntries
+
+-- | The branch's root tick — the anchor used for content inserted before
+--   the first atom of a file.
+rootTickId :: forall branch r. Members '[StoryBranch branch, Fail] r => Sem r TickId
+rootTickId = do
+  chain <- follow @branch [] (\acc t -> (t : acc, tickParent t))
+  case chain of
+    (root : _) -> return (tickId root)
+    []         -> fail "commitWorkingTree: branch has no root tick"
+
+-- | A file's history expressed at atom granularity: each committed tick's
+--   own contributed bytes, oldest-first.
+buildAtomHistory
   :: forall project branch r
   .  ( project ~ BranchTag branch
      , Members '[StoryBranch branch, FileSystemRead project, FileSystem project, Fail] r )
-  => Sem r FileHistory
-buildFileHistory = do
+  => FilePath -> Sem r AtomHistory
+buildAtomHistory file = do
   ticks     <- follow @branch [] $ \acc tick -> (tick : acc, tickParent tick)
-  snapshots <- mapM (readSnapshotAt @project @branch) (reverse ticks)
-  return $ deriveHistory snapshots
+  snapshots <- mapM (readSnapshotAt @project @branch) ticks
+  return $ deriveAtomHistory file snapshots
+
+deriveAtomHistory :: FilePath -> [(TickId, Map FilePath BS.ByteString)] -> AtomHistory
+deriveAtomHistory file = go BS.empty
+  where
+    go _ [] = []
+    go prevContent ((tid, m) : rest) =
+      case Map.lookup file m of
+        Nothing      -> go prevContent rest
+        Just content -> (tid, BS.drop (BS.length prevContent) content) : go content rest
 
 readSnapshotAt
   :: forall project branch r
@@ -376,78 +483,125 @@ readSnapshotAt tick = do
     Map.fromList <$> mapM (\f -> (f,) <$> readFile @project f) files
   return (tickId tick, fileMap)
 
-deriveHistory :: [(TickId, Map FilePath BS.ByteString)] -> FileHistory
-deriveHistory snapshots =
-  let allFiles = List.nub [ f | (_, m) <- snapshots, f <- Map.keys m ]
-  in Map.fromList [ (f, fileTimeline f snapshots) | f <- allFiles ]
+-- ---------------------------------------------------------------------------
+-- Matching: recover each atom's surviving core from the target content
+-- ---------------------------------------------------------------------------
+
+data AtomMatch = AtomMatch
+  { amTickId      :: TickId
+  , amOriginalLen :: Int
+  , amCoreStart   :: Int  -- ^ offset into the target content
+  , amCoreLen     :: Int  -- ^ 0 if the atom didn't survive at all
+  }
+
+data AtomOutcome = Kept | Changed | Dropped deriving Eq
+data GapFate = FoldBack | FoldFront | Standalone deriving Eq
+
+-- | Walk atoms oldest-first, anchoring each one's surviving core (a
+--   contiguous, order-preserving substring of its original content) in the
+--   target content via longest-common-substring search from the current
+--   cursor onward. Trimming is only ever recognized at an atom's front
+--   and/or back — a substring match is exactly that: no interior deletions.
+matchAtoms :: AtomHistory -> BS.ByteString -> [AtomMatch]
+matchAtoms history target = go 0 history
   where
-    fileTimeline file snaps =
-      [ (tid, BS.length content)
-      | (tid, fileMap) <- snaps
-      , Just content <- [Map.lookup file fileMap]
-      ]
+    go _ [] = []
+    go cursor ((tid, orig) : rest) =
+      let remaining     = BS.drop cursor target
+          (_, bOff, len) = longestCommonSubstring orig remaining
+          coreStart     = cursor + bOff
+          cursor'       = coreStart + len
+      in AtomMatch tid (BS.length orig) coreStart len : go cursor' rest
 
-computeBlocks
-  :: FileHistory
-  -> Map FilePath BS.ByteString
-  -> Either DiffError [AppendBlock]
-computeBlocks history working =
-  fmap concat $ mapM (fileBlocks history) (Map.toList working)
+isKept :: AtomMatch -> Bool
+isKept m = amCoreLen m == amOriginalLen m
 
-fileBlocks
-  :: FileHistory
-  -> (FilePath, BS.ByteString)
-  -> Either DiffError [AppendBlock]
-fileBlocks history (file, workingContent) =
-  case Map.lookup file history of
-    Nothing -> Right []
-    Just timeline ->
-      let committedLength = case timeline of { [] -> 0; xs -> snd (last xs) }
-          workingLength   = BS.length workingContent
-      in if workingLength < committedLength
-           then Left (ModificationDetected file committedLength workingLength)
-           else blocksFromTimeline file timeline workingContent
+coreOf :: BS.ByteString -> AtomMatch -> BS.ByteString
+coreOf target m = BS.take (amCoreLen m) (BS.drop (amCoreStart m) target)
 
-blocksFromTimeline
-  :: FilePath
-  -> [(TickId, Int)]
-  -> BS.ByteString
-  -> Either DiffError [AppendBlock]
-blocksFromTimeline file timeline workingContent = go 0 timeline []
+-- | The N+1 stretches of target content between (and around) atom cores.
+gapContents :: [AtomMatch] -> BS.ByteString -> [BS.ByteString]
+gapContents matches target = go 0 matches
   where
-    go _prevLen [] acc =
-      let lastLen = case timeline of { [] -> 0; xs -> snd (last xs) }
-          suffix  = BS.drop lastLen workingContent
-      in if BS.null suffix then Right (reverse acc)
-         else case timeline of
-           [] -> Right (reverse acc)
-           xs -> Right (reverse (AppendBlock file (fst (last xs)) suffix : acc))
-    go prevLen ((tid, cumulativeLen) : rest) acc =
-      let available = BS.length workingContent - prevLen
-      in if available <= 0 then Right (reverse acc)
-         else go cumulativeLen rest acc
+    go cursor [] = [BS.drop cursor target]
+    go cursor (m : rest) =
+      BS.take (amCoreStart m - cursor) (BS.drop cursor target)
+        : go (amCoreStart m + amCoreLen m) rest
 
-applyBlocks
+-- | Attribute each gap to a neighbor (folded) or mark it standalone: fold
+--   onto the preceding atom's back if it's eligible, else the following
+--   atom's front if eligible, else standalone. An atom is only eligible if
+--   it's *partially* trimmed — a nonempty core remains, but not the whole
+--   original. A fully-kept atom was never changing, so nothing folds onto
+--   it; a fully-dropped atom leaves no surviving anchor to fold onto.
+gapFates :: [AtomMatch] -> [BS.ByteString] -> [GapFate]
+gapFates matches gaps = [ fate i | i <- [0 .. length gaps - 1] ]
+  where
+    n    = length matches
+    elig = map (\m -> amCoreLen m > 0 && amCoreLen m < amOriginalLen m) matches
+    fate i
+      | BS.null (gaps !! i)      = Standalone
+      | i > 0 && elig !! (i - 1) = FoldBack
+      | i < n && elig !! i       = FoldFront
+      | otherwise                = Standalone
+
+-- | Each atom's final content: its surviving core plus whatever gaps
+--   folded onto its front\/back.
+finalAtomContents :: [AtomMatch] -> BS.ByteString -> [BS.ByteString] -> [GapFate] -> [BS.ByteString]
+finalAtomContents matches target gaps fates =
+  [ frontFold i <> coreOf target (matches !! i) <> backFold i | i <- [0 .. n - 1] ]
+  where
+    n = length matches
+    frontFold i = if fates !! i == FoldFront then gaps !! i else BS.empty
+    backFold i  = if fates !! (i + 1) == FoldBack then gaps !! (i + 1) else BS.empty
+
+-- | Classify each atom given its already-computed final content (core plus
+--   any folded-in gap bytes — see 'finalAtomContents').
+classify :: [AtomMatch] -> [BS.ByteString] -> [AtomOutcome]
+classify matches contents =
+  [ if isKept m then Kept else if BS.null fc then Dropped else Changed
+  | (m, fc) <- zip matches contents ]
+
+-- | Longest common substring of two byte strings: returns the offset into
+--   each and the shared length. @(0, 0, 0)@ if either is empty or there is
+--   no overlap. O(n*m) time and space — fine for atom-sized inputs; this
+--   is the one place that would need revisiting for very large files.
+longestCommonSubstring :: BS.ByteString -> BS.ByteString -> (Int, Int, Int)
+longestCommonSubstring a b
+  | n == 0 || m == 0 = (0, 0, 0)
+  | otherwise        = (bestI - best, bestJ - best, best)
+  where
+    n = BS.length a
+    m = BS.length b
+    dp :: Array (Int, Int) Int
+    dp = listArray ((0, 0), (n, m)) [ cellAt i j | i <- [0 .. n], j <- [0 .. m] ]
+    cellAt 0 _ = 0
+    cellAt _ 0 = 0
+    cellAt i j
+      | BS.index a (i - 1) == BS.index b (j - 1) = dp ! (i - 1, j - 1) + 1
+      | otherwise                                 = 0
+    (best, bestI, bestJ) =
+      List.foldl' pick (0, 0, 0) [ (dp ! (i, j), i, j) | i <- [1 .. n], j <- [1 .. m] ]
+    pick acc@(bl, _, _) cand@(l, _, _) = if l > bl then cand else acc
+
+-- | New files present in the working tree but absent from history: no
+--   reconciliation needed, just a plain commit. Reads their target content
+--   before resetting (which discards the pending buffer for files already
+--   reconciled via 'commitFile') so only the new files' bytes get replayed
+--   onto the now-current head.
+storeNewFiles
   :: forall project branch r
   .  ( project ~ BranchTag branch
-     , Members '[StoryBranch branch, FileSystemRead project, FileSystemWrite project,
-                 FileSystem project, StoryStorage, Fail] r )
-  => [AppendBlock]
-  -> Sem r [(TickId, TickId)]
-applyBlocks = fmap concat . mapM (applyBlock @project @branch)
-
-applyBlock
-  :: forall project branch r
-  .  ( project ~ BranchTag branch
-     , Members '[StoryBranch branch, FileSystemRead project, FileSystemWrite project,
-                 FileSystem project, StoryStorage, Fail] r )
-  => AppendBlock
-  -> Sem r [(TickId, TickId)]
-applyBlock (AppendBlock file afterTick content) = do
-  (_tid, mapping) <- at @branch afterTick $ do
-    appendFile @project file content
-    storeAs @branch (Atom file "")
-  return mapping
+     , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
+                , StoryBranch branch, StoryStorage, Fail ] r )
+  => [FilePath] -> Sem r ()
+storeNewFiles [] = return ()
+storeNewFiles files = do
+  contents <- mapM (\f -> (f,) <$> readWorking @project f) files
+  reset @branch
+  mapM_ (\(f, c) -> writeFile @project f c) contents
+  _ <- store @branch "add new files"
+  return ()
 
 readWorking
   :: forall project r
@@ -456,10 +610,3 @@ readWorking
 readWorking path = do
   exists <- fileExists @project path
   if exists then readFile @project path else return BS.empty
-
-renderDiffError :: DiffError -> String
-renderDiffError (ModificationDetected f committed working) =
-  "commitWorkingTree: " <> f <> " shrinks relative to committed content"
-  <> " (committed=" <> show committed <> " working=" <> show working <> ")"
-renderDiffError (GapDetected f offset) =
-  "commitWorkingTree: " <> f <> " has a content gap at byte offset " <> show offset

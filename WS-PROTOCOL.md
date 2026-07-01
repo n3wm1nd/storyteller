@@ -126,6 +126,17 @@ The `message` field carries the full encoded form including the `type:<kind>\n` 
 **Events:** `file.present`, `file.absent`, `update`, `agent.log`, `error`.  
 **Head semantics:** the most recent atom tick for this file.
 
+### Working tree access *(planned)*
+
+Neither connection type currently exposes the raw, ephemeral **working tree** described in DATA-MODEL.md — only the tick chain. Planned extension: raw working-tree content becomes part of connection state, the same way ticks are today. A `/branch/{name}` connection's working tree covers every file in the branch; a `/branch/{name}/{path}` connection's covers just that path. No `open`/`list` command is needed — the same connect-time-push-then-push-on-every-change model that already governs ticks (see "Core model" above) applies: on connect, the working tree's current raw content is pushed as part of state; any edit — from this connection, another connection, an agent, or the save process itself — produces an immediate update with the new raw content.
+
+Planned commands, none implemented yet:
+- **Write** — overwrite (or patch) a file's raw content in the working tree. No tick is created.
+- **Upload** — introduce a brand-new file into the working tree.
+- **Save** — runs the diff-and-merge path: reconciles the working tree's raw content against the last-saved tick chain and produces one or more atoms — appending where possible, merging into history where not, so the append-only invariant on the tick chain always holds afterward. This is the only point at which ticks are created; raw writes never touch the tick chain directly.
+
+Not implemented: no commands, no wire types, and no push event exist for this yet. `WorkingTree` today is purely an internal storage detail — shared `State WorkingTree` used transiently within a single handler call — not something a client can address.
+
 ### `/agent/{id}` *(planned)*
 
 **Scope:** a running agent.  

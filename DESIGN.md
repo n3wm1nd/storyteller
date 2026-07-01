@@ -235,6 +235,12 @@ Every prose paragraph is saved immediately and automatically. Users never decide
 
 Editing a paragraph is not a new entry — it amends the existing one and rebases what follows. The story branch always reflects the story as it should be read.
 
+### Raw File Editing *(planned)*
+
+Auto-Commit above assumes LLM-driven, paragraph-at-a-time authoring. A separate surface is planned for direct file editing: the frontend renders a file's raw working-tree content instead of its split-into-atoms view, and edits — free-form changes, switching between files, uploading new ones — accumulate in that working tree without creating a tick per keystroke. See WS-PROTOCOL.md's "Working tree access" for the planned wire-level shape.
+
+Saving is the only point where accumulated changes are reconciled: a diff-and-merge pass sorts them into one or more atoms on the tick chain, so the append-only invariant (see DATA-MODEL.md) always holds once saved. Not yet implemented.
+
 ### Regeneration and Swipes
 
 "Regenerate" creates an alternative version — a parallel branch off the same point, not a new entry on the main story line. The user selects which version becomes canonical. Rejected alternatives are preserved in the temporal branch, eventually garbage collected from the active graph.

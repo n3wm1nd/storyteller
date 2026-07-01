@@ -242,6 +242,16 @@ The storage tree is loaded as creative prompting context during brainstorming an
 
 ---
 
+## The Working Tree
+
+Not to be confused with the storage tree above (wallclock-ordered author notes): the **working tree** is the filesystem state implied by a branch's chain at a given position, plus whatever hasn't been committed as a tick yet (`Storyteller.Git`'s `WorkingTree`). Every mutation stages into it before `Store`/`Replace` commits; `At`/`Drop` move it between chain positions; `WithFS` snapshots and restores it around a scoped filesystem operation.
+
+The append-only invariant governs what gets written as a tick — not the working tree itself. Content in the working tree can be freely rewritten; the invariant only bites at the moment that state is checked in via `Store`/`Replace`, which requires the new content to be an append over the previous tick.
+
+This is the concept underlying any operation that needs to reconcile raw, freeform edits into the tick chain — an edit doesn't have to land as an append directly; it can be staged in the working tree and diffed against the chain at commit time to produce a valid append (or an amend, via `At` and rebase).
+
+---
+
 ## Summary: What Each Structure Answers
 
 | Structure | Question | Ordering | Semantics |
@@ -250,3 +260,4 @@ The storage tree is loaded as creative prompting context during brainstorming an
 | Entity branches | What does this entity know at this point in their timeline? | Fiction-time | Chain of ticks |
 | Temporal ledger | What states has this branch ever had? | Wallclock | Append-only ref log |
 | Storage tree | What ideas exist? | Wallclock | Flat workspace |
+| Working tree | What's staged right now, committed or not? | N/A (current state) | Ephemeral staging |
