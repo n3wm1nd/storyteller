@@ -50,6 +50,7 @@ library
                   , Storyteller.Edit
                   , Server.Env
                   , Server.Notification
+                  , Server.Protocol
                   , Server.Run
                   , Server.Util
                   , Server.Session.Protocol

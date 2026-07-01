@@ -22,6 +22,7 @@ import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.WebSockets (ServerApp, PendingConnection(..), RequestHead(..), defaultConnectionOptions, acceptRequest, withPingThread, rejectRequest)
 import Network.HTTP.Types (status200)
 import qualified Data.ByteString.Char8 as BC
+import Network.HTTP.Types (urlDecode)
 import System.IO (hPutStrLn, stderr)
 
 import qualified Data.Text as T
@@ -42,10 +43,10 @@ wsRouter :: ServerEnv -> ServerApp
 wsRouter env pending =
   case BC.split '/' . BC.dropWhile (== '/') . Network.WebSockets.requestPath $ pendingRequest pending of
     ["session"]              -> accept $ runSession env
-    ["branch", name]         -> accept $ runBranch  env (T.pack (BC.unpack name))
+    ["branch", name]         -> accept $ runBranch  env (T.pack (BC.unpack (urlDecode False name)))
     ("branch" : name : path) -> accept $ runFile env
-                                           (T.pack (BC.unpack name))
-                                           (foldl1 (\a b -> a <> "/" <> b) (map BC.unpack path))
+                                           (T.pack (BC.unpack (urlDecode False name)))
+                                           (foldl1 (\a b -> a <> "/" <> b) (map (BC.unpack . urlDecode False) path))
     _                        -> rejectRequest pending "not found"
   where
     accept handler = do

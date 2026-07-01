@@ -6,42 +6,55 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | Dispatch for /branch/{name}/{path} connections.
+--
+-- Each command handler returns a FileEvent. After any mutation the server
+-- pushes the full updated file tick list as a FileUpdate. No read command —
+-- reconnect is resync.
 module Server.File.Dispatch
   ( dispatch
-  , snapshot
+  , connectSnapshot
   ) where
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Aeson (encode)
 import qualified Network.WebSockets as WS
-import Polysemy (Sem, Members, runM)
-import Polysemy.Fail (Fail)
+import Polysemy (Sem, runM)
 import Runix.Logging (info)
-
 
 import Server.Env (ServerEnv)
 import Server.File.Protocol (FileCommand(..), FileEvent(..))
-import qualified Server.File.Protocol as Protocol
+import Server.Protocol (Update(..), toWireTick)
 import Server.Run (runAction, actionStack, loggingWS, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Runtime (Main)
-import Storyteller.Storage (StoryBranch, fileTicks, getBranch)
 import qualified Storyteller.Storage as Storage
+import Storyteller.Storage (FileTick, fileTicks, getBranch)
 import Storyteller.Edit (deleteTick, editAtom, moveTick)
 import Storyteller.Types (BranchName(..), TickId(..))
 
 import Prelude hiding (readFile, writeFile)
 
 -- ---------------------------------------------------------------------------
--- Snapshot + dispatch
+-- Connect snapshot
 -- ---------------------------------------------------------------------------
 
-snapshot :: ServerEnv -> T.Text -> FilePath -> IO (Either String (Maybe [Protocol.FileTick]))
-snapshot env branch path = runAction env $ queryFileTicks branch path
+-- | State push on connect: FilePresent + FileUpdate, or FileAbsent.
+connectSnapshot :: ServerEnv -> T.Text -> FilePath -> IO (Either String FileEvent, Maybe FileEvent)
+connectSnapshot env branch path = do
+  r <- runAction env (queryFileTicks branch path)
+  return $ case r of
+    Left err          -> (Left err, Nothing)
+    Right Nothing     -> (Right (FileAbsent Nothing), Nothing)
+    Right (Just ticks) ->
+      let upd = fileUpdate ticks
+      in (Right (FilePresent Nothing), Just (FileUpdate upd))
 
+-- ---------------------------------------------------------------------------
+-- Dispatch
+-- ---------------------------------------------------------------------------
 
 dispatch :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> FileCommand -> IO ()
 dispatch env branch path conn cmd = do
@@ -50,115 +63,90 @@ dispatch env branch path conn cmd = do
     Append _mid content -> do
       r <- runM $ actionStack env $ loggingWS conn $ handleAppend branch path content
       case r of
-        Left err   -> emit (FileError (T.pack err))
-        Right tick -> emit (TickAppended tick)
-
-    Read _mid -> do
-      r <- runAction env (queryFileTicks branch path)
-      case r of
-        Left err           -> emit (FileError (T.pack err))
-        Right Nothing      -> emit (FileAbsent Nothing)
-        Right (Just ticks) -> emit (FileTicks ticks)
+        Left err  -> emit (FileError (T.pack err))
+        Right ()  -> pushUpdate env branch path conn
 
     Delete _mid ->
       emit (FileError "file delete not yet implemented")
 
-    EditAtom mid tickIdTxt newContent -> do
+    EditAtom _mid tickIdTxt newContent -> do
       r <- runAction env (handleEditAtom branch path tickIdTxt newContent)
       case r of
-        Left err            -> emit (FileError (T.pack err))
-        Right (oldId, tick) -> emit (AtomReplaced mid oldId tick)
+        Left err -> emit (FileError (T.pack err))
+        Right () -> pushUpdate env branch path conn
 
-    DeleteAtom mid tickIdTxt -> do
+    DeleteAtom _mid tickIdTxt -> do
       r <- runAction env (handleDeleteAtom branch path tickIdTxt)
       case r of
-        Left err      -> emit (FileError (T.pack err))
-        Right mapping -> emit (AtomDeleted mid tickIdTxt mapping)
+        Left err -> emit (FileError (T.pack err))
+        Right () -> pushUpdate env branch path conn
 
-    MoveAtom mid tickIdTxt mAfterTickId -> do
+    MoveAtom _mid tickIdTxt mAfterTickId -> do
       r <- runAction env (handleMoveAtom branch path tickIdTxt mAfterTickId)
       case r of
-        Left err      -> emit (FileError (T.pack err))
-        Right mapping -> emit (AtomMoved mid mapping)
+        Left err -> emit (FileError (T.pack err))
+        Right () -> pushUpdate env branch path conn
 
 -- ---------------------------------------------------------------------------
--- Query helpers
+-- Handlers — pure-ish, no WS concerns
 -- ---------------------------------------------------------------------------
 
--- | Fetch file ticks via the StoryBranch effect.
---   Returns Nothing if the branch doesn't exist, Just [] if the file is absent.
-queryFileTicks
-  :: SessionEffects r
-  => T.Text -> FilePath -> Sem r (Maybe [Protocol.FileTick])
-queryFileTicks branch path =
-  getBranch (BranchName branch) >>= \case
-    Nothing -> return Nothing
-    Just _  -> withBranch @Main branch $
-      fmap (Just . map toProtocolTick) (fileTicks @Main path)
-
-toProtocolTick :: Storage.FileTick -> Protocol.FileTick
-toProtocolTick ft = Protocol.FileTick
-  { Protocol.ftTickId  = Storage.ftTickId  ft
-  , Protocol.ftKind    = Storage.ftKind    ft
-  , Protocol.ftRefs    = Storage.ftRefs    ft
-  , Protocol.ftFields  = Storage.ftFields  ft
-  , Protocol.ftMessage = Storage.ftMessage ft
-  , Protocol.ftContent = Storage.ftContent ft
-  , Protocol.ftParent  = Storage.ftParent  ft
-  }
-
--- ---------------------------------------------------------------------------
--- Handlers
--- ---------------------------------------------------------------------------
-
-handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r Protocol.FileTick
+handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
 handleAppend branch path content =
   withBranchSplitter @Main branch $ do
     info $ "appending to: " <> T.pack path
     _tids <- appendAgent @Main path content
     info $ "append done: " <> T.pack path
-    headTick path
 
-handleEditAtom
-  :: SessionEffects r
-  => T.Text -> FilePath -> T.Text -> T.Text
-  -> Sem r (T.Text, Protocol.FileTick)
+handleEditAtom :: SessionEffects r => T.Text -> FilePath -> T.Text -> T.Text -> Sem r ()
 handleEditAtom branch path tickIdTxt newContent =
-  withBranch @Main branch $ do
-    (_newTid, _mapping) <- editAtom @Main
-      (TickId tickIdTxt) path (TE.encodeUtf8 newContent)
-    tick <- headTick path
-    return (tickIdTxt, tick)
+  withBranch @Main branch $
+    editAtom @Main (TickId tickIdTxt) path (TE.encodeUtf8 newContent) >> return ()
 
-handleDeleteAtom
-  :: SessionEffects r
-  => T.Text -> FilePath -> T.Text
-  -> Sem r [(T.Text, T.Text)]
+handleDeleteAtom :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
 handleDeleteAtom branch _path tickIdTxt =
-  withBranch @Main branch $ do
-    mapping <- deleteTick @Main (TickId tickIdTxt)
-    return [ (unTickId o, unTickId n) | (o, n) <- mapping ]
+  withBranch @Main branch $
+    deleteTick @Main (TickId tickIdTxt) >> return ()
 
-handleMoveAtom
-  :: SessionEffects r
-  => T.Text -> FilePath -> T.Text -> Maybe T.Text
-  -> Sem r [(T.Text, T.Text)]
+handleMoveAtom :: SessionEffects r => T.Text -> FilePath -> T.Text -> Maybe T.Text -> Sem r ()
 handleMoveAtom branch _path tickIdTxt mAfterTickId =
-  withBranch @Main branch $ do
-    mapping <- moveTick @Main (TickId tickIdTxt) (TickId <$> mAfterTickId)
-    return [ (unTickId o, unTickId n) | (o, n) <- mapping ]
+  withBranch @Main branch $
+    moveTick @Main (TickId tickIdTxt) (TickId <$> mAfterTickId) >> return ()
 
 -- ---------------------------------------------------------------------------
--- Helpers
+-- Update builders
 -- ---------------------------------------------------------------------------
 
--- | Return the head (most recent) tick for @path@. Must be called inside
---   a 'withBranch @Main' / 'withBranchSplitter @Main' context.
-headTick
-  :: Members '[StoryBranch Main, Fail] r
-  => FilePath -> Sem r Protocol.FileTick
-headTick path = do
-  tks <- fileTicks @Main path
-  case reverse tks of
-    []     -> fail "no ticks at HEAD for this file"
-    (ft:_) -> return (toProtocolTick ft)
+-- | Push the current full file tick list to the client after any mutation.
+pushUpdate :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
+pushUpdate env branch path conn = do
+  r <- runAction env (queryFileTicks branch path)
+  case r of
+    Left err          -> WS.sendTextData conn (encode (FileError (T.pack err)))
+    Right Nothing     -> WS.sendTextData conn (encode (FileAbsent Nothing))
+    Right (Just ticks) -> WS.sendTextData conn (encode (FileUpdate (fileUpdate ticks)))
+
+-- | Build a FileUpdate from a list of file ticks.
+--   Head is the last tick in the list (newest).
+fileUpdate :: [FileTick] -> Update
+fileUpdate ticks = Update
+  { updateTicks = map toWireTick ticks
+  , updateHead  = case reverse ticks of
+                    []    -> ""
+                    (t:_) -> Storage.ftTickId t
+  }
+
+-- ---------------------------------------------------------------------------
+-- Query helpers
+-- ---------------------------------------------------------------------------
+
+-- | Fetch file ticks. Returns Nothing if the branch doesn't exist,
+--   Just [] if the file is absent, Just ticks otherwise.
+queryFileTicks
+  :: SessionEffects r
+  => T.Text -> FilePath -> Sem r (Maybe [FileTick])
+queryFileTicks branch path =
+  getBranch (BranchName branch) >>= \case
+    Nothing -> return Nothing
+    Just _  -> withBranch @Main branch $
+      fmap Just (fileTicks @Main path)

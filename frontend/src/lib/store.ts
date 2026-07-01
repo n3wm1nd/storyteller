@@ -4,35 +4,32 @@ import { create } from "zustand";
 import {
   sessionConn, branchConn, fileConn,
   type StoryWS,
-  type FileTick,
-  type BranchTick,
-  type IdMapping,
-  type ContextItem,
+  type WireTick,
+  type Update,
+  type AgentLogEvent,
+  type ErrorEvent,
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
   type FileCommand,    type FileEvent,
 } from "./ws";
 
-export type { ContextItem };
-
-export type { BranchTick };
-
-export type { FileTick };
+export type { WireTick };
 
 export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 
 export interface ConnInfo {
   label: string;
   status: ConnStatus;
-  lastActivity?: number;  // Date.now() timestamp of last received message
+  lastActivity?: number;
 }
 
-// A file connection: the WS handle plus the tick list.
+// A file connection: the WS handle, tick store, and current head.
 export interface FileConn {
-  path: string;
-  ticks: FileTick[];   // empty + absent=true means file.absent
+  path:   string;
+  ticks:  Record<string, WireTick>;
+  head:   string | null;
   absent: boolean;
-  conn: StoryWS<FileCommand, FileEvent>;
+  conn:   StoryWS<FileCommand, FileEvent>;
 }
 
 interface StoryState {
@@ -44,8 +41,9 @@ interface StoryState {
 
   // Branch level
   activeBranch: string | null;
-  files: string[];   // file paths only — content lives in openFiles
-  ticks: BranchTick[];
+  files:        string[];
+  ticks:        Record<string, WireTick>;
+  branchHead:   string | null;
 
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
@@ -53,28 +51,28 @@ interface StoryState {
   // Agent log entries (ephemeral, capped ring buffer)
   agentLogs: { level: string; message: string }[];
 
-  // Context selection (per file-connection; cleared on close/branch change)
+  // Context selection — local UI state, cleared on branch/file change
   contextAtoms:       Set<string>;
   contextAnnotations: Set<string>;
 
   // Actions
-  connect: () => Promise<void>;
-  createBranch: (name: string) => void;
-  deleteBranch: (name: string) => void;
-  selectBranch: (name: string) => Promise<void>;
-  openFile: (path: string) => Promise<void>;
-  closeFile: (path: string) => void;
-  appendToFile: (path: string, content: string) => void;
-  editAtom: (path: string, tickId: string, content: string) => void;
-  deleteAtom: (path: string, tickId: string) => void;
-  addNote: (refTickId: string, text: string) => void;
-  moveTick: (tickId: string, afterTickId?: string) => void;
-  deleteTickEntry: (tickId: string) => void;
-  toggleContextAtom: (tickId: string) => void;
+  connect:        () => Promise<void>;
+  createBranch:   (name: string) => void;
+  deleteBranch:   (name: string) => void;
+  selectBranch:   (name: string) => Promise<void>;
+  openFile:       (path: string) => Promise<void>;
+  closeFile:      (path: string) => void;
+  appendToFile:   (path: string, content: string) => void;
+  editAtom:       (path: string, tickId: string, content: string) => void;
+  deleteAtom:     (path: string, tickId: string) => void;
+  addNote:        (refTickId: string, text: string) => void;
+  moveTick:       (tickId: string, afterTickId?: string) => void;
+  deleteTickEntry:(tickId: string) => void;
+  chatPrompt:              (path: string, text: string) => void;
+  toggleContextAtom:       (tickId: string) => void;
   toggleContextAnnotation: (tickId: string) => void;
-  clearContext: () => void;
-  clearAgentLogs: () => void;
-  chatPrompt: (path: string, text: string) => void;
+  clearContext:            () => void;
+  clearAgentLogs:          () => void;
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
@@ -96,6 +94,22 @@ function bumpActivity(conns: ConnInfo[], label: string): ConnInfo[] {
   return conns.map((c) => c.label === label ? { ...c, lastActivity: Date.now() } : c);
 }
 
+type Setter = (fn: (s: StoryState) => Partial<StoryState>) => void;
+
+function applyUpdate(ticks: Record<string, WireTick>, upd: Update): Record<string, WireTick> {
+  const next = { ...ticks };
+  for (const t of upd.ticks) next[t.tickId] = t;
+  return next;
+}
+
+function handleAgentLog(set: Setter, evt: AgentLogEvent) {
+  set((s) => ({ agentLogs: [...s.agentLogs, { level: evt.level, message: evt.message }].slice(-200) }));
+}
+
+function handleError(set: Setter, evt: ErrorEvent) {
+  set(() => ({ error: evt.message }));
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useStory = create<StoryState>((set, get) => ({
@@ -104,7 +118,8 @@ export const useStory = create<StoryState>((set, get) => ({
   branches: [],
   activeBranch: null,
   files: [],
-  ticks: [],
+  ticks: {},
+  branchHead: null,
   openFiles: {},
   agentLogs: [],
   contextAtoms: new Set(),
@@ -137,7 +152,7 @@ export const useStory = create<StoryState>((set, get) => ({
           activeBranch: s.activeBranch === evt.branch ? null : s.activeBranch,
         }));
       } else if (evt.type === "error") {
-        set({ error: evt.message });
+        handleError(set, evt);
       }
     });
 
@@ -165,15 +180,14 @@ export const useStory = create<StoryState>((set, get) => ({
       if (prevName) set((s) => ({ conns: removeConn(s.conns, `branch:${prevName}`) }));
     }
 
-    // Close any open file connections from the previous branch.
-    const { openFiles } = get();
-    for (const fc of Object.values(openFiles)) fc.conn.close();
+    for (const fc of Object.values(get().openFiles)) fc.conn.close();
 
     const label = `branch:${name}`;
     set((s) => ({
       activeBranch: name,
       files: [],
-      ticks: [],
+      ticks: {},
+      branchHead: null,
       openFiles: {},
       contextAtoms: new Set(),
       contextAnnotations: new Set(),
@@ -198,23 +212,12 @@ export const useStory = create<StoryState>((set, get) => ({
         set((s) => ({
           files: s.files.includes(evt.path) ? s.files : [...s.files, evt.path].sort(),
         }));
-      } else if (evt.type === "branch.ticks") {
-        set({ ticks: evt.ticks });
+      } else if (evt.type === "update") {
+        set((s) => ({ ticks: applyUpdate(s.ticks, evt), branchHead: evt.head }));
       } else if (evt.type === "agent.log") {
-        set((s) => ({
-          agentLogs: [...s.agentLogs, { level: evt.level, message: evt.message }].slice(-200),
-        }));
-      } else if (evt.type === "ticks.invalidated") {
-        // Apply id renames optimistically, then re-fetch for accuracy.
-        const remap = new Map(evt.mapping.map((m: IdMapping) => [m.old, m.new]));
-        set((s) => ({
-          ticks: s.ticks.map((t) =>
-            remap.has(t.tickId) ? { ...t, tickId: remap.get(t.tickId)! } : t
-          ),
-        }));
-        get()._branch?.send({ type: "read.ticks" });
+        handleAgentLog(set, evt);
       } else if (evt.type === "error") {
-        set({ error: evt.message });
+        handleError(set, evt);
       }
     });
 
@@ -225,7 +228,7 @@ export const useStory = create<StoryState>((set, get) => ({
   openFile: async (path) => {
     const { activeBranch, openFiles } = get();
     if (!activeBranch) return;
-    if (openFiles[path]) return;  // already open
+    if (openFiles[path]) return;
 
     const label = `file:${path}`;
     set((s) => ({ conns: setConnStatus(s.conns, label, "connecting") }));
@@ -239,71 +242,51 @@ export const useStory = create<StoryState>((set, get) => ({
 
     fc.subscribe((evt) => {
       set((s) => ({ conns: bumpActivity(s.conns, label) }));
-      if (evt.type === "file.ticks") {
+      if (evt.type === "file.present") {
         set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, ticks: evt.ticks, absent: false, conn: fc } },
+          openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: false, conn: fc } },
           conns: setConnStatus(s.conns, label, "connected"),
         }));
       } else if (evt.type === "file.absent") {
         set((s) => ({
-          openFiles: { ...s.openFiles, [path]: { path, ticks: [], absent: true, conn: fc } },
+          openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: true, conn: fc } },
           conns: setConnStatus(s.conns, label, "connected"),
         }));
-      } else if (evt.type === "tick.appended") {
-        set((s) => {
-          const prev = s.openFiles[path];
-          const ticks = prev ? [...prev.ticks, evt.tick] : [evt.tick];
-          return { openFiles: { ...s.openFiles, [path]: { path, ticks, absent: false, conn: fc } } };
-        });
-      } else if (evt.type === "atom.replaced") {
-        // tickId changes on edit, so re-fetch to get consistent ids.
-        fc.send({ type: "read" });
-      } else if (evt.type === "atom.deleted") {
+      } else if (evt.type === "update") {
         set((s) => {
           const prev = s.openFiles[path];
           if (!prev) return {};
-          const remap = new Map(evt.mapping.map((m: IdMapping) => [m.old, m.new]));
-          const ticks = prev.ticks
-            .filter((t) => t.tickId !== evt.oldTickId)
-            .map((t) => remap.has(t.tickId) ? { ...t, tickId: remap.get(t.tickId)! } : t);
-          return { openFiles: { ...s.openFiles, [path]: { ...prev, ticks } } };
+          return {
+            openFiles: {
+              ...s.openFiles,
+              [path]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
+            },
+          };
         });
-      } else if (evt.type === "atom.moved") {
-        // Full re-fetch is safest — the chain order changed and all ids shifted.
-        get().openFiles[path]?.conn.send({ type: "read" });
       } else if (evt.type === "agent.log") {
-        set((s) => ({
-          agentLogs: [...s.agentLogs, { level: evt.level, message: evt.message }].slice(-200),
-        }));
+        handleAgentLog(set, evt);
       } else if (evt.type === "error") {
-        set({ error: evt.message });
+        handleError(set, evt);
       }
     });
 
     await fc.connect();
-    set((s) => ({ openFiles: { ...s.openFiles, [path]: { path, ticks: [], absent: false, conn: fc } } }));
+    set((s) => ({
+      openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: false, conn: fc } },
+    }));
   },
 
   closeFile: (path) => {
-    const { openFiles } = get();
-    openFiles[path]?.conn.close();
+    get().openFiles[path]?.conn.close();
     set((s) => {
       const next = { ...s.openFiles };
       delete next[path];
-      return {
-        openFiles: next,
-        contextAtoms: new Set(),
-        contextAnnotations: new Set(),
-        conns: removeConn(s.conns, `file:${path}`),
-      };
+      return { openFiles: next, conns: removeConn(s.conns, `file:${path}`) };
     });
   },
 
   appendToFile: (path, content) => {
-    const fc = get().openFiles[path];
-    if (fc) {
-      fc.conn.send({ type: "append", content: content.replace(/^\/+/, "") });
-    }
+    get().openFiles[path]?.conn.send({ type: "append", content: content.replace(/^\/+/, "") });
   },
 
   editAtom: (path, tickId, content) => {
@@ -324,6 +307,10 @@ export const useStory = create<StoryState>((set, get) => ({
 
   deleteTickEntry: (tickId) => {
     get()._branch?.send({ type: "delete.tick", tickId });
+  },
+
+  chatPrompt: (path, text) => {
+    get()._branch?.send({ type: "chat.prompt", path, text });
   },
 
   toggleContextAtom: (tickId) => {
@@ -348,26 +335,5 @@ export const useStory = create<StoryState>((set, get) => ({
 
   clearAgentLogs: () => {
     set({ agentLogs: [] });
-  },
-
-  chatPrompt: (path, text) => {
-    const { contextAtoms, contextAnnotations, openFiles } = get();
-    const ticks = openFiles[path]?.ticks ?? [];
-
-    let context: ContextItem[] | undefined;
-    const hasContext = contextAtoms.size > 0 || contextAnnotations.size > 0;
-    if (hasContext) {
-      // Build context items in chain order (oldest first), atoms before their annotations.
-      context = [];
-      for (const tick of ticks) {
-        if (tick.kind === "atom" && contextAtoms.has(tick.tickId)) {
-          context.push({ tickId: tick.tickId, kind: tick.kind, content: tick.content ?? tick.message });
-        } else if (tick.kind !== "atom" && contextAnnotations.has(tick.tickId)) {
-          context.push({ tickId: tick.tickId, kind: tick.kind, content: tick.message });
-        }
-      }
-    }
-
-    get()._branch?.send({ type: "chat.prompt", path, text, ...(context ? { context } : {}) });
   },
 }));

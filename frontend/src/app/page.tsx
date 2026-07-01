@@ -8,7 +8,35 @@ import {
   Sparkles, Plus, MessageSquare, StickyNote, Trash2, MoveUp, MoveDown,
   Eye, EyeOff,
 } from "lucide-react";
-import { useStory, type ConnInfo, type FileTick, type BranchTick } from "@/lib/store";
+import { useStory, type ConnInfo, type WireTick } from "@/lib/store";
+
+// Walk a tick map from head → oldest, return oldest-first ordered array.
+// Skips root ticks (kind "root") — those are structural, not content.
+function tickChain(ticks: Record<string, WireTick>, head: string | null): WireTick[] {
+  if (!head || !ticks[head]) return [];
+  const chain: WireTick[] = [];
+  let cur: string | null = head;
+  const seen = new Set<string>();
+  while (cur && ticks[cur] && !seen.has(cur)) {
+    seen.add(cur);
+    const t = ticks[cur];
+    if (t.kind !== "root") chain.push(t);
+    cur = t.parent;
+  }
+  return chain.reverse();
+}
+
+// Extract payload from "type:<kind>\n<payload>" message format.
+function tickPayload(msg: string): string {
+  const nl = msg.indexOf("\n");
+  return nl >= 0 ? msg.slice(nl + 1) : msg;
+}
+
+// Extract a named field from a WireTick's fields map.
+function tickField(tick: WireTick, key: string): string | undefined {
+  return tick.fields?.[key];
+}
+
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -414,11 +442,11 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   ),
 };
 
-function FileTickList({
+function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations,
   onEdit, onToggleContextAtom, onToggleContextAnnotation,
 }: {
-  ticks: FileTick[];
+  ticks: WireTick[];
   annotationMode: AnnotationMode;
   contextAtoms: Set<string>;
   contextAnnotations: Set<string>;
@@ -429,7 +457,7 @@ function FileTickList({
   const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
 
   // For each non-atom tick, find the atom it should appear after.
-  const annotationsFor = new Map<string, FileTick[]>();
+  const annotationsFor = new Map<string, WireTick[]>();
   let lastAtomId: string | null = null;
   for (const tick of ticks) {
     if (tick.kind === "atom") {
@@ -486,7 +514,7 @@ function FileTickList({
 }
 
 function AnnotationCard({ tick, inContext, onToggleContext }: {
-  tick: FileTick;
+  tick: WireTick;
   inContext: boolean;
   onToggleContext: (e: React.MouseEvent) => void;
 }) {
@@ -538,7 +566,7 @@ function AnnotationCard({ tick, inContext, onToggleContext }: {
 }
 
 function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
-  annotations: FileTick[];
+  annotations: WireTick[];
   contextAnnotations: Set<string>;
   onToggleContext: (tickId: string) => void;
 }) {
@@ -598,7 +626,7 @@ function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
 }
 
 function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
-  atom: FileTick;
+  atom: WireTick;
   isLast: boolean;
   inContext: boolean;
   onEdit: (content: string) => void;
@@ -940,7 +968,7 @@ function TicksView({
   onAddNote, onMoveTick, onDeleteTick,
 }: {
   activeBranch: string | null;
-  ticks: BranchTick[];
+  ticks: WireTick[];
   onAddNote: (refTickId: string, text: string) => void;
   onMoveTick: (tickId: string, afterTickId?: string) => void;
   onDeleteTick: (tickId: string) => void;
@@ -1000,11 +1028,11 @@ function TickRow({
   tick, allTicks, isFirst, isLast, prevTick,
   onAddNote, onMoveUp, onMoveDown, onDelete,
 }: {
-  tick: BranchTick;
-  allTicks: BranchTick[];
+  tick: WireTick;
+  allTicks: WireTick[];
   isFirst: boolean;
   isLast: boolean;
-  prevTick: BranchTick | undefined;
+  prevTick: WireTick | undefined;
   onAddNote: (refTickId: string, text: string) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -1017,8 +1045,7 @@ function TickRow({
   // Ordering invariant: all ticks you reference must be below you (older);
   // all ticks that reference you must be above you (newer).
   // Moving one step: blocked if the adjacent tick would violate this.
-  const refsOf = (t: BranchTick): string[] =>
-    t.kind === "note" ? [t.ref] : t.kind === "atom" ? t.refs : [];
+  const refsOf = (t: WireTick): string[] => t.refs ?? [];
 
   const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
   const above = allTicks[myIdx - 1];
@@ -1037,10 +1064,10 @@ function TickRow({
         </span>
         <StickyNote style={{ width: 11, height: 11, color: "oklch(0.55 0.15 240)", flexShrink: 0 }} />
         <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "inherit" }}>
-          {tick.text}
+          {tickPayload(tick.message)}
         </span>
         <span style={{ fontSize: 9, color: hovered ? "var(--text-ghost)" : "transparent", flexShrink: 0, transition: "color 0.15s" }}>
-          → {tick.ref.slice(0, 12)}
+          → {(tick.refs?.[0] ?? "").slice(0, 12)}
         </span>
       </div>
     );
@@ -1051,10 +1078,10 @@ function TickRow({
         </span>
         <Sparkles style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0 }} />
         <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "inherit" }}>
-          {tick.text}
+          {tickPayload(tick.message)}
         </span>
         <span style={{ fontSize: 9, color: hovered ? "var(--text-ghost)" : "transparent", flexShrink: 0, transition: "color 0.15s" }}>
-          {tick.file}
+          {tickField(tick, "file")}
         </span>
       </div>
     );
@@ -1064,11 +1091,11 @@ function TickRow({
           {tick.tickId.slice(0, 12)}
         </span>
         <span style={{ fontSize: 13, color: "var(--text-secondary)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {tick.message}
+          {tickPayload(tick.message)}
         </span>
-        {tick.file && (
+        {tickField(tick, "file") && (
           <span style={{ fontSize: 9, color: hovered ? "var(--text-ghost)" : "transparent", transition: "color 0.15s", flexShrink: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-            {tick.file}
+            {tickField(tick, "file")}
           </span>
         )}
         {tick.refs.length > 0 && (
@@ -1169,7 +1196,7 @@ function MoveButton({ disabled, onClick, title, danger, children }: {
 
 export default function Home() {
   const {
-    conns, error, branches, activeBranch, files, ticks, openFiles,
+    conns, error, branches, activeBranch, files, ticks, branchHead, openFiles,
     agentLogs,
     contextAtoms, contextAnnotations,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
@@ -1198,7 +1225,7 @@ export default function Home() {
   useEffect(() => { connect(); }, []);
 
   const fileConn = selectedFile ? openFiles[selectedFile] : null;
-  const fileTicks = fileConn?.ticks ?? [];
+  const fileTicks = tickChain(fileConn?.ticks ?? {}, fileConn?.head ?? null);
   const isAbsent = fileConn?.absent ?? false;
   const atomCount       = fileTicks.filter((t) => t.kind === "atom").length;
   const annotationCount = fileTicks.filter((t) => t.kind !== "atom").length;
@@ -1389,7 +1416,7 @@ export default function Home() {
                 Loading…
               </div>
             ) : (
-              <FileTickList
+              <WireTickList
                 ticks={fileTicks}
                 annotationMode={annotationMode}
                 contextAtoms={contextAtoms}
@@ -1414,7 +1441,7 @@ export default function Home() {
           {centerTab === "ticks" && (
             <TicksView
               activeBranch={activeBranch}
-              ticks={ticks}
+              ticks={tickChain(ticks, branchHead).reverse()}
               onAddNote={addNote}
               onMoveTick={moveTick}
               onDeleteTick={deleteTickEntry}

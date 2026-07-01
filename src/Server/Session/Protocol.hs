@@ -3,16 +3,19 @@
 
 -- | Protocol for /session connections.
 --
--- Commands: branch management operations that don't require an open branch.
--- Events:   branch list, confirmation, errors.
+-- Commands: branch management. No tick or file operations at this level.
+-- Events:   branch list, confirmations, errors.
+-- No resync command — reconnect triggers a fresh state push.
 module Server.Session.Protocol
   ( SessionCommand(..)
   , SessionEvent(..)
   ) where
 
 import Data.Aeson hiding (Error)
-import Data.Aeson.Types (Parser, Pair)
+import Data.Aeson.Types (Parser)
 import qualified Data.Text as T
+
+import Server.Protocol (withId)
 
 data SessionCommand
   = ListBranches { scId :: Maybe T.Text }
@@ -42,15 +45,11 @@ instance ToJSON SessionEvent where
   toJSON = \case
     SessionReady' ->
       object [ "type" .= ("session.ready" :: T.Text) ]
-    BranchList  mid branches ->
+    BranchList mid branches ->
       object $ withId mid [ "type" .= ("branch.list"    :: T.Text), "branches" .= branches ]
     BranchCreated mid branch ->
-      object $ withId mid [ "type" .= ("branch.created" :: T.Text), "branch" .= branch ]
+      object $ withId mid [ "type" .= ("branch.created" :: T.Text), "branch"   .= branch ]
     BranchDeleted mid branch ->
-      object $ withId mid [ "type" .= ("branch.deleted" :: T.Text), "branch" .= branch ]
+      object $ withId mid [ "type" .= ("branch.deleted" :: T.Text), "branch"   .= branch ]
     SessionError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]
-
-withId :: Maybe T.Text -> [Pair] -> [Pair]
-withId Nothing  ps = ps
-withId (Just i) ps = ("id" .= i) : ps

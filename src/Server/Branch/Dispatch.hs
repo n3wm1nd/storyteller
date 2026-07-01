@@ -9,13 +9,13 @@
 
 -- | Dispatch for /branch/{name} connections.
 --
--- Handles branch-level operations: file tree snapshot on connect, track, chargen,
--- note ticks, and tick move/delete.
--- Per-file operations (append, read, delete) live in Server.File.Dispatch.
+-- Each command handler is a pure-ish function (effects only from the effect
+-- stack, no IO/WS concerns) that returns a BranchEvent. Dispatch routes
+-- commands to handlers and emits the result. Connection setup lives in
+-- Server.Branch.Connection.
 module Server.Branch.Dispatch
   ( dispatch
-  , snapshot
-  , tickSnapshot
+  , connectSnapshot
   ) where
 
 import Control.Monad (void)
@@ -27,11 +27,12 @@ import qualified Network.WebSockets as WS
 import Polysemy (Members, Sem, runM)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
+import Runix.FileSystem (FileSystem, listAllFiles)
 import Runix.Logging (info)
 
 import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
+import Server.Protocol (Update(..), tickToWireTick)
 import Server.Run (runAction, actionStack, loggingWS, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
@@ -39,17 +40,32 @@ import Storyteller.Agent (Prompt(..), Instruction(..))
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Agent.Write (writeAgent)
-import Storyteller.Atom (Atom(..))
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, storeAs)
-import Storyteller.Types (BranchName(..), TickId(..), Tick(..), TickData(..), Note(..), TickType(..), tickId, tickParent, tickTypeOf)
+import Storyteller.Storage (StoryBranch, createBranch, getBranch, follow, get, storeAs)
+import Storyteller.Types (BranchName(..), TickId(..), Note(..), tickId, tickParent, unTickId)
 
 
 data Main
 data Source
 data Tracker
 data CharBranch
+
+-- ---------------------------------------------------------------------------
+-- Connect snapshot
+-- ---------------------------------------------------------------------------
+
+-- | Full state push on connect: file list and full tick chain as an Update.
+--   Returns Left on hard error, Right (files, update) on success.
+--   If the branch doesn't exist yet, returns empty lists.
+connectSnapshot :: ServerEnv -> T.Text -> IO (Either String ([FilePath], Maybe Update))
+connectSnapshot env branch = runAction env $ do
+  getBranch (BranchName branch) >>= \case
+    Nothing -> return ([], Nothing)
+    Just _  -> withBranch @Main branch $ do
+      files  <- branchFiles @Main
+      update <- branchUpdate @Main
+      return (files, Just update)
 
 -- ---------------------------------------------------------------------------
 -- Dispatch
@@ -60,39 +76,42 @@ dispatch env branch conn cmd = do
   let emit = WS.sendTextData conn . encode
   r <- runM $ actionStack env $ loggingWS conn $ case cmd of
     Track mid source files -> do
-      ps <- handleTrack branch source files
-      return $ map (FileAdded mid) ps
+      paths <- handleTrack branch source files
+      return (map (FileAdded mid) paths, Nothing)
 
     CharGen mid path scenario seed -> do
       handleCharGen branch path scenario seed
-      return [FileAdded mid path]
+      upd <- runUpdate branch
+      return ([FileAdded mid path], Just upd)
 
-    ReadTicks _mid -> do
-      ts <- handleReadTicks branch
-      return [BranchTicks ts]
+    AddNote _mid refTickId noteText_ -> do
+      handleAddNote branch refTickId noteText_
+      upd <- runUpdate branch
+      return ([], Just upd)
 
-    AddNote mid refTickId noteText_ -> do
-      _tick <- handleAddNote branch refTickId noteText_
-      return [TicksInvalidated mid []]
+    MoveTick _mid tickId_ mAfterTickId -> do
+      handleMoveTick branch tickId_ mAfterTickId
+      upd <- runUpdate branch
+      return ([], Just upd)
 
-    MoveTick mid tickId_ mAfterTickId -> do
-      mapping <- handleMoveTick branch tickId_ mAfterTickId
-      return [TicksInvalidated mid mapping]
-
-    DeleteTick mid tickId_ -> do
-      mapping <- handleDeleteTick branch tickId_
-      return [TicksInvalidated mid mapping]
+    DeleteTick _mid tickId_ -> do
+      handleDeleteTick branch tickId_
+      upd <- runUpdate branch
+      return ([], Just upd)
 
     ChatPrompt _mid path promptText_ -> do
       handleChatPrompt branch path promptText_
-      return []
+      upd <- runUpdate branch
+      return ([], Just upd)
 
   case r of
-    Left err  -> emit (BranchError (T.pack err))
-    Right evs -> mapM_ emit evs
+    Left err             -> emit (BranchError (T.pack err))
+    Right (evts, mUpd)  -> do
+      mapM_ emit evts
+      maybe (return ()) (emit . BranchUpdate) mUpd
 
 -- ---------------------------------------------------------------------------
--- Handlers
+-- Handlers — pure-ish, no WS concerns
 -- ---------------------------------------------------------------------------
 
 handleTrack :: SessionEffects r => T.Text -> T.Text -> [TrackFile] -> Sem r [FilePath]
@@ -121,118 +140,61 @@ handleCharGen branch path scenario seed = do
   runBranchAndFS @CharBranch name $
     void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
 
--- | Add an annotation note tick referencing @refTickId@ on branch @branch@.
---   The note tick is appended at head; the invariant (note comes after its ref)
---   is satisfied because the ref must already exist in history.
-handleAddNote
-  :: SessionEffects r
-  => T.Text -> T.Text -> T.Text
-  -> Sem r BranchTick
+handleAddNote :: SessionEffects r => T.Text -> T.Text -> T.Text -> Sem r ()
 handleAddNote branch refTickIdTxt text =
   withBranch @Main branch $ do
     let refId = TickId refTickIdTxt
-    -- Verify the ref exists in this branch's history.
     ticks <- follow @Main [] $ \acc t -> (t : acc, tickParent t)
     case filter (\t -> tickId t == refId) ticks of
       [] -> fail $ "ref tick not found in branch: " <> T.unpack refTickIdTxt
-      _  -> do
-        let headId = case ticks of { (h:_) -> Just (unTickId (tickId h)); [] -> Nothing }
-        newId <- storeAs @Main (Note refId text)
-        return $ BranchTickNote
-          { btTickId = unTickId newId
-          , btParent = headId
-          , btRef    = refTickIdTxt
-          , btText   = text
-          }
+      _  -> void $ storeAs @Main (Note refId text)
 
--- | Move a tick to a new position in the chain.
---   Delegates to 'Storyteller.Edit.moveTick' which enforces ordering invariants
---   and performs the move as a single nested At.
-handleMoveTick
-  :: SessionEffects r
-  => T.Text -> T.Text -> Maybe T.Text
-  -> Sem r [(T.Text, T.Text)]
+handleMoveTick :: SessionEffects r => T.Text -> T.Text -> Maybe T.Text -> Sem r ()
 handleMoveTick branch tickIdTxt mAfterTickIdTxt =
   withBranch @Main branch $ do
     let tid    = TickId tickIdTxt
         mAfter = TickId <$> mAfterTickIdTxt
-    mapping <- moveTick @Main tid mAfter
-    return (toTextPairs mapping)
+    void $ moveTick @Main tid mAfter
 
-handleChatPrompt
-  :: SessionEffects r
-  => T.Text -> FilePath -> T.Text
-  -> Sem r ()
+handleDeleteTick :: SessionEffects r => T.Text -> T.Text -> Sem r ()
+handleDeleteTick branch tickIdTxt =
+  withBranch @Main branch $
+    void $ deleteTick @Main (TickId tickIdTxt)
+
+handleChatPrompt :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
 handleChatPrompt branch path promptText_ =
   withBranchSplitter @Main branch $ do
-    storeAs @Main (Prompt path promptText_)
+    _ <- storeAs @Main (Prompt path promptText_)
     info $ "writer agent starting: " <> T.pack path
-    writeAgent @(BranchTag Main) @Main path (Instruction promptText_) []
+    _ <- writeAgent @(BranchTag Main) @Main path (Instruction promptText_) []
     info $ "writer agent done: " <> T.pack path
 
--- | Delete a tick from the chain. Any note ticks referencing it are left with
---   a dangling ref. Returns the old→new id mapping for the rebase.
-handleDeleteTick
-  :: SessionEffects r
-  => T.Text -> T.Text
-  -> Sem r [(T.Text, T.Text)]
-handleDeleteTick branch tickIdTxt =
-  withBranch @Main branch $ do
-    mapping <- deleteTick @Main (TickId tickIdTxt)
-    return (toTextPairs mapping)
-
 -- ---------------------------------------------------------------------------
--- Snapshots — sent on connect
+-- Update builders
 -- ---------------------------------------------------------------------------
 
-snapshot :: ServerEnv -> T.Text -> IO (Either String [FilePath])
-snapshot env branch = runAction env $ do
-  let name = BranchName branch
-  getBranch name >>= \case
-    Nothing -> return []
-    Just _  -> withBranch @Main branch $
-      branchFiles @Main
-
-handleReadTicks :: SessionEffects r => T.Text -> Sem r [BranchTick]
-handleReadTicks branch =
+-- | Build a full branch Update after any mutation.
+runUpdate :: SessionEffects r => T.Text -> Sem r Update
+runUpdate branch =
   getBranch (BranchName branch) >>= \case
-    Nothing -> return []
-    Just _  -> withBranch @Main branch $ do
-      ticks <- follow @Main [] $ \acc tick -> (tick : acc, tickParent tick)
-      let contentTicks = filter ((/= Nothing) . tickParent) ticks
-      return $ map tickToBranchTick (reverse contentTicks)
+    Nothing -> return (Update [] "")
+    Just _  -> withBranch @Main branch $ branchUpdate @Main
 
-tickSnapshot :: ServerEnv -> T.Text -> IO (Either String [BranchTick])
-tickSnapshot env branch = runAction env (handleReadTicks branch)
-
--- ---------------------------------------------------------------------------
--- Pub/sub broadcast
--- ---------------------------------------------------------------------------
+-- | Assemble an Update from the current branch state.
+--   Tick chain is oldest-first; head is the most recent tick id.
+branchUpdate
+  :: forall branch r
+  .  Members '[StoryBranch branch, Fail] r
+  => Sem r Update
+branchUpdate = do
+  ticks  <- follow @branch [] $ \acc t -> (t : acc, tickParent t)
+  headTick <- get @branch
+  let headId = unTickId (tickId headTick)
+  return (Update (map tickToWireTick ticks) headId)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
-
-toTextPairs :: [(TickId, TickId)] -> [(T.Text, T.Text)]
-toTextPairs = map (\(o, n) -> (unTickId o, unTickId n))
-
-tickToBranchTick :: Tick -> BranchTick
-tickToBranchTick tick =
-  let tid = unTickId (tickId tick)
-      par = unTickId <$> tickParent tick
-      rs  = map unTickId (tickRefs (tickData tick))
-  in case tickTypeOf tick of
-       Just "note"   | Just (Note ref body)   <- fromTick tick
-                     -> BranchTickNote   tid par (unTickId ref) body
-       Just "prompt" | Just (Prompt file txt) <- fromTick tick
-                     -> BranchTickPrompt tid par (T.pack file) txt
-       Just "atom"   | Just atom <- fromTick tick
-                     -> BranchTickAtom { btTickId = tid, btParent = par, btRefs = rs
-                                       , btMessage = atomMessage atom
-                                       , btAtomFile = Just (T.pack (atomFile atom)) }
-       _             -> BranchTickAtom { btTickId = tid, btParent = par, btRefs = rs
-                                       , btMessage = tickMessage (tickData tick)
-                                       , btAtomFile = Nothing }
 
 branchFiles
   :: forall branch r
