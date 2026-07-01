@@ -8,7 +8,11 @@
 // All connections support auto-reconnect. Reconnecting is the only resync
 // mechanism — the server pushes full state on every new connection.
 
-const WS_BASE = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8090";
+function wsBase() {
+  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.hostname}:8090`;
+}
 
 // ── Shared event types ────────────────────────────────────────────────────────
 
@@ -182,14 +186,14 @@ export class StoryWS<Cmd, Evt> {
 // ── Exported constructors ─────────────────────────────────────────────────────
 
 export function sessionConn() {
-  return new StoryWS<SessionCommand, SessionEvent>(`${WS_BASE}/session`);
+  return new StoryWS<SessionCommand, SessionEvent>(`${wsBase()}/session`);
 }
 
 export function branchConn(name: string) {
-  return new StoryWS<BranchCommand, BranchEvent>(`${WS_BASE}/branch/${encodeURIComponent(name)}`);
+  return new StoryWS<BranchCommand, BranchEvent>(`${wsBase()}/branch/${encodeURIComponent(name)}`);
 }
 
 export function fileConn(branch: string, path: string) {
   const encodedPath = path.split("/").map((p) => encodeURIComponent(decodeURIComponent(p))).join("/");
-  return new StoryWS<FileCommand, FileEvent>(`${WS_BASE}/branch/${encodeURIComponent(branch)}/${encodedPath}`);
+  return new StoryWS<FileCommand, FileEvent>(`${wsBase()}/branch/${encodeURIComponent(branch)}/${encodedPath}`);
 }
