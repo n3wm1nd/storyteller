@@ -12,16 +12,18 @@ import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles, writeFile)
 
 import Storyteller.Git (BranchTag, runBranchAndFS)
-import Storyteller.Storage (StoryBranch, createBranch, storeAs)
+import Storyteller.Storage (StoryBranch, createBranch, storeAs, store)
 import Storyteller.Types
 
 import Server.TestStack
 
 import Server.Branch
 import Server.Protocol (Update(..), WireTick(..))
+
+import Prelude hiding (writeFile)
 
 -- ---------------------------------------------------------------------------
 -- Runner
@@ -50,6 +52,16 @@ withBranch_ name action = run $ testStack $ do
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
+
+-- | Simulate a write made by a wholly separate connection: opens its own
+--   fresh 'Main' scope (its own 'WorkingTree' load + commit), nested inside
+--   an already-open outer scope. The outer scope's own 'WorkingTree' was
+--   loaded before this runs and — this is exactly the bug 'branchStateSince'
+--   guards against — won't see it without an explicit 'reset'.
+externalWrite :: BranchName -> FilePath -> Sem (TestEffects '[]) TickId
+externalWrite name path = runBranchAndFS @Main name $ do
+  writeFile @(BranchTag Main) path "content"
+  store @Main "external write"
 
 tickIds :: Update -> [T.Text]
 tickIds = map wtTickId . updateTicks
@@ -82,6 +94,31 @@ spec = do
       case result of
         Left err       -> expectationFailure err
         Right (_, upd) -> tickKinds upd `shouldBe` ["root"]
+
+  describe "branchStateSince" $ do
+
+    -- Regression test for a real bug: a connection's long-lived scope loads
+    -- its 'WorkingTree' once, at entry, and nothing refreshes it afterwards
+    -- except its own writes. A background listener that never writes (like
+    -- the notify thread in Server.Branch.Connection) would otherwise push a
+    -- file list frozen at whatever it was when the connection opened,
+    -- silently missing every file added by other connections after that.
+    it "sees files written by another scope after the fact, not just its own" $ do
+      let result = withBranch_ (BranchName "test") $ do
+            -- scope A "opens" here — its WorkingTree is loaded at this point
+            (before, _) <- branchStateSince Nothing
+            -- another connection writes a file via its own, separate scope
+            _ <- raise . raise . raise . raise $ externalWrite (BranchName "test") "new.txt"
+            -- listAllFiles alone reads scope A's now-stale cached WorkingTree
+            stale <- listAllFiles @(BranchTag Main) "/"
+            (after, _) <- branchStateSince Nothing
+            return (before, stale, after)
+      case result of
+        Left err               -> expectationFailure err
+        Right (before, stale, after) -> do
+          before `shouldNotContain` ["new.txt"]
+          stale  `shouldNotContain` ["new.txt"]
+          after  `shouldContain`    ["new.txt"]
 
   describe "addNote" $ do
 

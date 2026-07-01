@@ -158,17 +158,23 @@ When something is broken or missing, this matrix tells you where to look:
 
 ## Server-side structure
 
-The dispatch layer is **routing only** — it pattern-matches the incoming command type and delegates to a pure or limited-monad handler function. No WS concerns inside handlers.
-
-Handler functions return typed results. A helper assembles the `Update` from storage state after the mutation. This is the layer to unit-test.
+Each branch/file connection (`Server.*.Connection`) runs two independent, long-lived interpreter stacks on separate threads, both entering the same branch scope once and holding it for the connection's lifetime rather than re-entering per command or per push:
 
 ```
-Connection  →  Dispatch (routing)  →  Handler (pure/limited effects)
-                                   →  Update builder (reads storage → produces Update)
-                                   →  emit Update over WS
+Connection
+ ├─ command thread:  receive → decode → Dispatch (routing) → Handler (pure/limited effects)
+ │                                                          → push*   → emit over WS
+ └─ notify thread:   watchBranch (generic ref-move watcher) → push*   → emit over WS
 ```
 
-The `Update` builder always reads full current state from storage after a mutation — it does not try to compute a delta. This keeps it simple and correct; the client's upsert model handles receiving redundant ticks gracefully.
+These two axes are where the actual meaning of a connection lives, and they answer different questions:
+
+- **Dispatch** (`Server.*.Dispatch`) answers *"what can a connected client do, and in what environment does it run?"* It is routing only — pattern-match the incoming command, delegate to a handler, no WS concerns inside handlers. This is the layer to unit-test independently of the socket.
+- **`pushInitial` / `pushIncremental`** (in `Connection.hs`) answer *"what does this connection's scope look like, and how do we tell the client what changed?"* This is where file-presence tri-states, "does this update touch my chain," and similar scope-specific logic live. It's intentionally *not* shared between connection types — a branch connection and a file connection disagree on what "changed" even means, so forcing one push function to serve both would blur the one thing that actually distinguishes them.
+
+The notify thread's watch loop itself — block on the ref-move channel, skip notifications for other branches, thread an accumulator (e.g. last HEAD pushed) through repeated calls to `pushIncremental` — is pure plumbing with no domain meaning, so it *is* shared, as `Server.Notification.watchBranch`. It only assumes `Embed IO`; it has no opinion on what effects the push function needs or what "changed" means, so it composes with `runM . withBranch "name" $ watchBranch ... handler` rather than dictating the stack shape.
+
+The `Update` builder inside each push function always reads full current state from storage after a mutation — it does not try to compute a delta. This keeps it simple and correct; the client's upsert model handles receiving redundant ticks gracefully.
 
 ### Possible future optimisation (not implemented)
 

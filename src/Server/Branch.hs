@@ -50,7 +50,7 @@ import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, storeAs)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, reset, storeAs)
 import Storyteller.Types (BranchName(..), TickId(..), Note(..), tickId, tickParent, unTickId)
 import qualified Data.Yaml as Yaml
 
@@ -85,8 +85,15 @@ branchState = branchStateSince Nothing
 --   When 'since' is 'Nothing', or no longer reachable (e.g. a move/replace
 --   rewrote history out from under it), the walk runs all the way to root
 --   and the full chain is returned — the correct, if pricier, fallback.
+--
+--   'reset' first: 'listAllFiles' reads the in-memory working tree, which
+--   this connection's long-lived stack loaded once at scope-entry and never
+--   otherwise refreshes. Ticks/HEAD are read straight from git and are
+--   always current regardless — only the file list needs this to see
+--   writes made by other connections since we last synced.
 branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
+  reset @Main
   files  <- listAllFiles @(BranchTag Main) "/"
   ticks  <- follow @Main [] $ \acc t ->
     if Just (tickId t) == since
