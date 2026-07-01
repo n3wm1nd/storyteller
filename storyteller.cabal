@@ -177,6 +177,7 @@ test-suite storyteller-test
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.FileSpec
+                  , Server.NotificationSpec
   autogen-modules:  Paths_storyteller
   build-depends:    base >=4.18 && <5
                   , storyteller
@@ -192,6 +193,7 @@ test-suite storyteller-test
                   , hashable
                   , aeson
                   , yaml
+                  , stm
   hs-source-dirs:   test
   default-language: Haskell2010
   ghc-options:      -Wall

@@ -10,6 +10,7 @@ import qualified Storyteller.TrackerSpec
 import qualified Storyteller.CharGenSpec
 import qualified Server.BranchSpec
 import qualified Server.FileSpec
+import qualified Server.NotificationSpec
 
 main :: IO ()
 main = hspec $ do
@@ -22,3 +23,4 @@ main = hspec $ do
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
   describe "Server.Branch"              Server.BranchSpec.spec
   describe "Server.File"                Server.FileSpec.spec
+  describe "Server.Notification"        Server.NotificationSpec.spec
