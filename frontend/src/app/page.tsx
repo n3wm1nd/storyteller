@@ -1221,8 +1221,46 @@ export default function Home() {
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
+  // Parse /<branch>/<file...> from the URL path.
+  function parsePath(pathname: string): { branch: string | null; file: string | null } {
+    const parts = pathname.replace(/^\//, "").split("/").filter(Boolean);
+    if (parts.length === 0) return { branch: null, file: null };
+    const branch = decodeURIComponent(parts[0]);
+    const file = parts.length > 1 ? parts.slice(1).map(decodeURIComponent).join("/") : null;
+    return { branch, file };
+  }
+
+  function pushPath(branch: string | null, file: string | null) {
+    if (!branch) { history.pushState(null, "", "/"); return; }
+    const encodedBranch = encodeURIComponent(branch);
+    const encodedFile = file ? "/" + file.split("/").map(encodeURIComponent).join("/") : "";
+    history.pushState(null, "", `/${encodedBranch}${encodedFile}`);
+  }
+
+  // On mount: restore state from URL, then connect.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { connect(); }, []);
+  useEffect(() => {
+    const { branch, file } = parsePath(window.location.pathname);
+    connect().then(() => {
+      if (branch) {
+        selectBranch(branch).then(() => {
+          if (file) { setSelectedFile(file); openFile(file); setCenterTab("file"); }
+          else setCenterTab("ticks");
+        });
+        setSidebarTab("explorer");
+      }
+    });
+
+    const onPopState = () => {
+      const { branch: b, file: f } = parsePath(window.location.pathname);
+      if (b) { selectBranch(b); setSidebarTab("explorer"); }
+      setSelectedFile(f);
+      if (f) { openFile(f); setCenterTab("file"); }
+      else setCenterTab("ticks");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const fileConn = selectedFile ? openFiles[selectedFile] : null;
   const fileTicks = tickChain(fileConn?.ticks ?? {}, fileConn?.head ?? null);
@@ -1235,17 +1273,20 @@ export default function Home() {
     setSelectedFile(path);
     openFile(path);
     setCenterTab("file");
+    pushPath(activeBranch, path);
   }
 
   function handleCloseFile() {
     if (selectedFile) closeFile(selectedFile);
     setSelectedFile(null);
+    pushPath(activeBranch, null);
   }
 
   function handleSelectBranch(name: string) {
     handleCloseFile();
     selectBranch(name);
     setSidebarTab("explorer");
+    pushPath(name, null);
   }
 
   function handleCreateFile() {
@@ -1253,7 +1294,7 @@ export default function Home() {
     if (!path) return;
     setShowNewFile(false);
     setNewFilePath("");
-    handleSelectFile(path);
+    if (activeBranch) handleSelectFile(path);
   }
 
   // Sidebar resize drag
@@ -1313,7 +1354,10 @@ export default function Home() {
             selectedFile={selectedFile}
             onCloseFile={handleCloseFile}
             onNewFile={() => setShowNewFile((v) => !v)}
-            centerTab={centerTab} onCenterTab={setCenterTab}
+            centerTab={centerTab} onCenterTab={(tab) => {
+              setCenterTab(tab);
+              pushPath(activeBranch, tab === "file" ? selectedFile : null);
+            }}
           />
 
           {centerTab === "file" && <>
