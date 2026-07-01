@@ -8,6 +8,8 @@ import qualified Storyteller.SplitDiffMergeSpec
 import qualified Storyteller.SplitterSpec
 import qualified Storyteller.TrackerSpec
 import qualified Storyteller.CharGenSpec
+import qualified Server.BranchSpec
+import qualified Server.FileSpec
 
 main :: IO ()
 main = hspec $ do
@@ -18,3 +20,5 @@ main = hspec $ do
   describe "Storyteller.Splitter"       Storyteller.SplitterSpec.spec
   describe "Storyteller.Tracker"        Storyteller.TrackerSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
+  describe "Server.Branch"              Server.BranchSpec.spec
+  describe "Server.File"                Server.FileSpec.spec

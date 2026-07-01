@@ -13,18 +13,20 @@ module Server.Util
 
 import qualified Data.Text as T
 import Polysemy
-import Polysemy.Error (throw)
+import Polysemy.Error (Error, throw)
+import Runix.Git (Git)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
 import Server.Run (SessionEffects)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, getBranch)
+import Storyteller.Storage (StoryBranch, StoryStorage, getBranch)
 import Storyteller.Types (BranchName(..))
+import Polysemy.Fail (Fail)
 
 withBranch
   :: forall branch r a
-  .  SessionEffects r
+  .  Members '[StoryStorage, Error String, Git, Fail] r
   => T.Text
   -> Sem ( StoryBranch branch
          : FileSystemWrite (BranchTag branch)
