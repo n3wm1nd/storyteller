@@ -66,7 +66,7 @@ import Polysemy.Fail
 import qualified Data.List as List
 import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
-  , appendFile, fileExists, readFile, writeFile, listFiles, isDirectory
+  , appendFile, fileExists, readFile, listFiles, isDirectory
   )
 import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
@@ -187,7 +187,12 @@ editAtom tid path newBytes = do
   (newTid, mapping) <- at @branch tid $ do
     drop @branch
     withFS @branch $ do
-      writeFile @(BranchTag branch) path newBytes
+      -- 'drop' rewinds the branch's (temporary) head to tid's parent; withFS
+      -- loads that head's tree as the working tree, so the file here holds
+      -- every preceding atom's content already. Append the new atom content
+      -- rather than overwrite, so this tick's diff is just the one atom
+      -- being edited — matching the append-only invariant Store checks.
+      appendFile @(BranchTag branch) path newBytes
       store @branch "edit"
   reset @branch
   return (newTid, mapping)

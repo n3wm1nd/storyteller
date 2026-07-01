@@ -18,8 +18,8 @@ import Polysemy.State (State)
 
 import Git.Mock
 import Runix.Git (Git)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile)
-import Prelude hiding (writeFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile, readFile)
+import Prelude hiding (writeFile, readFile)
 
 import Storyteller.Git
 import Storyteller.Storage hiding (get, drop)
@@ -57,11 +57,22 @@ headIsIn :: Update -> Bool
 headIsIn upd = null (updateTicks upd) || updateHead upd `elem` map wtTickId (updateTicks upd)
 
 -- | Write a file into the working tree and store it as an atom tick.
+--   Only valid for a file's first atom — later atoms must be appended
+--   (see 'appendAtom'), since 'writeFile' overwrites the whole blob.
 storeAtom :: Members '[StoryStorage, Git, State GitState, Fail] r
           => FilePath -> BS.ByteString -> Sem r TickId
 storeAtom path content =
   runBranchAndFS @Main (BranchName "b") $ do
     writeFile @(BranchTag Main) path content
+    storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
+
+-- | Append content to an existing file and store it as a new atom tick.
+appendAtom :: Members '[StoryStorage, Git, State GitState, Fail] r
+           => FilePath -> BS.ByteString -> Sem r TickId
+appendAtom path content =
+  runBranchAndFS @Main (BranchName "b") $ do
+    existing <- readFile @(BranchTag Main) path
+    writeFile @(BranchTag Main) path (existing <> content)
     storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
 
 -- ---------------------------------------------------------------------------
@@ -119,3 +130,20 @@ spec = do
         Right upd ->
           -- content changed; atom count stays the same
           length (updateTicks upd) `shouldBe` 1
+
+    -- The only way an atom edit may fail is if the targeted atom doesn't
+    -- exist. Any replacement content — shorter, longer, unrelated — must be
+    -- accepted for an atom that does exist. Reproduces a bug where editing
+    -- a non-last atom with content shorter than the original trips the
+    -- storage layer's append-only check, since editAtom overwrote the whole
+    -- file blob with just the new atom bytes instead of appending them
+    -- after the preceding atoms' content.
+    it "edit succeeds for any existing atom regardless of new content length" $ do
+      let result = withFile_ (BranchName "b") $ do
+            t1 <- storeAtom "f.md" "first atom text\n"
+            _  <- appendAtom "f.md" "second\n"
+            editFileAtom "f.md" t1 "x\n"
+            fileState "f.md"
+      case result of
+        Left err  -> expectationFailure err
+        Right upd -> length (updateTicks upd) `shouldBe` 2

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, Eye, EyeOff, Trash2 } from "lucide-react";
 import { useStory } from "@/lib/store";
 import { tickChain, statusColor, type AnnotationMode } from "@/lib/utils";
@@ -169,6 +169,10 @@ export default function Home() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  const handleEditAtom = useCallback((tickId: string, content: string) => {
+    if (selectedFile) editAtom(selectedFile, tickId, content);
+  }, [selectedFile, editAtom]);
+
   const fileConn = selectedFile ? openFiles[selectedFile] : null;
   const fileTicks = tickChain(fileConn?.ticks ?? {}, fileConn?.head ?? null);
   const isAbsent = fileConn?.absent ?? false;
@@ -323,7 +327,8 @@ export default function Home() {
               <WireTickList
                 ticks={fileTicks} annotationMode={annotationMode}
                 contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
-                onEdit={(tickId, content) => selectedFile && editAtom(selectedFile, tickId, content)}
+                resetKey={selectedFile}
+                onEdit={handleEditAtom}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}
               />

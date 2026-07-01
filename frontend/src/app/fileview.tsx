@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/store";
 import { type AnnotationMode } from "@/lib/utils";
+import { useAutoScroll } from "@/lib/useAutoScroll";
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
@@ -37,12 +38,12 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
 
 // ── Atom block ────────────────────────────────────────────────────────────────
 
-function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
+const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
   atom: WireTick;
   isLast: boolean;
   inContext: boolean;
-  onEdit: (content: string) => void;
-  onToggleContext: () => void;
+  onEdit: (tickId: string, content: string) => void;
+  onToggleContext: (tickId: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -59,7 +60,7 @@ function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
 
   function commitEdit() {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== content.trim()) onEdit(trimmed);
+    if (trimmed && trimmed !== content.trim()) onEdit(atom.tickId, trimmed);
     setEditing(false);
   }
 
@@ -81,7 +82,7 @@ function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
       }}
     >
       <div
-        onClick={(e) => { e.stopPropagation(); onToggleContext(); }}
+        onClick={(e) => { e.stopPropagation(); onToggleContext(atom.tickId); }}
         title={inContext ? "Remove from context" : "Add to context"}
         style={{
           position: "absolute", left: 0, top: 0, bottom: 0,
@@ -125,7 +126,7 @@ function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
       ) : (
         <div
           onDoubleClick={startEdit}
-          onClick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); onToggleContext(); } }}
+          onClick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); onToggleContext(atom.tickId); } }}
         >
           <ReactMarkdown components={mdComponents}>{content}</ReactMarkdown>
         </div>
@@ -141,14 +142,14 @@ function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
       </span>
     </div>
   );
-}
+});
 
 // ── Annotation card ───────────────────────────────────────────────────────────
 
-function AnnotationCard({ tick, inContext, onToggleContext }: {
+const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleContext }: {
   tick: WireTick;
   inContext: boolean;
-  onToggleContext: (e: React.MouseEvent) => void;
+  onToggleContext: (tickId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -166,7 +167,7 @@ function AnnotationCard({ tick, inContext, onToggleContext }: {
   return (
     <div
       onClick={(e) => {
-        if (e.ctrlKey || e.metaKey) { onToggleContext(e); return; }
+        if (e.ctrlKey || e.metaKey) { onToggleContext(tick.tickId); return; }
         if (expandable) setExpanded((v) => !v);
       }}
       style={{
@@ -191,11 +192,11 @@ function AnnotationCard({ tick, inContext, onToggleContext }: {
       </div>
     </div>
   );
-}
+});
 
 // ── Annotation dots ───────────────────────────────────────────────────────────
 
-function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
+const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
   annotations: WireTick[];
   contextAnnotations: Set<string>;
   onToggleContext: (tickId: string) => void;
@@ -245,28 +246,32 @@ function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
           <AnnotationCard
             tick={ann}
             inContext={contextAnnotations.has(ann.tickId)}
-            onToggleContext={(e) => { if (e.ctrlKey || e.metaKey) onToggleContext(ann.tickId); }}
+            onToggleContext={onToggleContext}
           />
         );
       })()}
     </div>
   );
-}
+});
 
 // ── Wire tick list ────────────────────────────────────────────────────────────
 
 export function WireTickList({
-  ticks, annotationMode, contextAtoms, contextAnnotations,
+  ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
   onEdit, onToggleContextAtom, onToggleContextAnnotation,
 }: {
   ticks: WireTick[];
   annotationMode: AnnotationMode;
   contextAtoms: Set<string>;
   contextAnnotations: Set<string>;
+  resetKey: unknown;
   onEdit: (tickId: string, content: string) => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
 }) {
+  const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[ticks.length - 1].tickId}` : 0;
+  const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
+
   const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
 
   const annotationsFor = new Map<string, WireTick[]>();
@@ -288,7 +293,7 @@ export function WireTickList({
   const atoms = ticks.filter((t) => t.kind === "atom");
 
   return (
-    <div style={{ flex: 1, overflow: "auto" }}>
+    <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
       <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
         {atoms.map((atom, i) => {
           const anns = annotationsFor.get(atom.tickId) ?? [];
@@ -298,8 +303,8 @@ export function WireTickList({
               <AtomBlock
                 atom={atom} isLast={isLast}
                 inContext={contextAtoms.has(atom.tickId)}
-                onEdit={(content) => onEdit(atom.tickId, content)}
-                onToggleContext={() => onToggleContextAtom(atom.tickId)}
+                onEdit={onEdit}
+                onToggleContext={onToggleContextAtom}
               />
               {annotationMode === "dots" && anns.length > 0 && (
                 <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
@@ -308,7 +313,7 @@ export function WireTickList({
                 <AnnotationCard
                   key={ann.tickId} tick={ann}
                   inContext={contextAnnotations.has(ann.tickId)}
-                  onToggleContext={(e) => { if (e.ctrlKey || e.metaKey) onToggleContextAnnotation(ann.tickId); }}
+                  onToggleContext={onToggleContextAnnotation}
                 />
               ))}
             </div>

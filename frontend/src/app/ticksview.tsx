@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare } from "lucide-react";
 import { type WireTick } from "@/lib/store";
 import { tickPayload, tickField } from "@/lib/utils";
+import { useAutoScroll } from "@/lib/useAutoScroll";
 
 // ── Move button ───────────────────────────────────────────────────────────────
 
@@ -154,6 +155,9 @@ export function TicksView({
   onMoveTick: (tickId: string, afterTickId?: string) => void;
   onDeleteTick: (tickId: string) => void;
 }) {
+  const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[0].tickId}` : 0;
+  const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, activeBranch, "start");
+
   if (!activeBranch) return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
       Select a branch to view ticks
@@ -173,7 +177,7 @@ export function TicksView({
           No ticks yet
         </div>
       ) : (
-        <div style={{ flex: 1, overflow: "auto" }}>
+        <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
           <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 32px 48px" }}>
             {ticks.map((tick, i) => {
               const isFirst  = i === 0;
