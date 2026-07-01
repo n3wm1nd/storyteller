@@ -181,7 +181,10 @@ function LeftSidebar({
       <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "6px 10px" }}>
         {conns.map((c) => (
           <div key={c.label} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
-            <div style={{ width: 5, height: 5, borderRadius: "50%", background: statusColor(c.status), flexShrink: 0 }} />
+            <div style={{ position: "relative", width: 5, height: 5, flexShrink: 0, color: statusColor(c.status) }}>
+              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
+              <div key={c.lastActivity} className={c.lastActivity ? "ws-pulse" : undefined} style={{ position: "absolute", inset: 0, borderRadius: "50%" }} />
+            </div>
             <span style={{ fontSize: 9, color: "var(--text-dim)", fontFamily: "monospace", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
             <span style={{ fontSize: 9, color: statusColor(c.status) }}>{c.status}</span>
           </div>

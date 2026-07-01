@@ -24,6 +24,7 @@ export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 export interface ConnInfo {
   label: string;
   status: ConnStatus;
+  lastActivity?: number;  // Date.now() timestamp of last received message
 }
 
 // A file connection: the WS handle plus the tick list.
@@ -91,6 +92,10 @@ function removeConn(conns: ConnInfo[], label: string): ConnInfo[] {
   return conns.filter((c) => c.label !== label);
 }
 
+function bumpActivity(conns: ConnInfo[], label: string): ConnInfo[] {
+  return conns.map((c) => c.label === label ? { ...c, lastActivity: Date.now() } : c);
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useStory = create<StoryState>((set, get) => ({
@@ -118,6 +123,7 @@ export const useStory = create<StoryState>((set, get) => ({
     });
 
     session.subscribe((evt) => {
+      set((s) => ({ conns: bumpActivity(s.conns, "session") }));
       if (evt.type === "session.ready") {
         set((s) => ({ conns: setConnStatus(s.conns, "session", "connected") }));
         get()._session?.send({ type: "list-branches" });
@@ -182,6 +188,7 @@ export const useStory = create<StoryState>((set, get) => ({
     });
 
     branch.subscribe((evt) => {
+      set((s) => ({ conns: bumpActivity(s.conns, label) }));
       if (evt.type === "branch.ready") {
         set((s) => ({
           files: [...evt.files].sort(),
@@ -231,6 +238,7 @@ export const useStory = create<StoryState>((set, get) => ({
     });
 
     fc.subscribe((evt) => {
+      set((s) => ({ conns: bumpActivity(s.conns, label) }));
       if (evt.type === "file.ticks") {
         set((s) => ({
           openFiles: { ...s.openFiles, [path]: { path, ticks: evt.ticks, absent: false, conn: fc } },
