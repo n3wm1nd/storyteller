@@ -27,7 +27,8 @@ module Server.File.Connection
   ) where
 
 import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.STM (TChan, atomically, dupTChan, readTChan)
+import Control.Monad (void)
+import Control.Concurrent.STM (TChan, atomically, dupTChan)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -40,7 +41,7 @@ import Server.Env (ServerEnv(..))
 import Server.File (FileOpen, fileState, fileStateSince)
 import Server.File.Dispatch (runCommand)
 import Server.File.Protocol
-import Server.Notification (BranchNotification(..))
+import Server.Notification (BranchNotification, watchBranch)
 import Server.Protocol (Update(..))
 import Server.Run (SessionEffects, actionStack, loggingWS)
 import Server.Util (withBranchSplitter)
@@ -68,7 +69,7 @@ runCommands env branch path conn = do
 runNotifier :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch path conn chan = do
   result <- runM $ actionStack env $
-    withBranchSplitter @Main branch $ notifyLoop conn branch path chan Nothing
+    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (pushIncremental conn path)
   either (reportError conn) return result
 
 reportError :: WS.Connection -> String -> IO ()
@@ -103,35 +104,27 @@ commandLoop conn path = loop
         (runCommand path cmd)
         (\err -> embed (reportError conn err))
 
-notifyLoop
+-- 'since = Nothing' means we're still in the absent state from connect —
+-- mirror 'pushInitial' exactly, so it transitions to present the moment
+-- the file gets its first tick. 'since = Just tid' means we already have
+-- a HEAD to diff against; skip the push entirely if this write didn't
+-- touch this file's chain.
+pushIncremental
   :: (FileOpen r, Member (Embed IO) r, Member (Error String) r)
-  => WS.Connection -> T.Text -> FilePath -> TChan BranchNotification -> Maybe T.Text -> Sem r ()
-notifyLoop conn branch path chan lastHead = do
-  note <- embed $ atomically (readTChan chan)
-  newHead <-
-    if bnBranch note == branch
-      then pushIncremental lastHead
-      else return lastHead
-  notifyLoop conn branch path chan newHead
-  where
-    -- 'since = Nothing' means we're still in the absent state from connect —
-    -- mirror 'pushInitial' exactly, so it transitions to present the moment
-    -- the file gets its first tick. 'since = Just tid' means we already have
-    -- a HEAD to diff against; skip the push entirely if this write didn't
-    -- touch this file's chain.
-    pushIncremental since =
-      catch @String
-        (do
-          upd <- fileStateSince path since
-          case since of
-            Nothing | null (updateTicks upd) -> return since
-                    | otherwise -> do
-                        embed $ WS.sendTextData conn (encode (FilePresent Nothing))
-                        embed $ WS.sendTextData conn (encode (FileUpdate upd))
-                        return (Just (updateHead upd))
-            Just _  | null (updateTicks upd) -> return since
-                    | otherwise -> do
-                        embed $ WS.sendTextData conn (encode (FileUpdate upd))
-                        return (Just (updateHead upd))
-        )
-        (\err -> embed (reportError conn err) >> return since)
+  => WS.Connection -> FilePath -> Maybe T.Text -> Sem r (Maybe T.Text)
+pushIncremental conn path since =
+  catch @String
+    (do
+      upd <- fileStateSince path since
+      case since of
+        Nothing | null (updateTicks upd) -> return since
+                | otherwise -> do
+                    embed $ WS.sendTextData conn (encode (FilePresent Nothing))
+                    embed $ WS.sendTextData conn (encode (FileUpdate upd))
+                    return (Just (updateHead upd))
+        Just _  | null (updateTicks upd) -> return since
+                | otherwise -> do
+                    embed $ WS.sendTextData conn (encode (FileUpdate upd))
+                    return (Just (updateHead upd))
+    )
+    (\err -> embed (reportError conn err) >> return since)

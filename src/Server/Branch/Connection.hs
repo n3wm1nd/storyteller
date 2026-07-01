@@ -27,7 +27,8 @@ module Server.Branch.Connection
   ) where
 
 import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.STM (TChan, atomically, dupTChan, readTChan)
+import Control.Monad (void)
+import Control.Concurrent.STM (TChan, atomically, dupTChan)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -40,7 +41,7 @@ import Server.Branch (Main, BranchOpen, branchState, branchStateSince)
 import Server.Branch.Dispatch (runCommand)
 import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
-import Server.Notification (BranchNotification(..))
+import Server.Notification (BranchNotification, watchBranch)
 import Server.Protocol (Update(..))
 import Server.Run (SessionEffects, actionStack, loggingWS)
 import Server.Util (withBranchSplitter)
@@ -68,7 +69,7 @@ runCommands env branch conn = do
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
   result <- runM $ actionStack env $
-    withBranchSplitter @Main branch $ notifyLoop conn branch chan Nothing
+    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (pushIncremental conn)
   either (reportError conn) return result
 
 reportError :: WS.Connection -> String -> IO ()
@@ -100,21 +101,13 @@ commandLoop conn branch = loop
         (runCommand branch cmd >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
 
-notifyLoop
+pushIncremental
   :: (BranchOpen r, Member (Embed IO) r, Member (Error String) r)
-  => WS.Connection -> T.Text -> TChan BranchNotification -> Maybe T.Text -> Sem r ()
-notifyLoop conn branch chan lastHead = do
-  note <- embed $ atomically (readTChan chan)
-  newHead <-
-    if bnBranch note == branch
-      then pushIncremental lastHead
-      else return lastHead
-  notifyLoop conn branch chan newHead
-  where
-    pushIncremental since =
-      catch @String
-        (do
-          (_, upd) <- branchStateSince (TickId <$> since)
-          embed $ WS.sendTextData conn (encode (BranchUpdate upd))
-          return (Just (updateHead upd)))
-        (\err -> embed (reportError conn err) >> return since)
+  => WS.Connection -> Maybe T.Text -> Sem r (Maybe T.Text)
+pushIncremental conn since =
+  catch @String
+    (do
+      (_, upd) <- branchStateSince (TickId <$> since)
+      embed $ WS.sendTextData conn (encode (BranchUpdate upd))
+      return (Just (updateHead upd)))
+    (\err -> embed (reportError conn err) >> return since)
