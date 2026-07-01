@@ -15,13 +15,15 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Aeson (encode)
 import qualified Network.WebSockets as WS
-import Polysemy (Sem, Members)
+import Polysemy (Sem, Members, runM)
 import Polysemy.Fail (Fail)
+import Runix.Logging (info)
+
 
 import Server.Env (ServerEnv)
 import Server.File.Protocol (FileCommand(..), FileEvent(..))
 import qualified Server.File.Protocol as Protocol
-import Server.Run (runAction, SessionEffects)
+import Server.Run (runAction, actionStack, loggingWS, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
 import Storyteller.Agent.Append (appendAgent)
@@ -40,12 +42,13 @@ import Prelude hiding (readFile, writeFile)
 snapshot :: ServerEnv -> T.Text -> FilePath -> IO (Either String (Maybe [Protocol.FileTick]))
 snapshot env branch path = runAction env $ queryFileTicks branch path
 
+
 dispatch :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> FileCommand -> IO ()
 dispatch env branch path conn cmd = do
   let emit = WS.sendTextData conn . encode
   case cmd of
     Append _mid content -> do
-      r <- runAction env (handleAppend branch path content)
+      r <- runM $ actionStack env $ loggingWS conn $ handleAppend branch path content
       case r of
         Left err   -> emit (FileError (T.pack err))
         Right tick -> emit (TickAppended tick)
@@ -111,7 +114,9 @@ toProtocolTick ft = Protocol.FileTick
 handleAppend :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r Protocol.FileTick
 handleAppend branch path content =
   withBranchSplitter @Main branch $ do
+    info $ "appending to: " <> T.pack path
     _tids <- appendAgent @Main path content
+    info $ "append done: " <> T.pack path
     headTick path
 
 handleEditAtom

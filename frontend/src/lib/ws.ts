@@ -23,6 +23,12 @@ export type SessionEvent =
   | { type: "branch.deleted"; id?: string; branch: string }
   | { type: "error"; message: string };
 
+export interface ContextItem {
+  tickId:  string;
+  kind:    string;
+  content: string;
+}
+
 export type BranchCommand =
   | { type: "append";      id?: string; path: string; content: string }
   | { type: "read";        id?: string; path: string }
@@ -33,7 +39,7 @@ export type BranchCommand =
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
   | { type: "delete.tick"; id?: string; tickId: string }
-  | { type: "chat.prompt"; id?: string; path: string; text: string };
+  | { type: "chat.prompt"; id?: string; path: string; text: string; context?: ContextItem[] };
 
 export type BranchTick =
   | { kind: "atom";   tickId: string; parent: string | null; refs: string[]; message: string; file?: string }
@@ -45,6 +51,7 @@ export type BranchEvent =
   | { type: "branch.ticks";      ticks: BranchTick[] }
   | { type: "ticks.invalidated"; id?: string; mapping: IdMapping[] }
   | { type: "file.added";        id?: string; path: string }
+  | { type: "agent.log";         level: "info" | "warning" | "error"; message: string }
   | { type: "error"; message: string };
 
 export type FileCommand =
@@ -76,6 +83,7 @@ export type FileEvent =
   | { type: "atom.moved";    id?: string; mapping: IdMapping[] }
   | { type: "file.updated";  id?: string; content: string }
   | { type: "file.deleted";  id?: string }
+  | { type: "agent.log";     level: "info" | "warning" | "error"; message: string }
   | { type: "error"; message: string };
 
 // ── Connection ────────────────────────────────────────────────────────────────

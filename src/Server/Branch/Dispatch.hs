@@ -4,6 +4,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Dispatch for /branch/{name} connections.
 --
@@ -22,14 +24,15 @@ import qualified Data.Text.Encoding as TE
 import Data.Aeson (encode)
 import qualified Data.Yaml as Yaml
 import qualified Network.WebSockets as WS
-import Polysemy (Members, Sem)
+import Polysemy (Members, Sem, runM)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
+import Runix.Logging (info)
 
 import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
-import Server.Run (runAction, SessionEffects)
+import Server.Run (runAction, actionStack, loggingWS, SessionEffects)
 import Server.Util (withBranch, withBranchSplitter)
 
 import Storyteller.Agent (Prompt(..), Instruction(..))
@@ -55,7 +58,7 @@ data CharBranch
 dispatch :: ServerEnv -> T.Text -> WS.Connection -> BranchCommand -> IO ()
 dispatch env branch conn cmd = do
   let emit = WS.sendTextData conn . encode
-  r <- runAction env $ case cmd of
+  r <- runM $ actionStack env $ loggingWS conn $ case cmd of
     Track mid source files -> do
       ps <- handleTrack branch source files
       return $ map (FileAdded mid) ps
@@ -163,8 +166,9 @@ handleChatPrompt
 handleChatPrompt branch path promptText_ =
   withBranchSplitter @Main branch $ do
     storeAs @Main (Prompt path promptText_)
+    info $ "writer agent starting: " <> T.pack path
     writeAgent @(BranchTag Main) @Main path (Instruction promptText_) []
-    return ()
+    info $ "writer agent done: " <> T.pack path
 
 -- | Delete a tick from the chain. Any note ticks referencing it are left with
 --   a dangling ref. Returns the old→new id mapping for the rebase.

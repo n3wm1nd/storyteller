@@ -16,16 +16,20 @@
 -- or websocket types.
 module Server.Run
   ( runAction
+  , actionStack
+  , loggingWS
   , SessionEffects
   ) where
 
 import Control.Concurrent.STM (TChan, atomically, writeTChan)
 import qualified Data.Text as T
+import Data.Aeson (encode, object, (.=), Value)
+import qualified Network.WebSockets as WS
 import Polysemy
 import Polysemy.Error (Error, runError)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git(..), ObjectHash(..))
-import Runix.Logging (Logging)
+import Runix.Logging (Logging(..), Level(..))
 import Runix.LLM (LLM)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
@@ -71,20 +75,35 @@ instance RestEndpoint ServerAuth where
   authheaders _             = []
   useragent  _              = "storyteller-server/0.1"
 
+-- | Logging interpreter that calls an IO callback for each log entry.
+--   Use this to forward logs to a WebSocket connection or any other IO sink.
+agentLogEvent :: T.Text -> T.Text -> Value
+agentLogEvent level msg = object ["type" .= ("agent.log" :: T.Text), "level" .= level, "message" .= msg]
+
+levelText :: Level -> T.Text
+levelText Info    = "info"
+levelText Warning = "warning"
+levelText Error   = "error"
+
+loggingWS :: Member (Embed IO) r => WS.Connection -> Sem (Logging : r) a -> Sem r a
+loggingWS conn = interpret $ \(Log level _ msg) ->
+  embed $ WS.sendTextData conn $ encode $ agentLogEvent (levelText level) msg
+
 -- | Effects available at the session level (no branch open).
 type SessionEffects r =
   Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel] r
+
+actionStack env action =
+  let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
+  in runError @String
+   . runInfrastructure (envRepoPath env) (envLLMEndpoint env)
+   . gitNotify (envNotifyChan env)
+   . runStoryStorageGit
+   . interpretLLMWith auth (UniversalLLM.route @StoryModel) storyModel modelConfigs
+   $ action
 
 runAction
   :: ServerEnv
   -> (forall r. SessionEffects r => Sem r a)
   -> IO (Either String a)
-runAction env action = do
-  let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
-  runM
-    . runError @String
-    . runInfrastructure (envRepoPath env) (envLLMEndpoint env)
-    . gitNotify (envNotifyChan env)
-    . runStoryStorageGit
-    . interpretLLMWith auth (UniversalLLM.route @StoryModel) storyModel modelConfigs
-    $ action
+runAction env action = runM (actionStack env action)

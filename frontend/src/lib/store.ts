@@ -7,10 +7,13 @@ import {
   type FileTick,
   type BranchTick,
   type IdMapping,
+  type ContextItem,
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
   type FileCommand,    type FileEvent,
 } from "./ws";
+
+export type { ContextItem };
 
 export type { BranchTick };
 
@@ -46,6 +49,13 @@ interface StoryState {
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
 
+  // Agent log entries (ephemeral, capped ring buffer)
+  agentLogs: { level: string; message: string }[];
+
+  // Context selection (per file-connection; cleared on close/branch change)
+  contextAtoms:       Set<string>;
+  contextAnnotations: Set<string>;
+
   // Actions
   connect: () => Promise<void>;
   createBranch: (name: string) => void;
@@ -59,6 +69,10 @@ interface StoryState {
   addNote: (refTickId: string, text: string) => void;
   moveTick: (tickId: string, afterTickId?: string) => void;
   deleteTickEntry: (tickId: string) => void;
+  toggleContextAtom: (tickId: string) => void;
+  toggleContextAnnotation: (tickId: string) => void;
+  clearContext: () => void;
+  clearAgentLogs: () => void;
   chatPrompt: (path: string, text: string) => void;
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
@@ -87,6 +101,9 @@ export const useStory = create<StoryState>((set, get) => ({
   files: [],
   ticks: [],
   openFiles: {},
+  agentLogs: [],
+  contextAtoms: new Set(),
+  contextAnnotations: new Set(),
   _session: null,
   _branch: null,
 
@@ -152,6 +169,8 @@ export const useStory = create<StoryState>((set, get) => ({
       files: [],
       ticks: [],
       openFiles: {},
+      contextAtoms: new Set(),
+      contextAnnotations: new Set(),
       conns: setConnStatus(s.conns, label, "connecting"),
     }));
 
@@ -174,6 +193,10 @@ export const useStory = create<StoryState>((set, get) => ({
         }));
       } else if (evt.type === "branch.ticks") {
         set({ ticks: evt.ticks });
+      } else if (evt.type === "agent.log") {
+        set((s) => ({
+          agentLogs: [...s.agentLogs, { level: evt.level, message: evt.message }].slice(-200),
+        }));
       } else if (evt.type === "ticks.invalidated") {
         // Apply id renames optimistically, then re-fetch for accuracy.
         const remap = new Map(evt.mapping.map((m: IdMapping) => [m.old, m.new]));
@@ -240,6 +263,10 @@ export const useStory = create<StoryState>((set, get) => ({
       } else if (evt.type === "atom.moved") {
         // Full re-fetch is safest — the chain order changed and all ids shifted.
         get().openFiles[path]?.conn.send({ type: "read" });
+      } else if (evt.type === "agent.log") {
+        set((s) => ({
+          agentLogs: [...s.agentLogs, { level: evt.level, message: evt.message }].slice(-200),
+        }));
       } else if (evt.type === "error") {
         set({ error: evt.message });
       }
@@ -257,6 +284,8 @@ export const useStory = create<StoryState>((set, get) => ({
       delete next[path];
       return {
         openFiles: next,
+        contextAtoms: new Set(),
+        contextAnnotations: new Set(),
         conns: removeConn(s.conns, `file:${path}`),
       };
     });
@@ -289,7 +318,48 @@ export const useStory = create<StoryState>((set, get) => ({
     get()._branch?.send({ type: "delete.tick", tickId });
   },
 
+  toggleContextAtom: (tickId) => {
+    set((s) => {
+      const next = new Set(s.contextAtoms);
+      if (next.has(tickId)) next.delete(tickId); else next.add(tickId);
+      return { contextAtoms: next };
+    });
+  },
+
+  toggleContextAnnotation: (tickId) => {
+    set((s) => {
+      const next = new Set(s.contextAnnotations);
+      if (next.has(tickId)) next.delete(tickId); else next.add(tickId);
+      return { contextAnnotations: next };
+    });
+  },
+
+  clearContext: () => {
+    set({ contextAtoms: new Set(), contextAnnotations: new Set() });
+  },
+
+  clearAgentLogs: () => {
+    set({ agentLogs: [] });
+  },
+
   chatPrompt: (path, text) => {
-    get()._branch?.send({ type: "chat.prompt", path, text });
+    const { contextAtoms, contextAnnotations, openFiles } = get();
+    const ticks = openFiles[path]?.ticks ?? [];
+
+    let context: ContextItem[] | undefined;
+    const hasContext = contextAtoms.size > 0 || contextAnnotations.size > 0;
+    if (hasContext) {
+      // Build context items in chain order (oldest first), atoms before their annotations.
+      context = [];
+      for (const tick of ticks) {
+        if (tick.kind === "atom" && contextAtoms.has(tick.tickId)) {
+          context.push({ tickId: tick.tickId, kind: tick.kind, content: tick.content ?? tick.message });
+        } else if (tick.kind !== "atom" && contextAnnotations.has(tick.tickId)) {
+          context.push({ tickId: tick.tickId, kind: tick.kind, content: tick.message });
+        }
+      }
+    }
+
+    get()._branch?.send({ type: "chat.prompt", path, text, ...(context ? { context } : {}) });
   },
 }));
