@@ -14,6 +14,7 @@
 -- These functions are the unit under test.
 module Server.Branch
   ( branchState
+  , branchStateSince
   , addNote
   , moveTickInBranch
   , deleteTickFromBranch
@@ -61,12 +62,26 @@ data CharBranch
 -- | Full branch state: all ticks and current HEAD id.
 --   Called on connect and after every mutation.
 branchState :: Members '[StoryStorage, Git, Error String, Fail] r => BranchName -> Sem r (Maybe ([FilePath], Update))
-branchState name@(BranchName n) =
+branchState name = branchStateSince name Nothing
+
+-- | Branch state, optionally incremental. When 'since' names a tick still
+--   reachable from HEAD, only ticks newer than it are included — the common
+--   case for keeping an already-caught-up connection informed of new writes.
+--   When 'since' is 'Nothing', or no longer reachable (e.g. a move/replace
+--   rewrote history out from under it), the walk runs all the way to root
+--   and the full chain is returned — the correct, if pricier, fallback.
+branchStateSince
+  :: Members '[StoryStorage, Git, Error String, Fail] r
+  => BranchName -> Maybe TickId -> Sem r (Maybe ([FilePath], Update))
+branchStateSince name@(BranchName n) since =
   getBranch name >>= \case
     Nothing -> return Nothing
     Just _  -> withBranch @Main n $ do
       files  <- listAllFiles @(BranchTag Main) "/"
-      ticks  <- follow @Main [] $ \acc t -> (t : acc, tickParent t)
+      ticks  <- follow @Main [] $ \acc t ->
+        if Just (tickId t) == since
+          then (acc, Nothing)
+          else (t : acc, tickParent t)
       headTk <- get @Main
       let upd = Update (map tickToWireTick ticks) (unTickId (tickId headTk))
       return (Just (files, upd))

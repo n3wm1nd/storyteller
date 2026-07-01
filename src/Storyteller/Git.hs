@@ -32,6 +32,9 @@ module Storyteller.Git
   , runStoryBranchGit
   , runStoryFSGit
 
+    -- * Ref naming
+  , refBranchName
+
     -- * Working tree (in-memory filesystem)
   , FSNode(..)
   , WorkingTree
@@ -184,8 +187,16 @@ toEntry prefix name wt =
 -- Naming conventions
 -- ---------------------------------------------------------------------------
 
+storyRefPrefix :: Text
+storyRefPrefix = "refs/heads/story/"
+
 storyRef :: BranchName -> RefName
-storyRef (BranchName n) = RefName ("refs/heads/story/" <> n)
+storyRef (BranchName n) = RefName (storyRefPrefix <> n)
+
+-- | Recover the branch name a ref update refers to, or 'Nothing' if the ref
+--   isn't a story branch ref.
+refBranchName :: RefName -> Maybe BranchName
+refBranchName (RefName r) = BranchName <$> T.stripPrefix storyRefPrefix r
 
 emptyTree :: ObjectHash
 emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"

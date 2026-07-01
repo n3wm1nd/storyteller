@@ -13,6 +13,7 @@
 -- These functions are the unit under test.
 module Server.File
   ( fileState
+  , fileStateSince
   , appendToFile
   , editFileAtom
   , deleteFileAtom
@@ -49,11 +50,20 @@ import Storyteller.Types (BranchName(..), TickId(..))
 fileState
   :: Members '[StoryStorage, Git, Error String, Fail] r
   => BranchName -> FilePath -> Sem r (Maybe Update)
-fileState (BranchName n) path =
+fileState name path = fileStateSince name path Nothing
+
+-- | File state, optionally incremental. When 'since' names a tick still
+--   present in this file's chain, only ticks after it are included. When
+--   'since' is 'Nothing' or no longer present (rewritten out from under it),
+--   the full chain is returned.
+fileStateSince
+  :: Members '[StoryStorage, Git, Error String, Fail] r
+  => BranchName -> FilePath -> Maybe T.Text -> Sem r (Maybe Update)
+fileStateSince (BranchName n) path since =
   getBranch (BranchName n) >>= \case
     Nothing -> return Nothing
     Just _  -> withBranch @Main n $
-      fmap (Just . fileUpdate) (fileTicks @Main path)
+      fmap (Just . fileUpdateSince since) (fileTicks @Main path)
 
 -- ---------------------------------------------------------------------------
 -- Mutations
@@ -95,10 +105,19 @@ moveFileAtom (BranchName n) _path tid mAfter =
 -- Internal
 -- ---------------------------------------------------------------------------
 
-fileUpdate :: [FileTick] -> Update
-fileUpdate ticks = Update
-  { updateTicks = map toWireTick ticks
+fileUpdateSince :: Maybe T.Text -> [FileTick] -> Update
+fileUpdateSince since ticks = Update
+  { updateTicks = map toWireTick (dropSince since ticks)
   , updateHead  = case reverse ticks of
                     []    -> ""
                     (t:_) -> Storage.ftTickId t
   }
+
+-- | Drop everything up to and including the tick named by 'since'. If it
+--   isn't found (e.g. rewritten away by a move/replace), return everything —
+--   the correct fallback when we can't tell what's actually new.
+dropSince :: Maybe T.Text -> [FileTick] -> [FileTick]
+dropSince Nothing ticks = ticks
+dropSince (Just tid) ticks = case break ((== tid) . Storage.ftTickId) ticks of
+  (_, _ : rest) -> rest
+  (_, [])       -> ticks

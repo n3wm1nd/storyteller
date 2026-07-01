@@ -28,7 +28,7 @@ import qualified Network.WebSockets as WS
 import Polysemy
 import Polysemy.Error (Error, runError)
 import Polysemy.Fail (Fail)
-import Runix.Git (Git(..), ObjectHash(..))
+import Runix.Git (Git(..))
 import Runix.Logging (Logging(..), Level(..))
 import Runix.LLM (LLM)
 import Runix.Random (Random)
@@ -39,14 +39,18 @@ import Server.Notification (BranchNotification(..))
 import Storyteller.CLI.Env (modelConfigs)
 import Storyteller.Runtime (runInfrastructure, StoryModel, storyModel)
 import Storyteller.Storage (StoryStorage)
-import Storyteller.Git (runStoryStorageGit)
+import Storyteller.Git (runStoryStorageGit, refBranchName)
+import Storyteller.Types (unBranchName)
 
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..))
 import qualified UniversalLLM
 
--- | Intercept 'Git', pass every operation through, and notify after 'WriteCommit'.
---   Emits a 'BranchNotification' with no mapping — clients refetch what they need.
+-- | Intercept 'Git', pass every operation through, and notify whenever a
+--   story branch ref moves. A ref update is the point at which a branch's
+--   tick chain has actually changed (as opposed to 'WriteCommit'/'WriteObject',
+--   which stage objects that may or may not end up referenced) — connections
+--   for that branch then refetch and re-push their full state.
 gitNotify
   :: Members '[Git, Embed IO] r
   => TChan BranchNotification
@@ -54,19 +58,20 @@ gitNotify
   -> Sem r a
 gitNotify chan = interpret $ \case
   ResolveRef  ref         -> send (ResolveRef  ref)
-  CreateRef   ref hash    -> send (CreateRef   ref hash)
-  UpdateRef   ref hash    -> send (UpdateRef   ref hash)
   DeleteRef   ref         -> send (DeleteRef   ref)
   ListRefs    prefix      -> send (ListRefs    prefix)
   ReadCommit  hash        -> send (ReadCommit  hash)
   ReadObject  hash        -> send (ReadObject  hash)
   WriteObject obj         -> send (WriteObject obj)
   LookupPath  tree path   -> send (LookupPath  tree path)
-  WriteCommit cd          -> do
-    hash <- send (WriteCommit cd)
-    embed $ atomically $ writeTChan chan
-      BranchNotification { bnBranch = "", bnMapping = [] }
-    return hash
+  WriteCommit cd          -> send (WriteCommit cd)
+  CreateRef   ref hash    -> send (CreateRef ref hash) <* notifyRef ref
+  UpdateRef   ref hash    -> send (UpdateRef ref hash) <* notifyRef ref
+  where
+    notifyRef ref = case refBranchName ref of
+      Nothing     -> return ()
+      Just branch -> embed $ atomically $ writeTChan chan
+        BranchNotification { bnBranch = unBranchName branch }
 
 newtype ServerAuth = ServerAuth LlamaCppAuth
 
