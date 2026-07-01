@@ -4,7 +4,9 @@
 
 A WebSocket connection is a **scope** — a live, server-maintained view of some piece of server state (a branch, a file, an agent run, a session). The server owns that state. The client holds a cached copy and renders it.
 
-On connect, the server immediately pushes everything required to fully represent the current state of that scope. After that it keeps the client up to date by pushing changes as they happen. The client never polls, never requests a resync. **Reconnecting is resync** — the connect-time push is the only mechanism for full state delivery.
+On connect, the server immediately pushes everything required to fully represent the current state of that scope. A connection is fully self-contained — it does not depend on any other connection being open, and is not affected by the state of other connections. A file connection does not care how the client learned the filename; a branch connection does not care whether any file connections are open. Each connection converges to its own current state independently, so connections lagging behind each other on a lossy network is not a consistency problem — just each stream being momentarily behind its own HEAD.
+
+Connections do interact at the storage level — a write on a file connection creates ticks that the branch connection will subsequently push as an update. But from the branch connection's perspective the origin of those ticks is opaque: it sees new ticks appear at HEAD and pushes them, with no knowledge of which connection or agent caused them. After that it keeps the client up to date by pushing changes as they happen. The client never polls, never requests a resync. **Reconnecting is resync** — the connect-time push is the only mechanism for full state delivery.
 
 ---
 
@@ -133,6 +135,27 @@ The `message` field carries the full encoded form including the `type:<kind>\n` 
 
 ---
 
+## Responsibility matrix
+
+| Concern | Owner | Notes |
+|---|---|---|
+| Persistent state | Server | Storage is authoritative; client holds a cache |
+| Performing actions | Server | Decodes intent, executes, updates storage |
+| Pushing state to clients | Server (connection) | On connect and after every mutation |
+| Encoding (wire format) | Server | `Server.$scope` produces typed values; dispatch serialises |
+| Decoding (wire format) | Client | Receives `WireTick` and raw events, interprets locally |
+| Rendering | Client | Decides how to display a tick chain (prose, list, diff…) |
+| UI state | Client | Tabs, toggles, selection, pending indicators — not the server's concern |
+
+When something is broken or missing, this matrix tells you where to look:
+- Data wrong or stale → server storage or push logic
+- Data not arriving → connection / dispatch
+- Displayed wrong → client rendering
+- Action not taking effect → `Server.$scope` handler
+- Wire shape mismatch → server encoding / client decoding
+
+---
+
 ## Server-side structure
 
 The dispatch layer is **routing only** — it pattern-matches the incoming command type and delegates to a pure or limited-monad handler function. No WS concerns inside handlers.
@@ -146,3 +169,7 @@ Connection  →  Dispatch (routing)  →  Handler (pure/limited effects)
 ```
 
 The `Update` builder always reads full current state from storage after a mutation — it does not try to compute a delta. This keeps it simple and correct; the client's upsert model handles receiving redundant ticks gracefully.
+
+### Possible future optimisation (not implemented)
+
+On slower connections it may be worth sending only tick ids in the update, letting the client request the ones it doesn't already have. This saves retransmitting ticks the client has already cached. On localhost the extra round-trip makes this strictly worse than unconditional sends, so it is not worth doing until there is a concrete need.
