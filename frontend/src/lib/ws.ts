@@ -194,7 +194,7 @@ export function branchConn(name: string) {
 }
 
 export function fileConn(branch: string, path: string) {
-  // Path components are encoded individually to preserve the slash hierarchy.
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  // Decode first in case the server already sent an encoded path, then re-encode cleanly.
+  const encodedPath = path.split("/").map((p) => encodeURIComponent(decodeURIComponent(p))).join("/");
   return new StoryWS<FileCommand, FileEvent>(`${WS_BASE}/branch/${encodeURIComponent(branch)}/${encodedPath}`);
 }

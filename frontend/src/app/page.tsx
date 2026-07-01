@@ -209,9 +209,10 @@ function buildTree(paths: string[]): TreeNode[] {
     for (let i = 0; i < parts.length; i++) {
       builtPath = builtPath ? builtPath + "/" + parts[i] : parts[i];
       const isLast = i === parts.length - 1;
-      let node = nodes.find((n) => n.name === parts[i]);
+      const displayName = decodeURIComponent(parts[i]);
+      let node = nodes.find((n) => n.name === displayName);
       if (!node) {
-        node = { name: parts[i], path: builtPath, isDir: !isLast, children: [] };
+        node = { name: displayName, path: builtPath, isDir: !isLast, children: [] };
         nodes.push(node);
       }
       nodes = node.children;
@@ -346,7 +347,7 @@ function Toolbar({
             fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             color: centerTab === "file" ? "var(--text-muted)" : "var(--text-dim)",
             fontWeight: 400,
-          }}>{selectedFile.split("/").pop()}</span>
+          }}>{decodeURIComponent(selectedFile.split("/").pop() ?? "")}</span>
           <span onClick={(e) => { e.stopPropagation(); onCloseFile(); }} style={{
             fontSize: 13, lineHeight: 1, flexShrink: 0, opacity: 0.5, cursor: "pointer",
           }}>✕</span>
@@ -412,14 +413,13 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
 
 function FileTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations,
-  onEdit, onDelete, onToggleContextAtom, onToggleContextAnnotation,
+  onEdit, onToggleContextAtom, onToggleContextAnnotation,
 }: {
   ticks: FileTick[];
   annotationMode: AnnotationMode;
   contextAtoms: Set<string>;
   contextAnnotations: Set<string>;
   onEdit: (tickId: string, content: string) => void;
-  onDelete: (tickId: string) => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
 }) {
@@ -457,7 +457,6 @@ function FileTickList({
                 isLast={isLast}
                 inContext={contextAtoms.has(atom.tickId)}
                 onEdit={(content) => onEdit(atom.tickId, content)}
-                onDelete={() => onDelete(atom.tickId)}
                 onToggleContext={() => onToggleContextAtom(atom.tickId)}
               />
               {annotationMode === "dots" && anns.length > 0 && (
@@ -595,12 +594,11 @@ function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
   );
 }
 
-function AtomBlock({ atom, isLast, inContext, onEdit, onDelete, onToggleContext }: {
+function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
   atom: FileTick;
   isLast: boolean;
   inContext: boolean;
   onEdit: (content: string) => void;
-  onDelete: () => void;
   onToggleContext: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -702,24 +700,6 @@ function AtomBlock({ atom, isLast, inContext, onEdit, onDelete, onToggleContext 
         </div>
       )}
 
-      {/* Hover controls */}
-      {hovered && !editing && (
-        <button
-          onClick={onDelete}
-          title="Delete atom"
-          style={{
-            position: "absolute", top: 0, right: 0,
-            background: "none", border: "none", cursor: "pointer",
-            color: "var(--text-ghost)", fontSize: 12, lineHeight: 1,
-            padding: "2px 4px", opacity: 0.6,
-            transition: "opacity 0.15s, color 0.15s",
-          }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; (e.currentTarget as HTMLElement).style.color = "oklch(0.65 0.18 25)"; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = "0.6"; (e.currentTarget as HTMLElement).style.color = "var(--text-ghost)"; }}
-        >
-          ×
-        </button>
-      )}
 
       {/* Tick id */}
       <span style={{
@@ -1341,6 +1321,30 @@ export default function Home() {
                 borderBottom: "1px solid var(--border-subtle)",
                 display: "flex", alignItems: "center",
               }}>
+                {contextAtoms.size > 0 && (
+                  <button
+                    onClick={() => {
+                      // Delete tail-first: atoms after the deleted one get renumbered,
+                      // so deleting from the end preserves earlier ids in the queue.
+                      const ordered = fileTicks
+                        .filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
+                        .map((t) => t.tickId)
+                        .reverse();
+                      ordered.forEach((tickId) => selectedFile && deleteAtom(selectedFile, tickId));
+                      clearContext();
+                    }}
+                    title={`Delete ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""}`}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4, fontSize: 10,
+                      padding: "2px 7px", borderRadius: 4, cursor: "pointer",
+                      background: "oklch(0.65 0.18 25 / 0.15)", border: "1px solid oklch(0.65 0.18 25 / 0.35)",
+                      color: "var(--rose)",
+                    }}
+                  >
+                    <Trash2 style={{ width: 10, height: 10 }} />
+                    Delete {contextAtoms.size}
+                  </button>
+                )}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 9, color: "var(--text-ghost)", marginRight: 8 }}>
                   {atomCount} atom{atomCount !== 1 ? "s" : ""}
@@ -1388,7 +1392,6 @@ export default function Home() {
                 contextAtoms={contextAtoms}
                 contextAnnotations={contextAnnotations}
                 onEdit={(tickId, content) => selectedFile && editAtom(selectedFile, tickId, content)}
-                onDelete={(tickId) => selectedFile && deleteAtom(selectedFile, tickId)}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}
               />
