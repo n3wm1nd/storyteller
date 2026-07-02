@@ -431,6 +431,7 @@ export function WireTickList({
   const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
 
   const annotationsFor = new Map<string, WireTick[]>();
+  const leading: WireTick[] = [];
   let lastAtomId: string | null = null;
   for (const tick of ticks) {
     if (tick.kind === "atom") {
@@ -442,6 +443,10 @@ export function WireTickList({
         const arr = annotationsFor.get(anchor) ?? [];
         arr.push(tick);
         annotationsFor.set(anchor, arr);
+      } else {
+        // Predates any atom in this file — nothing to anchor to yet,
+        // rendered as its own block ahead of the first atom instead.
+        leading.push(tick);
       }
     }
   }
@@ -452,6 +457,19 @@ export function WireTickList({
     <div style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
         <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
+          {leading.length > 0 && annotationMode !== "hidden" && (
+            annotationMode === "dots" ? (
+              <AnnotationDots annotations={leading} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
+            ) : (
+              leading.map((ann) => (
+                <AnnotationCard
+                  key={ann.tickId} tick={ann}
+                  inContext={contextAnnotations.has(ann.tickId)}
+                  onToggleContext={onToggleContextAnnotation}
+                />
+              ))
+            )
+          )}
           {atoms.map((atom, i) => {
             const anns = annotationsFor.get(atom.tickId) ?? [];
             const isLast = i === atoms.length - 1 && (annotationMode === "hidden" || anns.length === 0);

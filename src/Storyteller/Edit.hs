@@ -227,8 +227,9 @@ moveTick tid mAfter = do
 
   tidPos   <- findPos "tick to move" tid contentOrdered
   afterPos <- case mAfter of
-    Nothing  -> return (-1)
-    Just aid -> findPos "afterTickId" aid contentOrdered
+    Nothing               -> return (-1)
+    Just aid | aid == tickId root -> return (-1)  -- explicit root is the same target as Nothing
+             | otherwise           -> findPos "afterTickId" aid contentOrdered
 
   checkMoveOrder tid mAfter tidPos afterPos contentOrdered
 

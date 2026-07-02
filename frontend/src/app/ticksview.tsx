@@ -32,14 +32,14 @@ function MoveButton({ disabled, onClick, title, danger, children }: {
 // ── Tick row ──────────────────────────────────────────────────────────────────
 
 function TickRow({
-  tick, allTicks, isFirst, isLast, prevTick,
+  tick, isFirst, isLast, prevTick, nextTick,
   onAddNote, onMoveUp, onMoveDown, onDelete,
 }: {
   tick: WireTick;
-  allTicks: WireTick[];
   isFirst: boolean;
   isLast: boolean;
   prevTick: WireTick | undefined;
+  nextTick: WireTick | undefined;
   onAddNote: (refTickId: string, text: string) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -50,13 +50,10 @@ function TickRow({
   const [noteText, setNoteText] = useState("");
 
   const refsOf = (t: WireTick): string[] => t.refs ?? [];
-  const myIdx = allTicks.findIndex((t) => t.tickId === tick.tickId);
-  const above = allTicks[myIdx - 1];
-  const below = allTicks[myIdx + 1];
 
   // Ordering invariant: refs must be older (below); things that ref you must be newer (above).
-  const canMoveUp   = !isFirst && !refsOf(above).includes(tick.tickId);
-  const canMoveDown = !isLast  && !refsOf(below).includes(tick.tickId) && !refsOf(tick).includes(below?.tickId);
+  const canMoveUp   = !isFirst && !refsOf(prevTick).includes(tick.tickId);
+  const canMoveDown = !isLast  && !refsOf(nextTick).includes(tick.tickId) && !refsOf(tick).includes(nextTick?.tickId);
 
   const tickContent = () => {
     if (tick.kind === "note") return (
@@ -180,17 +177,22 @@ export function TicksView({
         <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
           <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 32px 48px" }}>
             {ticks.map((tick, i) => {
-              const isFirst  = i === 0;
-              const isLast   = i === ticks.length - 1;
-              const prevTick = i > 0 ? ticks[i - 1] : undefined;
+              const isFirst   = i === 0;
+              const isLast    = i === ticks.length - 1;
+              const prevTick  = i > 0 ? ticks[i - 1] : undefined;
+              const nextTick  = i + 1 < ticks.length ? ticks[i + 1] : undefined;
+              // After a down-swap, tid's new older neighbor is whatever
+              // currently sits two rows below it (nextTick's own nextTick) —
+              // undefined (root) once that runs off the end of the list.
+              const afterNextTick = i + 2 < ticks.length ? ticks[i + 2] : undefined;
               return (
                 <TickRow
                   key={tick.tickId}
-                  tick={tick} allTicks={ticks}
-                  isFirst={isFirst} isLast={isLast} prevTick={prevTick}
+                  tick={tick}
+                  isFirst={isFirst} isLast={isLast} prevTick={prevTick} nextTick={nextTick}
                   onAddNote={onAddNote}
                   onMoveUp={() => onMoveTick(tick.tickId, prevTick?.tickId)}
-                  onMoveDown={() => !isLast && onMoveTick(tick.tickId, i + 2 < ticks.length ? ticks[i + 2].tickId : undefined)}
+                  onMoveDown={() => !isLast && onMoveTick(tick.tickId, afterNextTick?.tickId)}
                   onDelete={() => onDeleteTick(tick.tickId)}
                 />
               );
