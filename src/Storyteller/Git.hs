@@ -317,8 +317,27 @@ withStorageWithCallback onRef action =
         pending <- get
         return $ overlayRefs (map resolveToHead pairs) pending
 
+      -- Reads each branch's *current* head — real git overlaid with this
+      -- transaction's own pending writes so far (same computation as
+      -- 'ListBranches') — rather than raw, possibly-stale git refs. A
+      -- caller's own branch is typically already at its correct final
+      -- head by this point (an 'At'-based rewrite publishes via 'SetRef'
+      -- before calling this), so it naturally can't still match any of
+      -- 'mapping's superseded ids and won't be redundantly reprocessed.
+      -- Reading raw git refs instead would see that branch still at its
+      -- *pre-rewrite* head under 'withStorage' (nothing lands in real git
+      -- until the transaction replays), matching entries it shouldn't and
+      -- rebuilding a second, wrong chain from stale ancestry alongside the
+      -- correct one 'At' already built — this is what actually caused a
+      -- moved tick's sibling to be duplicated in the chain.
       UpdateReferences mapping ->
-        mapM_ (\(o, n) -> cascadeReplace applyRef (ObjectHash (unTickId o)) (ObjectHash (unTickId n))) mapping
+        mapM_ (\(o, n) -> do
+          pairs   <- raise $ listRefs storyRefPrefix
+          pending <- get
+          let current = [ (storyRef (branchName b), ObjectHash (unTickId (branchHead b)))
+                        | b <- overlayRefs (map resolveToHead pairs) pending ]
+          cascadeReplace current applyRef (ObjectHash (unTickId o)) (ObjectHash (unTickId n))
+          ) mapping
 
       SetRef name mtid -> applyRef name mtid
 
@@ -361,14 +380,32 @@ runStoryStorageGit = fmap fst . withStorageWithCallback applyToGit
 --   succeeds, replayed as a single batch of 'setRef' calls into the parent
 --   'StoryStorage'. If the action fails, nothing is replayed and nothing
 --   was ever written — same effect as if the action never ran.
+--
+--   Replayed as at most one 'setRef' per branch, keeping only each
+--   branch's last buffered write ('lastPerBranch') — the same last-write-
+--   wins collapse 'overlayRefs' already applies for reads. A single
+--   logical mutation (e.g. 'moveTick', which nests two 'At' calls and a
+--   multi-entry 'updateReferences' cascade) buffers several intermediate
+--   writes to the same branch; replaying every one of them individually
+--   into the parent 'StoryStorage' would make each intermediate state
+--   real and independently observable — one eager ref write, and one
+--   'RefMoved' notification, per intermediate step instead of one for the
+--   whole transaction. Collapsing first ensures only the final, coherent
+--   state is ever published.
 withStorage
   :: Members '[StoryStorage, Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
 withStorage action = do
   (a, refs) <- withStorageWithCallback (\_ _ -> pure ()) action
-  mapM_ (uncurry setRef) refs
+  mapM_ (uncurry setRef) (lastPerBranch refs)
   return a
+
+-- | Keep only the last buffered write per branch — see 'withStorage'.
+--   'Map.fromList' already retains the last value for duplicate keys, and
+--   'refs' is oldest-first, so this is exactly 'overlayRefs's collapse.
+lastPerBranch :: [RefWrite] -> [RefWrite]
+lastPerBranch = Map.toList . Map.fromList
 
 -- | Speculative 'StoryStorage': like 'withStorage', ref mutations never
 --   touch git while the action runs — but unlike 'withStorage', the
@@ -477,8 +514,14 @@ runStoryBranchGit branch action = do
             }
           let newId = TickId (unObjectHash newHash)
           -- Cascade to other branches only — the current branch is being
-          -- rebuilt by At's rewind and must not be touched here.
-          raise $ cascadeReplaceOtherBranches setRef branch (ObjectHash (unTickId oldId)) newHash
+          -- rebuilt by At's rewind and must not be touched here. Reads
+          -- current heads via 'listBranches' (StoryStorage, overlay-aware)
+          -- rather than raw git, so a branch already rewritten earlier in
+          -- the same transaction is matched against its up-to-date head —
+          -- see 'cascadeReplace's own comment for why that matters.
+          current <- raise $ map (\b -> (storyRef (branchName b), ObjectHash (unTickId (branchHead b))))
+                       <$> listBranches
+          raise $ cascadeReplaceOtherBranches current setRef branch (ObjectHash (unTickId oldId)) newHash
           raise $ put @ObjectHash newHash
           raise $ setRef branch (Just newId)
           pureT $ Right newId
@@ -910,29 +953,38 @@ walkFrom acc step hash = do
 --   the caller (a 'StoryStorage' interpreter) decides whether that lands in
 --   git immediately or is buffered as part of a transaction.
 --
+--   Takes each branch's current head as an explicit @pairs@ argument rather
+--   than reading raw git refs itself — a caller running inside a buffered
+--   transaction (see 'Storyteller.Git.withStorage') must pass heads
+--   overlaid with its own pending writes so far, not raw git, or a branch
+--   already correctly rewritten earlier in the same transaction would
+--   still read as pointing at its stale, pre-rewrite head here (nothing
+--   lands in real git until the transaction replays) and get wrongly
+--   matched and rebuilt a second time from that stale ancestry.
+--
 --   Only commit parent links are rewritten — trees and blobs are not tick
 --   references and are left untouched.
 cascadeReplace
   :: Members '[Git, Fail] r
-  => (BranchName -> Maybe TickId -> Sem r ())
+  => [(RefName, ObjectHash)]  -- ^ each branch's current head
+  -> (BranchName -> Maybe TickId -> Sem r ())
   -> ObjectHash  -- ^ old commit hash (now superseded)
   -> ObjectHash  -- ^ new commit hash (the replacement)
   -> Sem r ()
-cascadeReplace applyRef old new = do
-  pairs <- listRefs storyRefPrefix
+cascadeReplace pairs applyRef old new =
   mapM_ (rewriteRef applyRef old new) pairs
 
 -- | Like 'cascadeReplace' but skips the given branch — used by 'Replace'
 --   inside 'At' where the current branch is being rebuilt by the rewind.
 cascadeReplaceOtherBranches
   :: Members '[Git, Fail] r
-  => (BranchName -> Maybe TickId -> Sem r ())
+  => [(RefName, ObjectHash)]  -- ^ each branch's current head
+  -> (BranchName -> Maybe TickId -> Sem r ())
   -> BranchName
   -> ObjectHash
   -> ObjectHash
   -> Sem r ()
-cascadeReplaceOtherBranches applyRef skipBranch old new = do
-  pairs <- listRefs storyRefPrefix
+cascadeReplaceOtherBranches pairs applyRef skipBranch old new = do
   let others = filter (\(ref, _) -> ref /= storyRef skipBranch) pairs
   mapM_ (rewriteRef applyRef old new) others
 
