@@ -187,7 +187,7 @@ editAtom tid path newBytes = do
       -- rather than overwrite, so this tick's diff is just the one atom
       -- being edited — matching the append-only invariant Store checks.
       appendFile @(BranchTag branch) path newBytes
-      store @branch "edit"
+      storeAs @branch (Atom path (TE.decodeUtf8With TE.lenientDecode newBytes))
   reset @branch
   let fullMapping = (tid, newTid) : mapping
   updateReferences fullMapping
@@ -408,7 +408,7 @@ commitAtom file matches gaps fates contents outs (table, anchor) i = do
         drop @branch
         withFS @branch $ do
           appendFile @project file (contents !! i)
-          storeAs @branch (Atom file "")
+          storeAs @branch (Atom file (TE.decodeUtf8With TE.lenientDecode (contents !! i)))
       return (composeMapping table1 (tailMapping ++ [(origId, newTid)]), newTid)
 
 -- | A gap that folded onto a neighbor was already absorbed into that atom's
@@ -426,7 +426,7 @@ emitStandaloneGap file table anchor content fate
   | otherwise = do
       (newTid, tailMapping) <- sneakyAtWithFS @branch anchor $ do
         appendFile @project file content
-        storeAs @branch (Atom file "")
+        storeAs @branch (Atom file (TE.decodeUtf8With TE.lenientDecode content))
       return (composeMapping table tailMapping, newTid)
 
 resolveId :: Map TickId TickId -> TickId -> TickId

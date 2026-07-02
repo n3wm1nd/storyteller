@@ -45,7 +45,7 @@ import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(.
 import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, reset, storeAs)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, reset, storeAs)
 import Storyteller.Types (BranchName(..), TickId(..), Note(..), tickId, tickParent, unTickId)
 import qualified Data.Yaml as Yaml
 
@@ -81,6 +81,14 @@ branchState = branchStateSince Nothing
 --   rewrote history out from under it), the walk runs all the way to root
 --   and the full chain is returned — the correct, if pricier, fallback.
 --
+--   HEAD is derived from this same walk (its last, most-recent element)
+--   rather than a separate 'get' — a second, independent HEAD resolution
+--   could race a concurrent rebase and return a different, incompatible
+--   position than the one 'ticks' was just walked from, sending a HEAD the
+--   client can't fully resolve against the ticks in the very same update.
+--   One walk, one resolution: whatever HEAD was at the moment 'follow'
+--   resolved it, that's what both 'ticks' and the reported head describe.
+--
 --   'reset' first: 'listAllFiles' reads the in-memory working tree, which
 --   this connection's long-lived stack loaded once at scope-entry and never
 --   otherwise refreshes. Ticks/HEAD are read straight from git and are
@@ -89,13 +97,20 @@ branchState = branchStateSince Nothing
 branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
   reset @Main
-  files  <- listAllFiles @(BranchTag Main) "/"
-  ticks  <- follow @Main [] $ \acc t ->
+  files <- listAllFiles @(BranchTag Main) "/"
+  ticks <- follow @Main [] $ \acc t ->
     if Just (tickId t) == since
       then (acc, Nothing)
       else (t : acc, tickParent t)
-  headTk <- get @Main
-  return (files, Update (map tickToWireTick ticks) (unTickId (tickId headTk)))
+  case (reverse ticks, since) of
+    (headTk : _, _) ->
+      return (files, Update (map tickToWireTick ticks) (unTickId (tickId headTk)))
+    ([], Just s) ->
+      -- Nothing past 'since': HEAD hasn't moved from what the caller
+      -- already has, no need to resolve it again.
+      return (files, Update [] (unTickId s))
+    ([], Nothing) ->
+      fail "branchStateSince: branch has no ticks"
 
 -- ---------------------------------------------------------------------------
 -- Mutations on the already-open branch

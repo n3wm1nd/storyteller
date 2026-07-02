@@ -52,4 +52,4 @@ appendOne
   => FilePath -> T.Text -> Sem r TickId
 appendOne path content = do
   appendFile @(BranchTag branch) path (TE.encodeUtf8 content)
-  storeAs @branch (Atom path (T.take 60 content))
+  storeAs @branch (Atom path content)
