@@ -54,7 +54,7 @@ runCommand path cmd = case cmd of
   -- produced. 'reset' reloads the working tree from the (now rebased) head,
   -- since 'atWithFS' only restores the pre-call tree, not the post-rebase
   -- one — same pattern 'editAtom'/'moveTick' use after their own 'at' calls.
+  -- 'atWithFS' broadcasts the mapping itself, so nothing left to do here.
   At _mid tid inner -> do
-    (_, mapping) <- Storage.atWithFS @Main (TickId tid) (runCommand path inner)
+    _ <- Storage.atWithFS @Main (TickId tid) (runCommand path inner)
     Storage.reset @Main
-    Storage.updateReferences mapping

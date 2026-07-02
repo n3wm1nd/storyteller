@@ -66,7 +66,7 @@ import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, atWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
+  , at, sneakyAt, sneakyAtWithFS, atWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
   )
 import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
 
@@ -178,7 +178,7 @@ editAtom
   -> BS.ByteString
   -> Sem r (TickId, [(TickId, TickId)])
 editAtom tid path newBytes = do
-  (newTid, mapping) <- at @branch tid $ do
+  (newTid, mapping) <- sneakyAt @branch tid $ do
     drop @branch
     withFS @branch $ do
       -- 'drop' rewinds the branch's (temporary) head to tid's parent; withFS
@@ -189,7 +189,9 @@ editAtom tid path newBytes = do
       appendFile @(BranchTag branch) path newBytes
       store @branch "edit"
   reset @branch
-  return (newTid, mapping)
+  let fullMapping = (tid, newTid) : mapping
+  updateReferences fullMapping
+  return (newTid, fullMapping)
 
 -- ---------------------------------------------------------------------------
 -- Chain-level move
@@ -234,13 +236,13 @@ moveTick tid mAfter = do
   ((newTid, innerMapping), outerMapping) <-
     if tidPos > afterPos
       then -- Backward: at tid (pop >>= \d -> at after (push d))
-        at @branch tid $ do
+        sneakyAt @branch tid $ do
           d                  <- popTick @branch
-          (newTid, innerMap) <- at @branch resolvedAfter $ pushTick @branch d
+          (newTid, innerMap) <- sneakyAt @branch resolvedAfter $ pushTick @branch d
           return (newTid, innerMap)
       else -- Forward: at after (at tid pop >>= push)
-        at @branch resolvedAfter $ do
-          (d, innerMap) <- at @branch tid $ popTick @branch
+        sneakyAt @branch resolvedAfter $ do
+          (d, innerMap) <- sneakyAt @branch tid $ popTick @branch
           newTid        <- pushTick @branch d
           return (newTid, innerMap)
 
@@ -399,10 +401,10 @@ commitAtom file matches gaps fates contents outs (table, anchor) i = do
   case outs !! i of
     Kept -> return (table1, origId)
     Dropped -> do
-      (_, tailMapping) <- at @branch origId (drop @branch)
+      (_, tailMapping) <- sneakyAt @branch origId (drop @branch)
       return (composeMapping table1 tailMapping, anchor1)
     Changed -> do
-      (newTid, tailMapping) <- at @branch origId $ do
+      (newTid, tailMapping) <- sneakyAt @branch origId $ do
         drop @branch
         withFS @branch $ do
           appendFile @project file (contents !! i)
@@ -422,7 +424,7 @@ emitStandaloneGap
 emitStandaloneGap file table anchor content fate
   | fate /= Standalone || BS.null content = return (table, anchor)
   | otherwise = do
-      (newTid, tailMapping) <- at @branch anchor $ withFS @branch $ do
+      (newTid, tailMapping) <- sneakyAtWithFS @branch anchor $ do
         appendFile @project file content
         storeAs @branch (Atom file "")
       return (composeMapping table tailMapping, newTid)
@@ -478,7 +480,7 @@ readSnapshotAt
   => Tick
   -> Sem r (TickId, Map FilePath BS.ByteString)
 readSnapshotAt tick = do
-  (fileMap, _) <- atWithFS @branch (tickId tick) $ do
+  (fileMap, _) <- sneakyAtWithFS @branch (tickId tick) $ do
     files <- listFiles @project "/"
     Map.fromList <$> mapM (\f -> (f,) <$> readFile @project f) files
   return (tickId tick, fileMap)

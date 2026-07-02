@@ -19,8 +19,10 @@ module Storyteller.Storage
   , get
   , reset
   , at
+  , sneakyAt
   , withFS
   , atWithFS
+  , sneakyAtWithFS
   , follow
   , fileTicks
 
@@ -133,9 +135,27 @@ get = send @(StoryBranch branch) Get
 reset :: forall branch r. Member (StoryBranch branch) r => Sem r ()
 reset = send @(StoryBranch branch) Reset
 
-at :: forall branch r a. Members '[StoryBranch branch, Fail] r
+-- | Run branch operations at the given position, save/restore working tree,
+--   then replay the tail — without broadcasting the resulting id mapping via
+--   'updateReferences'. For callers that need to combine this mapping with
+--   something else before broadcasting once (see 'Storyteller.Edit'), or
+--   that only read history and have no mapping worth broadcasting. Most
+--   callers want 'at' instead, which broadcasts automatically.
+sneakyAt :: forall branch r a. Members '[StoryBranch branch, Fail] r
+         => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
+sneakyAt tid action = send @(StoryBranch branch) (At tid action) >>= either fail return
+
+-- | Run branch operations at the given position, save/restore working tree,
+--   then replay the tail, broadcasting the resulting old→new id mapping via
+--   'updateReferences' so cross-branch references and tracked ids stay in
+--   sync. Use 'sneakyAt' instead when the mapping needs to be combined with
+--   something else before a single broadcast.
+at :: forall branch r a. Members '[StoryBranch branch, StoryStorage, Fail] r
    => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
-at tid action = send @(StoryBranch branch) (At tid action) >>= either fail return
+at tid action = do
+  result@(_, mapping) <- sneakyAt @branch tid action
+  updateReferences mapping
+  return result
 
 -- | Initialise the filesystem to the current head tick's snapshot, run the
 --   action, then restore the outer filesystem state.
@@ -144,9 +164,14 @@ withFS action = send @(StoryBranch branch) (WithFS action)
 
 -- | Run an action at a historical tick position with the filesystem
 --   initialised to that tick's snapshot.  Equivalent to @at tid (withFS action)@.
-atWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
+atWithFS :: forall branch r a. Members '[StoryBranch branch, StoryStorage, Fail] r
          => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 atWithFS tid action = at @branch tid (withFS @branch action)
+
+-- | Like 'atWithFS' but skips the auto-broadcast — see 'sneakyAt'.
+sneakyAtWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
+               => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
+sneakyAtWithFS tid action = sneakyAt @branch tid (withFS @branch action)
 
 -- | Extract the file-relevant tick list for @path@ from the branch history (oldest-first).
 fileTicks :: forall branch r. Member (StoryBranch branch) r => FilePath -> Sem r [FileTick]

@@ -87,23 +87,16 @@ appendToFile path content = do
   void $ appendAgent @Main path content
   info $ "append done: " <> T.pack path
 
--- | Replace an atom's content in-place. Unlike 'moveTick', 'editAtom' returns
---   its tail-rebase mapping without including the edited tick's own
---   old->new pair (it isn't part of the tail being replayed, it's the new
---   pivot the tail replays onto) — add it here so clients tracking the
---   edited id itself (a rebase marker, a context selection), not just its
---   successors, get told where it went.
+-- | Replace an atom's content in-place. 'editAtom' broadcasts its own
+--   old->new mapping (including the edited tick's own pivot pair) via
+--   'Storyteller.Storage.at', so there's nothing left to do here.
 editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
-editFileAtom path tid content = do
-  (newTid, mapping) <- editAtom @Main tid path (TE.encodeUtf8 content)
-  Storage.updateReferences ((tid, newTid) : mapping)
+editFileAtom path tid content = void $ editAtom @Main tid path (TE.encodeUtf8 content)
 
--- | Delete an atom from the file's chain. See 'editFileAtom' — 'deleteTick'
---   likewise leaves the mapping propagation to the caller.
+-- | Delete an atom from the file's chain. 'deleteTick' broadcasts its own
+--   mapping via 'Storyteller.Storage.at', so there's nothing left to do here.
 deleteFileAtom :: FileOpen r => TickId -> Sem r ()
-deleteFileAtom tid = do
-  mapping <- deleteTick @Main tid
-  Storage.updateReferences mapping
+deleteFileAtom tid = void $ deleteTick @Main tid
 
 -- | Move an atom to a new position in the file's chain.
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()

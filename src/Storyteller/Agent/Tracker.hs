@@ -25,7 +25,7 @@ import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
                         , appendFile, readFile, fileExists )
 import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage ( StoryBranch, StoryStorage, follow, storeData, atWithFS )
+import Storyteller.Storage ( StoryBranch, StoryStorage, follow, storeData, sneakyAtWithFS )
 import Storyteller.Types ( Tick(..), TickData(..), TickId(..), tickId, tickParent )
 
 import Prelude hiding (appendFile, readFile)
@@ -85,11 +85,11 @@ copyAtom
               ] r
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
-  (thisContent, _) <- atWithFS @trackeeBranch (tickId tick) $
+  (thisContent, _) <- sneakyAtWithFS @trackeeBranch (tickId tick) $
     readFileOrEmpty @(BranchTag trackeeBranch) fromFile
   parentContent <- case tickParent tick of
     Nothing  -> return BS.empty
-    Just pid -> fst <$> atWithFS @trackeeBranch pid
+    Just pid -> fst <$> sneakyAtWithFS @trackeeBranch pid
       (readFileOrEmpty @(BranchTag trackeeBranch) fromFile)
 
   let delta = BS.drop (BS.length parentContent) thisContent
