@@ -48,7 +48,7 @@ module Storyteller.Edit
 import qualified Data.ByteString as BS
 import Control.Monad (foldM, filterM)
 import Data.Array (Array, listArray, (!))
-import Data.List (findIndex)
+import Data.List (findIndex, zip5)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -221,8 +221,9 @@ moveTick
 moveTick tid mAfter = do
   chain <- follow @branch [] (\acc t -> (t : acc, tickParent t))
   -- chain is oldest-first: [root, t1, t2, t3]
-  let root           = head chain
-      contentOrdered = tail chain
+  (root, contentOrdered) <- case chain of
+    (r : rest) -> return (r, rest)
+    []         -> fail "moveTick: branch has no root tick"
 
   tidPos   <- findPos "tick to move" tid contentOrdered
   afterPos <- case mAfter of
@@ -259,8 +260,10 @@ checkMoveOrder
   :: Members '[Fail] r
   => TickId -> Maybe TickId -> Int -> Int -> [Tick] -> Sem r ()
 checkMoveOrder tid _mAfter tidPos afterPos ordered = do
-  let movingTick = ordered !! tidPos
-      newPos     = afterPos + 1
+  movingTick <- case List.drop tidPos ordered of
+    (t : _) -> return t
+    []      -> fail "checkMoveOrder: tick position out of range"
+  let newPos = afterPos + 1
 
   mapM_ (checkRefBefore newPos) (tickRefs (tickData movingTick))
 
@@ -378,14 +381,19 @@ commitFile table file = do
         fates    = gapFates matches gaps
         contents = finalAtomContents matches target gaps fates
         outs     = classify matches contents
-    (table1, anchor1) <-
-      foldM (commitAtom @project @branch file matches gaps fates contents outs)
-            (table, root)
-            [0 .. n - 1]
-    fst <$> emitStandaloneGap @project @branch file table1 anchor1 (gaps !! n) (fates !! n)
+        -- 'gaps'/'fates' carry one entry per atom (the gap immediately
+        -- before it) plus one trailing entry for the gap after the last
+        -- atom; zip5 below pairs each atom with its own leading gap/fate,
+        -- leaving that trailing pair for the final 'emitStandaloneGap' call.
+        perAtom  = zip5 matches (take n gaps) (take n fates) contents outs
+        (tailGap, tailFate) = case (List.drop n gaps, List.drop n fates) of
+          (g : _, f : _) -> (g, f)
+          _              -> (BS.empty, Standalone)
+    (table1, anchor1) <- foldM (commitAtom @project @branch file) (table, root) perAtom
+    fst <$> emitStandaloneGap @project @branch file table1 anchor1 tailGap tailFate
 
--- | Process the gap immediately before atom @i@ (folding it in is handled
---   as part of that atom's own content — see 'finalAtomContents' — so only
+-- | Process the gap immediately before this atom (folding it in is handled
+--   as part of the atom's own content — see 'finalAtomContents' — so only
 --   a standalone gap needs its own tick here), then the atom itself: left
 --   untouched if kept, replaced in place if changed, removed if dropped.
 commitAtom
@@ -393,12 +401,14 @@ commitAtom
   .  ( project ~ BranchTag branch
      , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
                 , StoryBranch branch, StoryStorage, Fail ] r )
-  => FilePath -> [AtomMatch] -> [BS.ByteString] -> [GapFate] -> [BS.ByteString] -> [AtomOutcome]
-  -> (Map TickId TickId, TickId) -> Int -> Sem r (Map TickId TickId, TickId)
-commitAtom file matches gaps fates contents outs (table, anchor) i = do
-  (table1, anchor1) <- emitStandaloneGap @project @branch file table anchor (gaps !! i) (fates !! i)
-  let origId = resolveId table1 (amTickId (matches !! i))
-  case outs !! i of
+  => FilePath
+  -> (Map TickId TickId, TickId)
+  -> (AtomMatch, BS.ByteString, GapFate, BS.ByteString, AtomOutcome)
+  -> Sem r (Map TickId TickId, TickId)
+commitAtom file (table, anchor) (m, gap, fate, content, outcome) = do
+  (table1, anchor1) <- emitStandaloneGap @project @branch file table anchor gap fate
+  let origId = resolveId table1 (amTickId m)
+  case outcome of
     Kept -> return (table1, origId)
     Dropped -> do
       (_, tailMapping) <- sneakyAt @branch origId (drop @branch)
@@ -407,8 +417,8 @@ commitAtom file matches gaps fates contents outs (table, anchor) i = do
       (newTid, tailMapping) <- sneakyAt @branch origId $ do
         drop @branch
         withFS @branch $ do
-          appendFile @project file (contents !! i)
-          storeAs @branch (Atom file (TE.decodeUtf8With TE.lenientDecode (contents !! i)))
+          appendFile @project file content
+          storeAs @branch (Atom file (TE.decodeUtf8With TE.lenientDecode content))
       return (composeMapping table1 (tailMapping ++ [(origId, newTid)]), newTid)
 
 -- | A gap that folded onto a neighbor was already absorbed into that atom's
@@ -536,26 +546,40 @@ gapContents matches target = go 0 matches
 --   it's *partially* trimmed — a nonempty core remains, but not the whole
 --   original. A fully-kept atom was never changing, so nothing folds onto
 --   it; a fully-dropped atom leaves no surviving anchor to fold onto.
+--   Each gap's fate depends only on its immediate neighbors' eligibility, so
+--   this is a sliding window over (previous atom eligible?, gap, next atom
+--   eligible?) rather than indexed lookups — 'gaps' has one more entry than
+--   'matches' (a gap before each atom plus one trailing gap), so the window
+--   edges are padded with 'False' on either side via zipWith3's own
+--   length-matching (all three lists here are exactly @length matches + 1@).
 gapFates :: [AtomMatch] -> [BS.ByteString] -> [GapFate]
-gapFates matches gaps = [ fate i | i <- [0 .. length gaps - 1] ]
+gapFates matches gaps = zipWith3 fate3 gaps prevElig curElig
   where
-    n    = length matches
-    elig = map (\m -> amCoreLen m > 0 && amCoreLen m < amOriginalLen m) matches
-    fate i
-      | BS.null (gaps !! i)      = Standalone
-      | i > 0 && elig !! (i - 1) = FoldBack
-      | i < n && elig !! i       = FoldFront
-      | otherwise                = Standalone
+    elig     = map (\m -> amCoreLen m > 0 && amCoreLen m < amOriginalLen m) matches
+    prevElig = False : elig
+    curElig  = elig ++ [False]
+    fate3 gap prev cur
+      | BS.null gap = Standalone
+      | prev        = FoldBack
+      | cur         = FoldFront
+      | otherwise   = Standalone
 
 -- | Each atom's final content: its surviving core plus whatever gaps
---   folded onto its front\/back.
+--   folded onto its front\/back. 'gaps'/'fates' each carry one leading
+--   entry per atom plus a trailing one; zip5 pairs each atom with its own
+--   leading (front) and following (back) gap/fate instead of indexing.
 finalAtomContents :: [AtomMatch] -> BS.ByteString -> [BS.ByteString] -> [GapFate] -> [BS.ByteString]
 finalAtomContents matches target gaps fates =
-  [ frontFold i <> coreOf target (matches !! i) <> backFold i | i <- [0 .. n - 1] ]
+  [ frontFold ff fg <> coreOf target m <> backFold bf bg
+  | (m, ff, fg, bf, bg) <- zip5 matches frontFates frontGaps backFates backGaps ]
   where
-    n = length matches
-    frontFold i = if fates !! i == FoldFront then gaps !! i else BS.empty
-    backFold i  = if fates !! (i + 1) == FoldBack then gaps !! (i + 1) else BS.empty
+    n          = length matches
+    frontFates = take n fates
+    frontGaps  = take n gaps
+    backFates  = List.drop 1 fates
+    backGaps   = List.drop 1 gaps
+    frontFold fate gap = if fate == FoldFront then gap else BS.empty
+    backFold  fate gap = if fate == FoldBack  then gap else BS.empty
 
 -- | Classify each atom given its already-computed final content (core plus
 --   any folded-in gap bytes — see 'finalAtomContents').
