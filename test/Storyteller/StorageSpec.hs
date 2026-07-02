@@ -151,6 +151,17 @@ spec = do
             return (branchHead before /= branchHead after, branchHead after)
       result `shouldBe` Right (True, TickId "new-head")
 
+    it "withStorageDiscard never publishes ref writes, even on success" $ do
+      let result = runTest $ do
+            _           <- createBranch (BranchName "novel")
+            Just before <- getBranch (BranchName "novel")
+            withStorageDiscard $ setRef (BranchName "novel") (Just (TickId "should-not-land"))
+            Just after <- getBranch (BranchName "novel")
+            return (branchHead before, branchHead after)
+      case result of
+        Left err -> expectationFailure err
+        Right (before, after) -> after `shouldBe` before
+
   describe "StoryBranch" $ do
     it "store advances the head" $ do
       let result = runTestFS $ do

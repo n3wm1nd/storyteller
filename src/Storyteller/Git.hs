@@ -30,6 +30,7 @@ module Storyteller.Git
     -- * Interpreters
   , runStoryStorageGit
   , withStorage
+  , withStorageDiscard
   , runStoryBranchGit
   , runStoryFSGit
 
@@ -368,6 +369,19 @@ withStorage action = do
   (a, refs) <- withStorageWithCallback (\_ _ -> pure ()) action
   mapM_ (uncurry setRef) refs
   return a
+
+-- | Speculative 'StoryStorage': like 'withStorage', ref mutations never
+--   touch git while the action runs — but unlike 'withStorage', the
+--   accumulated overlay is discarded instead of replayed, even if the
+--   action succeeds. Content objects/commits the action wrote are still
+--   real git objects (cheap and harmless to leave unreferenced), but no
+--   ref anywhere ever moves — a dry run with a hard guarantee, not just a
+--   rolled-back transaction.
+withStorageDiscard
+  :: Members '[Git, Fail] r
+  => Sem (StoryStorage : r) a
+  -> Sem r a
+withStorageDiscard = fmap fst . withStorageWithCallback (\_ _ -> pure ())
 
 -- ---------------------------------------------------------------------------
 -- StoryBranch interpreter
