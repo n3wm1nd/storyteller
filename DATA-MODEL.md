@@ -23,6 +23,7 @@ An atom eliminates this problem by making the diff the primitive. An atom *is* "
 - **Append** — add new content at HEAD. The character learns something, a constraint is added, a scene continues. The common case.
 - **Amend** — `At` back to the tick where the content was written, write it differently, rebase forward. From HEAD, it was always that way. The old version exists only in the temporal ledger.
 - **Replace a file** — write a new file with the same name at HEAD. This is a forward append operation: a new file appears, the old one is no longer in the active tree but remains reachable via `At`. Categorically different from amending: replacement is a forward move, amendment is a rewrite of history.
+- **Read** — `At` back to a tick purely to inspect state at that point (a historical UI view, a background summarizer or tracker walking prior ticks) without writing anything. This is not a lesser form of amending — it's a different operation with a different cost. Amending rebases the tail forward and every rewritten tick gets a new id, propagated to anything referencing it. A read touches none of that: nothing is rebased, no tick ever changes identity, and the branch is left exactly as it was found once the read completes. Reading the past must never accidentally rewrite it, and must never cost as much as if it had.
 
 **Reticking** — atom boundaries can be changed after the fact. Splitting one tick into two requires choosing which inherits the original ID (preserving existing references) and which gets a new one (propagated via `updateReferences`). Merging two ticks into one is the reverse. Because rebase is already guaranteed to succeed, reticking is just another rebase — the storage layer imposes no additional cost.
 
@@ -207,7 +208,7 @@ When a narrator or context-assembly agent needs to load an entity, it walks the 
 
 When a story tick is copied to an entity branch (because the entity was present and experienced that event), the entity tick carries a reference to the story tick. This is the primary cross-branch link.
 
-References are embedded in the tick and survive as long as the tick does. When a rebase changes a tick's identity, all references to the old identity are updated across all branches as part of the rebase operation. This is mechanical and complete — the storage layer knows every tick that was rewritten and propagates the mapping.
+References are embedded in the tick and survive as long as the tick does. When a rebase changes a tick's identity, all references to the old identity are updated across all branches as part of the rebase operation. This is mechanical and complete — the storage layer knows every tick that was rewritten and propagates the mapping automatically, without the operation that triggered the rebase having to know propagation exists. A read of historical state produces no identity changes and so has nothing to propagate — see "Read" above.
 
 ---
 
@@ -242,9 +243,42 @@ The storage tree is loaded as creative prompting context during brainstorming an
 
 ---
 
+## Core Chain Operations
+
+Everything above — amending, reticking, the rebase-marker UI, background summarizers and trackers reading historical state — is built from three primitives. Nothing above needs its own bespoke implementation; each is one of these, or a composition of them.
+
+**follow** — walk the chain backward from HEAD, tick by tick, folding an accumulator and deciding at each step whether to continue. This is the only way anything inspects chain structure: finding a tick's position, building a file's atom-by-atom history, checking that one tick precedes another. Every "what happened before this point" question bottoms out in a `follow`.
+
+```haskell
+follow :: b -> (b -> Tick -> (b, Maybe TickId)) -> Sem r b
+```
+
+**At** — move to a given tick's position, run an action there, then either replay everything after it back onto whatever the action produced, or leave the chain untouched and return to where it started. Which of those two happens is not a property of `At` itself — it depends on whether the action wrote anything worth keeping. A write rebases the tail forward, and every rewritten tick gets a new id (propagated to anything referencing it, see Cross-Branch References above). A pure read does neither — see "Read" above. This is the one mechanism behind every operation that needs to act on the past: amending an atom, deleting or reordering a tick, dragging a rebase marker to run any command as if a past atom were HEAD, a background agent peeking at historical file state. None of these are special-cased; they're all `At` with a different inner action and a different answer to "did it write."
+
+```haskell
+at       :: TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])  -- replays, broadcasts the mapping
+sneakyAt :: TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])  -- replays, caller broadcasts
+readAt   :: TickId -> Sem r a -> Sem r a                        -- no replay, no mapping, no broadcast
+```
+
+**withFS** — temporarily swap the working tree to reflect the current position's committed snapshot, run an action, then restore whatever the working tree held before. Filesystem operations always act on "the current working tree," whatever that happens to be; `withFS` is how an action gets to see committed content instead of in-progress edits, without needing to know where or when it's being called from.
+
+```haskell
+withFS :: Sem r a -> Sem r a
+```
+
+**Composing them:** `at tid (withFS action)` is historical filesystem access — check out `tid`'s snapshot, let `action` read or write it, then rebase the result forward or discard the excursion depending on whether it wrote. Nesting composes for free: an action already running under one `At` can call another `At` for a different tick, and the rebases (or lack of them) nest correctly. This is what makes the rebase-marker feature — and any future "run this generic command as if an earlier point were HEAD" feature — need no per-command logic at all.
+
+```haskell
+atWithFS     :: TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])  -- at     . withFS
+readAtWithFS :: TickId -> Sem r a -> Sem r a                        -- readAt . withFS
+```
+
+---
+
 ## The Working Tree
 
-Not to be confused with the storage tree above (wallclock-ordered author notes): the **working tree** is the filesystem state implied by a branch's chain at a given position, plus whatever hasn't been committed as a tick yet (`Storyteller.Git`'s `WorkingTree`). Every mutation stages into it before `Store`/`Replace` commits; `At`/`Drop` move it between chain positions; `WithFS` snapshots and restores it around a scoped filesystem operation.
+Not to be confused with the storage tree above (wallclock-ordered author notes): the **working tree** is the filesystem state implied by a branch's chain at a given position, plus whatever hasn't been committed as a tick yet (`Storyteller.Git`'s `WorkingTree`). Every mutation stages into it before `Store`/`Replace` commits; `Drop` moves it back one tick; `At` and `withFS` (see Core Chain Operations above) move and scope it around historical positions.
 
 The append-only invariant governs what gets written as a tick — not the working tree itself. Content in the working tree can be freely rewritten; the invariant only bites at the moment that state is checked in via `Store`/`Replace`, which requires the new content to be an append over the previous tick.
 
