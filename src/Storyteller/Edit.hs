@@ -66,7 +66,7 @@ import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage
   ( StoryBranch, StoryStorage
-  , at, sneakyAt, sneakyAtWithFS, atWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
+  , at, sneakyAt, sneakyAtWithFS, atWithFS, readAtWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
   )
 import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
 
@@ -480,7 +480,7 @@ readSnapshotAt
   => Tick
   -> Sem r (TickId, Map FilePath BS.ByteString)
 readSnapshotAt tick = do
-  (fileMap, _) <- sneakyAtWithFS @branch (tickId tick) $ do
+  fileMap <- readAtWithFS @branch (tickId tick) $ do
     files <- listFiles @project "/"
     Map.fromList <$> mapM (\f -> (f,) <$> readFile @project f) files
   return (tickId tick, fileMap)

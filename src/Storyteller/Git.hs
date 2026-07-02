@@ -379,12 +379,16 @@ runStoryBranchGit branch action = do
           raise $ updateRef (storyRef branch) newHash
           pureT $ Right newId
 
-    At tid innerAction -> do
+    At replay tid innerAction -> do
       headHash' <- raise $ resolveHead branch
-      eResult   <- runAtH branch tid headHash' (runTSimple innerAction)
+      eResult   <- runAtH replay branch tid headHash' (runTSimple innerAction)
       case eResult of
         Left err            -> pureT (Left err)
-        Right (fa, mapping) -> return $ fmap (\a -> Right (a, mapping)) fa
+        Right (fa, mapping) -> do
+          -- Replay's own unwind leaves the ref at the rewritten head; a
+          -- read-only walk never moves it forward again, so restore it here.
+          when (not replay) $ raise $ updateRef (storyRef branch) headHash'
+          return $ fmap (\a -> Right (a, mapping)) fa
 
     WithFS innerAction -> do
       headHash' <- raise $ resolveHead branch
@@ -645,18 +649,24 @@ resolveHead name = do
 -- Base case: @current == tid@ — load the target working tree, run the action,
 -- return the result and an empty mapping.
 --
--- Recursive case: capture this tick's diff, drop to parent, recurse, then
--- reapply the diff onto whatever the inner action left, write a new commit.
+-- Recursive case: walk back to @parent@ (validating @tid@ is actually in the
+-- branch's history, and moving the ref there so 'WithFS' resolves to the
+-- right historical snapshot), recurse, then either (@replay = True@) reapply
+-- this tick's diff onto whatever the inner action left and write a new
+-- commit, or (@replay = False@) just pass the result through untouched —
+-- no write, no mapping entry, ref stays at @parent@ until the top-level
+-- caller restores it once the whole walk unwinds.
 runAtH
   :: forall branch f a rInitial r
   .  Members '[Git, Fail, State WorkingTree] r
-  => BranchName
+  => Bool
+  -> BranchName
   -> TickId
   -> ObjectHash
   -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r) (f a)
   -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r)
          (Either String (f a, [(TickId, TickId)]))
-runAtH branch tid current action
+runAtH replay branch tid current action
   | TickId (unObjectHash current) == tid = do
       fa <- action
       return $ Right (fa, [])
@@ -674,24 +684,26 @@ runAtH branch tid current action
       case mResult of
         Left err -> return (Left err)
         Right (parent, parentWt, commitWt, cd) -> do
-          eInner <- runAtH branch tid parent action
+          eInner <- runAtH replay branch tid parent action
           case eInner of
             Left err -> return (Left err)
-            Right (fa, innerMapping) -> do
-              newHash <- raise $ do
-                newParent   <- resolveHead branch
-                newParentWt <- loadWorkingTree newParent
-                newWt       <- applyDiff parentWt commitWt newParentWt
-                treeHash    <- flushWorkingTree newWt
-                newHash     <- writeCommit cd
-                  { commitParents = newParent : drop 1 (commitParents cd)
-                  , commitTree    = treeHash
-                  }
-                updateRef (storyRef branch) newHash
-                return newHash
-              let oldId = TickId (unObjectHash current)
-                  newId = TickId (unObjectHash newHash)
-              return $ Right (fa, innerMapping <> [(oldId, newId)])
+            Right (fa, innerMapping)
+              | not replay -> return $ Right (fa, innerMapping)
+              | otherwise  -> do
+                  newHash <- raise $ do
+                    newParent   <- resolveHead branch
+                    newParentWt <- loadWorkingTree newParent
+                    newWt       <- applyDiff parentWt commitWt newParentWt
+                    treeHash    <- flushWorkingTree newWt
+                    newHash     <- writeCommit cd
+                      { commitParents = newParent : drop 1 (commitParents cd)
+                      , commitTree    = treeHash
+                      }
+                    updateRef (storyRef branch) newHash
+                    return newHash
+                  let oldId = TickId (unObjectHash current)
+                      newId = TickId (unObjectHash newHash)
+                  return $ Right (fa, innerMapping <> [(oldId, newId)])
 
 -- | Walk the branch from HEAD and collect all ticks belonging to @path@.
 --

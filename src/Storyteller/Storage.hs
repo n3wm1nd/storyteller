@@ -20,9 +20,11 @@ module Storyteller.Storage
   , reset
   , at
   , sneakyAt
+  , readAt
   , withFS
   , atWithFS
   , sneakyAtWithFS
+  , readAtWithFS
   , follow
   , fileTicks
 
@@ -87,10 +89,16 @@ data StoryBranch (branch :: k) m a where
   --   invariant is violated or the old tick is not in the branch history.
   Replace :: TickId -> TickData -> StoryBranch branch m (Either String TickId)
 
-  -- | Run branch operations at the given position, save/restore working tree,
-  --   then replay the tail. Returns 'Left' if the target tick is not in the
-  --   branch history; otherwise the inner result and the old→new id mapping.
-  At      :: TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
+  -- | Run branch operations at the given position, save/restore working tree.
+  --   With @replay = True@, the tail is rewritten on top of whatever the
+  --   inner action left, producing an old→new id mapping for every rewritten
+  --   tick. With @replay = False@, nothing is written and the branch ref
+  --   ends up back where it started — no mapping is ever produced, so the
+  --   inner action's own writes (if it defies the read-only contract and
+  --   calls 'Store'/'Replace' anyway) are silently orphaned when the ref is
+  --   rolled back. Returns 'Left' if the target tick is not in the branch
+  --   history; otherwise the inner result and the mapping.
+  At      :: Bool -> TickId -> m a -> StoryBranch branch m (Either String (a, [(TickId, TickId)]))
 
   -- | Initialise the filesystem to the current head tick's snapshot, run the
   --   inner action, then restore the outer filesystem state.  Compose with
@@ -138,24 +146,39 @@ reset = send @(StoryBranch branch) Reset
 -- | Run branch operations at the given position, save/restore working tree,
 --   then replay the tail — without broadcasting the resulting id mapping via
 --   'updateReferences'. For callers that need to combine this mapping with
---   something else before broadcasting once (see 'Storyteller.Edit'), or
---   that only read history and have no mapping worth broadcasting. Most
---   callers want 'at' instead, which broadcasts automatically.
+--   something else before broadcasting once (see 'Storyteller.Edit'). Most
+--   callers want 'at' instead, which broadcasts automatically; for reads
+--   that make no changes worth keeping, use 'readAt' instead, which skips
+--   the replay entirely rather than just deferring its broadcast.
 sneakyAt :: forall branch r a. Members '[StoryBranch branch, Fail] r
          => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
-sneakyAt tid action = send @(StoryBranch branch) (At tid action) >>= either fail return
+sneakyAt tid action = send @(StoryBranch branch) (At True tid action) >>= either fail return
 
 -- | Run branch operations at the given position, save/restore working tree,
 --   then replay the tail, broadcasting the resulting old→new id mapping via
 --   'updateReferences' so cross-branch references and tracked ids stay in
 --   sync. Use 'sneakyAt' instead when the mapping needs to be combined with
---   something else before a single broadcast.
+--   something else before a single broadcast, or 'readAt' when the action
+--   is read-only and no replay is needed at all.
 at :: forall branch r a. Members '[StoryBranch branch, StoryStorage, Fail] r
    => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 at tid action = do
   result@(_, mapping) <- sneakyAt @branch tid action
   updateReferences mapping
   return result
+
+-- | Run branch operations at the given historical position without
+--   replaying the tail: no commits are written, no tick ids change, and the
+--   branch ref ends up back where it started. Use for read-only inner
+--   actions — a historical filesystem peek, an ancestor walk — where 'at's
+--   replay (and the id mapping it produces, even if every entry maps an id
+--   to itself) would be pure waste. The inner action must not itself
+--   'store'/'replace': doing so still writes a real commit and moves the
+--   ref, but that write is then silently discarded when the ref rolls back.
+readAt :: forall branch r a. Members '[StoryBranch branch, Fail] r
+       => TickId -> Sem r a -> Sem r a
+readAt tid action =
+  send @(StoryBranch branch) (At False tid action) >>= either fail (return . fst)
 
 -- | Initialise the filesystem to the current head tick's snapshot, run the
 --   action, then restore the outer filesystem state.
@@ -172,6 +195,11 @@ atWithFS tid action = at @branch tid (withFS @branch action)
 sneakyAtWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
                => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 sneakyAtWithFS tid action = sneakyAt @branch tid (withFS @branch action)
+
+-- | Read-only historical filesystem access: no replay, no mapping — see 'readAt'.
+readAtWithFS :: forall branch r a. Members '[StoryBranch branch, Fail] r
+             => TickId -> Sem r a -> Sem r a
+readAtWithFS tid action = readAt @branch tid (withFS @branch action)
 
 -- | Extract the file-relevant tick list for @path@ from the branch history (oldest-first).
 fileTicks :: forall branch r. Member (StoryBranch branch) r => FilePath -> Sem r [FileTick]
