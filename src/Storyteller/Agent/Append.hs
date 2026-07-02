@@ -12,6 +12,7 @@
 -- Richer agents compose this at the end of their pipeline.
 module Storyteller.Agent.Append
   ( appendAgent
+  , appendUnsplit
   ) where
 
 import qualified Data.Text as T
@@ -41,6 +42,22 @@ appendAgent
 appendAgent path content = do
   atoms <- splitAtoms content
   mapM (appendOne @branch path) atoms
+
+-- | Append @content@ as a single atom, unsplit — one tick, verbatim.
+--   For callers where the content is already a deliberate, whole unit (e.g.
+--   a person typing and appending their own text) rather than something
+--   that benefits from being decomposed into paragraph-sized atoms (e.g.
+--   LLM-generated prose, which 'appendAgent' is for). Doesn't need
+--   'Splitter' at all.
+appendUnsplit
+  :: forall branch r
+  .  Members '[ StoryBranch branch
+              , FileSystem      (BranchTag branch)
+              , FileSystemRead  (BranchTag branch)
+              , FileSystemWrite (BranchTag branch)
+              , Fail ] r
+  => FilePath -> T.Text -> Sem r TickId
+appendUnsplit = appendOne @branch
 
 appendOne
   :: forall branch r

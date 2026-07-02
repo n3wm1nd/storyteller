@@ -6,22 +6,30 @@
 
 -- | /branch/{name} connection lifecycle.
 --
--- On connect: enter the branch's storage/filesystem scope exactly once for
--- the connection's whole lifetime (not re-entered per command — see
--- 'Server.Branch.BranchOpen'), push BranchReady + full BranchUpdate, then
--- loop receiving commands via 'embed'. A command that fails is caught
--- locally with 'Polysemy.Error.catch' and reported as a BranchError without
--- unwinding the stack or ending the connection.
+-- On connect: enter the branch's storage/filesystem scope once to push
+-- BranchReady + full BranchUpdate, then loop receiving commands via
+-- 'embed'. Each command reopens the branch scope itself, nested inside
+-- 'withStorage' — see 'commandLoop' — so its ref writes are all-or-nothing
+-- and land (and notify) as soon as that one command finishes, rather than
+-- being buffered for the connection's whole lifetime. A command that fails
+-- is caught locally with 'Polysemy.Error.catch' and reported as a
+-- BranchError without unwinding the stack or ending the connection.
 --
--- A second, independent long-lived stack runs on its own thread, entering
--- the same branch, purely to listen for ref-move broadcasts and push
--- incremental updates — the sole path by which tick state reaches this
--- connection after the initial push, whether the write came from this
--- connection's own commands, another connection, or a background agent.
--- Because each thread owns its own stack (a 'Sem' computation can only run
--- on the thread that calls 'runM' on it), 'lastHead' is a plain
--- recursive-loop accumulator inside that thread's loop — no shared mutable
--- state between the two stacks, no possibility of their pushes racing.
+-- A second, independent stack runs on its own thread for the connection's
+-- lifetime, purely to listen for ref-move broadcasts and push incremental
+-- updates — the sole path by which tick state reaches this connection
+-- after the initial push, whether the write came from this connection's
+-- own commands, another connection, or a background agent. It does *not*
+-- hold one long-lived branch scope the way it once did: 'StoryBranch'
+-- reads are a point-in-time snapshot from whenever a scope was opened (see
+-- 'Storyteller.Git.runStoryBranchGit'), so a scope opened once at connect
+-- would never notice anything written afterwards. Each notification
+-- reopens the scope fresh instead (see 'onNotify') — the same "sync
+-- happens at open" rule 'commandLoop' follows. Because each thread owns
+-- its own stack (a 'Sem' computation can only run on the thread that calls
+-- 'runM' on it), 'lastHead' is a plain recursive-loop accumulator inside
+-- that thread's loop — no shared mutable state between the two stacks, no
+-- possibility of their pushes racing.
 module Server.Branch.Connection
   ( runBranch
   ) where
@@ -44,8 +52,9 @@ import Server.Env (ServerEnv(..))
 import Server.Notification (BranchNotification(..), watchBranch)
 import Server.Protocol (Update(..))
 import Server.Run (SessionEffects, actionStack, loggingWS)
-import Server.Util (withBranchSplitter)
-import Storyteller.Agent.Splitter (Splitter)
+import Server.Util (withBranch)
+import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
+import Storyteller.Git (withStorage)
 import Storyteller.Types (TickId(..))
 
 runBranch :: ServerEnv -> T.Text -> WS.Connection -> IO ()
@@ -59,27 +68,28 @@ runBranch env branch conn = do
 runCommands :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCommands env branch conn = do
   result <- runM $ actionStack env $ loggingWS conn $
-    withBranchSplitter @Main branch $ do
-      pushInitial conn branch
-      commandLoop conn branch
+    withBranch @Main branch (pushInitial conn branch)
+      >> splitByParagraph (commandLoop conn branch)
   either (reportError conn) return result
 
--- | The notify-listener thread's persistent stack: enter the branch once,
---   then react to ref-move broadcasts for the connection's lifetime. Tick
---   remaps aren't forwarded here — nothing at the branch level (unlike a
---   file connection's rebase marker/context selection) tracks a bare tickId
---   across a push yet.
+-- | The notify-listener thread's persistent stack: react to ref-move
+--   broadcasts for the connection's lifetime. Doesn't hold 'BranchOpen'
+--   itself — each 'RefMoved' reopens the branch scope fresh (see
+--   'onNotify') to get a live view, rather than relying on one long-held
+--   scope to notice writes made elsewhere. Tick remaps aren't forwarded
+--   here — nothing at the branch level (unlike a file connection's rebase
+--   marker/context selection) tracks a bare tickId across a push yet.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
   result <- runM $ actionStack env $
-    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (onNotify conn)
+    void $ watchBranch chan branch Nothing (onNotify branch conn)
   either (reportError conn) return result
 
 onNotify
-  :: (BranchOpen r, Member (Embed IO) r, Member (Error String) r)
-  => WS.Connection -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
-onNotify conn since note = case note of
-  RefMoved _      -> pushIncremental conn since
+  :: (SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  => T.Text -> WS.Connection -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
+onNotify branch conn since note = case note of
+  RefMoved _      -> withBranch @Main branch (pushIncremental conn since)
   TicksRemapped _ -> return since
 
 reportError :: WS.Connection -> String -> IO ()
@@ -93,8 +103,14 @@ pushInitial conn branch = do
   embed $ WS.sendTextData conn (encode (BranchReady Nothing branch files))
   embed $ WS.sendTextData conn (encode (BranchUpdate upd))
 
+-- | Dispatch commands until the socket closes. Doesn't itself hold
+--   'BranchOpen' — each command reopens the branch scope fresh (see
+--   'handle'), since that's what lets its own nested 'withStorage' actually
+--   take effect: an already-open 'StoryBranch' interpreter's writes are
+--   wired to whichever 'StoryStorage' was ambient when *it* was opened, not
+--   to one introduced later around an individual command.
 commandLoop
-  :: (BranchOpen r, Member Splitter r, SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  :: (Member Splitter r, SessionEffects r, Member (Embed IO) r, Member (Error String) r)
   => WS.Connection -> T.Text -> Sem r ()
 commandLoop conn branch = loop
   where
@@ -106,9 +122,11 @@ commandLoop conn branch = loop
           Nothing  -> embed (WS.sendTextData conn (encode (BranchError "invalid message"))) >> loop
           Just cmd -> handle cmd >> loop
 
+    -- Each command is its own transaction — see the comment in
+    -- Server.File.Connection.commandLoop.
     handle cmd =
       catch @String
-        (runCommand branch cmd >>= embed . mapM_ (WS.sendTextData conn . encode))
+        (withStorage (withBranch @Main branch (runCommand branch cmd)) >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
 
 pushIncremental

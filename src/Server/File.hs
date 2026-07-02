@@ -10,8 +10,12 @@
 -- | File-level business logic.
 --
 -- These functions assume the branch's storage/filesystem scope ('FileOpen')
--- is already live in the ambient stack — a file connection enters it once,
--- when the connection starts, not per command.
+-- is already live in the ambient stack. The connection (see
+-- 'Server.File.Connection') reopens that scope fresh around each command,
+-- nested inside a 'Storyteller.Git.withStorage' transaction, so a command's
+-- writes are all-or-nothing and visible immediately, not just at
+-- disconnect — these functions don't need to know that; they just see
+-- 'FileOpen' as already open.
 --
 -- No JSON, no WebSocket, no T.Text ids — callers handle the boundary.
 -- These functions are the unit under test.
@@ -37,7 +41,7 @@ import Server.Protocol (Update(..), toWireTick)
 import Server.Run (SessionEffects)
 
 import Storyteller.Agent (Prompt(..), Instruction(..))
-import Storyteller.Agent.Append (appendAgent)
+import Storyteller.Agent.Append (appendUnsplit)
 import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Runtime (Main)
@@ -80,11 +84,14 @@ fileStateSince path since = fileUpdateSince since <$> fileTicks @Main path
 -- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
 
--- | Append content to a file, splitting into atoms via the append agent.
-appendToFile :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
+-- | Append content to a file as a single, unsplit atom — the caller
+--   (someone typing and appending their own text) already chose exactly
+--   what they wanted stored; paragraph-splitting is for generated prose
+--   (see 'chatPrompt'), not for this.
+appendToFile :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 appendToFile path content = do
   info $ "appending to: " <> T.pack path
-  void $ appendAgent @Main path content
+  void $ appendUnsplit @Main path content
   info $ "append done: " <> T.pack path
 
 -- | Replace an atom's content in-place. 'editAtom' broadcasts its own

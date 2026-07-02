@@ -10,11 +10,17 @@
 -- | Branch-level business logic.
 --
 -- Most of these functions assume the branch's storage/filesystem scope
--- ('BranchOpen') is already live in the ambient stack — a branch connection
--- enters it once, when the connection starts, not per command. Only
--- 'trackFiles' and 'charGen' open their own (additional) branch scopes on
--- top of that, because the branch they need (the source to track from, or a
--- brand-new target) is only known from the command payload at dispatch time.
+-- ('BranchOpen') is already live in the ambient stack. The connection (see
+-- 'Server.Branch.Connection') reopens that scope fresh around each command,
+-- nested inside a 'Storyteller.Git.withStorage' transaction, so a command's
+-- writes are all-or-nothing and visible immediately, not just at
+-- disconnect — these functions don't need to know that; they just see
+-- 'BranchOpen' as already open. Only 'trackFiles' and 'charGen' open their
+-- own (additional) branch scopes on top of that, because the branch they
+-- need (the source to track from, or a brand-new target) is only known
+-- from the command payload at dispatch time — those scopes are opened
+-- within the same per-command transaction, so their writes are covered by
+-- it too.
 --
 -- No JSON, no WebSocket, no T.Text ids — callers handle the boundary.
 -- These functions are the unit under test.
@@ -55,8 +61,8 @@ data Tracker
 data CharBranch
 
 -- | The effects live once a branch connection has entered its branch's
---   scope — one 'StoryBranch'/filesystem instance for the connection's
---   whole lifetime, not reopened per command.
+--   scope — reopened fresh per command by 'Server.Branch.Connection', not
+--   held for the connection's whole lifetime (see the module comment).
 type BranchOpen r =
   Members '[ StoryBranch Main
            , StoryStorage

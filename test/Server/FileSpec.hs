@@ -59,21 +59,31 @@ headIsIn upd = null (updateTicks upd) || updateHead upd `elem` map wtTickId (upd
 -- | Write a file into the working tree and store it as an atom tick.
 --   Only valid for a file's first atom — later atoms must be appended
 --   (see 'appendAtom'), since 'writeFile' overwrites the whole blob.
-storeAtom :: Members '[StoryStorage, Git, State GitState, Fail] r
+--   Runs against the ambient, already-open branch scope — same as any real
+--   command dispatch — rather than opening its own: 'StoryBranch's head is
+--   a point-in-time snapshot from whenever a scope was opened, so a nested
+--   'runBranchAndFS' here would be invisible to the outer scope's later
+--   reads (see 'Storyteller.Git.runStoryBranchGit').
+storeAtom :: Members '[ StoryBranch Main
+                      , FileSystemWrite (BranchTag Main)
+                      , FileSystemRead  (BranchTag Main)
+                      , Fail ] r
           => FilePath -> BS.ByteString -> Sem r TickId
-storeAtom path content =
-  runBranchAndFS @Main (BranchName "b") $ do
-    writeFile @(BranchTag Main) path content
-    storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
+storeAtom path content = do
+  writeFile @(BranchTag Main) path content
+  storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
 
 -- | Append content to an existing file and store it as a new atom tick.
-appendAtom :: Members '[StoryStorage, Git, State GitState, Fail] r
+--   Same ambient-scope note as 'storeAtom'.
+appendAtom :: Members '[ StoryBranch Main
+                       , FileSystemWrite (BranchTag Main)
+                       , FileSystemRead  (BranchTag Main)
+                       , Fail ] r
            => FilePath -> BS.ByteString -> Sem r TickId
-appendAtom path content =
-  runBranchAndFS @Main (BranchName "b") $ do
-    existing <- readFile @(BranchTag Main) path
-    writeFile @(BranchTag Main) path (existing <> content)
-    storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
+appendAtom path content = do
+  existing <- readFile @(BranchTag Main) path
+  writeFile @(BranchTag Main) path (existing <> content)
+  storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
 
 -- ---------------------------------------------------------------------------
 -- Specs

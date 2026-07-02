@@ -29,6 +29,7 @@ module Storyteller.Git
 
     -- * Interpreters
   , runStoryStorageGit
+  , withStorage
   , runStoryBranchGit
   , runStoryFSGit
 
@@ -56,8 +57,10 @@ import qualified Data.Text as T
 import System.FilePath (splitDirectories, joinPath)
 import Polysemy
 import Polysemy.Fail
-import Polysemy.State (State, get, put, modify, evalState)
-import Polysemy.Internal (raiseUnder3)
+import Data.Maybe (fromMaybe, isJust)
+import Data.Tuple (swap)
+import Polysemy.State (State, get, put, modify, evalState, runState)
+import Polysemy.Internal (raiseUnder, raiseUnder3)
 
 import Runix.Git
 import Runix.FileSystem
@@ -262,38 +265,109 @@ commitToTick hash cd =
 -- StoryStorage interpreter
 -- ---------------------------------------------------------------------------
 
+-- | A ref, in storage terms: which branch, pointing at which tick (or
+--   'Nothing' for a deletion). This is the one shape every 'StoryStorage'
+--   ref mutation reduces to, whether it came from 'CreateBranch',
+--   'DeleteBranch', 'SetRef', or a cascade triggered by 'UpdateReferences'.
+type RefWrite = (BranchName, Maybe TickId)
+
+-- | The one real implementation of 'StoryStorage'. Every ref mutation calls
+--   the supplied @onRef@ callback (in order) and is recorded into the
+--   returned overlay, last write per branch wins. Reads ('ListBranches')
+--   see real git refs with any pending overlay entries from this same run
+--   applied on top, so a read-after-write within one run observes its own
+--   writes.
+--
+--   'runStoryStorageGit' instantiates this with a callback that writes
+--   straight to git and discards the overlay (today's eager behaviour).
+--   'withStorage' instantiates it with a no-op callback and replays the
+--   overlay into the parent 'StoryStorage' only once the wrapped action has
+--   fully succeeded — nothing is written anywhere if it fails.
+withStorageWithCallback
+  :: forall r a
+  .  Members '[Git, Fail] r
+  => (BranchName -> Maybe TickId -> Sem r ())
+  -> Sem (StoryStorage : r) a
+  -> Sem r (a, [RefWrite])
+withStorageWithCallback onRef action =
+  swap <$> runState [] (reinterpret handle action)
+  where
+    handle :: StoryStorage m x -> Sem (State [RefWrite] : r) x
+    handle = \case
+      CreateBranch name -> do
+        let ref = storyRef name
+        existing <- raise $ resolveRef ref
+        case existing of
+          Just _ -> raise $ fail $ "branch already exists: " <> T.unpack (unBranchName name)
+          Nothing -> do
+            rootHash <- raise $ writeCommit CommitData
+              { commitParents = []
+              , commitTree    = emptyTree
+              , commitMessage = encodeTickData (toDraft (Root name))
+              }
+            let tid = TickId (unObjectHash rootHash)
+            applyRef name (Just tid)
+            return Branch { branchName = name, branchHead = tid }
+
+      DeleteBranch name -> applyRef name Nothing
+
+      ListBranches -> do
+        pairs   <- raise $ listRefs storyRefPrefix
+        pending <- get
+        return $ overlayRefs (map resolveToHead pairs) pending
+
+      UpdateReferences mapping ->
+        mapM_ (\(o, n) -> cascadeReplace applyRef (ObjectHash (unTickId o)) (ObjectHash (unTickId n))) mapping
+
+      SetRef name mtid -> applyRef name mtid
+
+    -- Appended, not prepended: 'overlayRefs' and 'withStorage's replay both
+    -- rely on later entries for the same branch winning over earlier ones.
+    applyRef :: BranchName -> Maybe TickId -> Sem (State [RefWrite] : r) ()
+    applyRef name mtid = do
+      raise $ onRef name mtid
+      modify (++ [(name, mtid)])
+
+    resolveToHead (RefName ref, hash) =
+      Branch { branchName = BranchName (T.drop (T.length storyRefPrefix) ref)
+             , branchHead = TickId (unObjectHash hash) }
+
+-- | Overlay pending ref writes (newest last) onto a base branch list —
+--   updates existing branches, adds newly created ones, drops deleted ones.
+overlayRefs :: [Branch] -> [RefWrite] -> [Branch]
+overlayRefs base pending =
+  let winners      = Map.fromList pending   -- input is newest-last, so last-in-list (newest) wins
+      survivors     = [ b | b <- base, maybe True isJust (Map.lookup (branchName b) winners) ]
+      applied       = [ b { branchHead = fromMaybe (branchHead b) (fromMaybe Nothing (Map.lookup (branchName b) winners)) }
+                      | b <- survivors ]
+      existingNames = map branchName base
+      newOnes       = [ Branch n tid | (n, Just tid) <- Map.toList winners, n `notElem` existingNames ]
+  in applied ++ newOnes
+
+-- | Eager 'StoryStorage' interpreter: every ref mutation lands in git
+--   immediately. This is the default used everywhere except inside 'withStorage'.
 runStoryStorageGit
   :: Members '[Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
-runStoryStorageGit = interpret $ \case
-  CreateBranch name -> do
-    let ref = storyRef name
-    existing <- resolveRef ref
-    case existing of
-      Just _ -> fail $ "branch already exists: " <> T.unpack (unBranchName name)
-      Nothing -> do
-        rootHash <- writeCommit CommitData
-          { commitParents = []
-          , commitTree    = emptyTree
-          , commitMessage = encodeTickData (toDraft (Root name))
-          }
-        createRef ref rootHash
-        return Branch { branchName = name, branchHead = TickId (unObjectHash rootHash) }
+runStoryStorageGit = fmap fst . withStorageWithCallback applyToGit
+  where
+    applyToGit name (Just tid) = updateRef (storyRef name) (ObjectHash (unTickId tid))
+    applyToGit name Nothing    = deleteRef (storyRef name)
 
-  DeleteBranch name ->
-    deleteRef (storyRef name)
-
-  ListBranches -> do
-    pairs <- listRefs "refs/heads/story/"
-    mapM resolveToHead pairs
-    where
-      resolveToHead (RefName ref, hash) =
-        let name = BranchName $ T.drop (T.length "refs/heads/story/") ref
-        in return Branch { branchName = name, branchHead = TickId (unObjectHash hash) }
-
-  UpdateReferences mapping ->
-    mapM_ (\(o, n) -> cascadeReplace (ObjectHash (unTickId o)) (ObjectHash (unTickId n))) mapping
+-- | Transactional 'StoryStorage': ref mutations made by the wrapped action
+--   are buffered in memory (never touch git) and, only once the action
+--   succeeds, replayed as a single batch of 'setRef' calls into the parent
+--   'StoryStorage'. If the action fails, nothing is replayed and nothing
+--   was ever written — same effect as if the action never ran.
+withStorage
+  :: Members '[StoryStorage, Git, Fail] r
+  => Sem (StoryStorage : r) a
+  -> Sem r a
+withStorage action = do
+  (a, refs) <- withStorageWithCallback (\_ _ -> pure ()) action
+  mapM_ (uncurry setRef) refs
+  return a
 
 -- ---------------------------------------------------------------------------
 -- StoryBranch interpreter
@@ -302,23 +376,34 @@ runStoryStorageGit = interpret $ \case
 -- | Interpret 'StoryBranch branch' against git.
 --   'Store' flushes the shared 'WorkingTree' into a real git tree object.
 --   'Drop' and 'At' restore the working tree from the target commit's tree.
+--
+--   The branch's head is tracked as local 'State ObjectHash', seeded once
+--   from 'StoryStorage' here at entry and never re-read afterwards — this
+--   scope is a snapshot, same as 'WorkingTree' already was. Every write
+--   still publishes via 'setRef' immediately (so a caller not wrapped in
+--   'withStorage' keeps today's eager, git-visible-immediately behaviour),
+--   but nothing in here reaches back out to 'StoryStorage' to notice
+--   writes made by another, concurrently-open scope. A caller that needs a
+--   fresh view of a branch after some other write reopens the scope (see
+--   'runBranchAndFS'/'Server.Util.withBranch') rather than relying on this
+--   interpreter to notice mid-flight — that's what makes the 'withStorage'
+--   transaction boundary and this scope's snapshot semantics agree: both
+--   sync exactly once, at open.
 runStoryBranchGit
   :: forall branch r a
-  .  Members '[Git, Fail, State WorkingTree] r
+  .  Members '[Git, StoryStorage, Fail, State WorkingTree] r
   => BranchName
   -> Sem (StoryBranch branch : r) a
   -> Sem r a
 runStoryBranchGit branch action = do
-  -- Initialise working tree from head commit if the branch already exists.
-  -- If it doesn't exist yet, start with an empty tree — createBranch will
-  -- be called before any Store, establishing the root commit.
-  mHead <- resolveRef (storyRef branch)
-  case mHead of
-    Nothing -> put emptyWorkingTree
-    Just h  -> loadWorkingTree h >>= put
-  interpretH (\case
+  headTid0 <- getBranch branch >>= \case
+    Just b  -> pure (branchHead b)
+    Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName branch)
+  let headHash0 = ObjectHash (unTickId headTid0)
+  loadWorkingTree headHash0 >>= put
+  evalState headHash0 $ interpretH (\case
     Store d -> do
-      headHash' <- raise $ resolveHead branch
+      headHash' <- raise $ get @ObjectHash
       wt'      <- raise $ get @WorkingTree
       parentWt <- raise $ loadWorkingTree headHash'
       eCheck   <- raise $ checkAppendOnly parentWt wt'
@@ -331,29 +416,33 @@ runStoryBranchGit branch action = do
             , commitTree    = treeHash
             , commitMessage = encodeTickData d
             }
-          raise $ updateRef (storyRef branch) newHash
+          raise $ put @ObjectHash newHash
+          raise $ setRef branch (Just (TickId (unObjectHash newHash)))
           pureT $ Right (TickId (unObjectHash newHash))
 
     Drop -> do
-      headHash' <- raise $ resolveHead branch
+      headHash' <- raise $ get @ObjectHash
       cd        <- raise $ readCommit headHash'
       case commitParents cd of
         []      -> pureT ()
-        (p : _) -> raise (updateRef (storyRef branch) p) >> pureT ()
+        (p : _) -> do
+          raise $ put @ObjectHash p
+          raise $ setRef branch (Just (TickId (unObjectHash p)))
+          pureT ()
 
     S.Get -> do
-      headHash' <- raise $ resolveHead branch
+      headHash' <- raise $ get @ObjectHash
       cd        <- raise $ readCommit headHash'
       pureT $ commitToTick headHash' cd
 
     S.Reset -> do
-      headHash' <- raise $ resolveHead branch
+      headHash' <- raise $ get @ObjectHash
       wt'       <- raise $ loadWorkingTree headHash'
       raise $ put wt'
       pureT ()
 
     Follow seed step -> do
-      headHash' <- raise $ resolveHead branch
+      headHash' <- raise $ get @ObjectHash
       result    <- raise $ walkFrom seed step headHash'
       pureT result
 
@@ -375,23 +464,37 @@ runStoryBranchGit branch action = do
           let newId = TickId (unObjectHash newHash)
           -- Cascade to other branches only — the current branch is being
           -- rebuilt by At's rewind and must not be touched here.
-          raise $ cascadeReplaceOtherBranches branch (ObjectHash (unTickId oldId)) newHash
-          raise $ updateRef (storyRef branch) newHash
+          raise $ cascadeReplaceOtherBranches setRef branch (ObjectHash (unTickId oldId)) newHash
+          raise $ put @ObjectHash newHash
+          raise $ setRef branch (Just newId)
           pureT $ Right newId
 
+    -- 'moveTick' nests one 'At' inside another (rewind to the tick being
+    -- moved, then — still inside that walk — rewind again to where it's
+    -- going). Both share this one head slot, so the inner call must
+    -- save/restore whatever the outer call left there when it's done,
+    -- rather than assuming its own start position — otherwise the inner
+    -- 'At's cleanup would wipe out the outer walk's still-in-progress
+    -- position.
     At replay tid innerAction -> do
-      headHash' <- raise $ resolveHead branch
-      eResult   <- runAtH replay branch tid headHash' (runTSimple innerAction)
+      outerHead <- raise $ get @ObjectHash
+      eResult   <- runAtH replay tid outerHead (runTSimple innerAction)
       case eResult of
         Left err            -> pureT (Left err)
         Right (fa, mapping) -> do
-          -- Replay's own unwind leaves the ref at the rewritten head; a
-          -- read-only walk never moves it forward again, so restore it here.
-          when (not replay) $ raise $ updateRef (storyRef branch) headHash'
+          -- A replaying walk leaves local state at the rebuilt head —
+          -- publish it once, here, rather than once per rewritten tick.
+          -- A read-only walk never advances anything: restore local state
+          -- to wherever it started and publish nothing.
+          if replay
+            then do
+              finalHead <- raise $ get @ObjectHash
+              raise $ setRef branch (Just (TickId (unObjectHash finalHead)))
+            else raise $ put @ObjectHash outerHead
           return $ fmap (\a -> Right (a, mapping)) fa
 
     WithFS innerAction -> do
-      headHash' <- raise $ resolveHead branch
+      headHash' <- raise $ get @ObjectHash
       outerWt   <- raise $ get @WorkingTree
       headWt    <- raise $ loadWorkingTree headHash'
       raise $ put headWt
@@ -400,12 +503,10 @@ runStoryBranchGit branch action = do
       return fa
 
     S.FileTicks path -> do
-      mHead <- raise $ resolveRef (storyRef branch)
-      ticks <- case mHead of
-        Nothing       -> return []
-        Just headHash -> raise $ walkFileTicks path headHash
+      headHash' <- raise $ get @ObjectHash
+      ticks     <- raise $ walkFileTicks path headHash'
       pureT ticks
-    ) action
+    ) (raiseUnder action)
 
 -- ---------------------------------------------------------------------------
 -- FileSystem interpreter (git-backed, shares WorkingTree state)
@@ -637,36 +738,32 @@ applyCommitSuffix parentWt cd = do
       return $ Map.insert path (FSFile hash) wt
     keepExisting _ old = old
 
-resolveHead :: Members '[Git, Fail] r => BranchName -> Sem r ObjectHash
-resolveHead name = do
-  mhash <- resolveRef (storyRef name)
-  case mhash of
-    Just h  -> return h
-    Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName name)
-
 -- | Recursive implementation of At, inside the interpretH tactic context.
 --
 -- Base case: @current == tid@ — load the target working tree, run the action,
 -- return the result and an empty mapping.
 --
 -- Recursive case: walk back to @parent@ (validating @tid@ is actually in the
--- branch's history, and moving the ref there so 'WithFS' resolves to the
--- right historical snapshot), recurse, then either (@replay = True@) reapply
--- this tick's diff onto whatever the inner action left and write a new
--- commit, or (@replay = False@) just pass the result through untouched —
--- no write, no mapping entry, ref stays at @parent@ until the top-level
--- caller restores it once the whole walk unwinds.
+-- branch's history, and moving the local head there so 'WithFS' resolves to
+-- the right historical snapshot), recurse, then either (@replay = True@)
+-- reapply this tick's diff onto whatever the inner action left and write a
+-- new commit, or (@replay = False@) just pass the result through untouched
+-- — no write, no mapping entry, local head stays at @parent@ until the
+-- top-level caller (the 'At' case in 'runStoryBranchGit') restores it once
+-- the whole walk unwinds. Only ever touches the private local 'State
+-- ObjectHash' — no ref, git or 'StoryStorage', is written until that
+-- top-level caller publishes the final result once, after the whole walk
+-- completes.
 runAtH
   :: forall branch f a rInitial r
-  .  Members '[Git, Fail, State WorkingTree] r
+  .  Members '[Git, Fail, State ObjectHash] r
   => Bool
-  -> BranchName
   -> TickId
   -> ObjectHash
   -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r) (f a)
   -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r)
          (Either String (f a, [(TickId, TickId)]))
-runAtH replay branch tid current action
+runAtH replay tid current action
   | TickId (unObjectHash current) == tid = do
       fa <- action
       return $ Right (fa, [])
@@ -679,19 +776,19 @@ runAtH replay branch tid current action
           (parent : _) -> do
             parentWt <- loadWorkingTree parent
             commitWt <- loadWorkingTree current
-            updateRef (storyRef branch) parent
+            put parent
             return $ Right (parent, parentWt, commitWt, cd)
       case mResult of
         Left err -> return (Left err)
         Right (parent, parentWt, commitWt, cd) -> do
-          eInner <- runAtH replay branch tid parent action
+          eInner <- runAtH replay tid parent action
           case eInner of
             Left err -> return (Left err)
             Right (fa, innerMapping)
               | not replay -> return $ Right (fa, innerMapping)
               | otherwise  -> do
                   newHash <- raise $ do
-                    newParent   <- resolveHead branch
+                    newParent   <- get
                     newParentWt <- loadWorkingTree newParent
                     newWt       <- applyDiff parentWt commitWt newParentWt
                     treeHash    <- flushWorkingTree newWt
@@ -699,7 +796,7 @@ runAtH replay branch tid current action
                       { commitParents = newParent : drop 1 (commitParents cd)
                       , commitTree    = treeHash
                       }
-                    updateRef (storyRef branch) newHash
+                    put newHash
                     return newHash
                   let oldId = TickId (unObjectHash current)
                       newId = TickId (unObjectHash newHash)
@@ -795,41 +892,49 @@ walkFrom acc step hash = do
 
 -- | Rewrite all story branch commits that reference @old@ as a parent,
 --   substituting @new@, then cascade until no more referencing commits remain.
---   Branch refs are updated in place.
+--   Branch refs are updated via @applyRef@ rather than touched directly, so
+--   the caller (a 'StoryStorage' interpreter) decides whether that lands in
+--   git immediately or is buffered as part of a transaction.
 --
 --   Only commit parent links are rewritten — trees and blobs are not tick
 --   references and are left untouched.
 cascadeReplace
   :: Members '[Git, Fail] r
-  => ObjectHash  -- ^ old commit hash (now superseded)
+  => (BranchName -> Maybe TickId -> Sem r ())
+  -> ObjectHash  -- ^ old commit hash (now superseded)
   -> ObjectHash  -- ^ new commit hash (the replacement)
   -> Sem r ()
-cascadeReplace old new = do
-  pairs <- listRefs "refs/heads/story/"
-  mapM_ (rewriteRef old new) pairs
+cascadeReplace applyRef old new = do
+  pairs <- listRefs storyRefPrefix
+  mapM_ (rewriteRef applyRef old new) pairs
 
 -- | Like 'cascadeReplace' but skips the given branch — used by 'Replace'
 --   inside 'At' where the current branch is being rebuilt by the rewind.
 cascadeReplaceOtherBranches
   :: Members '[Git, Fail] r
-  => BranchName
+  => (BranchName -> Maybe TickId -> Sem r ())
+  -> BranchName
   -> ObjectHash
   -> ObjectHash
   -> Sem r ()
-cascadeReplaceOtherBranches skipBranch old new = do
-  pairs <- listRefs "refs/heads/story/"
+cascadeReplaceOtherBranches applyRef skipBranch old new = do
+  pairs <- listRefs storyRefPrefix
   let others = filter (\(ref, _) -> ref /= storyRef skipBranch) pairs
-  mapM_ (rewriteRef old new) others
+  mapM_ (rewriteRef applyRef old new) others
 
 rewriteRef
   :: Members '[Git, Fail] r
-  => ObjectHash
+  => (BranchName -> Maybe TickId -> Sem r ())
+  -> ObjectHash
   -> ObjectHash
   -> (RefName, ObjectHash)
   -> Sem r ()
-rewriteRef old new (ref, headHash) = do
+rewriteRef applyRef old new (ref, headHash) = do
   newHead <- rewriteChain old new headHash
-  when (newHead /= headHash) $ updateRef ref newHead
+  when (newHead /= headHash) $
+    case refBranchName ref of
+      Just name -> applyRef name (Just (TickId (unObjectHash newHead)))
+      Nothing   -> return ()
 
 -- | Walk a commit chain rewriting any commit that has @old@ as a parent.
 --   Returns the (possibly new) head hash. Works bottom-up by recursing to

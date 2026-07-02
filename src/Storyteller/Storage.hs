@@ -38,6 +38,7 @@ module Storyteller.Storage
   , deleteBranch
   , listBranches
   , updateReferences
+  , setRef
   ) where
 
 import Prelude hiding (drop)
@@ -212,6 +213,12 @@ data StoryStorage m a where
   ListBranches     :: StoryStorage m [Branch]
   UpdateReferences :: [(TickId, TickId)] -> StoryStorage m ()
 
+  -- | Set a branch's ref directly to the given tick, or delete it
+  --   (@Nothing@). This is the one place a "ref" is ever named outside of
+  --   the git interpreter — in storage terms it's just @BranchName -> Maybe
+  --   TickId@, with no git vocabulary involved.
+  SetRef :: BranchName -> Maybe TickId -> StoryStorage m ()
+
 createBranch :: Member StoryStorage r => BranchName -> Sem r Branch
 createBranch name = send (CreateBranch name)
 
@@ -226,3 +233,6 @@ getBranch name = find ((== name) . branchName) <$> listBranches
 
 updateReferences :: Member StoryStorage r => [(TickId, TickId)] -> Sem r ()
 updateReferences mapping = send (UpdateReferences mapping)
+
+setRef :: Member StoryStorage r => BranchName -> Maybe TickId -> Sem r ()
+setRef name mtid = send (SetRef name mtid)

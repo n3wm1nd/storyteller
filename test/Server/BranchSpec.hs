@@ -54,10 +54,10 @@ withBranch_ name action = run $ testStack $ do
 -- ---------------------------------------------------------------------------
 
 -- | Simulate a write made by a wholly separate connection: opens its own
---   fresh 'Main' scope (its own 'WorkingTree' load + commit), nested inside
---   an already-open outer scope. The outer scope's own 'WorkingTree' was
---   loaded before this runs and — this is exactly the bug 'branchStateSince'
---   guards against — won't see it without an explicit 'reset'.
+--   fresh 'Main' scope (its own 'WorkingTree' load + commit + head), nested
+--   inside an already-open outer scope. The outer scope's own state was
+--   loaded before this runs and, by design, won't see it — see
+--   'Storyteller.Git.runStoryBranchGit' and the tests below.
 externalWrite :: BranchName -> FilePath -> Sem (TestEffects '[]) TickId
 externalWrite name path = runBranchAndFS @Main name $ do
   writeFile @(BranchTag Main) path "content"
@@ -97,28 +97,39 @@ spec = do
 
   describe "branchStateSince" $ do
 
-    -- Regression test for a real bug: a connection's long-lived scope loads
-    -- its 'WorkingTree' once, at entry, and nothing refreshes it afterwards
-    -- except its own writes. A background listener that never writes (like
-    -- the notify thread in Server.Branch.Connection) would otherwise push a
-    -- file list frozen at whatever it was when the connection opened,
-    -- silently missing every file added by other connections after that.
-    it "sees files written by another scope after the fact, not just its own" $ do
+    -- 'runStoryBranchGit' takes its head as a point-in-time snapshot from
+    -- whenever the scope was opened and never reaches back out afterwards —
+    -- deliberately: it's what makes the 'withStorage' transaction boundary
+    -- and this scope's snapshot semantics agree, both syncing exactly once,
+    -- at open (see the docs on 'Storyteller.Git.runStoryBranchGit'). So a
+    -- still-open scope does not see a write made by a separately-opened
+    -- one, for either the raw 'WorkingTree' (already true before) or
+    -- 'branchStateSince' (StoryStorage-backed, previously always live).
+    -- Freshness comes from reopening the scope, not from re-reading within
+    -- an already-open one — see 'Server.Branch.Connection's notifier,
+    -- which now reopens per notification for exactly this reason.
+    it "a still-open scope does not see a write made by a separately-opened one" $ do
       let result = withBranch_ (BranchName "test") $ do
-            -- scope A "opens" here — its WorkingTree is loaded at this point
+            -- scope A "opens" here — its head and WorkingTree are snapshotted now
             (before, _) <- branchStateSince Nothing
             -- another connection writes a file via its own, separate scope
             _ <- raise . raise . raise . raise $ externalWrite (BranchName "test") "new.txt"
-            -- listAllFiles alone reads scope A's now-stale cached WorkingTree
-            stale <- listAllFiles @(BranchTag Main) "/"
-            (after, _) <- branchStateSince Nothing
-            return (before, stale, after)
+            stillTree <- listAllFiles @(BranchTag Main) "/"
+            (stillSince, _) <- branchStateSince Nothing
+            return (before, stillTree, stillSince)
       case result of
-        Left err               -> expectationFailure err
-        Right (before, stale, after) -> do
-          before `shouldNotContain` ["new.txt"]
-          stale  `shouldNotContain` ["new.txt"]
-          after  `shouldContain`    ["new.txt"]
+        Left err                              -> expectationFailure err
+        Right (before, stillTree, stillSince) -> do
+          before     `shouldNotContain` ["new.txt"]
+          stillTree  `shouldNotContain` ["new.txt"]
+          stillSince `shouldNotContain` ["new.txt"]
+
+    it "reopening the scope sees a write made while it was closed" $ do
+      let result = run $ testStack $ do
+            _ <- createBranch (BranchName "test")
+            _ <- externalWrite (BranchName "test") "new.txt"
+            runBranchAndFS @Main (BranchName "test") (fst <$> branchStateSince Nothing)
+      result `shouldBe` Right ["new.txt"]
 
   describe "addNote" $ do
 

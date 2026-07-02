@@ -87,6 +87,7 @@ storageNotify chan = intercept $ \case
   CreateBranch name -> send (CreateBranch name)
   DeleteBranch name -> send (DeleteBranch name)
   ListBranches      -> send ListBranches
+  SetRef name mtid  -> send (SetRef name mtid)
   UpdateReferences mapping -> do
     result <- send (UpdateReferences mapping)
     if null mapping then return () else

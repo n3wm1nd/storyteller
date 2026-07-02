@@ -6,22 +6,30 @@
 
 -- | /branch/{name}/{path} connection lifecycle.
 --
--- On connect: enter the branch's storage/filesystem scope exactly once for
--- the connection's whole lifetime (not re-entered per command — see
--- 'Server.File.FileOpen'), push FilePresent/FileAbsent + FileUpdate, then
--- loop receiving commands via 'embed'. A command that fails is caught
--- locally with 'Polysemy.Error.catch' and reported as a FileError without
--- unwinding the stack or ending the connection.
+-- On connect: enter the branch's storage/filesystem scope once to push the
+-- initial FilePresent/FileAbsent + FileUpdate, then loop receiving commands
+-- via 'embed'. Each command reopens the branch scope itself, nested inside
+-- 'withStorage' — see 'commandLoop' — so its ref writes are all-or-nothing
+-- and land (and notify) as soon as that one command finishes, rather than
+-- being buffered for the connection's whole lifetime. A command that fails
+-- is caught locally with 'Polysemy.Error.catch' and reported as a FileError
+-- without unwinding the stack or ending the connection.
 --
--- A second, independent long-lived stack runs on its own thread, entering
--- the same branch, purely to listen for ref-move broadcasts and push
--- incremental updates — the sole path by which tick state reaches this
--- connection after the initial push (including the absent → present
--- transition on first write), whether the write came from this connection's
--- own commands, another connection, or a background agent. Because each
--- thread owns its own stack, 'lastHead' is a plain recursive-loop
--- accumulator inside that thread's loop — no shared mutable state between
--- the two stacks, no possibility of their pushes racing.
+-- A second, independent stack runs on its own thread for the connection's
+-- lifetime, purely to listen for ref-move broadcasts and push incremental
+-- updates — the sole path by which tick state reaches this connection
+-- after the initial push (including the absent → present transition on
+-- first write), whether the write came from this connection's own
+-- commands, another connection, or a background agent. It does *not* hold
+-- one long-lived branch scope the way it once did: 'StoryBranch' reads are
+-- a point-in-time snapshot from whenever a scope was opened (see
+-- 'Storyteller.Git.runStoryBranchGit'), so a scope opened once at connect
+-- would never notice anything written afterwards. Each notification
+-- reopens the scope fresh instead (see 'onNotify') — the same "sync
+-- happens at open" rule 'commandLoop' follows. Because each thread owns
+-- its own stack, 'lastHead' is a plain recursive-loop accumulator inside
+-- that thread's loop — no shared mutable state between the two stacks, no
+-- possibility of their pushes racing.
 module Server.File.Connection
   ( runFile
   ) where
@@ -44,8 +52,9 @@ import Server.File.Protocol
 import Server.Notification (BranchNotification(..), watchBranch)
 import Server.Protocol (Update(..))
 import Server.Run (SessionEffects, actionStack, loggingWS)
-import Server.Util (withBranchSplitter)
-import Storyteller.Agent.Splitter (Splitter)
+import Server.Util (withBranch)
+import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
+import Storyteller.Git (withStorage)
 import Storyteller.Runtime (Main)
 
 runFile :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
@@ -59,32 +68,34 @@ runFile env branch path conn = do
 runCommands :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runCommands env branch path conn = do
   result <- runM $ actionStack env $ loggingWS conn $
-    withBranchSplitter @Main branch $ do
-      pushInitial conn path
-      commandLoop conn path
+    withBranch @Main branch (pushInitial conn path)
+      >> splitByParagraph (commandLoop branch conn path)
   either (reportError conn) return result
 
--- | The notify-listener thread's persistent stack: enter the branch once,
---   then react to ref-move and tick-remap broadcasts for the connection's
---   lifetime.
+-- | The notify-listener thread's persistent stack: react to ref-move and
+--   tick-remap broadcasts for the connection's lifetime. Doesn't hold
+--   'FileOpen' itself — each 'RefMoved' reopens the branch scope fresh
+--   (see 'onNotify') to get a live view, rather than relying on one
+--   long-held scope to notice writes made elsewhere.
 runNotifier :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch path conn chan = do
   result <- runM $ actionStack env $
-    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (onNotify conn path)
+    void $ watchBranch chan branch Nothing (onNotify branch conn path)
   either (reportError conn) return result
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (FileError (T.pack err)))
 
 -- | Dispatch a notification to the right push: a ref move means this file's
---   ticks may have changed, so refetch and diff since the last push; a tick
---   remap carries its own payload straight through — see 'FileEvent.TickRemap'.
+--   ticks may have changed, so reopen the branch scope (a fresh sync point)
+--   and diff since the last push; a tick remap carries its own payload
+--   straight through — see 'FileEvent.TickRemap'.
 onNotify
-  :: (FileOpen r, Member (Embed IO) r, Member (Error String) r)
-  => WS.Connection -> FilePath -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
-onNotify conn path since note = case note of
+  :: (SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  => T.Text -> WS.Connection -> FilePath -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
+onNotify branch conn path since note = case note of
   RefMoved _ ->
-    pushIncremental conn path since
+    withBranch @Main branch (pushIncremental conn path since)
   TicksRemapped mapping -> do
     embed $ WS.sendTextData conn (encode (TickRemap mapping))
     return since
@@ -100,10 +111,16 @@ pushInitial conn path = do
       embed $ WS.sendTextData conn (encode (FilePresent Nothing))
       embed $ WS.sendTextData conn (encode (FileUpdate upd))
 
+-- | Dispatch commands until the socket closes. Doesn't itself hold
+--   'FileOpen' — each command reopens the branch scope fresh (see 'handle'),
+--   since that's what lets its own nested 'withStorage' actually take
+--   effect: an already-open 'StoryBranch' interpreter's writes are wired to
+--   whichever 'StoryStorage' was ambient when *it* was opened, not to one
+--   introduced later around an individual command.
 commandLoop
-  :: (FileOpen r, Member Splitter r, SessionEffects r, Member (Embed IO) r, Member (Error String) r)
-  => WS.Connection -> FilePath -> Sem r ()
-commandLoop conn path = loop
+  :: (Member Splitter r, SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  => T.Text -> WS.Connection -> FilePath -> Sem r ()
+commandLoop branch conn path = loop
   where
     loop = do
       msg <- embed (try (WS.receiveData conn) :: IO (Either SomeException LBS.ByteString))
@@ -113,9 +130,13 @@ commandLoop conn path = loop
           Nothing  -> embed (WS.sendTextData conn (encode (FileError "invalid message"))) >> loop
           Just cmd -> handle cmd >> loop
 
+    -- Each command is its own transaction: writes it makes (including any
+    -- cross-branch cascade) either all land together or none do, and
+    -- either way the ref-move notification other connections rely on
+    -- fires right after this command, not just at connection close.
     handle cmd =
       catch @String
-        (runCommand path cmd)
+        (withStorage (withBranch @Main branch (runCommand path cmd)))
         (\err -> embed (reportError conn err))
 
 -- 'since = Nothing' means we're still in the absent state from connect —

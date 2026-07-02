@@ -125,6 +125,32 @@ spec = do
             return (map branchName bs)
       result `shouldBe` Right [BranchName "novel"]
 
+  describe "withStorage (transactions)" $ do
+    it "discards all ref writes when the wrapped action fails" $ do
+      let result = runTest $ do
+            _           <- createBranch (BranchName "novel")
+            Just before <- getBranch (BranchName "novel")
+            eResult <- runFail $ withStorage $ do
+              setRef (BranchName "novel") (Just (TickId "should-not-land"))
+              fail "boom"
+              return ()
+            Just after <- getBranch (BranchName "novel")
+            return (eResult, branchHead before, branchHead after)
+      case result of
+        Left err -> expectationFailure err
+        Right (eResult, before, after) -> do
+          eResult `shouldSatisfy` either (const True) (const False)
+          after `shouldBe` before
+
+    it "publishes ref writes once the wrapped action succeeds" $ do
+      let result = runTest $ do
+            _           <- createBranch (BranchName "novel")
+            Just before <- getBranch (BranchName "novel")
+            withStorage $ setRef (BranchName "novel") (Just (TickId "new-head"))
+            Just after <- getBranch (BranchName "novel")
+            return (branchHead before /= branchHead after, branchHead after)
+      result `shouldBe` Right (True, TickId "new-head")
+
   describe "StoryBranch" $ do
     it "store advances the head" $ do
       let result = runTestFS $ do
