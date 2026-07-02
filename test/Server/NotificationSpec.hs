@@ -26,14 +26,14 @@ waitFor mv n = go (200 :: Int)
 spec :: Spec
 spec = describe "watchBranch" $ do
 
-  it "ignores notifications for other branches" $ do
+  it "ignores RefMoved notifications for other branches" $ do
     chan <- newTChanIO
     seen <- newMVar []
-    tid  <- forkIO $ runM $ void $ watchBranch chan "mine" () $ \() ->
+    tid  <- forkIO $ runM $ void $ watchBranch chan "mine" () $ \() _ ->
       embed (modifyMVar_ seen (return . (() :))) >> return ()
-    atomically $ writeTChan chan (BranchNotification "other")
-    atomically $ writeTChan chan (BranchNotification "also-not-mine")
-    atomically $ writeTChan chan (BranchNotification "mine")
+    atomically $ writeTChan chan (RefMoved "other")
+    atomically $ writeTChan chan (RefMoved "also-not-mine")
+    atomically $ writeTChan chan (RefMoved "mine")
     got <- waitFor seen 1
     killThread tid
     length got `shouldBe` 1
@@ -41,14 +41,25 @@ spec = describe "watchBranch" $ do
   it "threads the accumulator through consecutive matching notifications, unaffected by non-matches" $ do
     chan <- newTChanIO
     seen <- newMVar []
-    tid  <- forkIO $ runM $ void $ watchBranch chan "mine" (0 :: Int) $ \n -> do
+    tid  <- forkIO $ runM $ void $ watchBranch chan "mine" (0 :: Int) $ \n _ -> do
       let n' = n + 1
       embed $ modifyMVar_ seen (return . (++ [n']))
       return n'
-    atomically $ writeTChan chan (BranchNotification "mine")
-    atomically $ writeTChan chan (BranchNotification "other")
-    atomically $ writeTChan chan (BranchNotification "mine")
-    atomically $ writeTChan chan (BranchNotification "mine")
+    atomically $ writeTChan chan (RefMoved "mine")
+    atomically $ writeTChan chan (RefMoved "other")
+    atomically $ writeTChan chan (RefMoved "mine")
+    atomically $ writeTChan chan (RefMoved "mine")
     got <- waitFor seen 3
     killThread tid
     got `shouldBe` [1, 2, 3]
+
+  it "delivers TicksRemapped regardless of branch" $ do
+    chan <- newTChanIO
+    seen <- newMVar []
+    tid  <- forkIO $ runM $ void $ watchBranch chan "mine" () $ \() _ ->
+      embed (modifyMVar_ seen (return . (() :))) >> return ()
+    atomically $ writeTChan chan (TicksRemapped [("old", "new")])
+    atomically $ writeTChan chan (RefMoved "other")
+    got <- waitFor seen 1
+    killThread tid
+    length got `shouldBe` 1
