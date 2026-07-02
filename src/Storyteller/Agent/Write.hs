@@ -22,7 +22,6 @@ import Runix.Logging (Logging)
 
 import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), WordCount(..))
 import Storyteller.Agent.Append (appendAgent)
-import Storyteller.Agent.CharContext (charSummaryAgent)
 import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.CLI.Env (modelConfigs)

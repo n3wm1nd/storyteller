@@ -25,7 +25,7 @@ import Storyteller.Agent.Splitter (Splitter, splitAtoms)
 import Storyteller.Atom (Atom(..))
 import Storyteller.Git (BranchTag)
 import Storyteller.Storage (StoryBranch, storeAs)
-import Storyteller.Types (TickId, TickType(..))
+import Storyteller.Types (TickId)
 
 import Prelude hiding (appendFile)
 
