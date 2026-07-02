@@ -23,14 +23,19 @@ import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed, runM)
 import Polysemy.Error (catch)
 
+import Runix.LLM.Streaming (StreamEvent)
+import Runix.StreamChunk (ignoreChunks)
 import Server.Env (ServerEnv)
 import Server.Run (SessionEffects, actionStack)
 import Server.Session.Dispatch (runCommand)
 import Server.Session.Protocol
 
+-- | No agent commands run on a session connection (session-level commands
+--   are list/create/delete-branch only) so there's never anything to
+--   stream; drop chunks rather than push them anywhere.
 runSession :: ServerEnv -> WS.Connection -> IO ()
 runSession env conn = do
-  result <- runM $ actionStack env $ do
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
     embed $ WS.sendTextData conn (encode SessionReady')
     commandLoop conn
   either (reportError conn) return result

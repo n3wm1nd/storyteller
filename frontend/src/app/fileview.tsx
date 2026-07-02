@@ -604,6 +604,45 @@ export function AgentLogStrip({ logs, onClear }: {
   );
 }
 
+// ── Chat preview strip ────────────────────────────────────────────────────────
+
+// Ephemeral, best-effort draft of an in-flight chat.prompt/chargen call —
+// see WS-PROTOCOL.md "Chat preview (streaming)". Purely a live look at
+// tokens as they arrive; it disappears the moment the store clears
+// `preview` (on chat.preview.end, or the real update/error superseding it).
+export function ChatPreviewStrip({ preview }: {
+  preview: { text: string; thinking: string } | null;
+}) {
+  const containerRef = useAutoScroll<HTMLDivElement>(
+    (preview?.text.length ?? 0) + (preview?.thinking.length ?? 0), preview === null, "end"
+  );
+
+  if (preview === null) return null;
+
+  const isEmpty = preview.text.length === 0 && preview.thinking.length === 0;
+
+  return (
+    <div style={{ flexShrink: 0, borderTop: "1px solid oklch(0.78 0.10 65 / 0.25)", background: "oklch(0.16 0.02 65 / 0.5)" }}>
+      <div ref={containerRef} style={{ maxHeight: 140, overflow: "auto", padding: "8px 16px" }}>
+        {preview.thinking && (
+          <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-ghost)", marginBottom: 6, whiteSpace: "pre-wrap" }}>
+            {preview.thinking}
+          </div>
+        )}
+        {isEmpty ? (
+          <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-ghost)" }}>
+            Generating…
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, fontFamily: "Georgia, serif", color: "var(--text-muted)", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+            {preview.text}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Input bar ─────────────────────────────────────────────────────────────────
 
 export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite }: {

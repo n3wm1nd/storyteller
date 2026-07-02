@@ -30,6 +30,22 @@ Connection-specific events that describe the scope itself rather than its tick c
 
 `{ type: "agent.log", level: "info"|"warning"|"error", message: string }` — streamed as an agent runs on this connection's scope. Ephemeral; not part of persistent state.
 
+### Chat preview (streaming)
+
+Sent while an LLM call triggered by this connection's command (`chat.prompt`, `chargen`, ...) is in flight, if the underlying model/provider supports streaming:
+
+- **`{ type: "chat.preview.start" }`** — a streaming LLM call has begun. Reset any locally accumulated preview text.
+- **`{ type: "chat.preview", text: string }`** — an incremental chunk of assistant text. Append to the accumulated preview.
+- **`{ type: "chat.preview.thinking", text: string }`** — an incremental chunk of reasoning/thinking text, if the model exposes it. Kept separate from `chat.preview` text; append to its own accumulated buffer.
+- **`{ type: "chat.preview.end" }`** — the streaming call has finished (successfully or not).
+
+This preview is a **best-effort draft only** — nothing more than a live look at tokens as they arrive over the wire. There is no guarantee it matches, or is followed by, anything persisted: an agent may run multiple LLM calls before writing a tick (each with its own `start`...`end` cycle), may write ticks whose content differs from the last streamed draft, or may finish with nothing persisted at all. The client must therefore:
+
+- Discard/replace the preview the instant this connection's `update` or `error` arrives, whichever comes first — that is the real result, superseding any draft.
+- Also clear the preview on `chat.preview.end` regardless of whether an `update`/`error` follows, since a call can legitimately end with no persisted result.
+
+Not correlated by request `id` — a connection's command loop processes one command at a time, so there is never more than one in-flight preview per connection.
+
 ### Error
 
 `{ type: "error", message: string }` — something went wrong processing a command. Human-readable, not machine-parseable.

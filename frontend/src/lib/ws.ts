@@ -19,6 +19,17 @@ function wsBase() {
 export type ErrorEvent    = { type: "error";     message: string };
 export type AgentLogEvent = { type: "agent.log"; level: "info" | "warning" | "error"; message: string };
 
+// Ephemeral, best-effort streamed draft of an in-flight chat.prompt/chargen
+// call. Not correlated by id — a connection only ever has one command in
+// flight at a time. Must be discarded the instant the real Update/error for
+// that command arrives, and cleared on "chat.preview.end" regardless (a
+// call can finish with nothing persisted at all). See WS-PROTOCOL.md.
+export type ChatPreviewEvent =
+  | { type: "chat.preview.start" }
+  | { type: "chat.preview";          text: string }
+  | { type: "chat.preview.thinking"; text: string }
+  | { type: "chat.preview.end" };
+
 // ── Shared tick + update types ────────────────────────────────────────────────
 
 // A tick as sent over the wire. Flat representation — the client interprets
@@ -68,6 +79,7 @@ export type BranchEvent =
   | { type: "file.added";   id?: string; path: string }
   | Update
   | AgentLogEvent
+  | ChatPreviewEvent
   | ErrorEvent;
 
 // ── File protocol ─────────────────────────────────────────────────────────────
@@ -93,6 +105,7 @@ export type FileEvent =
   // this client doesn't track.
   | { type: "tick.remap"; mapping: [string, string][] }
   | AgentLogEvent
+  | ChatPreviewEvent
   | ErrorEvent;
 
 // ── Connection ────────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import {
   type WireTick,
   type Update,
   type AgentLogEvent,
+  type ChatPreviewEvent,
   type ErrorEvent,
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
@@ -51,6 +52,12 @@ interface StoryState {
 
   // Agent log entries (ephemeral, capped ring buffer)
   agentLogs: { level: string; message: string }[];
+
+  // Streamed LLM draft for the in-flight chat.prompt/chargen command, if
+  // any — a best-effort preview only. Cleared on chat.preview.end, and
+  // defensively on any update/error, since it may not match (or may not be
+  // followed by) anything actually persisted. See WS-PROTOCOL.md.
+  preview: { text: string; thinking: string } | null;
 
   // Context selection — local UI state, cleared on branch/file change
   contextAtoms:       Set<string>;
@@ -111,6 +118,50 @@ function applyUpdate(ticks: Record<string, WireTick>, upd: Update): Record<strin
 
 function handleAgentLog(set: Setter, evt: AgentLogEvent) {
   set((s) => ({ agentLogs: [...s.agentLogs, { level: evt.level, message: evt.message }].slice(-200) }));
+}
+
+function isChatPreviewEvent(evt: { type: string }): evt is ChatPreviewEvent {
+  return evt.type === "chat.preview.start" || evt.type === "chat.preview"
+      || evt.type === "chat.preview.thinking" || evt.type === "chat.preview.end";
+}
+
+// Shows the preview strip (as a "Generating…" placeholder) a beat after a
+// chat.prompt is sent, in case the real chat.preview.start takes a while to
+// arrive — but only once enough time has passed that a fast agent wouldn't
+// just flash it briefly. Cancelled the moment a real preview event or the
+// command's actual result (update/error) arrives.
+const PREVIEW_DELAY_MS = 1000;
+let previewDelayTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPreviewDelayTimer() {
+  if (previewDelayTimer !== null) {
+    clearTimeout(previewDelayTimer);
+    previewDelayTimer = null;
+  }
+}
+
+function schedulePreviewPlaceholder(set: Setter) {
+  clearPreviewDelayTimer();
+  previewDelayTimer = setTimeout(() => {
+    previewDelayTimer = null;
+    set((s) => (s.preview === null ? { preview: { text: "", thinking: "" } } : {}));
+  }, PREVIEW_DELAY_MS);
+}
+
+function handleChatPreview(set: Setter, evt: ChatPreviewEvent) {
+  clearPreviewDelayTimer();
+  set((s) => {
+    switch (evt.type) {
+      case "chat.preview.start":
+        return { preview: { text: "", thinking: "" } };
+      case "chat.preview":
+        return s.preview ? { preview: { ...s.preview, text: s.preview.text + evt.text } } : {};
+      case "chat.preview.thinking":
+        return s.preview ? { preview: { ...s.preview, thinking: s.preview.thinking + evt.text } } : {};
+      case "chat.preview.end":
+        return { preview: null };
+    }
+  });
 }
 
 // Apply a server-computed old->new tickId remap (from a rebase/replace/move)
@@ -183,6 +234,7 @@ export const useStory = create<StoryState>((set, get) => ({
   branchHead: null,
   openFiles: {},
   agentLogs: [],
+  preview: null,
   contextAtoms: new Set(),
   contextAnnotations: new Set(),
   rebaseMarker: null,
@@ -276,10 +328,15 @@ export const useStory = create<StoryState>((set, get) => ({
           files: s.files.includes(evt.path) ? s.files : [...s.files, evt.path].sort(),
         }));
       } else if (evt.type === "update") {
-        set((s) => ({ ticks: applyUpdate(s.ticks, evt), branchHead: evt.head }));
+        clearPreviewDelayTimer();
+        set((s) => ({ ticks: applyUpdate(s.ticks, evt), branchHead: evt.head, preview: null }));
       } else if (evt.type === "agent.log") {
         handleAgentLog(set, evt);
+      } else if (isChatPreviewEvent(evt)) {
+        handleChatPreview(set, evt);
       } else if (evt.type === "error") {
+        clearPreviewDelayTimer();
+        set({ preview: null });
         handleError(set, evt);
       }
     });
@@ -317,6 +374,7 @@ export const useStory = create<StoryState>((set, get) => ({
           conns: setConnStatus(s.conns, label, "connected"),
         }));
       } else if (evt.type === "update") {
+        clearPreviewDelayTimer();
         set((s) => {
           const prev = s.openFiles[path];
           if (!prev) return {};
@@ -325,13 +383,18 @@ export const useStory = create<StoryState>((set, get) => ({
               ...s.openFiles,
               [path]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
             },
+            preview: null,
           };
         });
       } else if (evt.type === "tick.remap") {
         handleTickRemap(set, path, evt.mapping);
       } else if (evt.type === "agent.log") {
         handleAgentLog(set, evt);
+      } else if (isChatPreviewEvent(evt)) {
+        handleChatPreview(set, evt);
       } else if (evt.type === "error") {
+        clearPreviewDelayTimer();
+        set({ preview: null });
         handleError(set, evt);
       }
     });
@@ -382,6 +445,7 @@ export const useStory = create<StoryState>((set, get) => ({
   },
 
   chatPrompt: (path, text) => {
+    schedulePreviewPlaceholder(set);
     get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "chat.prompt", text }));
   },
 

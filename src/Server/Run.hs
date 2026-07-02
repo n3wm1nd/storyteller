@@ -18,6 +18,7 @@ module Server.Run
   ( runAction
   , actionStack
   , loggingWS
+  , wsAction
   , SessionEffects
   ) where
 
@@ -33,6 +34,10 @@ import Runix.Logging (Logging(..), Level(..))
 import Runix.LLM (LLM)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
+import Runix.HTTP (HTTPStreaming)
+import Runix.StreamChunk (StreamChunk(..), ignoreChunks)
+import Runix.Config (runConfig)
+import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent(..), StreamingEnabled(..))
 
 import Server.Env (ServerEnv(..))
 import Server.Notification (BranchNotification(..))
@@ -42,8 +47,8 @@ import Storyteller.Storage (StoryStorage(..))
 import Storyteller.Git (runStoryStorageGit, refBranchName)
 import Storyteller.Types (unBranchName, unTickId)
 
-import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
-import Runix.RestAPI (RestEndpoint(..))
+import Runix.LLM.Interpreter (interpretLLM, LlamaCppAuth(..))
+import Runix.RestAPI (RestEndpoint(..), RestAPI, restapiHTTP, llmRetry)
 import qualified UniversalLLM
 
 -- | Intercept 'Git', pass every operation through, and notify whenever a
@@ -116,7 +121,35 @@ loggingWS :: Member (Embed IO) r => WS.Connection -> Sem (Logging : r) a -> Sem 
 loggingWS conn = interpret $ \(Log level _ msg) ->
   embed $ WS.sendTextData conn $ encode $ agentLogEvent (levelText level) msg
 
--- | Effects available at the session level (no branch open).
+-- | Map a stream event to its wire event, or 'Nothing' to drop it (tool-call
+--   events aren't produced by any agent flow today). This is a *preview*
+--   only — an ephemeral, best-effort draft of what the LLM is generating.
+--   There is no guarantee it matches, or is followed by, any persisted tick:
+--   the client must treat it as void the moment the real 'update'/'error'
+--   for the in-flight command arrives, and must also clear it on
+--   "chat.preview.end" regardless, since a call can finish with nothing
+--   persisted at all (e.g. tool-call-only output).
+previewEvent :: StreamEvent -> Maybe Value
+previewEvent StreamStarted                = Just $ object ["type" .= ("chat.preview.start"    :: T.Text)]
+previewEvent (StreamText t)               = Just $ object ["type" .= ("chat.preview"          :: T.Text), "text" .= t]
+previewEvent (StreamThinking t)           = Just $ object ["type" .= ("chat.preview.thinking" :: T.Text), "text" .= t]
+previewEvent StreamDone                   = Just $ object ["type" .= ("chat.preview.end"      :: T.Text)]
+previewEvent (StreamError _)              = Just $ object ["type" .= ("chat.preview.end"      :: T.Text)]
+previewEvent (StreamToolCallStarted  _ _) = Nothing
+previewEvent (StreamToolCallArgument _ _) = Nothing
+previewEvent (StreamToolCallComplete _)   = Nothing
+
+-- | Push each streamed LLM chunk to the client as it arrives. Styled after
+--   'loggingWS': installed once around a connection's whole command loop so
+--   it sees chunks emitted from anywhere in the stack, including deep
+--   inside 'llmStreamingRestAPI'.
+streamChunksWS :: Member (Embed IO) r => WS.Connection -> Sem (StreamChunk StreamEvent : r) a -> Sem r a
+streamChunksWS conn = interpret $ \(EmitChunk event) ->
+  maybe (return ()) (embed . WS.sendTextData conn . encode) (previewEvent event)
+
+-- | Effects available at the session level (no branch open). Deliberately
+--   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
+--   network through the 'LLM' effect, never directly.
 type SessionEffects r =
   Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel] r
 
@@ -127,11 +160,37 @@ actionStack env action =
    . gitNotify (envNotifyChan env)
    . runStoryStorageGit
    . storageNotify (envNotifyChan env)
-   . interpretLLMWith auth (UniversalLLM.route @StoryModel) storyModel modelConfigs
+   . runConfig (StreamingEnabled True)
+   . restapiHTTP auth
+   . llmStreamingRestAPI @StoryModel auth
+   . llmRetry @ServerAuth
+   . interpretLLM @ServerAuth (UniversalLLM.route @StoryModel) storyModel modelConfigs
+   . raiseUnder @(RestAPI ServerAuth)
    $ action
 
+-- | No WS connection to push a streaming preview to (CLI/session-only use);
+--   drop chunks instead, same as 'wsAction' consuming them into pushes.
 runAction
   :: ServerEnv
   -> (forall r. SessionEffects r => Sem r a)
   -> IO (Either String a)
-runAction env action = runM (actionStack env action)
+runAction env action = runM (ignoreChunks @StreamEvent (actionStack env action))
+
+-- | Shared composition for WS connections: layers the connection's
+--   log-forwarding interpreter *underneath* 'actionStack' (same as before —
+--   real 'Log' calls from domain code are diverted to the socket instead of
+--   reaching 'runInfrastructure's stdout logger), and its LLM-streaming
+--   preview push *around the outside*. Unlike 'Logging', 'StreamChunk
+--   StreamEvent' isn't eliminated anywhere inside 'actionStack' — nothing
+--   there interprets it, so 'llmStreamingRestAPI's emitted chunks surface on
+--   'actionStack's own return row instead of needing to be threaded through
+--   'action'; 'streamChunksWS' has to consume it out here.
+--
+--   Both 'Server.File.Connection' and 'Server.Branch.Connection' had been
+--   assembling this composition independently; this is the one place it's
+--   built. Callers still own 'runM' at their own call site.
+wsAction
+  :: ServerEnv -> WS.Connection
+  -> (forall r. (SessionEffects r, Member (Embed IO) r, Member (Error String) r) => Sem r a)
+  -> Sem '[Embed IO] (Either String a)
+wsAction env conn action = streamChunksWS conn (actionStack env (loggingWS conn action))

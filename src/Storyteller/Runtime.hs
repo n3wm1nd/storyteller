@@ -38,7 +38,7 @@ import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
 import Runix.Random (Random, randomIO)
 import Runix.RestAPI (RestEndpoint(..))
 import Runix.Runner (httpIO, withRequestTimeout, loggingIO, failLog)
-import Runix.HTTP (HTTP)
+import Runix.HTTP (HTTP, HTTPStreaming, httpIOStreaming)
 import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
@@ -87,7 +87,7 @@ runInfrastructure
   :: Members '[Error String, Embed IO] r
   => FilePath
   -> String
-  -> Sem (Random : HTTP : Sleep : Time : Git : Cmd "git" : Cmds : Fail : Logging : r) a
+  -> Sem (Random : HTTP : HTTPStreaming : Sleep : Time : Git : Cmd "git" : Cmds : Fail : Logging : r) a
   -> Sem r a
 runInfrastructure repoPath _endpoint =
     loggingIO
@@ -98,6 +98,7 @@ runInfrastructure repoPath _endpoint =
   . withGitCache
   . timeIO
   . sleepIO
+  . httpIOStreaming (withRequestTimeout 600)
   . httpIO (withRequestTimeout 600)
   . randomIO
 

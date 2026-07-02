@@ -5,7 +5,7 @@ import { PanelLeftClose, PanelLeftOpen, Eye, EyeOff, Trash2 } from "lucide-react
 import { useStory } from "@/lib/store";
 import { tickChain, statusColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { WireTickList, AgentLogStrip, InputBar } from "./fileview";
+import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar } from "./fileview";
 import { TicksView } from "./ticksview";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ function Toolbar({ leftOpen, onToggleLeft, selectedFile, onCloseFile, onNewFile,
 export default function Home() {
   const {
     conns, error, branches, activeBranch, files, ticks, branchHead, openFiles,
-    agentLogs, contextAtoms, contextAnnotations, rebaseMarker,
+    agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatPrompt,
@@ -337,6 +337,7 @@ export default function Home() {
               />
             )}
 
+            <ChatPreviewStrip preview={preview} />
             <AgentLogStrip logs={agentLogs} onClear={clearAgentLogs} />
             <InputBar
               enabled={selectedFile !== null}

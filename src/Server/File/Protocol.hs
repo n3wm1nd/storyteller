@@ -63,6 +63,14 @@ instance FromJSON FileCommand where
 --                 place — a no-op if it isn't tracking any of them.
 --   AgentLog:     progress message from a running agent.
 --   FileError:    something went wrong; message is human-readable.
+--
+--   Not modeled here: "chat.preview.start"/"chat.preview"/"chat.preview.thinking"/
+--   "chat.preview.end", the ephemeral LLM streaming preview. Those are pushed
+--   directly by 'Server.Run.streamChunksWS', which is installed once per
+--   connection (file or branch alike) around the whole command loop rather
+--   than constructed by any 'Server.File'/'Server.Branch' handler — the wire
+--   shape is identical for both connection types, so there's nothing
+--   File-specific for a 'FileEvent' constructor to add. See WS-PROTOCOL.md.
 data FileEvent
   = FilePresent { feId :: Maybe T.Text }
   | FileAbsent  { feId :: Maybe T.Text }

@@ -51,7 +51,9 @@ import Server.File.Dispatch (runCommand)
 import Server.File.Protocol
 import Server.Notification (BranchNotification(..), watchBranch)
 import Server.Protocol (Update(..))
-import Server.Run (SessionEffects, actionStack, loggingWS)
+import Runix.LLM.Streaming (StreamEvent)
+import Runix.StreamChunk (ignoreChunks)
+import Server.Run (SessionEffects, actionStack, wsAction)
 import Server.Util (withBranch)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
 import Storyteller.Git (withStorage)
@@ -67,7 +69,7 @@ runFile env branch path conn = do
 --   the initial file state, then dispatch commands until the socket closes.
 runCommands :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runCommands env branch path conn = do
-  result <- runM $ actionStack env $ loggingWS conn $
+  result <- runM $ wsAction env conn $
     withBranch @Main branch (pushInitial conn path)
       >> splitByParagraph (commandLoop branch conn path)
   either (reportError conn) return result
@@ -79,7 +81,7 @@ runCommands env branch path conn = do
 --   long-held scope to notice writes made elsewhere.
 runNotifier :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch path conn chan = do
-  result <- runM $ actionStack env $
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
     void $ watchBranch chan branch Nothing (onNotify branch conn path)
   either (reportError conn) return result
 

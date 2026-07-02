@@ -51,7 +51,9 @@ import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
 import Server.Notification (BranchNotification(..), watchBranch)
 import Server.Protocol (Update(..))
-import Server.Run (SessionEffects, actionStack, loggingWS)
+import Runix.LLM.Streaming (StreamEvent)
+import Runix.StreamChunk (ignoreChunks)
+import Server.Run (SessionEffects, actionStack, wsAction)
 import Server.Util (withBranch)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
 import Storyteller.Git (withStorage)
@@ -67,7 +69,7 @@ runBranch env branch conn = do
 --   the initial full state, then dispatch commands until the socket closes.
 runCommands :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCommands env branch conn = do
-  result <- runM $ actionStack env $ loggingWS conn $
+  result <- runM $ wsAction env conn $
     withBranch @Main branch (pushInitial conn branch)
       >> splitByParagraph (commandLoop conn branch)
   either (reportError conn) return result
@@ -81,7 +83,7 @@ runCommands env branch conn = do
 --   marker/context selection) tracks a bare tickId across a push yet.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ actionStack env $
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
     void $ watchBranch chan branch Nothing (onNotify branch conn)
   either (reportError conn) return result
 
