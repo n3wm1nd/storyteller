@@ -68,5 +68,13 @@ appendOne
               , Fail ] r
   => FilePath -> T.Text -> Sem r TickId
 appendOne path content = do
-  appendFile @(BranchTag branch) path (TE.encodeUtf8 content)
-  storeAs @branch (Atom path content)
+  let content' = ensureTrailingNewline content
+  appendFile @(BranchTag branch) path (TE.encodeUtf8 content')
+  storeAs @branch (Atom path content')
+
+-- | Ensure text ends with a newline — an appended atom is one text block on
+-- disk, and a block should end its line.
+ensureTrailingNewline :: T.Text -> T.Text
+ensureTrailingNewline t
+  | "\n" `T.isSuffixOf` t = t
+  | otherwise = t <> "\n"
