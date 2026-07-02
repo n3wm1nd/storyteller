@@ -38,9 +38,9 @@ import Server.Env (ServerEnv(..))
 import Server.Notification (BranchNotification(..))
 import Storyteller.CLI.Env (modelConfigs)
 import Storyteller.Runtime (runInfrastructure, StoryModel, storyModel)
-import Storyteller.Storage (StoryStorage)
+import Storyteller.Storage (StoryStorage(..))
 import Storyteller.Git (runStoryStorageGit, refBranchName)
-import Storyteller.Types (unBranchName)
+import Storyteller.Types (unBranchName, unTickId)
 
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..))
@@ -70,8 +70,29 @@ gitNotify chan = interpret $ \case
   where
     notifyRef ref = case refBranchName ref of
       Nothing     -> return ()
-      Just branch -> embed $ atomically $ writeTChan chan
-        BranchNotification { bnBranch = unBranchName branch }
+      Just branch -> embed $ atomically $ writeTChan chan (RefMoved (unBranchName branch))
+
+-- | Intercept 'StoryStorage' and notify whenever 'UpdateReferences' rewrites
+-- a non-empty batch of tick ids — the point at which any client tracking one
+-- of those ids (a rebase marker, a context selection) needs to move it.
+-- Doesn't consume the effect ('intercept', not 'interpret'): 'runStoryStorageGit'
+-- still does the real work: this only observes the one call site that
+-- already carries the mapping every rebase/replace/move computes internally.
+storageNotify
+  :: Members '[StoryStorage, Embed IO] r
+  => TChan BranchNotification
+  -> Sem r a
+  -> Sem r a
+storageNotify chan = intercept $ \case
+  CreateBranch name -> send (CreateBranch name)
+  DeleteBranch name -> send (DeleteBranch name)
+  ListBranches      -> send ListBranches
+  UpdateReferences mapping -> do
+    result <- send (UpdateReferences mapping)
+    if null mapping then return () else
+      embed $ atomically $ writeTChan chan $
+        TicksRemapped (map (\(o, n) -> (unTickId o, unTickId n)) mapping)
+    return result
 
 newtype ServerAuth = ServerAuth LlamaCppAuth
 
@@ -104,6 +125,7 @@ actionStack env action =
    . runInfrastructure (envRepoPath env) (envLLMEndpoint env)
    . gitNotify (envNotifyChan env)
    . runStoryStorageGit
+   . storageNotify (envNotifyChan env)
    . interpretLLMWith auth (UniversalLLM.route @StoryModel) storyModel modelConfigs
    $ action
 

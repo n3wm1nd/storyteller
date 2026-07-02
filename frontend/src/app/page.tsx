@@ -112,10 +112,11 @@ function Toolbar({ leftOpen, onToggleLeft, selectedFile, onCloseFile, onNewFile,
 export default function Home() {
   const {
     conns, error, branches, activeBranch, files, ticks, branchHead, openFiles,
-    agentLogs, contextAtoms, contextAnnotations,
+    agentLogs, contextAtoms, contextAnnotations, rebaseMarker,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatPrompt,
+    setRebaseMarker,
   } = useStory();
 
   const [annotationMode, setAnnotationMode] = useState<AnnotationMode>("expanded");
@@ -328,6 +329,8 @@ export default function Home() {
                 ticks={fileTicks} annotationMode={annotationMode}
                 contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
                 resetKey={selectedFile}
+                rebaseMarker={rebaseMarker}
+                onSetRebaseMarker={setRebaseMarker}
                 onEdit={handleEditAtom}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}
@@ -338,6 +341,8 @@ export default function Home() {
             <InputBar
               enabled={selectedFile !== null}
               contextAtomCount={contextAtoms.size} contextAnnotationCount={contextAnnotations.size}
+              rebasing={rebaseMarker !== null}
+              onClearRebase={() => setRebaseMarker(null)}
               onClearContext={clearContext}
               onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
               onWrite={(text)  => selectedFile && chatPrompt(selectedFile, text)}

@@ -41,7 +41,7 @@ import Server.Branch (Main, BranchOpen, branchState, branchStateSince)
 import Server.Branch.Dispatch (runCommand)
 import Server.Branch.Protocol
 import Server.Env (ServerEnv(..))
-import Server.Notification (BranchNotification, watchBranch)
+import Server.Notification (BranchNotification(..), watchBranch)
 import Server.Protocol (Update(..))
 import Server.Run (SessionEffects, actionStack, loggingWS)
 import Server.Util (withBranchSplitter)
@@ -65,12 +65,22 @@ runCommands env branch conn = do
   either (reportError conn) return result
 
 -- | The notify-listener thread's persistent stack: enter the branch once,
---   then react to ref-move broadcasts for the connection's lifetime.
+--   then react to ref-move broadcasts for the connection's lifetime. Tick
+--   remaps aren't forwarded here — nothing at the branch level (unlike a
+--   file connection's rebase marker/context selection) tracks a bare tickId
+--   across a push yet.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
   result <- runM $ actionStack env $
-    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (pushIncremental conn)
+    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (onNotify conn)
   either (reportError conn) return result
+
+onNotify
+  :: (BranchOpen r, Member (Embed IO) r, Member (Error String) r)
+  => WS.Connection -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
+onNotify conn since note = case note of
+  RefMoved _      -> pushIncremental conn since
+  TicksRemapped _ -> return since
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (BranchError (T.pack err)))

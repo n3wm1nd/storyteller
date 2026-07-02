@@ -20,10 +20,12 @@ module Server.File.Dispatch
 import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
-import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom)
+import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatPrompt)
 import Server.File.Protocol (FileCommand(..))
 import Server.Run (SessionEffects)
 import Storyteller.Agent.Splitter (Splitter)
+import Storyteller.Runtime (Main)
+import qualified Storyteller.Storage as Storage
 import Storyteller.Types (TickId(..))
 
 runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r ()
@@ -43,3 +45,16 @@ runCommand path cmd = case cmd of
 
   MoveAtom _mid tid mAfter ->
     moveFileAtom (TickId tid) (TickId <$> mAfter)
+
+  ChatPrompt _mid prompt ->
+    chatPrompt path prompt
+
+  -- Rebase 'inner' at 'tid': wind the chain back, run it against that
+  -- tick's filesystem snapshot, then replay the tail on top of whatever it
+  -- produced. 'reset' reloads the working tree from the (now rebased) head,
+  -- since 'atWithFS' only restores the pre-call tree, not the post-rebase
+  -- one — same pattern 'editAtom'/'moveTick' use after their own 'at' calls.
+  At _mid tid inner -> do
+    (_, mapping) <- Storage.atWithFS @Main (TickId tid) (runCommand path inner)
+    Storage.reset @Main
+    Storage.updateReferences mapping

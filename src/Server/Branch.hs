@@ -28,26 +28,21 @@ module Server.Branch
   , deleteTickFromBranch
   , trackFiles
   , charGen
-  , chatPrompt
   ) where
 
 import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Members, Member, Sem)
+import Polysemy (Members, Sem)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
-import Runix.Logging (info)
 
 import Server.Protocol (Update(..), tickToWireTick)
 import Server.Run (SessionEffects)
 
-import Storyteller.Agent (Prompt(..), Instruction(..))
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
-import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Agent.Tracker (trackBranch)
-import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
 import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, get, reset, storeAs)
@@ -121,14 +116,6 @@ moveTickInBranch tid mAfter = void $ moveTick @Main tid mAfter
 -- | Delete a tick from the chain.
 deleteTickFromBranch :: BranchOpen r => TickId -> Sem r ()
 deleteTickFromBranch tid = void $ deleteTick @Main tid
-
--- | Store a prompt tick then run the write agent, on the already-open branch.
-chatPrompt :: (BranchOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
-chatPrompt path prompt = do
-  _ <- storeAs @Main (Prompt path prompt)
-  info $ "writer agent starting: " <> T.pack path
-  _ <- writeAgent @(BranchTag Main) @Main path (Instruction prompt) []
-  info $ "writer agent done: " <> T.pack path
 
 -- ---------------------------------------------------------------------------
 -- Operations that open their own (additional) branch scopes

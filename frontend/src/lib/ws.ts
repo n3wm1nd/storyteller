@@ -61,8 +61,7 @@ export type BranchCommand =
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
-  | { type: "delete.tick"; id?: string; tickId: string }
-  | { type: "chat.prompt"; id?: string; path: string; text: string };
+  | { type: "delete.tick"; id?: string; tickId: string };
 
 export type BranchEvent =
   | { type: "branch.ready"; id?: string; branch: string; files: string[] }
@@ -78,12 +77,21 @@ export type FileCommand =
   | { type: "delete";      id?: string }
   | { type: "edit.atom";   id?: string; tickId: string; content: string }
   | { type: "delete.atom"; id?: string; tickId: string }
-  | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string };
+  | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string }
+  | { type: "chat.prompt"; id?: string; text: string }
+  // Rebase: run `command` as if `tickId` were HEAD, then replay everything
+  // that came after it on top of the result. Lets the client re-target any
+  // command at a historical point in the file's chain.
+  | { type: "at";          id?: string; tickId: string; command: FileCommand };
 
 export type FileEvent =
   | { type: "file.present"; id?: string }
   | { type: "file.absent";  id?: string }
   | Update
+  // A rebase/replace/move rewrote tick ids; [from, to] pairs. Apply to any
+  // tickId held locally (rebase marker, context selection) — a no-op for ids
+  // this client doesn't track.
+  | { type: "tick.remap"; mapping: [string, string][] }
   | AgentLogEvent
   | ErrorEvent;
 

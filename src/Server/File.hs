@@ -23,6 +23,7 @@ module Server.File
   , editFileAtom
   , deleteFileAtom
   , moveFileAtom
+  , chatPrompt
   ) where
 
 import Control.Monad (void)
@@ -35,11 +36,13 @@ import Runix.Logging (info)
 import Server.Protocol (Update(..), toWireTick)
 import Server.Run (SessionEffects)
 
+import Storyteller.Agent (Prompt(..), Instruction(..))
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.Splitter (Splitter)
+import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Runtime (Main)
 import qualified Storyteller.Storage as Storage
-import Storyteller.Storage (FileTick, StoryBranch, StoryStorage, fileTicks)
+import Storyteller.Storage (FileTick, StoryBranch, StoryStorage, fileTicks, storeAs)
 import Storyteller.Edit (deleteTick, editAtom, moveTick)
 import Storyteller.Types (TickId(..))
 import Storyteller.Git (BranchTag)
@@ -84,18 +87,35 @@ appendToFile path content = do
   void $ appendAgent @Main path content
   info $ "append done: " <> T.pack path
 
--- | Replace an atom's content in-place.
+-- | Replace an atom's content in-place. Unlike 'moveTick', 'editAtom' returns
+--   its tail-rebase mapping without including the edited tick's own
+--   old->new pair (it isn't part of the tail being replayed, it's the new
+--   pivot the tail replays onto) — add it here so clients tracking the
+--   edited id itself (a rebase marker, a context selection), not just its
+--   successors, get told where it went.
 editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
-editFileAtom path tid content =
-  void $ editAtom @Main tid path (TE.encodeUtf8 content)
+editFileAtom path tid content = do
+  (newTid, mapping) <- editAtom @Main tid path (TE.encodeUtf8 content)
+  Storage.updateReferences ((tid, newTid) : mapping)
 
--- | Delete an atom from the file's chain.
+-- | Delete an atom from the file's chain. See 'editFileAtom' — 'deleteTick'
+--   likewise leaves the mapping propagation to the caller.
 deleteFileAtom :: FileOpen r => TickId -> Sem r ()
-deleteFileAtom tid = void $ deleteTick @Main tid
+deleteFileAtom tid = do
+  mapping <- deleteTick @Main tid
+  Storage.updateReferences mapping
 
 -- | Move an atom to a new position in the file's chain.
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
 moveFileAtom tid mAfter = void $ moveTick @Main tid mAfter
+
+-- | Store a prompt tick then run the write agent against this file.
+chatPrompt :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
+chatPrompt path prompt = do
+  _ <- storeAs @Main (Prompt path prompt)
+  info $ "writer agent starting: " <> T.pack path
+  _ <- writeAgent @(BranchTag Main) @Main path (Instruction prompt) []
+  info $ "writer agent done: " <> T.pack path
 
 -- ---------------------------------------------------------------------------
 -- Internal

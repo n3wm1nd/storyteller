@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/store";
 import { type AnnotationMode } from "@/lib/utils";
@@ -254,10 +254,92 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
   );
 });
 
+// ── Rebase handle ─────────────────────────────────────────────────────────────
+//
+// A CAD feature-tree-style marker: dropping it after an atom means every
+// subsequent command runs as if that atom were HEAD, then the (grayed-out)
+// atoms below get rebased on top of whatever happens next.
+//
+// Rather than a permanent divider between every atom, the marker lives as one
+// small draggable handle anchored at the bottom of the atom list (never
+// overlapping the log strip / input bar below it, which are separate
+// siblings). Grabbing it shows a preview line immediately, tracking the
+// nearest atom boundary to the cursor anywhere on the page (not just while
+// hovering the thin gap between atoms) — dropping commits it. The active
+// marker (and the drag preview) render as a full line with a centered
+// clock+label pill; clicking the pill clears the marker.
+
+const RebaseHandle = memo(function RebaseHandle({ active, dragging, willClear, onDragStart }: {
+  active: boolean;
+  dragging: boolean;
+  willClear: boolean;
+  onDragStart: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <div
+      onMouseDown={onDragStart}
+      title={active ? "Drag to move the rebase marker" : "Drag onto an atom to rebase from there"}
+      style={{
+        position: "absolute", right: 14, bottom: 10, zIndex: 5,
+        width: 22, height: 22, borderRadius: "50%",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: willClear ? "var(--rose)" : active ? "var(--amber)" : "var(--surface-deep)",
+        border: `1px solid ${willClear ? "var(--rose)" : active ? "var(--amber)" : "var(--border)"}`,
+        color: willClear || active ? "oklch(0.15 0.01 60)" : "var(--text-ghost)",
+        cursor: dragging ? "grabbing" : "grab",
+        opacity: dragging ? 1 : active ? 0.85 : 0.45,
+        boxShadow: dragging ? "0 2px 8px oklch(0 0 0 / 0.35)" : "none",
+        transition: "opacity 0.15s, background 0.15s, box-shadow 0.15s",
+      }}
+    >
+      <History style={{ width: 12, height: 12 }} />
+    </div>
+  );
+});
+
+const RebaseDropZone = memo(function RebaseDropZone({ isMarker, isCandidate, onDragStart }: {
+  isMarker: boolean;
+  isCandidate: boolean;
+  onDragStart: (e: React.MouseEvent) => void;
+}) {
+  const lit = isMarker || isCandidate;
+  return (
+    <div
+      onMouseDown={isMarker ? onDragStart : undefined}
+      title={isMarker ? "Rebasing here — click to clear, drag to move" : undefined}
+      style={{
+        display: "flex", alignItems: "center", gap: 6, margin: "3px 0", padding: "2px 0",
+        cursor: isMarker ? "grab" : "default", userSelect: "none",
+      }}
+    >
+      <div style={{
+        flex: 1, height: lit ? 2 : 1, borderRadius: 1,
+        background: isMarker ? "var(--amber)" : isCandidate ? "var(--text-ghost)" : "transparent",
+        transition: "background 0.1s, height 0.1s",
+      }} />
+      {lit && (
+        <span style={{
+          display: "flex", alignItems: "center", gap: 4, flexShrink: 0,
+          fontSize: 9, color: isMarker ? "var(--amber)" : "var(--text-ghost)",
+        }}>
+          <History style={{ width: 10, height: 10 }} />
+          {isMarker ? "rebasing here — drag to move, click to clear" : "rebase here"}
+        </span>
+      )}
+      <div style={{
+        flex: 1, height: lit ? 2 : 1, borderRadius: 1,
+        background: isMarker ? "var(--amber)" : isCandidate ? "var(--text-ghost)" : "transparent",
+        transition: "background 0.1s, height 0.1s",
+      }} />
+    </div>
+  );
+});
+
 // ── Wire tick list ────────────────────────────────────────────────────────────
 
 export function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
+  rebaseMarker, onSetRebaseMarker,
   onEdit, onToggleContextAtom, onToggleContextAnnotation,
 }: {
   ticks: WireTick[];
@@ -265,12 +347,86 @@ export function WireTickList({
   contextAtoms: Set<string>;
   contextAnnotations: Set<string>;
   resetKey: unknown;
+  rebaseMarker: string | null;
+  onSetRebaseMarker: (tickId: string | null) => void;
   onEdit: (tickId: string, content: string) => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
 }) {
   const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[ticks.length - 1].tickId}` : 0;
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
+
+  const atoms = ticks.filter((t) => t.kind === "atom");
+  const atomRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  const [dragging, setDragging] = useState(false);
+  const [candidate, setCandidateState] = useState<string | null>(null);
+  const candidateRef = useRef<string | null>(null);
+  function setCandidate(id: string | null) {
+    candidateRef.current = id;
+    setCandidateState(id);
+  }
+
+  // Flip target once the cursor passes an atom's own vertical middle — that's
+  // the point where it visually stops being "in" the previous atom and starts
+  // being "in" this one — rather than nearest-center-of-any-atom, which drifts
+  // off with uneven atom heights. Landing on (or past) the last atom collapses
+  // to "clear": rebasing right at the last tick is a no-op on the server
+  // anyway (nothing downstream to replay), so there's no reason to make the
+  // user thread the needle between "select the last tick" and "release to
+  // resume at the present" — dragging to the bottom just means the latter.
+  function nearestAtomId(clientY: number): string | null {
+    if (atoms.length === 0) return null;
+    let candidate: string | null = null;
+    for (const atom of atoms) {
+      const el = atomRefs.current.get(atom.tickId);
+      if (!el) continue;
+      if (clientY >= el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2) candidate = atom.tickId;
+      else break;
+    }
+    return candidate === atoms[atoms.length - 1].tickId ? null : candidate;
+  }
+
+  function runDrag(initialClientY: number) {
+    setDragging(true);
+    setCandidate(nearestAtomId(initialClientY));
+    const onMove = (ev: MouseEvent) => setCandidate(nearestAtomId(ev.clientY));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDragging(false);
+      onSetRebaseMarker(candidateRef.current);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function startDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    runDrag(e.clientY);
+  }
+
+  // The active divider line is also a drag handle: a plain click (no
+  // movement) clears the marker, same as before; moving past a small
+  // threshold before release hands off into the same drag as the handle.
+  function startDragFromDivider(e: React.MouseEvent) {
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const onMove = (ev: MouseEvent) => {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        runDrag(ev.clientY);
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      onSetRebaseMarker(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
 
@@ -290,36 +446,63 @@ export function WireTickList({
     }
   }
 
-  const atoms = ticks.filter((t) => t.kind === "atom");
+  const markerIdx = rebaseMarker ? atoms.findIndex((a) => a.tickId === rebaseMarker) : -1;
 
   return (
-    <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
-      <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
-        {atoms.map((atom, i) => {
-          const anns = annotationsFor.get(atom.tickId) ?? [];
-          const isLast = i === atoms.length - 1 && (annotationMode === "hidden" || anns.length === 0);
-          return (
-            <div key={atom.tickId}>
-              <AtomBlock
-                atom={atom} isLast={isLast}
-                inContext={contextAtoms.has(atom.tickId)}
-                onEdit={onEdit}
-                onToggleContext={onToggleContextAtom}
-              />
-              {annotationMode === "dots" && anns.length > 0 && (
-                <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
-              )}
-              {annotationMode === "expanded" && anns.map((ann) => (
-                <AnnotationCard
-                  key={ann.tickId} tick={ann}
-                  inContext={contextAnnotations.has(ann.tickId)}
-                  onToggleContext={onToggleContextAnnotation}
+    <div style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
+        <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
+          {atoms.map((atom, i) => {
+            const anns = annotationsFor.get(atom.tickId) ?? [];
+            const isLast = i === atoms.length - 1 && (annotationMode === "hidden" || anns.length === 0);
+            const suppressed = markerIdx !== -1 && i > markerIdx;
+            return (
+              <div
+                key={atom.tickId}
+                ref={(el) => {
+                  if (el) atomRefs.current.set(atom.tickId, el);
+                  else atomRefs.current.delete(atom.tickId);
+                }}
+              >
+                <div style={{
+                  opacity: suppressed ? 0.35 : 1,
+                  filter: suppressed ? "grayscale(0.7)" : "none",
+                  pointerEvents: suppressed ? "none" : "auto",
+                  transition: "opacity 0.15s, filter 0.15s",
+                }}>
+                  <AtomBlock
+                    atom={atom} isLast={isLast}
+                    inContext={contextAtoms.has(atom.tickId)}
+                    onEdit={onEdit}
+                    onToggleContext={onToggleContextAtom}
+                  />
+                  {annotationMode === "dots" && anns.length > 0 && (
+                    <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
+                  )}
+                  {annotationMode === "expanded" && anns.map((ann) => (
+                    <AnnotationCard
+                      key={ann.tickId} tick={ann}
+                      inContext={contextAnnotations.has(ann.tickId)}
+                      onToggleContext={onToggleContextAnnotation}
+                    />
+                  ))}
+                </div>
+                <RebaseDropZone
+                  isMarker={!dragging && rebaseMarker === atom.tickId}
+                  isCandidate={dragging && candidate === atom.tickId}
+                  onDragStart={startDragFromDivider}
                 />
-              ))}
-            </div>
-          );
-        })}
+              </div>
+            );
+          })}
+        </div>
       </div>
+      <RebaseHandle
+        active={rebaseMarker !== null}
+        dragging={dragging}
+        willClear={dragging && candidate === null}
+        onDragStart={startDrag}
+      />
     </div>
   );
 }
@@ -405,10 +588,12 @@ export function AgentLogStrip({ logs, onClear }: {
 
 // ── Input bar ─────────────────────────────────────────────────────────────────
 
-export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, onClearContext, onAppend, onWrite }: {
+export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite }: {
   enabled: boolean;
   contextAtomCount: number;
   contextAnnotationCount: number;
+  rebasing: boolean;
+  onClearRebase: () => void;
   onClearContext: () => void;
   onAppend: (text: string) => void;
   onWrite:  (text: string) => void;
@@ -447,6 +632,15 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, on
       opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none",
     }}>
       <div onMouseDown={onDragHandleMouseDown} style={{ height: 4, cursor: "ns-resize", flexShrink: 0 }} />
+      {rebasing && (
+        <div style={{ flexShrink: 0, padding: "2px 16px 0", display: "flex", alignItems: "center", gap: 6 }}>
+          <History style={{ width: 11, height: 11, color: "var(--amber)" }} />
+          <span style={{ fontSize: 10, color: "var(--amber)", fontStyle: "italic" }}>
+            Writing rebased at the marker — later atoms will shift on top
+          </span>
+          <button onClick={onClearRebase} title="Clear rebase marker" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--amber)", fontSize: 12, lineHeight: 1, padding: "0 2px", opacity: 0.7 }}>×</button>
+        </div>
+      )}
       {hasContext && (
         <div style={{ flexShrink: 0, padding: "2px 16px 0", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 10, color: "var(--amber)", fontStyle: "italic" }}>{contextLabel()}</span>

@@ -4,7 +4,9 @@
 -- | Protocol for /branch/{name} connections.
 --
 -- Commands: branch-level operations (file tracking, generation, annotations,
---           tick reordering, chat). No resync command — reconnect is resync.
+--           tick reordering). No resync command — reconnect is resync.
+--           chat.prompt lives on the file connection (Server.File.Protocol) —
+--           path is implicit from the URL there.
 -- Events:   structural events (ready, file list changes) plus tick updates.
 --           All tick state arrives as Update — the full filtered chain on
 --           connect, affected ticks after each mutation.
@@ -40,7 +42,6 @@ data BranchCommand
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
-  | ChatPrompt { bcId :: Maybe T.Text, bcPath :: FilePath, bcPromptText :: T.Text }
   deriving (Show)
 
 instance FromJSON BranchCommand where
@@ -53,7 +54,6 @@ instance FromJSON BranchCommand where
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
-      "chat.prompt" -> ChatPrompt i <$> o .: "path" <*> o .: "text"
       _             -> fail ("unknown branch command: " <> T.unpack t)
 
 -- | Events the server sends on a branch connection.

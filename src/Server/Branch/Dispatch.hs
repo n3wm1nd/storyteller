@@ -18,17 +18,16 @@ module Server.Branch.Dispatch
   ) where
 
 import qualified Data.Text as T
-import Polysemy (Member, Sem)
+import Polysemy (Sem)
 
 import Server.Branch (BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch,
-                      trackFiles, charGen, chatPrompt)
+                      trackFiles, charGen)
 import Server.Branch.Protocol
 import Server.Run (SessionEffects)
-import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Types (BranchName(..), TickId(..))
 
 runCommand
-  :: (BranchOpen r, Member Splitter r, SessionEffects r)
+  :: (BranchOpen r, SessionEffects r)
   => T.Text -> BranchCommand -> Sem r [BranchEvent]
 runCommand branch cmd =
   let name = BranchName branch
@@ -51,10 +50,6 @@ runCommand branch cmd =
 
     DeleteTick _mid tid -> do
       deleteTickFromBranch (TickId tid)
-      return []
-
-    ChatPrompt _mid path prompt -> do
-      chatPrompt path prompt
       return []
 
 -- ---------------------------------------------------------------------------

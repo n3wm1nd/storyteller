@@ -41,7 +41,7 @@ import Server.Env (ServerEnv(..))
 import Server.File (FileOpen, fileState, fileStateSince)
 import Server.File.Dispatch (runCommand)
 import Server.File.Protocol
-import Server.Notification (BranchNotification, watchBranch)
+import Server.Notification (BranchNotification(..), watchBranch)
 import Server.Protocol (Update(..))
 import Server.Run (SessionEffects, actionStack, loggingWS)
 import Server.Util (withBranchSplitter)
@@ -65,15 +65,29 @@ runCommands env branch path conn = do
   either (reportError conn) return result
 
 -- | The notify-listener thread's persistent stack: enter the branch once,
---   then react to ref-move broadcasts for the connection's lifetime.
+--   then react to ref-move and tick-remap broadcasts for the connection's
+--   lifetime.
 runNotifier :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch path conn chan = do
   result <- runM $ actionStack env $
-    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (pushIncremental conn path)
+    withBranchSplitter @Main branch $ void $ watchBranch chan branch Nothing (onNotify conn path)
   either (reportError conn) return result
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (FileError (T.pack err)))
+
+-- | Dispatch a notification to the right push: a ref move means this file's
+--   ticks may have changed, so refetch and diff since the last push; a tick
+--   remap carries its own payload straight through — see 'FileEvent.TickRemap'.
+onNotify
+  :: (FileOpen r, Member (Embed IO) r, Member (Error String) r)
+  => WS.Connection -> FilePath -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
+onNotify conn path since note = case note of
+  RefMoved _ ->
+    pushIncremental conn path since
+  TicksRemapped mapping -> do
+    embed $ WS.sendTextData conn (encode (TickRemap mapping))
+    return since
 
 -- | Push present/absent plus the initial update, mirroring the shape used
 --   throughout: presence is just "does this file have any ticks yet".
