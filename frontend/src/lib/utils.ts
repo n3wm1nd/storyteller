@@ -47,6 +47,25 @@ export function activeCharacterBranches(ticks: Record<string, WireTick>, head: s
   return active;
 }
 
+// Which atom tickIds were written while `character` was present in the
+// scene, derived by folding the branch's full chain (atoms and presence
+// ticks interleaved) in order. An atom counts as "during" if the character
+// was already active at the point that atom lands — i.e. entered before it,
+// not yet left. Used to highlight a character's atoms in the file view on
+// hover; not stored, recomputed on demand same as activeCharacterBranches.
+export function presentDuringAtoms(ticks: Record<string, WireTick>, head: string | null, character: string): Set<string> {
+  const result = new Set<string>();
+  let active = false;
+  for (const t of tickChain(ticks, head)) {
+    if (t.kind === "presence" && tickField(t, "character") === character) {
+      active = tickField(t, "event") === "enter";
+    } else if (t.kind === "atom" && active) {
+      result.add(t.tickId);
+    }
+  }
+  return result;
+}
+
 // Display name for a character/{id} branch — id decoded, prefix stripped.
 // Shared by the character sidebar and the ticks view's presence rendering.
 export function characterDisplayName(branch: string): string {

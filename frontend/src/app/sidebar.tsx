@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, GitBranch, ChevronRight, Plus } from "lucide-react";
+import { Folder, FolderOpen, FileText, GitBranch, ChevronRight, Plus, Users } from "lucide-react";
 import { type ConnInfo } from "@/lib/store";
-import { statusColor } from "@/lib/utils";
+import { statusColor, characterDisplayName } from "@/lib/utils";
 
 // ── File tree ─────────────────────────────────────────────────────────────────
 
@@ -111,6 +111,39 @@ function BranchItem({ name, active, onSelect, onDelete }: {
   );
 }
 
+function CharacterListItem({ branch, active, onSelect, onDelete, onHoverStart, onHoverEnd }: {
+  branch: string; active: boolean; onSelect: () => void; onDelete: () => void;
+  onHoverStart: () => void; onHoverEnd: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => { setHover(true); onHoverStart(); }}
+      onMouseLeave={() => { setHover(false); onHoverEnd(); }}
+      style={{
+        display: "flex", alignItems: "center", gap: 6,
+        padding: "5px 8px",
+        background: active ? "oklch(0.65 0.15 200 / 0.10)" : hover ? "var(--surface)" : "transparent",
+        borderLeft: active ? "2px solid oklch(0.65 0.15 200)" : "2px solid transparent",
+        borderRadius: 5, cursor: "pointer",
+      }}
+    >
+      <Users style={{ width: 11, height: 11, flexShrink: 0, color: active ? "oklch(0.65 0.15 200)" : "var(--text-dim)" }} />
+      <span onClick={onSelect} style={{
+        flex: 1, fontSize: 12, color: active ? "oklch(0.75 0.12 200)" : "var(--text-secondary)",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        fontWeight: active ? 500 : 400,
+      }}>{characterDisplayName(branch)}</span>
+      {hover && (
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: "var(--rose)", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0,
+        }}>×</button>
+      )}
+    </div>
+  );
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export function LeftSidebar({
@@ -118,10 +151,11 @@ export function LeftSidebar({
   branches, activeBranch, files, selectedFile,
   onSelectBranch, onSelectFile,
   onCreateBranch, onDeleteBranch,
+  onHoverCharacter,
   conns, error,
 }: {
-  tab: "explorer" | "branches";
-  setTab: (t: "explorer" | "branches") => void;
+  tab: "explorer" | "branches" | "characters";
+  setTab: (t: "explorer" | "branches" | "characters") => void;
   branches: string[];
   activeBranch: string | null;
   files: string[];
@@ -130,16 +164,18 @@ export function LeftSidebar({
   onSelectFile: (f: string) => void;
   onCreateBranch: (name: string) => void;
   onDeleteBranch: (name: string) => void;
+  onHoverCharacter: (branch: string | null) => void;
   conns: ConnInfo[];
   error: string | null;
 }) {
+  const characterBranches = branches.filter((b) => b.startsWith("character/"));
   const [newBranch, setNewBranch] = useState("");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--sidebar)" }}>
       <div style={{ flexShrink: 0, padding: "8px 8px 0", borderBottom: "1px solid var(--border-subtle)" }}>
         <div style={{ display: "flex", background: "var(--surface)", borderRadius: 6, padding: 2, gap: 1 }}>
-          {(["explorer", "branches"] as const).map((t) => (
+          {(["explorer", "branches", "characters"] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)} style={{
               flex: 1, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
               gap: 5, fontSize: 11, borderRadius: 4, border: "none", cursor: "pointer",
@@ -149,8 +185,10 @@ export function LeftSidebar({
             }}>
               {t === "explorer"
                 ? <Folder style={{ width: 12, height: 12 }} />
-                : <GitBranch style={{ width: 12, height: 12 }} />}
-              {t === "explorer" ? "Explorer" : "Branches"}
+                : t === "branches"
+                ? <GitBranch style={{ width: 12, height: 12 }} />
+                : <Users style={{ width: 12, height: 12 }} />}
+              {t === "explorer" ? "Explorer" : t === "branches" ? "Branches" : "Characters"}
             </button>
           ))}
         </div>
@@ -227,6 +265,32 @@ export function LeftSidebar({
               <Plus style={{ width: 11, height: 11 }} />
             </button>
           </div>
+        </div>
+      )}
+
+      {tab === "characters" && (
+        // Filtered/styled view over the same branch list — no dedicated
+        // "characters" endpoint yet, see WRITER.md. Hovering an entry
+        // highlights that character's atoms in the currently open file.
+        <div style={{ flex: 1, overflow: "auto", padding: "4px 4px" }} onMouseLeave={() => onHoverCharacter(null)}>
+          <div style={{ padding: "4px 10px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+            <Users style={{ width: 11, height: 11 }} />
+            Characters
+            <span style={{ marginLeft: "auto", fontWeight: 400 }}>{characterBranches.length}</span>
+          </div>
+          {characterBranches.length === 0 ? (
+            <div style={{ padding: "12px 12px", fontSize: 11, color: "var(--text-ghost)" }}>
+              No character branches — create one from the Branches tab (e.g. "character/alice")
+            </div>
+          ) : (
+            characterBranches.map((b) => (
+              <CharacterListItem key={b} branch={b} active={b === activeBranch}
+                onSelect={() => onSelectBranch(b)}
+                onDelete={() => onDeleteBranch(b)}
+                onHoverStart={() => onHoverCharacter(b)}
+                onHoverEnd={() => onHoverCharacter(null)} />
+            ))
+          )}
         </div>
       )}
 

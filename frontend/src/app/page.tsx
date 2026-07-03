@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2 } from "lucide-react";
 import { useStory } from "@/lib/store";
-import { tickChain, statusColor, type AnnotationMode } from "@/lib/utils";
+import { tickChain, statusColor, presentDuringAtoms, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar } from "./fileview";
 import { TicksView } from "./ticksview";
@@ -134,7 +134,8 @@ export default function Home() {
   const [rightOpen, setRightOpen] = useState(true);
   const [rightWidth, setRightWidth] = useState(260);
   const [isResizingRight, setIsResizingRight] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches">("branches");
+  const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters">("branches");
+  const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<"file" | "ticks">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [showNewFile, setShowNewFile] = useState(false);
@@ -190,6 +191,7 @@ export default function Home() {
   const isAbsent = fileConn?.absent ?? false;
   const atomCount       = fileTicks.filter((t) => t.kind === "atom").length;
   const annotationCount = fileTicks.filter((t) => t.kind !== "atom").length;
+  const highlightedTickIds = hoveredCharacter ? presentDuringAtoms(ticks, branchHead, hoveredCharacter) : null;
 
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
@@ -255,6 +257,7 @@ export default function Home() {
               onSelectFile={handleSelectFile}
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
+              onHoverCharacter={setHoveredCharacter}
               conns={conns} error={error}
             />
             <div
@@ -353,6 +356,7 @@ export default function Home() {
                 resetKey={selectedFile}
                 rebaseMarker={rebaseMarker}
                 onSetRebaseMarker={setRebaseMarker}
+                highlightedTickIds={highlightedTickIds}
                 onEdit={handleEditAtom}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}

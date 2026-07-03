@@ -38,10 +38,11 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
 
 // ── Atom block ────────────────────────────────────────────────────────────────
 
-const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
+const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, highlighted, onEdit, onToggleContext }: {
   atom: WireTick;
   isLast: boolean;
   inContext: boolean;
+  highlighted: boolean;
   onEdit: (tickId: string, content: string) => void;
   onToggleContext: (tickId: string) => void;
 }) {
@@ -66,6 +67,7 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
 
   const barColor = inContext
     ? "var(--amber)"
+    : highlighted ? "oklch(0.65 0.15 200)"
     : hovered ? "oklch(0.40 0.03 60)" : "oklch(0.20 0.01 60)";
 
   return (
@@ -75,8 +77,8 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
       style={{
         position: "relative",
         paddingLeft: 10, marginLeft: -12,
-        background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : "transparent",
-        borderRadius: inContext ? 4 : 0,
+        background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : highlighted ? "oklch(0.65 0.15 200 / 0.06)" : "transparent",
+        borderRadius: inContext || highlighted ? 4 : 0,
         marginBottom: isLast ? 0 : editing ? 16 : undefined,
         transition: "background 0.15s",
       }}
@@ -339,7 +341,7 @@ const RebaseDropZone = memo(function RebaseDropZone({ isMarker, isCandidate, onD
 
 export function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
-  rebaseMarker, onSetRebaseMarker,
+  rebaseMarker, onSetRebaseMarker, highlightedTickIds,
   onEdit, onToggleContextAtom, onToggleContextAnnotation,
 }: {
   ticks: WireTick[];
@@ -349,6 +351,10 @@ export function WireTickList({
   resetKey: unknown;
   rebaseMarker: string | null;
   onSetRebaseMarker: (tickId: string | null) => void;
+  // Atoms written while a hovered character (left sidebar's Characters tab)
+  // was present in the scene — see lib/utils.presentDuringAtoms. Null when
+  // nothing is hovered.
+  highlightedTickIds: Set<string> | null;
   onEdit: (tickId: string, content: string) => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
@@ -491,6 +497,7 @@ export function WireTickList({
                   <AtomBlock
                     atom={atom} isLast={isLast}
                     inContext={contextAtoms.has(atom.tickId)}
+                    highlighted={highlightedTickIds?.has(atom.tickId) ?? false}
                     onEdit={onEdit}
                     onToggleContext={onToggleContextAtom}
                   />
