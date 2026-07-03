@@ -48,14 +48,50 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   ),
 };
 
+// Tighter variant for narrow, dense contexts (the journal sidebar panel) —
+// same tags, much less whitespace and a smaller size tuned for a ~200px
+// column rather than a full reading pane.
+const compactMdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+  p: ({ children }) => <p style={{ margin: "0 0 0.35em", fontSize: 11, lineHeight: 1.45, color: "var(--text-body)" }}>{children}</p>,
+  h1: ({ children }) => <h1 style={{ margin: "0 0 0.25em", fontSize: 13, color: "var(--text-heading)", fontWeight: 600 }}>{children}</h1>,
+  h2: ({ children }) => <h2 style={{ margin: "0 0 0.25em", fontSize: 12, color: "var(--text-heading)", fontWeight: 600 }}>{children}</h2>,
+  h3: ({ children }) => <h3 style={{ margin: "0 0 0.25em", fontSize: 11, color: "var(--text-heading)", fontWeight: 600 }}>{children}</h3>,
+  blockquote: ({ children }) => (
+    <blockquote style={{ margin: "0 0 0.35em", paddingLeft: 8, borderLeft: "2px solid var(--border)", color: "var(--text-muted)", fontStyle: "italic" }}>
+      {children}
+    </blockquote>
+  ),
+  code: ({ children }) => (
+    <code style={{ fontFamily: "monospace", fontSize: 10, background: "oklch(0.18 0.01 60)", padding: "0 3px", borderRadius: 2, color: "var(--text-label)" }}>
+      {children}
+    </code>
+  ),
+  pre: ({ children }) => (
+    <pre style={{ margin: "0 0 0.35em", padding: "5px 6px", background: "oklch(0.18 0.01 60)", borderRadius: 4, overflowX: "auto", fontSize: 10, lineHeight: 1.4 }}>
+      {children}
+    </pre>
+  ),
+};
+
 // ── Atom block ────────────────────────────────────────────────────────────────
 
-const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
+const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext, onHoverAtom, onHoverEnd, compact }: {
   atom: WireTick;
   isLast: boolean;
   inContext: boolean;
   onEdit: (tickId: string, content: string) => void;
   onToggleContext: (tickId: string) => void;
+  // Optional cross-component "glow" hook (see store.ts's 'hoverHighlight') —
+  // unused by the main file view, wired up by the journal panel so hovering
+  // a tracked entry highlights the scene atom it came from (via 'atom.refs').
+  onHoverAtom?: (tickIds: Set<string>) => void;
+  onHoverEnd?: () => void;
+  // Dense rendering for narrow, secondary views (the journal sidebar panel)
+  // — smaller type/margins, no dedicated selection-bar gutter (ctrl-click
+  // directly on the text still toggles context, same as the main view — the
+  // always-visible bar is the part that isn't worth the width here), and no
+  // tickId debug label. Everything else (edit, select, hover) is unchanged.
+  compact?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -82,30 +118,32 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
 
   return (
     <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={() => { setHovered(true); onHoverAtom?.(new Set(atom.refs)); }}
+      onMouseLeave={() => { setHovered(false); onHoverEnd?.(); }}
       style={{
         position: "relative",
-        paddingLeft: 10, marginLeft: -12,
+        paddingLeft: compact ? 0 : 10, marginLeft: compact ? 0 : -12,
         background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : "transparent",
         borderRadius: inContext ? 4 : 0,
-        marginBottom: isLast ? 0 : editing ? 16 : undefined,
+        marginBottom: isLast ? 0 : editing ? (compact ? 6 : 16) : (compact ? 2 : undefined),
         transition: "background 0.15s",
       }}
     >
-      <div
-        onClick={(e) => { e.stopPropagation(); onToggleContext(atom.tickId); }}
-        title={inContext ? "Remove from context" : "Add to context"}
-        style={{
-          position: "absolute", left: 0, top: 0, bottom: 0,
-          width: 10, cursor: "pointer", display: "flex", alignItems: "stretch",
-        }}
-      >
-        <div style={{ width: 2, height: "100%", background: barColor, transition: "background 0.15s", borderRadius: 1 }} />
-      </div>
+      {!compact && (
+        <div
+          onClick={(e) => { e.stopPropagation(); onToggleContext(atom.tickId); }}
+          title={inContext ? "Remove from context" : "Add to context"}
+          style={{
+            position: "absolute", left: 0, top: 0, bottom: 0,
+            width: 10, cursor: "pointer", display: "flex", alignItems: "stretch",
+          }}
+        >
+          <div style={{ width: 2, height: "100%", background: barColor, transition: "background 0.15s", borderRadius: 1 }} />
+        </div>
+      )}
 
       {editing ? (
-        <div style={{ padding: "10px 0 14px" }}>
+        <div style={{ padding: compact ? "3px 0 6px" : "10px 0 14px" }}>
           <textarea
             ref={textareaRef}
             value={draft}
@@ -116,11 +154,11 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
             }}
             style={{
               width: "100%", boxSizing: "border-box",
-              minHeight: 80, resize: "vertical",
+              minHeight: compact ? 44 : 80, resize: "vertical",
               background: "var(--surface-deep)",
               border: "1px solid oklch(0.78 0.10 65 / 0.4)",
-              borderRadius: 4, padding: "6px 8px",
-              color: "var(--text-primary)", fontSize: 14, lineHeight: 1.6,
+              borderRadius: 4, padding: compact ? "4px 6px" : "6px 8px",
+              color: "var(--text-primary)", fontSize: compact ? 11 : 14, lineHeight: compact ? 1.4 : 1.6,
               fontFamily: "inherit", outline: "none",
             }}
           />
@@ -139,19 +177,22 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
         <div
           onDoubleClick={startEdit}
           onClick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); onToggleContext(atom.tickId); } }}
+          style={compact ? { cursor: "default", outline: inContext ? "1px solid oklch(0.78 0.10 65 / 0.4)" : "none", outlineOffset: 2, borderRadius: 3 } : undefined}
         >
-          <ReactMarkdown components={mdComponents}>{content}</ReactMarkdown>
+          <ReactMarkdown components={compact ? compactMdComponents : mdComponents}>{content}</ReactMarkdown>
         </div>
       )}
 
-      <span style={{
-        position: "absolute", bottom: 0, right: 0,
-        fontSize: 9, fontFamily: "monospace", lineHeight: 1,
-        color: hovered ? "var(--text-ghost)" : "transparent",
-        userSelect: "all", transition: "color 0.15s", pointerEvents: "none",
-      }}>
-        {atom.tickId.slice(0, 12)}
-      </span>
+      {!compact && (
+        <span style={{
+          position: "absolute", bottom: 0, right: 0,
+          fontSize: 9, fontFamily: "monospace", lineHeight: 1,
+          color: hovered ? "var(--text-ghost)" : "transparent",
+          userSelect: "all", transition: "color 0.15s", pointerEvents: "none",
+        }}>
+          {atom.tickId.slice(0, 12)}
+        </span>
+      )}
     </div>
   );
 });
@@ -353,6 +394,7 @@ export function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
   rebaseMarker, onSetRebaseMarker, presenceBars,
   onEdit, onToggleContextAtom, onToggleContextAnnotation,
+  onHoverAtom, onHoverEnd, compact,
 }: {
   ticks: WireTick[];
   annotationMode: AnnotationMode;
@@ -363,8 +405,16 @@ export function WireTickList({
   onSetRebaseMarker: (tickId: string | null) => void;
   presenceBars: PresenceBar[];
   onEdit: (tickId: string, content: string) => void;
+  onHoverAtom?: (tickIds: Set<string>) => void;
+  onHoverEnd?: () => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
+  // Dense mode for embedding in a narrow, naturally-sized container (the
+  // journal panel) instead of a full-page fill — see AtomBlock's own
+  // 'compact' doc. Also drops the flex/overflow fill assumptions so the
+  // element sizes to its content; the embedding container is expected to
+  // supply its own maxHeight + overflow for the (rare) long-journal case.
+  compact?: boolean;
 }) {
   const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[ticks.length - 1].tickId}` : 0;
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
@@ -511,9 +561,11 @@ export function WireTickList({
   }, [barsKey, atomsKey]);
 
   return (
-    <div style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
-        <div ref={contentRef} style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px", position: "relative" }}>
+    <div style={{ position: "relative", flex: compact ? undefined : 1, display: "flex", flexDirection: "column", overflow: compact ? "visible" : "hidden" }}>
+      <div ref={scrollRef} style={{ flex: compact ? undefined : 1, overflow: compact ? "visible" : "auto" }}>
+        <div ref={contentRef} style={compact
+          ? { padding: "6px 8px", position: "relative" }
+          : { maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px", position: "relative" }}>
           {barRects.map((r, idx) => (
             <div
               key={`${r.character}-${idx}`}
@@ -570,6 +622,9 @@ export function WireTickList({
                     inContext={contextAtoms.has(atom.tickId)}
                     onEdit={onEdit}
                     onToggleContext={onToggleContextAtom}
+                    onHoverAtom={onHoverAtom}
+                    onHoverEnd={onHoverEnd}
+                    compact={compact}
                   />
                   {annotationMode === "dots" && anns.length > 0 && (
                     <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />

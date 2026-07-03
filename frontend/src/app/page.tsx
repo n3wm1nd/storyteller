@@ -119,9 +119,11 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
 export default function Home() {
   const {
     conns, error, branches, activeBranch, files, ticks, branchHead, openFiles,
-    openCharacters, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
-    connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
-    openCharacter, closeCharacter, enterScene, leaveScene,
+    openCharacters, openJournals, journalMarkers, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
+    hoverHighlight, connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
+    openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
+    editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker,
+    setHoverHighlight, clearHoverHighlight, enterScene, leaveScene,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote,
     setRebaseMarker,
@@ -207,6 +209,10 @@ export default function Home() {
     : hoveredCharacter
     ? [{ character: hoveredCharacter, color: characterColor(hoveredCharacter), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, hoveredCharacter) }]
     : [];
+  // Global cross-component highlight (e.g. hovering a journal entry in the
+  // character sidebar) — folded into the same bar mechanism as an extra
+  // lane, since it's the same shape (tickIds + color -> a colored run).
+  if (hoverHighlight) presenceBars.push({ character: "__hover__", color: hoverHighlight.color, tickIds: hoverHighlight.tickIds });
 
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
@@ -227,6 +233,39 @@ export default function Home() {
     selectBranch(name);
     setSidebarTab("explorer");
     pushPath(name, null);
+  }
+
+  // Selection (contextAtoms) is shared across the main scene and every open
+  // journal (see character-sidebar.tsx) — deleting/fixing "the selection"
+  // therefore has to sweep every chain that might contain a selected id, not
+  // just the currently open scene file. A given tickId only ever appears in
+  // the one chain it actually belongs to, so this is just "check each open
+  // chain for members of the shared set," not a routing decision.
+  function handleDeleteSelected() {
+    if (selectedFile) {
+      fileTicks.filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
+        .map((t) => t.tickId).reverse()
+        .forEach((tickId) => deleteAtom(selectedFile, tickId));
+    }
+    for (const [branch, jc] of Object.entries(openJournals)) {
+      tickChain(jc.ticks, jc.head).filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
+        .map((t) => t.tickId).reverse()
+        .forEach((tickId) => deleteJournalAtom(branch, tickId, journalMarkers[branch] ?? null));
+    }
+    clearContext();
+  }
+
+  function handleFix(text: string) {
+    if (selectedFile) {
+      const hasSelection = fileTicks.some((t) => t.kind === "atom" && contextAtoms.has(t.tickId));
+      if (hasSelection) chatFix(selectedFile, text);
+    }
+    for (const [branch, jc] of Object.entries(openJournals)) {
+      const targets = tickChain(jc.ticks, jc.head)
+        .filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
+        .map((t) => t.tickId);
+      if (targets.length > 0) journalFix(branch, text, targets, journalMarkers[branch] ?? null);
+    }
   }
 
   function handleCreateFile() {
@@ -319,13 +358,7 @@ export default function Home() {
               <div style={{ flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center" }}>
                 {contextAtoms.size > 0 && (
                   <button
-                    onClick={() => {
-                      // Delete tail-first so earlier ids aren't invalidated.
-                      fileTicks.filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
-                        .map((t) => t.tickId).reverse()
-                        .forEach((tickId) => selectedFile && deleteAtom(selectedFile, tickId));
-                      clearContext();
-                    }}
+                    onClick={handleDeleteSelected}
                     title={`Delete ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""}`}
                     style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.65 0.18 25 / 0.15)", border: "1px solid oklch(0.65 0.18 25 / 0.35)", color: "var(--rose)" }}
                   >
@@ -395,7 +428,7 @@ export default function Home() {
               onClearContext={clearContext}
               onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
               onWrite={(text)  => selectedFile && chatWrite(selectedFile, text)}
-              onFix={(text)    => selectedFile && chatFix(selectedFile, text)}
+              onFix={handleFix}
               onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
             />
           </>}
@@ -427,6 +460,13 @@ export default function Home() {
               ticks={fileChainTicks} head={fileChainHead} rebaseMarker={rebaseMarker}
               openCharacters={openCharacters}
               openCharacter={openCharacter} closeCharacter={closeCharacter}
+              openJournals={openJournals}
+              openJournal={openJournal} closeJournal={closeJournal}
+              journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
+              trackJournal={trackJournal} editJournalAtom={editJournalAtom}
+              contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
+              toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
+              onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}
               enterScene={enterScene} leaveScene={leaveScene}
             />
           </div>

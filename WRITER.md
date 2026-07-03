@@ -40,7 +40,12 @@ Writer-specific.
 - `sheet.md` — current-state description (mood, traits, whatever a sheet
   ends up holding). Read directly as a file for full history; composed into
   the `character/{charBranch}` connection payload for the sidebar (see
-  WS-PROTOCOL.md).
+  WS-PROTOCOL.md). The first Markdown H1 (`# `) line in `sheet.md` is the
+  character's **display name** — what the UI shows for them (sidebar,
+  presence markers, etc). This may be a nickname, may differ from the full
+  name used in prose, and may differ from the `character/{characterid}`
+  branch id (which often can't hold the real name verbatim — spaces, special
+  characters, renames). Falls back to the branch id if no H1 is present.
 - `journal.md` — the character's own account, in fiction-time order (not
   necessarily story order — flashbacks etc). Read directly via a normal file
   connection; no special connection needed just to read it.

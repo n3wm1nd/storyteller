@@ -17,6 +17,8 @@ import {
 } from "./ws";
 import { tickChain } from "./utils";
 
+const JOURNAL_PATH = "journal.md";
+
 export type { WireTick };
 
 export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
@@ -67,8 +69,30 @@ interface StoryState {
   // itself; this just holds whatever's currently open.
   openCharacters: Record<string, CharacterConn>;
 
+  // Read-only journal.md file connections, keyed by character branch —
+  // opened/closed following scene presence, same lifecycle as
+  // openCharacters (see character-sidebar.tsx), independent of whether the
+  // accordion row happens to be expanded: the marker below needs to track
+  // continuously even while collapsed.
+  openJournals: Record<string, FileConn>;
+
+  // Each active character's own independent time-travel position in their
+  // journal (see lib/utils.nearestJournalMarker) — global, not local
+  // component state, so it (a) keeps updating while the accordion row is
+  // collapsed and (b) is addressable by both the journal panel's own scrub
+  // handle and any future cross-character action (e.g. a unified delete).
+  journalMarkers: Record<string, string | null>;
+
   // Agent log entries (ephemeral, capped ring buffer)
   agentLogs: { level: string; message: string }[];
+
+  // A single cross-component "glow these ticks" highlight — e.g. hovering a
+  // journal entry highlights the main-view atom(s) it was tracked from (via
+  // that atom's 'refs'). Deliberately global rather than routed through a
+  // prop chain: any view keyed by tickId can read this directly and doesn't
+  // need to know who set it or why. Rendered in fileview.tsx by folding it
+  // into the same presence-bar mechanism (tickIds + color -> a colored run).
+  hoverHighlight: { tickIds: Set<string>; color: string } | null;
 
   // Streamed LLM draft for the in-flight chat.prompt/chargen command, if
   // any — a best-effort preview only. Cleared on chat.preview.end, and
@@ -103,6 +127,15 @@ interface StoryState {
   closeFile:      (path: string) => void;
   openCharacter:  (branch: string) => Promise<void>;
   closeCharacter: (branch: string) => void;
+  openJournal:    (branch: string) => Promise<void>;
+  closeJournal:   (branch: string) => void;
+  trackJournal:   (characterBranch: string, fromPath: string) => void;
+  editJournalAtom:   (branch: string, tickId: string, content: string, marker: string | null) => void;
+  deleteJournalAtom: (branch: string, tickId: string, marker: string | null) => void;
+  journalFix:        (branch: string, text: string, targets: string[], marker: string | null) => void;
+  setJournalMarker:  (branch: string, tickId: string | null) => void;
+  setHoverHighlight:   (tickIds: Set<string>, color: string) => void;
+  clearHoverHighlight: () => void;
   enterScene:     (path: string, character: string) => void;
   leaveScene:     (path: string, character: string) => void;
   appendToFile:   (path: string, content: string) => void;
@@ -223,6 +256,20 @@ function buildContextItems(s: StoryState, path: string): ContextItem[] {
   }));
 }
 
+// Target ids for chat.fixer/chat.note, scoped to this file's own chain —
+// contextAtoms is a shared, connection-agnostic set (a journal atom's id can
+// be selected alongside a scene atom's, see character-sidebar.tsx), so a
+// command sent on *this* file's connection must only carry the subset that
+// actually belongs to it. Journal-selected ids are picked up by
+// journalFix/deleteJournalAtom instead (see page.tsx's handleFix).
+function buildContextTargets(s: StoryState, path: string): string[] {
+  const fc = s.openFiles[path];
+  if (!fc) return [];
+  return tickChain(fc.ticks, fc.head)
+    .filter((t) => t.kind === "atom" && s.contextAtoms.has(t.tickId))
+    .map((t) => t.tickId);
+}
+
 // Send a chat.* command now, or hold it if a generation is already
 // streaming on this connection (server processes one command at a time).
 // 'buildCmd' receives the captured flowTid (HEAD at queue-time) only when
@@ -275,6 +322,21 @@ function advanceMarker(marker: string, ticks: Record<string, WireTick>, head: st
   return chain[i].tickId;
 }
 
+// contextAtoms/contextAnnotations are shared, connection-agnostic selection
+// sets (see 'openJournal' below) — any tick.remap, whether from the main
+// file connection or a character's journal connection, must keep them
+// pointing at the right ids. Journal edits don't carry a persistent
+// rebaseMarker in the store (the journal's own marker is local component
+// state — see character-sidebar.tsx), so unlike 'handleTickRemap' this only
+// remaps the shared sets, not a marker.
+function handleContextRemap(set: Setter, mapping: [string, string][]) {
+  const table = new Map(mapping);
+  set((s) => ({
+    contextAtoms: remapSet(table, s.contextAtoms),
+    contextAnnotations: remapSet(table, s.contextAnnotations),
+  }));
+}
+
 function handleTickRemap(set: Setter, path: string, mapping: [string, string][]) {
   const table = new Map(mapping);
   const toSet = new Set(mapping.map(([, to]) => to));
@@ -310,7 +372,10 @@ export const useStory = create<StoryState>((set, get) => ({
   branchHead: null,
   openFiles: {},
   openCharacters: {},
+  openJournals: {},
+  journalMarkers: {},
   agentLogs: [],
+  hoverHighlight: null,
   preview: null,
   contextAtoms: new Set(),
   contextAnnotations: new Set(),
@@ -374,6 +439,7 @@ export const useStory = create<StoryState>((set, get) => ({
 
     for (const fc of Object.values(get().openFiles)) fc.conn.close();
     for (const cc of Object.values(get().openCharacters)) cc.conn.close();
+    for (const jc of Object.values(get().openJournals)) jc.conn.close();
 
     const label = `branch:${name}`;
     set((s) => ({
@@ -383,10 +449,13 @@ export const useStory = create<StoryState>((set, get) => ({
       branchHead: null,
       openFiles: {},
       openCharacters: {},
+      openJournals: {},
+      journalMarkers: {},
       contextAtoms: new Set(),
       contextAnnotations: new Set(),
       rebaseMarker: null,
       pendingSubmit: null,
+      hoverHighlight: null,
       conns: setConnStatus(s.conns, label, "connecting"),
     }));
 
@@ -535,6 +604,123 @@ export const useStory = create<StoryState>((set, get) => ({
     });
   },
 
+  // A character's journal is a plain file (see WRITER.md) — this is the same
+  // generic '/branch/{name}/{path}' connection the main file view uses, just
+  // scoped to the character's own branch instead of activeBranch, and opened
+  // lazily by the sidebar accordion rather than by file selection.
+  openJournal: async (branch) => {
+    if (get().openJournals[branch]) return;
+
+    const label = `journal:${branch}`;
+    set((s) => ({ conns: setConnStatus(s.conns, label, "connecting") }));
+
+    const jc = fileConn(branch, JOURNAL_PATH);
+
+    jc.onStatus((s) => {
+      if (s !== "connected")
+        set((st) => ({ conns: setConnStatus(st.conns, label, "connecting") }));
+    });
+
+    jc.subscribe((evt) => {
+      set((s) => ({ conns: bumpActivity(s.conns, label) }));
+      if (evt.type === "file.present") {
+        set((s) => ({
+          openJournals: { ...s.openJournals, [branch]: { path: JOURNAL_PATH, ticks: {}, head: null, absent: false, conn: jc } },
+          conns: setConnStatus(s.conns, label, "connected"),
+        }));
+      } else if (evt.type === "file.absent") {
+        set((s) => ({
+          openJournals: { ...s.openJournals, [branch]: { path: JOURNAL_PATH, ticks: {}, head: null, absent: true, conn: jc } },
+          conns: setConnStatus(s.conns, label, "connected"),
+        }));
+      } else if (evt.type === "update") {
+        set((s) => {
+          const prev = s.openJournals[branch];
+          if (!prev) return {};
+          return { openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false } } };
+        });
+      } else if (evt.type === "tick.remap") {
+        handleContextRemap(set, evt.mapping);
+      } else if (evt.type === "error") {
+        handleError(set, evt);
+      }
+    });
+
+    await jc.connect();
+    set((s) => ({
+      openJournals: { ...s.openJournals, [branch]: { path: JOURNAL_PATH, ticks: {}, head: null, absent: false, conn: jc } },
+    }));
+  },
+
+  closeJournal: (branch) => {
+    get().openJournals[branch]?.conn.close();
+    set((s) => {
+      const next = { ...s.openJournals };
+      delete next[branch];
+      const nextMarkers = { ...s.journalMarkers };
+      delete nextMarkers[branch];
+      return { openJournals: next, journalMarkers: nextMarkers, conns: removeConn(s.conns, `journal:${branch}`) };
+    });
+  },
+
+  // Explicit, one-shot invocation of the raw Tracker agent (see
+  // Storyteller.Writer.Agent.Tracker) — copies new deltas from the current
+  // scene file into this character's journal.md, verbatim, with a
+  // cross-branch ref back to each source atom (that ref is what lets the
+  // journal panel's hover highlight find the matching atom in the main
+  // view). 'track' is a 'BranchCommand' sent on the *character* branch's own
+  // connection, not the currently open story branch's — so this opens a
+  // short-lived branch connection just to fire it, and closes it the moment
+  // the resulting update/error lands. No persistent state needed: the
+  // journal's own file connection (if open) receives the new ticks through
+  // its own push, same as any other write to that branch.
+  trackJournal: (characterBranch, fromPath) => {
+    const source = get().activeBranch;
+    if (!source) return;
+    const conn = branchConn(characterBranch);
+    conn.subscribe((evt) => {
+      if (evt.type === "update" || evt.type === "error") conn.close();
+      if (evt.type === "error") handleError(set, evt);
+    });
+    conn.connect().then(() => {
+      conn.send({ type: "track", source, files: [{ from: fromPath, to: JOURNAL_PATH }] });
+    }).catch(() => { conn.close(); });
+  },
+
+  // Basic editing on a character's journal — same commands the main file
+  // view sends, just addressed at the journal's own connection. 'marker' is
+  // the journal's own local time-travel position (see character-sidebar.tsx
+  // / lib/utils.nearestJournalMarker), not the store's global 'rebaseMarker'
+  // (which is scoped to whichever scene file is open).
+  editJournalAtom: (branch, tickId, content, marker) => {
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "edit.atom", tickId, content }));
+  },
+
+  deleteJournalAtom: (branch, tickId, marker) => {
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "delete.atom", tickId }));
+  },
+
+  // Fix, scoped to the journal itself — this is what "rewrite to exclude
+  // knowledge of the gun" actually runs against: the character's own
+  // account, not the scene prose. Targets are journal atom ids (see
+  // character-sidebar.tsx's selection-intersection), sent as a chat.fixer
+  // on the journal's connection, same shape as the main view's chatFix.
+  journalFix: (branch, text, targets, marker) => {
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.fixer", text, targets }));
+  },
+
+  setJournalMarker: (branch, tickId) => {
+    set((s) => ({ journalMarkers: { ...s.journalMarkers, [branch]: tickId } }));
+  },
+
+  setHoverHighlight: (tickIds, color) => {
+    set({ hoverHighlight: { tickIds, color } });
+  },
+
+  clearHoverHighlight: () => {
+    set({ hoverHighlight: null });
+  },
+
   // Presence is scoped to a file (a scene), not the whole branch — see
   // WRITER.md — so this sends on the file connection, same as any other
   // mutating file command, and gets rebase-at-marker for free via 'atRebase'.
@@ -582,12 +768,12 @@ export const useStory = create<StoryState>((set, get) => ({
 
   chatFix: (path, text) => {
     const context = buildContextItems(get(), path);
-    const targets = [...get().contextAtoms];
+    const targets = buildContextTargets(get(), path);
     sendChatCommand(get, set, path, () => ({ type: "chat.fixer", text, context, targets }));
   },
 
   chatNote: (path, text) => {
-    const targets = [...get().contextAtoms];
+    const targets = buildContextTargets(get(), path);
     sendChatCommand(get, set, path, () => ({ type: "chat.note", text, targets }));
   },
 
