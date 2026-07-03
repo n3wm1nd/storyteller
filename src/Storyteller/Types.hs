@@ -148,19 +148,19 @@ instance TickType Root where
   toDraft (Root name) = encodeDraft @Root [] [] (unBranchName name)
   fromTick t = Root . BranchName <$> decodePayload @Root t
 
--- | An annotation: a human note referencing another tick.
+-- | An annotation attached to zero or more existing ticks — a comment on a
+--   specific set of atoms, or (with no refs) a free-floating remark on the
+--   file/story so far.
 data Note = Note
-  { noteRef  :: TickId
+  { noteRefs :: [TickId]
   , noteBody :: Text
   } deriving (Show, Eq)
 
 instance TickType Note where
   tickTypeName = "note"
 
-  toDraft (Note ref body) = encodeDraft @Note [ref] [] body
+  toDraft (Note refs body) = encodeDraft @Note refs [] body
 
   fromTick t = do
     body <- decodePayload @Note t
-    case tickRefs (tickData t) of
-      [ref] -> Just Note { noteRef = ref, noteBody = body }
-      _     -> Nothing
+    Just Note { noteRefs = tickRefs (tickData t), noteBody = body }

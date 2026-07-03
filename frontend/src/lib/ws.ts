@@ -105,6 +105,10 @@ export type FileCommand =
   | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; flowTid?: string }
   // Fixer: `targets` are the atoms flagged as the subject of `text`.
   | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
+  // Note: instant, non-LLM, like chat.append — attaches `text` as an
+  // annotation on each of `targets`, or (when empty) on the file's current
+  // HEAD tick.
+  | { type: "chat.note";   id?: string; text: string; targets?: string[] }
   // Rebase: run `command` as if `tickId` were HEAD, then replay everything
   // that came after it on top of the result. Lets the client re-target any
   // command at a historical point in the file's chain.

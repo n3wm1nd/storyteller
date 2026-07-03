@@ -49,10 +49,11 @@ import Server.Run (SessionEffects)
 
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Agent.Tracker (trackBranch)
+import Storyteller.Annotation (addNote)
 import Storyteller.Edit (deleteTick, moveTick)
 import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, reset, storeAs)
-import Storyteller.Types (BranchName(..), TickId(..), Note(..), tickId, tickParent, unTickId)
+import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, reset)
+import Storyteller.Types (BranchName(..), TickId(..), tickId, tickParent, unTickId)
 import qualified Data.Yaml as Yaml
 
 data Main
@@ -121,14 +122,6 @@ branchStateSince since = do
 -- ---------------------------------------------------------------------------
 -- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
-
--- | Add an annotation note referencing an existing tick.
-addNote :: BranchOpen r => TickId -> T.Text -> Sem r ()
-addNote refId text = do
-  ticks <- follow @Main [] $ \acc t -> (t : acc, tickParent t)
-  case filter (\t -> tickId t == refId) ticks of
-    [] -> fail $ "ref tick not found: " <> T.unpack (unTickId refId)
-    _  -> void $ storeAs @Main (Note refId text)
 
 -- | Move a tick to a new position in the chain.
 moveTickInBranch :: BranchOpen r => TickId -> Maybe TickId -> Sem r ()

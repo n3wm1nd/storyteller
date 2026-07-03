@@ -648,16 +648,20 @@ export function ChatPreviewStrip({ preview }: {
 // Routable agents behind the input bar. 'write' is Writer (or FlowWriter,
 // implicitly, when a generation is already in flight — see the store's
 // chatWrite). 'fix' targets the current atom selection. 'append' is the
-// instant, non-LLM verbatim insert.
-type AgentId = "write" | "fix" | "append";
+// instant, non-LLM verbatim insert. 'note' is also instant and non-LLM —
+// attaches the text as an annotation on the current selection, or (with
+// nothing selected) on the file's HEAD tick. Dropdown-only for now, no
+// default main/alt slot — see the routing table in the input-bar plan.
+type AgentId = "write" | "fix" | "append" | "note";
 
 const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof Sparkles | null }> = {
   write:  { label: "Write",  title: "Send to writer agent",              icon: Sparkles },
   fix:    { label: "Fix",    title: "Send to fixer agent (edit targets)", icon: Wrench },
   append: { label: "Append", title: "Append verbatim, instant",           icon: null },
+  note:   { label: "Note",   title: "Attach as a note, instant",          icon: StickyNote },
 };
 
-export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix }: {
+export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote }: {
   enabled: boolean;
   contextAtomCount: number;
   contextAnnotationCount: number;
@@ -667,6 +671,7 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   onAppend: (text: string) => void;
   onWrite:  (text: string) => void;
   onFix:    (text: string) => void;
+  onNote:   (text: string) => void;
 }) {
   const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
@@ -682,7 +687,7 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   const mainId: AgentId = hasContext ? "fix" : "write";
   const altId:  AgentId = hasContext ? "write" : "append";
 
-  const actionFor: Record<AgentId, (t: string) => void> = { write: onWrite, fix: onFix, append: onAppend };
+  const actionFor: Record<AgentId, (t: string) => void> = { write: onWrite, fix: onFix, append: onAppend, note: onNote };
 
   function fire(id: AgentId) {
     const t = text.trim();

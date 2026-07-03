@@ -20,7 +20,7 @@ module Server.File.Dispatch
 import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
-import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatWriter, chatFixer)
+import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatWriter, chatFixer, chatNote)
 import Server.File.Protocol (FileCommand(..))
 import Server.Run (SessionEffects)
 import Storyteller.Agent.Splitter (Splitter)
@@ -51,6 +51,9 @@ runCommand path cmd = case cmd of
 
   ChatFixer _mid prompt context targets ->
     chatFixer path prompt context (map TickId targets)
+
+  ChatNote _mid text targets ->
+    chatNote text (map TickId targets)
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it

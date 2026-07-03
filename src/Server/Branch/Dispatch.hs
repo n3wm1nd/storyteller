@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Dispatch for /branch/{name} connections.
 --
@@ -20,7 +21,7 @@ module Server.Branch.Dispatch
 import qualified Data.Text as T
 import Polysemy (Sem)
 
-import Server.Branch (BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch,
+import Server.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch,
                       trackFiles, charGen)
 import Server.Branch.Protocol
 import Server.Run (SessionEffects)
@@ -41,7 +42,7 @@ runCommand branch cmd =
       return [FileAdded mid path]
 
     AddNote _mid refTickId text -> do
-      addNote (TickId refTickId) text
+      addNote @Main [TickId refTickId] text
       return []
 
     MoveTick _mid tid mAfter -> do

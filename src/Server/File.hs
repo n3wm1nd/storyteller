@@ -29,6 +29,7 @@ module Server.File
   , moveFileAtom
   , chatWriter
   , chatFixer
+  , chatNote
   ) where
 
 import Control.Monad (void)
@@ -48,6 +49,7 @@ import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Agent.Fix (fixAgent)
+import Storyteller.Annotation (addNote)
 import Storyteller.Runtime (Main)
 import qualified Storyteller.Storage as Storage
 import Storyteller.Storage (FileTick, StoryBranch, StoryStorage, fileTicks, storeAs)
@@ -137,6 +139,11 @@ chatFixer path prompt context targets = do
   info $ "fixer agent starting: " <> T.pack path
   _ <- fixAgent @(BranchTag Main) @Main path targets (Instruction prompt) (toContextBlocks context)
   info $ "fixer agent done: " <> T.pack path
+
+-- | Attach a note referencing @targets@ — zero or more atoms; empty is a
+--   free-floating remark rather than a comment on any specific one.
+chatNote :: FileOpen r => T.Text -> [TickId] -> Sem r ()
+chatNote text targets = addNote @Main targets text
 
 toContextBlocks :: [ContextItem] -> [ContextBlock]
 toContextBlocks = map (ContextBlock . ciContent)

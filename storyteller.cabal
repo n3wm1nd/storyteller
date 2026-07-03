@@ -50,6 +50,7 @@ library
                   , Storyteller.Agent.Fix
                   , Storyteller.Agent.ReplaceTool
                   , Storyteller.Atom
+                  , Storyteller.Annotation
                   , Storyteller.Edit
                   , Server.Env
                   , Server.Notification

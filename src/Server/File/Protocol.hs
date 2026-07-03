@@ -38,12 +38,13 @@ instance FromJSON ContextItem where
 -- | Commands the client may send on a file connection.
 --   Each is an intent — the server decides what ticks result.
 --
---   The three "chat.*" variants are the input bar's routable targets:
+--   The "chat.*" variants are the input bar's routable targets:
 --   'ChatAppend' is the instant, non-LLM verbatim insert; 'ChatWriter' is
 --   Writer (or FlowWriter, implicitly, when 'cwFlowTid' is set — the tick
 --   that was HEAD when the user started typing, so the agent can judge
 --   whether atoms generated since then are still provisional); 'ChatFixer'
---   targets specific existing atoms for (eventually) in-place editing.
+--   edits specific existing atoms in place; 'ChatNote' is instant and
+--   non-LLM like 'ChatAppend', attaching an annotation instead of content.
 data FileCommand
   = ChatAppend { fcId :: Maybe T.Text, fcContent :: T.Text }
   | Delete     { fcId :: Maybe T.Text }
@@ -52,6 +53,9 @@ data FileCommand
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
   | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
+  -- | Instant, non-LLM: attach a note to each of 'fcTargets', or (when
+  --   empty) to the file's current HEAD tick.
+  | ChatNote   { fcId :: Maybe T.Text, fcNoteText :: T.Text, fcTargets :: [T.Text] }
   -- | Run 'fcCommand' rebased at 'fcTickId': the chain is temporarily wound
   --   back to that tick, the filesystem set to its snapshot, the inner
   --   command executed there, then every later tick is replayed on top of
@@ -79,6 +83,9 @@ instance FromJSON FileCommand where
         context <- fromMaybe [] <$> o .:? "context"
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatFixer i <$> o .: "text" <*> pure context <*> pure targets
+      "chat.note"   -> do
+        targets <- fromMaybe [] <$> o .:? "targets"
+        ChatNote i <$> o .: "text" <*> pure targets
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown file command: " <> T.unpack t)
 
