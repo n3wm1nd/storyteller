@@ -202,7 +202,7 @@ spec runner = do
   describe "addNote" $ do
 
     it "fails when the ref tick does not exist" $
-      withBranch_ runner (BranchName "test") (addNote (TickId "nonexistent") "hello")
+      withBranch_ runner (BranchName "test") (addNote [TickId "nonexistent"] "hello")
         `shouldSatisfy` \case { Left _ -> True; Right _ -> False }
 
     it "produces a note tick visible in branchState" $ do
@@ -210,7 +210,7 @@ spec runner = do
             -- root tick is the only tick; use its id as the ref
             (_, upd) <- branchState
             let refId = TickId (updateHead upd)
-            addNote refId "a note"
+            addNote [refId] "a note"
             tickKinds . snd <$> branchState
       case result of
         Left err    -> expectationFailure err
@@ -219,7 +219,7 @@ spec runner = do
     it "head still points to a valid tick after adding a note" $ do
       let result = withBranch_ runner (BranchName "test") $ do
             (_, upd) <- branchState
-            addNote (TickId (updateHead upd)) "note"
+            addNote [TickId (updateHead upd)] "note"
             branchState
       case result of
         Left err       -> expectationFailure err
@@ -231,7 +231,7 @@ spec runner = do
       let result = withBranch_ runner (BranchName "test") $ do
             (_, upd) <- branchState
             let refId = TickId (updateHead upd)
-            noteId <- storeAs @Main (Note refId "to delete")
+            noteId <- storeAs @Main (Note [refId] "to delete")
             deleteTickFromBranch noteId
             tickKinds . snd <$> branchState
       case result of
@@ -244,8 +244,8 @@ spec runner = do
       let result = withBranch_ runner (BranchName "test") $ do
             (_, upd) <- branchState
             let refId = TickId (updateHead upd)
-            n1 <- storeAs @Main (Note refId "note1")
-            _  <- storeAs @Main (Note refId "note2")
+            n1 <- storeAs @Main (Note [refId] "note1")
+            _  <- storeAs @Main (Note [refId] "note2")
             before <- length . updateTicks . snd <$> branchState
             moveTickInBranch n1 Nothing
             after <- length . updateTicks . snd <$> branchState
@@ -362,8 +362,8 @@ spec runner = do
                 n1 <- runBranchAndFS @Main (BranchName "test") $ do
                   (_, upd) <- branchState
                   let refId = TickId (updateHead upd)
-                  n1 <- storeAs @Main (Note refId "note1")
-                  _  <- storeAs @Main (Note refId "note2")
+                  n1 <- storeAs @Main (Note [refId] "note1")
+                  _  <- storeAs @Main (Note [refId] "note2")
                   return n1
                 put (0 :: Int)
                 -- 'withStorage' outermost, the branch scope opened inside

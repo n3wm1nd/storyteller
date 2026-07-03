@@ -201,7 +201,7 @@ spec = describe "fileTicks" $ do
     let result = runTestFS $ do
           appendFile @Main "scene.md" "content\n"
           atomId <- store @Main "atom"
-          noteId <- storeAs @Main (Note atomId "a note")
+          noteId <- storeAs @Main (Note [atomId] "a note")
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
@@ -218,7 +218,7 @@ spec = describe "fileTicks" $ do
     let result = runTestFS $ do
           appendFile @Main "other.md" "other content\n"
           atomId <- store @Main "other atom"
-          _noteId <- storeAs @Main (Note atomId "note about other file")
+          _noteId <- storeAs @Main (Note [atomId] "note about other file")
           appendFile @Main "scene.md" "scene content\n"
           _ <- store @Main "scene atom"
           fileTicks @Main "scene.md"
@@ -232,8 +232,8 @@ spec = describe "fileTicks" $ do
     let result = runTestFS $ do
           appendFile @Main "scene.md" "content\n"
           atomId  <- store @Main "atom"
-          noteId  <- storeAs @Main (Note atomId "first note")
-          _note2Id <- storeAs @Main (Note noteId "note about note")
+          noteId  <- storeAs @Main (Note [atomId] "first note")
+          _note2Id <- storeAs @Main (Note [noteId] "note about note")
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
