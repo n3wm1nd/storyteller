@@ -15,7 +15,7 @@
 --
 -- 'continueFileAgent' wraps 'proseAgent' with the common case of reading the
 -- target file to supply the existing content.
-module Storyteller.Agent.Continuation
+module Storyteller.Writer.Agent.Continuation
   ( proseAgent
   , continueFileAgent
   ) where
@@ -30,7 +30,7 @@ import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, listAllFiles, r
 import Runix.LLM (LLM, queryLLM)
 import UniversalLLM (Message(..), ModelConfig(..))
 
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
 
 import Prelude hiding (readFile)
 

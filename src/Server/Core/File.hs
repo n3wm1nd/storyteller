@@ -40,7 +40,7 @@ import Runix.Logging (info)
 import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
 
-import Storyteller.Agent.Append (appendUnsplit)
+import Storyteller.Core.Append (append)
 import Storyteller.Common.Annotation (addNote)
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
@@ -82,14 +82,13 @@ fileStateSince path since = fileUpdateSince since <$> fileTicks @Main path
 -- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
 
--- | Append content to a file as a single, unsplit atom — the caller
---   (someone typing and appending their own text) already chose exactly
---   what they wanted stored; paragraph-splitting is for generated prose,
---   not for this.
+-- | Append content to a file as a single atom — the caller (someone typing
+--   and appending their own text) already chose exactly what they wanted
+--   stored; paragraph-splitting is for generated prose, not for this.
 appendToFile :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 appendToFile path content = do
   info $ "appending to: " <> T.pack path
-  void $ appendUnsplit @Main path content
+  void $ append @Main path content
   info $ "append done: " <> T.pack path
 
 -- | Replace an atom's content in-place. 'editAtom' broadcasts its own

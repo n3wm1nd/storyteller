@@ -16,8 +16,11 @@
 -- granularity at which content is addressable in a branch. The policy is
 -- expressed as an effect so callers are not coupled to it and interceptors
 -- can override it (e.g. to split by sentence instead of paragraph, or to
--- call an LLM for semantic splitting).
-module Storyteller.Agent.Splitter
+-- call an LLM for semantic splitting). Lives in 'Common' rather than
+-- 'Storyteller.Writer.Agent' — closer to a type/effect declaration any app
+-- could want than to app-specific policy, and 'Storyteller.Core.Append'
+-- needs the option to be split-aware without depending on Writer.
+module Storyteller.Common.Splitter
   ( -- * Effect
     Splitter(..)
   , splitAtoms

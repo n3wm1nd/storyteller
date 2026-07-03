@@ -41,11 +41,11 @@ import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
 import Storyteller.Core.Storage (StoryBranch, StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
-import Storyteller.Agent.Continuation (continueFileAgent)
-import Storyteller.Agent.CharContext (charSummaryAgent)
-import Storyteller.Agent.Append (appendAgent)
-import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
+import Storyteller.Writer.Agent.Continuation (continueFileAgent)
+import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Common.Splitter (Splitter, splitAtoms, splitByParagraph)
+import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 -- | Phantom tag for character branches opened temporarily within the action.
@@ -91,5 +91,5 @@ writeAction outFile instruction activeChars = do
 
   Prose generated <- continueFileAgent @(BranchTag Main) @StoryModel
                                modelConfigs (Just (WordCount 300)) charContexts [] outFile instruction
-  _ <- appendAgent @Main outFile generated
+  _ <- mapM (append @Main outFile) =<< splitAtoms generated
   return generated

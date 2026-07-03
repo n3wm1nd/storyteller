@@ -6,11 +6,11 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Write agent: wire charSummaryAgent → continueFileAgent → appendAgent.
+-- | Write agent: wire charSummaryAgent → continueFileAgent → split → append.
 --
 -- All branch and filesystem interpreters must be in scope at the call site.
 -- This module only composes — no interpreters are launched here.
-module Storyteller.Agent.Write
+module Storyteller.Writer.Agent.Write
   ( writeAgent
   ) where
 
@@ -20,10 +20,10 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), ContextBlock(..), WordCount(..))
-import Storyteller.Agent.Append (appendAgent)
-import Storyteller.Agent.Continuation (continueFileAgent)
-import Storyteller.Agent.Splitter (Splitter)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), ContextBlock(..), WordCount(..))
+import Storyteller.Writer.Agent.Continuation (continueFileAgent)
+import Storyteller.Common.Splitter (Splitter, splitAtoms)
+import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Git (BranchTag(..))
 import Storyteller.Core.Runtime (StoryModel)
@@ -53,4 +53,4 @@ writeAgent path instruction extraContext charActions = do
     return $ CharContextBlock ("## Character: " <> name) : blocks) charActions
   Prose generated <- continueFileAgent @project @StoryModel
                        modelConfigs (Just (WordCount 300)) charContexts extraContext path instruction
-  appendAgent @branch path generated
+  mapM (append @branch path) =<< splitAtoms generated

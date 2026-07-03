@@ -34,22 +34,22 @@ library gitlib-effect
 library
   exposed-modules:  Storyteller
                   , Storyteller.Core.Types
-                  , Storyteller.Agent
+                  , Storyteller.Writer.Agent
                   , Storyteller.Core.Storage
                   , Storyteller.Core.Git
                   , Storyteller.Core.Runtime
                   , Storyteller.Core.CLI.Env
-                  , Storyteller.Agent.Continuation
-                  , Storyteller.Agent.CharContext
-                  , Storyteller.Agent.Splitter
-                  , Storyteller.Agent.Tracker
-                  , Storyteller.Agent.CharGen
-                  , Storyteller.Agent.Append
-                  , Storyteller.Agent.Write
-                  , Storyteller.Agent.FlowWrite
-                  , Storyteller.Agent.Fix
-                  , Storyteller.Agent.ReplaceTool
+                  , Storyteller.Writer.Agent.Continuation
+                  , Storyteller.Writer.Agent.CharContext
+                  , Storyteller.Common.Splitter
+                  , Storyteller.Writer.Agent.Tracker
+                  , Storyteller.Writer.Agent.CharGen
+                  , Storyteller.Writer.Agent.Write
+                  , Storyteller.Writer.Agent.FlowWrite
+                  , Storyteller.Writer.Agent.Fix
+                  , Storyteller.Writer.Agent.ReplaceTool
                   , Storyteller.Core.Atom
+                  , Storyteller.Core.Append
                   , Storyteller.Core.Edit
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation

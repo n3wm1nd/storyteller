@@ -56,7 +56,7 @@ import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction)
 import Server.Core.Util (withBranch)
-import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
+import Storyteller.Common.Splitter (Splitter, splitByParagraph)
 import Storyteller.Core.Git (withStorage)
 import Storyteller.Core.Types (TickId(..))
 

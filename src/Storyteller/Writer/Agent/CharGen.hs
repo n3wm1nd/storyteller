@@ -13,7 +13,7 @@
 --
 --   'charGenAgent' is pure. 'charGenCommit' is the Polysemy action that
 --   generates the sheet and commits it to a branch.
-module Storyteller.Agent.CharGen
+module Storyteller.Writer.Agent.CharGen
   ( charGenAgent
   , charGenCommit
   , ScenarioTemplate(..)

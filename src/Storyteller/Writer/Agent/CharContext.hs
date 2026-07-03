@@ -10,7 +10,7 @@
 --
 -- Reads all files from a character branch's filesystem and formats them as
 -- labelled blocks for inclusion in LLM prompts.
-module Storyteller.Agent.CharContext
+module Storyteller.Writer.Agent.CharContext
   ( charSummaryAgent
   ) where
 
@@ -22,7 +22,7 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 
-import Storyteller.Agent (CharContextBlock(..))
+import Storyteller.Writer.Agent (CharContextBlock(..))
 
 import Prelude hiding (readFile)
 

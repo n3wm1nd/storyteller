@@ -12,7 +12,7 @@
 --
 -- Copies new atoms from a trackee branch into a tracker branch, one tracker
 -- atom per trackee atom. Cross-branch refs record the source atom id.
-module Storyteller.Agent.Tracker
+module Storyteller.Writer.Agent.Tracker
   ( trackBranch
   , dropUntilAfterLastSynced
   ) where

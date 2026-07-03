@@ -8,7 +8,7 @@ import           Paths_storyteller (getDataFileName)
 import           Test.Hspec
 import           Test.QuickCheck
 
-import           Storyteller.Agent.CharGen
+import           Storyteller.Writer.Agent.CharGen
   ( charGenAgent, ScenarioTemplate(..), RngSeed(..), CharSheet(..) )
 
 -- ---------------------------------------------------------------------------

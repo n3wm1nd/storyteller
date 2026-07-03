@@ -27,7 +27,7 @@ import Storyteller.Common.Types (Note(..))
 import Storyteller.Core.Storage hiding (get, drop)
 import qualified Storyteller.Core.Storage as S
 import Storyteller.Core.Git
-import Storyteller.Agent (Prompt(..))
+import Storyteller.Writer.Agent (Prompt(..))
 
 -- ---------------------------------------------------------------------------
 -- Helpers & runner

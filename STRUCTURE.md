@@ -6,14 +6,14 @@ different axes. Don't confuse them:
 1. **`Server.Core` vs. `Server.Writer`** — generic connection/dispatch
    infrastructure vs. this-app-specific assembly and business logic. The cut
    is "would this survive unmodified in a sibling app (Roleplay, Lector)."
-2. **`Storyteller.Core` vs. `Storyteller.Agent`** — the tick/atom/git storage
-   engine vs. the story-writing business logic built on top of it. The cut
-   is "is this the substrate every app would share, or the policy that makes
-   this app what it is" — the closest thing this codebase has to
-   "user-serviceable parts."
+2. **`Storyteller.Core` vs. `Storyteller.Writer.Agent`** (with a `Common`
+   middle tier) — the tick/atom/git storage engine vs. the story-writing
+   business logic built on top of it. The cut is "is this the substrate
+   every app would share, or the policy that makes this app what it is" —
+   the closest thing this codebase has to "user-serviceable parts."
 
-Both splits happen to reuse the word "Core" because they're the same *shape*
-of decision (substrate vs. specific), just applied at different layers — the
+Both splits reuse the word "Core" because they're the same *shape* of
+decision (substrate vs. specific), just applied at different layers — the
 server's request-handling layer, and the underlying storage SDK.
 
 Background/principles this follows: `WS-PROTOCOL.md`'s scope-design section,
@@ -27,14 +27,12 @@ Notepad++ — duplicate glue rather than build extension points).
 `Server.Writer` is not a child that inherits from `Server.Core`. `Server.Core`
 is what you'd get by extracting the common operations out of `Server.Writer`,
 `Server.Roleplay`, and `Server.Lector` — a library factored out of siblings,
-not a base class siblings extend. Since only Writer exists so far, that
-extraction can't honestly happen yet for anything above the pure-function
-layer: the test for "does this belong in Core" isn't "does this look
-app-agnostic" (everything looks app-agnostic with one sample), it's "would
-this survive unmodified if Roleplay or Lector needed it too" — and for
-env/notification/connection assembly, there's no second app yet to check that
-against. That's why those stay in Writer even though nothing about the code
-itself makes them look Writer-specific.
+not a base class siblings extend. The test for "does this belong in Core"
+isn't "does this look app-agnostic" (everything looks app-agnostic with one
+app in existence), it's "would this survive unmodified if Roleplay or Lector
+needed it too." Env/notification/connection assembly stay in Writer even
+though nothing about the code itself makes them look Writer-specific,
+because there's no second app yet to check that against.
 
 ## The cut: library vs. assembly
 
@@ -49,15 +47,15 @@ it holds Writer-specific business-logic functions of the same shape/category
 as Core's (e.g. `trackFiles`/`charGen` sit next to `Server.Core.Branch`'s
 `moveTickInBranch` in spirit, just too specific to be universal).
 
-Concretely: connection lifecycle and notification handling are assembly, not
-library, even though `Server.Writer.File.Connection`/`Server.Writer.Branch.Connection`
+Connection lifecycle and notification handling are assembly, not library,
+even though `Server.Writer.File.Connection`/`Server.Writer.Branch.Connection`
 look structurally identical to each other. That similarity is a coincidence
 of only having one app so far, not evidence they're a reusable "tick
-notifier" abstraction — Branch and File *already* handle `TicksRemapped`
+notifier" abstraction — Branch and File already handle `TicksRemapped`
 differently (File forwards it to the client as `tick.remap`; Branch drops
-it). Don't extract a shared notifier now and hit that mismatch later;
-duplicate the whole connection+notification module and let it diverge until
-a second app actually forces the shared part into view.
+it). Don't extract a shared notifier and risk a mismatch surfacing later;
+let the connection+notification modules diverge freely per app until a
+second app actually forces the shared part into view.
 
 ## `Server.Core.*` — pure library, no assembly
 
@@ -65,8 +63,8 @@ a second app actually forces the shared part into view.
 |---|---|
 | `Server.Core.Protocol` | `WireTick`, `Update`, `toWireTick`, `tickToWireTick`, `withId` — wire-shape data + pure conversions |
 | `Server.Core.Util` | `withBranch` — generic scope-opening helper |
-| `Server.Core.Run` | `SessionEffects` type alias — a type-level list of effect memberships (Random/Sleep/Time/Git/Fail/Logging/Error/StoryStorage/LLM). A declaration any library function can require, not wiring; the interpreters that satisfy it are Writer's job (`Server.Writer.Run`). Split out from the rest of `Run` specifically because `Server.Core.File`'s `appendToFile` needs the constraint for logging — a library function, so it can't depend on Writer. |
-| `Server.Core.Branch` | `BranchOpen`, `branchState`, `branchStateSince`, `moveTickInBranch`, `deleteTickFromBranch`, `addNote` (re-exported from `Storyteller.Core.Annotation`) — generic tick-chain state/mutation, no JSON/WebSocket |
+| `Server.Core.Run` | `SessionEffects` type alias — a type-level list of effect memberships (Random/Sleep/Time/Git/Fail/Logging/Error/StoryStorage/LLM). A declaration any library function can require, not wiring — kept separate from the rest of `Run` (which is the interpreters that satisfy it) so library code can depend on the constraint without depending on Writer's assembly. |
+| `Server.Core.Branch` | `BranchOpen`, `branchState`, `branchStateSince`, `moveTickInBranch`, `deleteTickFromBranch`, `addNote` (re-exported from `Storyteller.Common.Annotation`) — generic tick-chain state/mutation, no JSON/WebSocket |
 | `Server.Core.File` | `FileOpen`, `fileState`, `fileStateSince`, `appendToFile`, `editFileAtom`, `deleteFileAtom`, `moveFileAtom`, `chatNote` — generic atom-chain state/mutation, no JSON/WebSocket |
 
 That's the whole of Core — five modules. Everything else is assembly (or
@@ -104,9 +102,7 @@ business-logic layer, not the wire protocol), run once each under an eager
 interpreter and once buffered through `Storyteller.Core.Git.withStorage` (see
 `test/Main.hs`). `NotificationSpec` exercises `Server.Writer.Notification`.
 
-# Part 2: SDK — `Storyteller.Core` vs. `Storyteller.Common` vs. `Storyteller.Agent`
-
-This turned out to need three tiers, not two — see "the middle tier" below.
+# Part 2: SDK — `Storyteller.Core` vs. `Storyteller.Common` vs. `Storyteller.Writer.Agent`
 
 ## `Storyteller.Core.*` — the storage engine
 
@@ -121,56 +117,75 @@ unmodified if a Roleplay or Lector app were built on the same substrate.
 | `Storyteller.Core.Git` | The git-backed interpreters for `StoryStorage`/`StoryBranch` — ref layout, commit encoding, working-tree (de)serialization |
 | `Storyteller.Core.Edit` | Chain editing: `deleteTick`, `editAtom`, `moveTick`, `commitWorkingTree` — composed from storage primitives, no LLM/splitter involvement |
 | `Storyteller.Core.Atom` | The `Atom` tick kind (file-append ticks) |
+| `Storyteller.Core.Append` | `append` — write one atom, verbatim. Same category as `Edit`: a plain composition of storage primitives, deliberately with no `Splitter` awareness (see below). |
 | `Storyteller.Core.Runtime` | `StoryModel`, the `Main` branch-phantom, `runInfrastructure`/`runStoryGit` — shared IO effect-stack assembly |
 | `Storyteller.Core.CLI.Env` | `StoryEnv`, `loadEnv`, `modelConfigs` — the ENV-variable configuration shared by all CLI entry points |
 
-## The middle tier: `Storyteller.Common.*`
+## `Storyteller.Common.*` — reusable, but not foundational
 
-Not every tick kind is foundational the way `Root` is (every branch needs a
-root tick regardless of app), but not every tick kind is app-specific either
-— some are things *any* agent, in any app built on this storage model, would
-plausibly want to produce: a user comment, a record of why an agent changed
-something. Those go in `Storyteller.Common`, not `Storyteller.Core`:
+Not every tick kind (or effect) is foundational the way `Root` is (every
+branch needs a root tick regardless of app), but not everything is
+app-specific either — some things any agent, in any app built on this
+storage model, would plausibly want:
 
 | Module | Contains |
 |---|---|
 | `Storyteller.Common.Types` | `Note` (user-authored comment on zero or more ticks), `Fixup` (agent-authored record of why it changed an atom) |
 | `Storyteller.Common.Annotation` | `addNote` — the operation that creates a `Note` tick |
+| `Storyteller.Common.Splitter` | The `Splitter` effect and `splitAtoms`/`splitByParagraph`/`byParagraph` — the policy for dividing raw text into atoms. Closer to a type/effect declaration than an agent, and `Storyteller.Core.Append` needs the option to compose with it without Core depending on Writer — see below. |
 
-`Fixup` is the fuzzier of the two calls — it's currently only produced by one
-agent (`Storyteller.Agent.ReplaceTool`, used by `Fix`/`FlowWrite`), so
-"common" is a judgment call rather than something a second caller has
-already proven. Revisit if it turns out to be genuinely Fix/FlowWrite-only.
+`Fixup` is the fuzzier of the two `Common.Types` calls — it's currently only
+produced by one agent (`Storyteller.Writer.Agent.ReplaceTool`, used by
+`Fix`/`FlowWrite`), so "common" here is a judgment call rather than
+something a second caller has already proven. Revisit if it turns out to be
+genuinely Fix/FlowWrite-only.
 
-`Storyteller.Common.Agent.*` doesn't exist yet — reserved for agents that
-turn out to be common rather than Core or Writer-specific as that
-distinction gets made (see the still-unfinished agent-internal split below;
-`Splitter`/`Tracker` are the current candidates).
+## `Storyteller.Writer.Agent.*` — the business logic
 
-## `Storyteller.Agent.*` — the business logic (unchanged)
+Named `Writer.Agent`, not bare `Agent`, because this is the "what does this
+app actually do" policy layer — the least reusable part of the whole SDK.
+Holds: `Agent` (shared cross-agent vocabulary — `Prompt`, `Instruction`,
+`Prose`, `ContextBlock`, etc.), `CharContext`, `CharGen`, `Continuation`
+(the prose-generation core), `Fix`, `FlowWrite`, `ReplaceTool`, `Tracker`,
+`Write`. There's no `Append` module here — see below.
 
-Already lived in its own namespace before this split and didn't need to
-move — it was already correctly separated by directory, just not by a name
-that made the boundary explicit. This is where the actual "what does this
-app do" policy lives: `Agent` (shared cross-agent vocabulary — `Prompt`,
-`Instruction`, `Prose`, `ContextBlock`, etc.), `Append`, `CharContext`,
-`CharGen`, `Continuation` (the prose-generation core), `Fix`, `FlowWrite`,
-`ReplaceTool`, `Splitter` (the atom-splitting policy — deliberately an
-effect, so callers aren't coupled to it), `Tracker`, `Write`.
+## Erring toward specificity
 
-None of this moved in this pass. A further split *within* `Storyteller.Agent`
-(Core/Common/Writer, by how Writer-specific each agent's *policy* is — not
-to be confused with the engine/logic split above) is still only sketched,
-not done: `Splitter`/`Tracker` look like they'd survive across apps
-unmodified, `Write`/`FlowWrite`/`Fix`/`CharGen`/`CharContext`/`Continuation`
-look Writer-specific, but nothing has forced the actual boundary into view
-yet — same "don't extract before a second app exists" reasoning as
-everywhere else in this doc.
+The rule for placing anything in `Storyteller.Core`/`Common` vs.
+`Writer.Agent`: default to Writer-specific unless something *forces* the
+boundary into view — a real second consumer today, not a plausible future
+one. "Looks reusable" is not sufficient on its own. `Splitter` lives in
+`Common` because `Storyteller.Core.Append` has a genuine, structural need to
+compose with it (see below) — not merely because splitting policy sounds
+generic. `Tracker` looks just as reusable (copying atoms between branches
+isn't inherently a Writer-only idea), but nothing depends on it outside
+`Storyteller.Writer.Agent` today, so it stays there until something does.
 
-## Blast radius
+## Why `append` and `Splitter` are split the way they are
 
-`Storyteller.Core.Types`/`Storage`/`Git` in particular are imported almost
-everywhere (45 files at the time of this move) — they're the closest thing
-this codebase has to a standard library. Renaming them was a pure mechanical
-move (module path + import lines only), no behavior change; the git history
-for this commit is a straightforward rename diff.
+`Server.Core.File.appendToFile` must work for any app, and it needs to
+append a single atom verbatim. Core code can never depend on
+`Storyteller.Writer.Agent` (Writer depends on Core, not the reverse), so
+that operation — `Storyteller.Core.Append.append` — has to live in Core and
+must not require the `Splitter` effect.
+
+Splitting generated prose into paragraph atoms before appending each one is
+a different, Splitter-dependent operation, needed only by the prose agents
+(`Write`, `Fix`, `FlowWrite`). There's no dedicated function for this at
+all — no `Storyteller.Writer.Agent.Append` module, no `appendAgent`. Each of
+the three call sites just writes the composition out directly:
+`mapM (append @branch path) =<< splitAtoms content`, using
+`Storyteller.Core.Append.append` and `Storyteller.Common.Splitter.splitAtoms`
+straight from their own modules. Two ordinary operations composed at the
+point of use don't need a name of their own.
+
+`Splitter` itself lives in `Common` rather than `Writer.Agent` specifically
+so this composition is possible without `Storyteller.Core.Append` depending
+on `Storyteller.Writer.Agent`.
+
+## Cross-cutting note
+
+`Storyteller.Core.Types`/`Storage`/`Git` are imported by nearly every module
+in this codebase — they're the closest thing here to a standard library.
+Any change to them has wide blast radius; check callers broadly before
+editing their public interface.

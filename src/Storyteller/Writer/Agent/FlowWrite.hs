@@ -7,7 +7,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | FlowWriter: like 'Storyteller.Agent.Write.writeAgent', but aware that a
+-- | FlowWriter: like 'Storyteller.Writer.Agent.Write.writeAgent', but aware that a
 -- generation may already have been in flight when the user typed this
 -- instruction. 'flowWriteAgent' is given 'flowTid' — the tick that was HEAD
 -- at type-time, not at execution-time — so it can tell which atoms it's
@@ -16,10 +16,10 @@
 --
 -- Before continuing, it revises that provisional span in place: each atom
 -- generated since 'flowTid' gets its own single-atom 'reworkAtomsAt' call
--- (see @Storyteller.Agent.ReplaceTool@) against the new instruction, so the
+-- (see @Storyteller.Writer.Agent.ReplaceTool@) against the new instruction, so the
 -- model can patch anything the new instruction invalidates before building
 -- on top of it.
-module Storyteller.Agent.FlowWrite
+module Storyteller.Writer.Agent.FlowWrite
   ( flowWriteAgent
   ) where
 
@@ -29,11 +29,11 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), ContextBlock(..), WordCount(..))
-import Storyteller.Agent.Append (appendAgent)
-import Storyteller.Agent.Continuation (continueFileAgent)
-import Storyteller.Agent.ReplaceTool (reworkAtomsAt)
-import Storyteller.Agent.Splitter (Splitter)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), ContextBlock(..), WordCount(..))
+import Storyteller.Writer.Agent.Continuation (continueFileAgent)
+import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
+import Storyteller.Common.Splitter (Splitter, splitAtoms)
+import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (StoryModel)
@@ -68,7 +68,7 @@ flowWriteAgent path flowTid instruction extraContext charActions = do
 
   Prose generated <- continueFileAgent @project @StoryModel
                        modelConfigs (Just (WordCount 300)) charContexts extraContext path instruction
-  contTids <- appendAgent @branch path generated
+  contTids <- mapM (append @branch path) =<< splitAtoms generated
   return (reworkedTids <> contTids)
 
 -- | The atom under review was generated while this instruction was already

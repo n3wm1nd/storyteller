@@ -30,7 +30,7 @@ import Storyteller.Core.Runtime
   ( runInfrastructure, runBranchAndFS, runStoryStorageGit, BranchTag(..) )
 import Storyteller.Core.Storage (createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..), TickId)
-import Storyteller.Agent.Tracker (trackBranch)
+import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 
 -- | Phantom tags for the two branches open simultaneously.

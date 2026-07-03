@@ -8,7 +8,7 @@
 -- Newtypes here are for values that cross agent boundaries — either passed
 -- from the server dispatch layer into an agent, or forwarded from one agent
 -- to another. Single-agent-local types stay in their own modules.
-module Storyteller.Agent
+module Storyteller.Writer.Agent
   ( UserInput(..)
   , Instruction(..)
   , Prompt(..)

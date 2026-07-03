@@ -31,7 +31,7 @@ import Server.Core.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, m
 import Server.Writer.File (chatWriter, chatFixer)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
-import Storyteller.Agent.Splitter (Splitter)
+import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
 import Storyteller.Core.Types (TickId(..))

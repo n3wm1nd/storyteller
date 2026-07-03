@@ -12,7 +12,7 @@
 -- replacement text plus a short reason, and the target atom (its tick id
 -- and file path) is bound into the tool by the caller rather than supplied
 -- by the model — so the model has no way to ever target the wrong atom.
--- This is what @Storyteller.Agent.Fix@ and @Storyteller.Agent.FlowWrite@
+-- This is what @Storyteller.Writer.Agent.Fix@ and @Storyteller.Writer.Agent.FlowWrite@
 -- both reduce to: "here is one atom, here is an instruction, does it need
 -- to change, and if so to what — and why".
 --
@@ -25,7 +25,7 @@
 -- wrapped with 'mkToolWithMeta', and applying it is 'Storyteller.Core.Edit.editAtom'
 -- — the same in-place-replace-preserving-position mechanics the working-tree
 -- commit path already uses.
-module Storyteller.Agent.ReplaceTool
+module Storyteller.Writer.Agent.ReplaceTool
   ( reworkAtom
   , reworkAtomsAt
   ) where
@@ -46,7 +46,7 @@ import UniversalLLM.Tools
   , executeToolCallFromList, ToolResult(..)
   )
 
-import Storyteller.Agent (Instruction(..))
+import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Edit (editAtom)
 import Storyteller.Core.Git (BranchTag)

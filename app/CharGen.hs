@@ -36,7 +36,7 @@ import           Polysemy.Fail (Fail)
 import           Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile)
 import           Runix.Logging (Logging)
 
-import           Storyteller.Agent.CharGen
+import           Storyteller.Writer.Agent.CharGen
   (charGenAgent, ScenarioTemplate(..), RngSeed(..), unSheet)
 import           Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 import           Storyteller.Core.Git (BranchTag(..))

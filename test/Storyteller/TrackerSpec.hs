@@ -25,7 +25,7 @@ import Prelude hiding (readFile, writeFile)
 import Storyteller.Core.Git hiding (emptyWorkingTree)
 import Storyteller.Core.Storage hiding (drop)
 import Storyteller.Core.Types
-import Storyteller.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
+import Storyteller.Writer.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
 
 -- ---------------------------------------------------------------------------
 -- Phantoms

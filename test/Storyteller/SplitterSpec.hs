@@ -6,7 +6,7 @@ import qualified Data.Text as T
 import Test.Hspec
 import Test.QuickCheck
 
-import Storyteller.Agent.Splitter (byParagraph)
+import Storyteller.Common.Splitter (byParagraph)
 
 spec :: Spec
 spec = do

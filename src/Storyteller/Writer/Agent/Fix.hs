@@ -8,10 +8,10 @@
 
 -- | Fixer: given an instruction and a set of existing atoms flagged as the
 -- target of that instruction, edit each flagged atom in place via
--- 'reworkAtomsAt' (see @Storyteller.Agent.ReplaceTool@) — one single-turn,
+-- 'reworkAtomsAt' (see @Storyteller.Writer.Agent.ReplaceTool@) — one single-turn,
 -- single-atom tool call per target, so the model decides per-atom whether a
 -- change is even warranted.
-module Storyteller.Agent.Fix
+module Storyteller.Writer.Agent.Fix
   ( fixAgent
   ) where
 
@@ -22,11 +22,11 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 
-import Storyteller.Agent (Instruction(..), Prose(..), ContextBlock(..), WordCount(..))
-import Storyteller.Agent.Append (appendAgent)
-import Storyteller.Agent.Continuation (continueFileAgent)
-import Storyteller.Agent.ReplaceTool (reworkAtomsAt)
-import Storyteller.Agent.Splitter (Splitter)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), ContextBlock(..), WordCount(..))
+import Storyteller.Writer.Agent.Continuation (continueFileAgent)
+import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
+import Storyteller.Common.Splitter (Splitter, splitAtoms)
+import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (StoryModel)
@@ -55,5 +55,5 @@ fixAgent path targets instruction extraContext = do
     then do
       Prose generated <- continueFileAgent @project @StoryModel
                            modelConfigs (Just (WordCount 300)) [] extraContext path instruction
-      appendAgent @branch path generated
+      mapM (append @branch path) =<< splitAtoms generated
     else reworkAtomsAt @branch @project path instruction idxs

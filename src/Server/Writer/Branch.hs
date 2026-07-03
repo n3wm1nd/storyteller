@@ -24,8 +24,8 @@ import Polysemy.Error (throw)
 
 import Server.Core.Run (SessionEffects)
 
-import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
-import Storyteller.Agent.Tracker (trackBranch)
+import Storyteller.Writer.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
+import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Core.Git (runBranchAndFS)
 import Storyteller.Core.Storage (createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))

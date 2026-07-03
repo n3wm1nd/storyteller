@@ -21,11 +21,11 @@ import Server.Core.File (FileOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.File.Protocol (ContextItem(..))
 
-import Storyteller.Agent (Prompt(..), Instruction(..), ContextBlock(..))
-import Storyteller.Agent.Splitter (Splitter)
-import Storyteller.Agent.Write (writeAgent)
-import Storyteller.Agent.FlowWrite (flowWriteAgent)
-import Storyteller.Agent.Fix (fixAgent)
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..))
+import Storyteller.Common.Splitter (Splitter)
+import Storyteller.Writer.Agent.Write (writeAgent)
+import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
+import Storyteller.Writer.Agent.Fix (fixAgent)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (storeAs)
 import Storyteller.Core.Types (TickId(..))
@@ -33,7 +33,7 @@ import Storyteller.Core.Git (BranchTag)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Agent.FlowWrite').
+--   'Storyteller.Writer.Agent.FlowWrite').
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe TickId -> Sem r ()
 chatWriter path prompt context mFlowTid = do
   _ <- storeAs @Main (Prompt path prompt)
