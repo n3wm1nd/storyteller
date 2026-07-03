@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare } from "lucide-react";
+import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare, LogIn, LogOut } from "lucide-react";
 import { type WireTick } from "@/lib/store";
-import { tickPayload, tickField } from "@/lib/utils";
+import { tickPayload, tickField, characterDisplayName } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 
 // ── Move button ───────────────────────────────────────────────────────────────
@@ -68,6 +68,20 @@ function TickRow({
         </span>
       </div>
     );
+    if (tick.kind === "presence") {
+      const character = tickField(tick, "character");
+      const entering = tickField(tick, "event") === "enter";
+      const Icon = entering ? LogIn : LogOut;
+      return (
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
+          <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>{tick.tickId.slice(0, 12)}</span>
+          <Icon style={{ width: 11, height: 11, color: entering ? "oklch(0.65 0.15 165)" : "oklch(0.65 0.15 25)", flexShrink: 0 }} />
+          <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "inherit" }}>
+            {character ? characterDisplayName(character) : "unknown"} {entering ? "enters the scene" : "leaves the scene"}
+          </span>
+        </div>
+      );
+    }
     if (tick.kind === "prompt") return (
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
         <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>{tick.tickId.slice(0, 12)}</span>

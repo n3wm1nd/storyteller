@@ -3,12 +3,7 @@
 import { useEffect, useState } from "react";
 import { Users, UserPlus, X, ChevronDown, ChevronUp, History } from "lucide-react";
 import { type CharacterConn, type WireTick } from "@/lib/store";
-import { activeCharacterBranches } from "@/lib/utils";
-
-function displayName(branch: string): string {
-  const stripped = branch.startsWith("character/") ? branch.slice("character/".length) : branch;
-  return decodeURIComponent(stripped);
-}
+import { activeCharacterBranches, characterDisplayName as displayName } from "@/lib/utils";
 
 // ── Character card ───────────────────────────────────────────────────────────
 

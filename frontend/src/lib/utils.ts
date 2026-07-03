@@ -47,6 +47,13 @@ export function activeCharacterBranches(ticks: Record<string, WireTick>, head: s
   return active;
 }
 
+// Display name for a character/{id} branch — id decoded, prefix stripped.
+// Shared by the character sidebar and the ticks view's presence rendering.
+export function characterDisplayName(branch: string): string {
+  const stripped = branch.startsWith("character/") ? branch.slice("character/".length) : branch;
+  return decodeURIComponent(stripped);
+}
+
 export function statusColor(status: string): string {
   switch (status) {
     case "connected":  return "var(--emerald)";
