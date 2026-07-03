@@ -9,11 +9,10 @@ import { activeCharacterBranches, characterDisplayName as displayName } from "@/
 
 const SHEET_PREVIEW_LEN = 220;
 
-function CharacterCard({ branch, conn, onLeave, leaveDisabled }: {
+function CharacterCard({ branch, conn, onLeave }: {
   branch: string;
   conn: CharacterConn | undefined;
   onLeave: () => void;
-  leaveDisabled: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const connected = conn !== undefined;
@@ -33,12 +32,11 @@ function CharacterCard({ branch, conn, onLeave, leaveDisabled }: {
           {name}
         </span>
         <button
-          onClick={leaveDisabled ? undefined : onLeave}
-          disabled={leaveDisabled}
-          title={leaveDisabled ? "Can't change presence while viewing a past rebase marker" : "Remove from scene"}
+          onClick={onLeave}
+          title="Remove from scene"
           style={{
-            background: "none", border: "none", cursor: leaveDisabled ? "default" : "pointer",
-            color: "var(--text-dim)", opacity: leaveDisabled ? 0.35 : 1,
+            background: "none", border: "none", cursor: "pointer",
+            color: "var(--text-dim)",
             display: "flex", alignItems: "center", padding: 2, flexShrink: 0,
           }}>
           <X style={{ width: 12, height: 12 }} />
@@ -72,25 +70,26 @@ function CharacterCard({ branch, conn, onLeave, leaveDisabled }: {
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export function CharacterSidebar({
-  activeBranch, branches, ticks, branchHead, rebaseMarker, openCharacters,
+  selectedFile, branches, ticks, head, rebaseMarker, openCharacters,
   openCharacter, closeCharacter, enterScene, leaveScene,
 }: {
-  activeBranch: string | null;
+  // Presence is scoped to a file (a scene), not the whole branch — see
+  // WRITER.md — so this sidebar reflects whichever file is open, not the
+  // branch as a whole. 'ticks'/'head' are that file's own projected chain.
+  selectedFile: string | null;
   branches: string[];
   ticks: Record<string, WireTick>;
-  branchHead: string | null;
+  head: string | null;
   // When set (time-travel/rebase mode — see fileview.tsx's RebaseHandle),
-  // the scene shown is "as of this tick" rather than live HEAD. Tick ids are
-  // shared across the whole branch chain, so a marker set while rebasing one
-  // file's atoms is still a valid point to fold presence ticks up to here.
+  // the scene shown is "as of this tick" rather than live HEAD.
   rebaseMarker: string | null;
   openCharacters: Record<string, CharacterConn>;
   openCharacter: (branch: string) => void;
   closeCharacter: (branch: string) => void;
-  enterScene: (character: string) => void;
-  leaveScene: (character: string) => void;
+  enterScene: (path: string, character: string) => void;
+  leaveScene: (path: string, character: string) => void;
 }) {
-  const effectiveHead = rebaseMarker ?? branchHead;
+  const effectiveHead = rebaseMarker ?? head;
   const active = activeCharacterBranches(ticks, effectiveHead);
   const activeKey = active.join("|");
   const [showAdd, setShowAdd] = useState(false);
@@ -132,24 +131,18 @@ export function CharacterSidebar({
       )}
 
       <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
-        {!activeBranch ? (
-          <div style={{ fontSize: 11, color: "var(--text-ghost)" }}>Select a branch</div>
+        {!selectedFile ? (
+          <div style={{ fontSize: 11, color: "var(--text-ghost)" }}>Open a file to see its scene</div>
         ) : active.length === 0 ? (
           <div style={{ fontSize: 11, color: "var(--text-ghost)" }}>No characters in this scene</div>
         ) : (
           active.map((b) => (
-            <CharacterCard key={b} branch={b} conn={openCharacters[b]} onLeave={() => leaveScene(b)} leaveDisabled={rebasing} />
+            <CharacterCard key={b} branch={b} conn={openCharacters[b]} onLeave={() => leaveScene(selectedFile, b)} />
           ))
         )}
       </div>
 
-      {activeBranch && rebasing && (
-        <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "8px", fontSize: 9, color: "var(--text-ghost)", textAlign: "center" }}>
-          Adding/removing characters is disabled while viewing a rebase marker
-        </div>
-      )}
-
-      {activeBranch && !rebasing && (
+      {selectedFile && (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "6px 8px" }}>
           {showAdd ? (
             <div>
@@ -159,7 +152,7 @@ export function CharacterSidebar({
                 available.map((b) => (
                   <button
                     key={b}
-                    onClick={() => { enterScene(b); setShowAdd(false); }}
+                    onClick={() => { enterScene(selectedFile, b); setShowAdd(false); }}
                     style={{
                       display: "block", width: "100%", textAlign: "left",
                       fontSize: 11, padding: "4px 6px", borderRadius: 4,

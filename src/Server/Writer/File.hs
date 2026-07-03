@@ -11,8 +11,10 @@
 module Server.Writer.File
   ( chatWriter
   , chatFixer
+  , setPresence
   ) where
 
+import Control.Monad (void)
 import qualified Data.Text as T
 import Polysemy (Member, Sem)
 import Runix.Logging (info)
@@ -26,9 +28,11 @@ import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (storeAs)
-import Storyteller.Core.Types (TickId(..))
+import Storyteller.Core.Types (BranchName, TickId(..))
 import Storyteller.Core.Git (BranchTag)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
@@ -58,3 +62,9 @@ chatFixer path prompt context targets = do
 
 toContextBlocks :: [ContextItem] -> [ContextBlock]
 toContextBlocks = map (ContextBlock . ciContent)
+
+-- | Record a character entering or leaving the scene on @path@ — presence
+--   is scoped to the file (the scene), not the whole branch, see
+--   'Storyteller.Writer.Types.Presence' and WRITER.md.
+setPresence :: FileOpen r => FilePath -> BranchName -> PresenceEvent -> Sem r ()
+setPresence path character event = void $ recordPresence @Main path character event

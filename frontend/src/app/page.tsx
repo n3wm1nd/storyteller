@@ -192,16 +192,20 @@ export default function Home() {
   const isAbsent = fileConn?.absent ?? false;
   const atomCount       = fileTicks.filter((t) => t.kind === "atom").length;
   const annotationCount = fileTicks.filter((t) => t.kind !== "atom").length;
-  // "Show all" (persistent, toolbar toggle) wins over hover — first-appearance
-  // order both here and in 'allPresentCharacters' itself, so lane 0 (closest
-  // to the text) is always whoever entered the scene first, per the same
-  // ordering 'activeCharacterBranches' already uses for the sidebar.
+  // Presence is scoped to the open file (a scene), not the whole branch —
+  // see WRITER.md — so this folds the file's own chain, not the branch-wide
+  // one. "Show all" (persistent, toolbar toggle) wins over hover —
+  // first-appearance order both here and in 'allPresentCharacters' itself,
+  // so lane 0 (closest to the text) is always whoever entered first, per
+  // the same ordering 'activeCharacterBranches' already uses for the sidebar.
+  const fileChainTicks = fileConn?.ticks ?? {};
+  const fileChainHead  = fileConn?.head ?? null;
   const presenceBars: PresenceBar[] = showAllPresence
-    ? allPresentCharacters(ticks, branchHead).map((c) => ({
-        character: c, color: characterColor(c), tickIds: presentDuringAtoms(ticks, branchHead, c),
+    ? allPresentCharacters(fileChainTicks, fileChainHead).map((c) => ({
+        character: c, color: characterColor(c), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, c),
       }))
     : hoveredCharacter
-    ? [{ character: hoveredCharacter, color: characterColor(hoveredCharacter), tickIds: presentDuringAtoms(ticks, branchHead, hoveredCharacter) }]
+    ? [{ character: hoveredCharacter, color: characterColor(hoveredCharacter), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, hoveredCharacter) }]
     : [];
 
   function handleSelectFile(path: string) {
@@ -418,9 +422,9 @@ export default function Home() {
               }}
             />
             <CharacterSidebar
-              activeBranch={activeBranch}
+              selectedFile={selectedFile}
               branches={branches}
-              ticks={ticks} branchHead={branchHead} rebaseMarker={rebaseMarker}
+              ticks={fileChainTicks} head={fileChainHead} rebaseMarker={rebaseMarker}
               openCharacters={openCharacters}
               openCharacter={openCharacter} closeCharacter={closeCharacter}
               enterScene={enterScene} leaveScene={leaveScene}

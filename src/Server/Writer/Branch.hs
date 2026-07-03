@@ -14,7 +14,6 @@
 module Server.Writer.Branch
   ( trackFiles
   , charGen
-  , setPresence
   ) where
 
 import Control.Monad (void)
@@ -23,13 +22,10 @@ import qualified Data.Text.Encoding as TE
 import Polysemy (Sem)
 import Polysemy.Error (throw)
 
-import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
 
 import Storyteller.Writer.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.Git (runBranchAndFS)
 import Storyteller.Core.Storage (createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -84,10 +80,3 @@ charGen name path scenario seed = do
     Just _  -> return ()
   runBranchAndFS @CharBranch name $
     void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
-
--- | Record a character entering or leaving the scene on the currently-open
---   branch's chain. Unlike 'trackFiles'/'charGen', this touches only the
---   ambient 'Main' scope — the character branch is referenced by name, its
---   own storage is never opened.
-setPresence :: BranchOpen r => BranchName -> PresenceEvent -> Sem r ()
-setPresence character event = void $ recordPresence @Main character event

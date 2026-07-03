@@ -11,10 +11,12 @@
 --
 -- 'ChatAppend'/'EditAtom'/'DeleteAtom'/'MoveAtom'/'ChatNote' are generic
 -- atom-chain operations, so they call straight into 'Server.Core.File'.
--- 'ChatWriter'/'ChatFixer' are Writer-specific, so they call
--- 'Server.Writer.File' instead — this module is where the two layers
--- actually get assembled into one protocol. 'At' is generic either way — it
--- just recurses back into this same dispatch for whichever inner command.
+-- 'ChatWriter'/'ChatFixer'/'EnterScene'/'LeaveScene' are Writer-specific, so
+-- they call 'Server.Writer.File' instead — this module is where the two
+-- layers actually get assembled into one protocol. 'At' is generic either
+-- way — it just recurses back into this same dispatch for whichever inner
+-- command, which is what lets 'EnterScene'/'LeaveScene' be sent rebased at
+-- a client's rebase marker for free.
 --
 -- Successful mutations reach the client via the ref-move notification, same
 -- as anyone else's write — this just runs the mutation. Throws
@@ -28,13 +30,14 @@ import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
 import Server.Core.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatNote)
-import Server.Writer.File (chatWriter, chatFixer)
+import Server.Writer.File (chatWriter, chatFixer, setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
-import Storyteller.Core.Types (TickId(..))
+import Storyteller.Core.Types (BranchName(..), TickId(..))
+import Storyteller.Writer.Types (PresenceEvent(..))
 
 runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r ()
 runCommand path cmd = case cmd of
@@ -62,6 +65,12 @@ runCommand path cmd = case cmd of
 
   ChatNote _mid text targets ->
     chatNote text (map TickId targets)
+
+  EnterScene _mid character ->
+    setPresence path (BranchName character) Enter
+
+  LeaveScene _mid character ->
+    setPresence path (BranchName character) Leave
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it

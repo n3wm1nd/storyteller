@@ -56,6 +56,11 @@ data FileCommand
   -- | Instant, non-LLM: attach a note to each of 'fcTargets', or (when
   --   empty) to the file's current HEAD tick.
   | ChatNote   { fcId :: Maybe T.Text, fcNoteText :: T.Text, fcTargets :: [T.Text] }
+  -- | Presence: a character (character/{id} branch) enters or leaves the
+  --   scene on this file — recorded as a "presence" tick scoped to this
+  --   file's own chain, not the whole branch. See WRITER.md.
+  | EnterScene { fcId :: Maybe T.Text, fcCharacter :: T.Text }
+  | LeaveScene { fcId :: Maybe T.Text, fcCharacter :: T.Text }
   -- | Run 'fcCommand' rebased at 'fcTickId': the chain is temporarily wound
   --   back to that tick, the filesystem set to its snapshot, the inner
   --   command executed there, then every later tick is replayed on top of
@@ -86,6 +91,8 @@ instance FromJSON FileCommand where
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatNote i <$> o .: "text" <*> pure targets
+      "enter.scene" -> EnterScene i <$> o .: "character"
+      "leave.scene" -> LeaveScene i <$> o .: "character"
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown file command: " <> T.unpack t)
 

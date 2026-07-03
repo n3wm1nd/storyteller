@@ -4,8 +4,11 @@
 -- | Protocol for /branch/{name} connections.
 --
 -- Commands: branch-level operations (file tracking, generation, annotations,
---           tick reordering, scene presence). No resync command — reconnect
---           is resync.
+--           tick reordering). Scene presence (enter.scene/leave.scene) lives
+--           on the file connection instead — see WRITER.md and
+--           Server.Writer.File.Protocol; a scene is a file, not the whole
+--           branch, so presence is scoped there. No resync command —
+--           reconnect is resync.
 --           chat.prompt lives on the file connection (Server.Writer.File.Protocol) —
 --           path is implicit from the URL there.
 -- Events:   structural events (ready, file list changes) plus tick updates.
@@ -43,8 +46,13 @@ data BranchCommand
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
-  | EnterScene { bcId :: Maybe T.Text, bcCharacter :: T.Text }
-  | LeaveScene { bcId :: Maybe T.Text, bcCharacter :: T.Text }
+  -- Rebase: run @command@ as if @tickId@ were HEAD, then replay everything
+  -- that came after it on top of the result — same as 'FileCommand's 'At'
+  -- (see Server.Writer.File.Protocol), just for branch-level commands (e.g.
+  -- a future Ticks-view rebase marker, the branch-level equivalent of the
+  -- file view's drag handle — no client trigger for this exists yet, this
+  -- is just the generic capability being available symmetrically).
+  | At { bcId :: Maybe T.Text, bcTickId :: T.Text, bcCommand :: BranchCommand }
   deriving (Show)
 
 instance FromJSON BranchCommand where
@@ -57,8 +65,7 @@ instance FromJSON BranchCommand where
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
-      "enter.scene" -> EnterScene i <$> o .: "character"
-      "leave.scene" -> LeaveScene i <$> o .: "character"
+      "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown branch command: " <> T.unpack t)
 
 -- | Events the server sends on a branch connection.

@@ -103,8 +103,8 @@ interface StoryState {
   closeFile:      (path: string) => void;
   openCharacter:  (branch: string) => Promise<void>;
   closeCharacter: (branch: string) => void;
-  enterScene:     (character: string) => void;
-  leaveScene:     (character: string) => void;
+  enterScene:     (path: string, character: string) => void;
+  leaveScene:     (path: string, character: string) => void;
   appendToFile:   (path: string, content: string) => void;
   editAtom:       (path: string, tickId: string, content: string) => void;
   deleteAtom:     (path: string, tickId: string) => void;
@@ -535,12 +535,15 @@ export const useStory = create<StoryState>((set, get) => ({
     });
   },
 
-  enterScene: (character) => {
-    get()._branch?.send({ type: "enter.scene", character });
+  // Presence is scoped to a file (a scene), not the whole branch — see
+  // WRITER.md — so this sends on the file connection, same as any other
+  // mutating file command, and gets rebase-at-marker for free via 'atRebase'.
+  enterScene: (path, character) => {
+    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "enter.scene", character }));
   },
 
-  leaveScene: (character) => {
-    get()._branch?.send({ type: "leave.scene", character });
+  leaveScene: (path, character) => {
+    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "leave.scene", character }));
   },
 
   appendToFile: (path, content) => {

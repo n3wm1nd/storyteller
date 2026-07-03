@@ -74,11 +74,9 @@ export type BranchCommand =
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
   | { type: "delete.tick"; id?: string; tickId: string }
-  // Presence: a character (character/{id} branch) enters or leaves the
-  // scene at this point in the chain — recorded as a "presence" tick, not
-  // a separate entity. See WRITER.md.
-  | { type: "enter.scene"; id?: string; character: string }
-  | { type: "leave.scene"; id?: string; character: string };
+  // Rebase, same shape as FileCommand's — generic capability, no client
+  // trigger uses this yet (would be a future Ticks-view rebase marker).
+  | { type: "at";          id?: string; tickId: string; command: BranchCommand };
 
 export type BranchEvent =
   | { type: "branch.ready"; id?: string; branch: string; files: string[] }
@@ -115,6 +113,13 @@ export type FileCommand =
   // annotation on each of `targets`, or (when empty) on the file's current
   // HEAD tick.
   | { type: "chat.note";   id?: string; text: string; targets?: string[] }
+  // Presence: a character (character/{id} branch) enters or leaves the
+  // scene on this file — recorded as a "presence" tick scoped to this
+  // file's own chain, not the whole branch (a scene is a file — see
+  // WRITER.md). Wrapping in `at` (below) rebases it at a historical tick,
+  // same as any other file command — no separate mechanism needed.
+  | { type: "enter.scene"; id?: string; character: string }
+  | { type: "leave.scene"; id?: string; character: string }
   // Rebase: run `command` as if `tickId` were HEAD, then replay everything
   // that came after it on top of the result. Lets the client re-target any
   // command at a historical point in the file's chain.

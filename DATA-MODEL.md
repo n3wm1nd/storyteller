@@ -212,6 +212,20 @@ References are embedded in the tick and survive as long as the tick does. When a
 
 ---
 
+## Associations
+
+Not every tick needs a hard reference. A tick can instead carry an **association**: a named, string-matched field in its payload (e.g. `file`, `character`) that relates it to another entity by name, scoped to the branch it lives on. `Presence` uses this to attach itself to a file's scene without pointing at any specific atom; `Prompt` uses the same mechanism. An association may be list-valued in the future (e.g. a tick relevant to more than one file) — it isn't required to be one-to-one the way a reference is.
+
+**Authoritative for filtering, not a ceiling.** Anything that filters or scopes a tick stream (a file's projected chain, a notifier deciding what to push to a connection) can treat a tick's association as ground truth: if it says `file: scene.md`, it belongs to that file's view. But a filter is free to pull in *more* than its associated ticks by following hard references outward from what's already in scope — an annotation with no `file` association at all, but a hard ref into an atom that *is* in scene.md, is fair game for a file notifier to include (and for a UI to then highlight the referenced atom). Association is a floor, not a boundary.
+
+**Branch-scoped.** An association only makes sense to resolve within the branch it's read from. If the entity it names is renamed, every branch that might hold a tick associated with the old name has to be walked and updated — there's no single place a rename touches, because the association itself has no structural link back to the entity it names.
+
+**Contrast with hard references.** `tickRefs` (used by `Note`, `Fixup`) are structural: extra git-parent links, automatically kept in sync by `cascadeReplace` whenever the referenced tick's identity changes via rebase. An association carries no such guarantee — it's just text that has to already match. This is a deliberate trade, not an oversight: for something like `Presence`, the association's looseness is what makes the fold order (not the tick's target identity) the source of truth for what "enter"/"leave" mean — see the note on `moveTick` under Cross-Branch References. Coupling a presence tick to a specific atom's identity would force `moveTick` to drag it along whenever that atom moved, which is backwards: moving an atom past a `Leave` tick should change that atom's presence, not carry the `Leave` along with it.
+
+**Relabel (pattern, not yet built).** No feature exists today that renames an associated entity, so no `relabel` operation has been implemented — but the shape it would need to take is worth recording so a future rename doesn't reinvent this: given an old and new name in some namespace (e.g. `character`), first check every branch for any tick already associating with the new name (a real collision — renaming into a name already in use would otherwise silently merge two identities, which might be desired but should never happen by accident), then, if clear, walk every branch's chain rewriting every tick's matching association value from old to new. This mirrors `cascadeReplace`'s "walk everything, rewrite what matches" shape, just keyed on text equality in a payload field instead of hash equality in a parent list.
+
+---
+
 ## The Temporal Ledger
 
 Each branch maintains a temporal ledger: append-only, never rebased.

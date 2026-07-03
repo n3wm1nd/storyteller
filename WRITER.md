@@ -47,24 +47,46 @@ Writer-specific.
 
 ## Scene presence
 
-No dedicated `Scene` entity. A story branch's tick chain carries presence
-markers — "character X is here" / "character X leaves" — as a tick kind
-alongside atoms and notes (same shape as `BranchTickNote`: kind-tagged,
-referencing the character branch via `tickRefs`). "Who's active" at any
-point in the story is derived by folding presence ticks from root to a given
-tick, not stored separately. A scene typically opens with a cluster of
-"is here" ticks establishing the starting cast. These ticks are ordinary
-chain members — movable/deletable through the existing ticks view, subject
-to the same ordering invariant as any other tick.
+No dedicated `Scene` entity — **a scene is a file.** Presence is scoped per
+file, not to the whole branch: a fresh file implicitly starts with nobody in
+it. Writing a scratch/mid-chapter scene in a separate file must not inherit
+whoever happened to be present in the last file worked on — files are
+independent chains for most practical purposes (see DATA-MODEL.md's
+append-only model; a file's own tick chain is a *projection* of the branch
+chain, not a contiguous walk — `walkFileTicks`, Storyteller.Core.Git, is
+what makes that projection self-contained, see below).
+
+A file's tick chain carries presence markers — "character X is here" /
+"character X leaves" — as a tick kind alongside atoms and notes. "Who's
+active" at any point in that file is derived by folding presence ticks from
+root to a given tick, not stored separately. A scene typically opens with a
+cluster of "is here" ticks establishing the starting cast.
 
 Implemented: the `presence` tick kind (`Storyteller.Writer.Types.Presence`,
 `Storyteller.Writer.Presence.recordPresence`) and the `enter.scene`/
-`leave.scene` commands on `/branch/{name}` (see WS-PROTOCOL.md and
-`Server.Writer.Branch.Protocol`). `character` is stored as a `character/{id}`
-branch-name field, not a tick ref — no rebase fixup needed since it isn't a
-reference into this branch's own chain. Not yet implemented: the sidebar
-reading/deriving "who's active" from these ticks, and any UI to add them
-outside the ticks view.
+`leave.scene` commands on `/branch/{name}/{path}` (the file connection —
+**not** `/branch/{name}`; see WS-PROTOCOL.md and
+`Server.Writer.File.Protocol`). Because it's a `FileCommand`, presence gets
+the existing `at` rebase wrapper for free — no special-casing needed to add
+a character to a scene at a historical point.
+
+`character` is stored as a `character/{id}` branch-name field, not a tick
+ref — no rebase fixup needed since it isn't a reference into this branch's
+own chain. `file` is stored the same way `Prompt` already stores its file
+association (a plain `"file"` field `walkFileTicks` matches against) — a
+hint, not a hard reference; expect this mechanism to change shape later
+(it makes file renaming awkward), and presence to move with it.
+`walkFileTicks` relinks each returned tick's parent to the nearest tick
+still in that file's projection, so a tick like `presence` that carries a
+file hint but no atom content doesn't leave a gap a client's chain walk can
+fall out of (this was a real bug, fixed — see `test/Server/FileSpec.hs`'s
+"unrelated tick" regression test).
+
+The **branch** connection also has a generic `at` wrapper on `BranchCommand`
+(same shape, for `Track`/`CharGen`/`AddNote`/`MoveTick`/`DeleteTick`) — no
+client trigger uses it yet, but it'd be the mechanism behind a possible
+future Ticks-view rebase marker, the branch-level equivalent of the file
+view's drag handle.
 
 ## File extensions
 
@@ -83,9 +105,15 @@ Not yet decided whether the UI hides/auto-adds the extension.
 
 ## Implemented so far
 
-- `presence` tick kind + `enter.scene`/`leave.scene` on `/branch/{name}`.
+- `presence` tick kind + `enter.scene`/`leave.scene` on
+  `/branch/{name}/{path}` (file-scoped — see "Scene presence" above).
 - `/character/{charBranch}` connection (`Server.Writer.Character*`) —
   read-only, pushes `{ name, sheet }` on connect and on every change to the
   character branch. Branch names containing `/` must be percent-encoded in
   the URL path (`character%2Falice`).
-- Nothing on the frontend yet.
+- Frontend: right-hand character sidebar (scene membership for the open
+  file, add/remove, sheet preview), left-sidebar "Characters" tab (filtered
+  branch list, hover-to-highlight), presence bars in the file view (per-run
+  colored lines next to the selection bar; toolbar toggle for "show all
+  characters" vs. hover-only), all reading/writing the open file's own
+  chain, not the branch-wide one.

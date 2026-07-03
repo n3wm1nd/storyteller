@@ -173,17 +173,18 @@ The `message` field carries the full encoded form including the `type:<kind>\n` 
 
 **Scope:** a branch — its full tick chain and file tree.  
 **On connect:** `branch.ready` (file list) + `update` (full tick chain, current head).  
-**Commands:** `add.note`, `move.tick`, `delete.tick`, `chat.prompt`, `track`, `chargen`.  
+**Commands:** `add.note`, `move.tick`, `delete.tick`, `track`, `chargen`, `at` (generic rebase wrapper — see the file connection's `at`; no client trigger uses this one yet, would back a future Ticks-view rebase marker).  
 **Events:** `branch.ready`, `file.added`, `update`, `agent.log`, `error`.  
-**Head semantics:** the most recent content tick on the branch.
+**Head semantics:** the most recent content tick on the branch.  
+**Not here:** scene presence (`enter.scene`/`leave.scene`) — a scene is a file, not the whole branch, so those live on the file connection below. See WRITER.md.
 
 ### `/branch/{name}/{path}`
 
 **Scope:** a single file within a branch — ticks whose content is associated with that path.  
 **On connect:** `file.present` + `update` (file's tick chain, current head), or `file.absent` (no ticks yet — normal initial state before first write).  
 **After first write:** server pushes `file.present` + `update` — the connection transitions from absent to present without reconnecting.  
-**Commands:** `append`, `edit.atom`, `delete.atom`, `move.atom`, `delete`.  
-**Events:** `file.present`, `file.absent`, `update`, `agent.log`, `error`.  
+**Commands:** `chat.append`, `edit.atom`, `delete.atom`, `move.atom`, `delete`, `chat.writer`, `chat.fixer`, `chat.note`, `enter.scene`, `leave.scene`, `at` (rebase wrapper — any command above, including `enter.scene`/`leave.scene`, can be sent wrapped in `at` to run as of a historical tick).  
+**Events:** `file.present`, `file.absent`, `update`, `tick.remap`, `agent.log`, `chat.preview*`, `error`.  
 **Head semantics:** the most recent atom tick for this file.
 
 ### Working tree access *(planned)*
@@ -205,7 +206,7 @@ Not implemented: no commands, no wire types, and no push event exist for this ye
 **Events:** an `update`-shaped push whenever a tick lands inside the range or a referencing entity-branch tick appears.  
 **Why separate from `/branch/{name}/{path}`:** keeps the (large, per-atom) prose stream and the (small, cross-cutting) metadata stream from duplicating each other over the wire — a panel that only needs the chrome (breadcrumb, summary, cast list) doesn't have to receive or filter the full atom chain to get it.
 
-### `/character/{charBranch}` *(planned, app-specific)*
+### `/character/{charBranch}` *(app-specific)*
 
 **Scope:** sidebar-facing data about one character — not its journal (see
 "New scopes are app-specific, not core" above; journal stays on the file
