@@ -222,3 +222,33 @@ test-suite storyteller-test
                     -rtsopts
                     -with-rtsopts=-N
                     -fplugin=Polysemy.Plugin
+
+-- | Scaling probe for the At/updateReferences cascade cost (see
+-- bench/PerfCascade.hs). Not a correctness test: scaling badly is a
+-- performance fact to observe via 'cabal bench', not a build failure.
+benchmark storyteller-cascade-perf
+  type:             exitcode-stdio-1.0
+  main-is:          PerfCascade.hs
+  other-modules:    Git.Mock
+  build-depends:    base >=4.18 && <5
+                  , storyteller
+                  , storyteller:gitlib-effect
+                  , polysemy
+                  , polysemy-plugin
+                  , containers
+                  , text
+                  , bytestring
+                  , runix
+                  , hashable
+  hs-source-dirs:   bench, test
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -threaded
+                    -rtsopts
+                    -with-rtsopts=-N
+                    -O2
+                    -fplugin=Polysemy.Plugin
