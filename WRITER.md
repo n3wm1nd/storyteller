@@ -80,3 +80,12 @@ Not yet decided whether the UI hides/auto-adds the extension.
 - `characters` (plural) session-scoped connection: a filtered, augmented
   branch list for an add-to-scene picker. Deferred — see WS-PROTOCOL.md's
   connection scoping principles for how it would be shaped when built.
+
+## Implemented so far
+
+- `presence` tick kind + `enter.scene`/`leave.scene` on `/branch/{name}`.
+- `/character/{charBranch}` connection (`Server.Writer.Character*`) —
+  read-only, pushes `{ name, sheet }` on connect and on every change to the
+  character branch. Branch names containing `/` must be percent-encoded in
+  the URL path (`character%2Falice`).
+- Nothing on the frontend yet.

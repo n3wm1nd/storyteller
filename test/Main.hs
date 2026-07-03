@@ -11,6 +11,7 @@ import qualified Storyteller.CharGenSpec
 import qualified Storyteller.PresenceSpec
 import qualified Server.BranchSpec
 import qualified Server.FileSpec
+import qualified Server.CharacterSpec
 import qualified Server.NotificationSpec
 import Server.TestStack (testStack, testStackTransactional)
 
@@ -34,4 +35,5 @@ main = hspec $ do
   describe "Server.Core.Branch (withStorage)"   (Server.BranchSpec.spec testStackTransactional)
   describe "Server.Core.File (eager)"           (Server.FileSpec.spec testStack)
   describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
+  describe "Server.Writer.Character"            Server.CharacterSpec.spec
   describe "Server.Writer.Notification"         Server.NotificationSpec.spec

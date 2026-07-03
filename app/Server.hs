@@ -10,6 +10,7 @@
 -- WebSocket endpoints:
 --   /session          — storage-level session (branch management)
 --   /branch/{name}    — branch session (file operations, agents)
+--   /character/{name} — character branch's sidebar-facing state (read-only)
 --
 -- HTTP endpoints (alongside):
 --   /data/{hash}/{filename}   — binary blob by content hash
@@ -29,6 +30,7 @@ import qualified Data.Text as T
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
+import Server.Writer.Character.Connection (runCharacter)
 import Server.Writer.Session.Connection (runSession)
 
 main :: IO ()
@@ -47,6 +49,7 @@ wsRouter env pending =
     ("branch" : name : path) -> accept $ runFile env
                                            (T.pack (BC.unpack (urlDecode False name)))
                                            (foldl1 (\a b -> a <> "/" <> b) (map (BC.unpack . urlDecode False) path))
+    ["character", name]      -> accept $ runCharacter env (T.pack (BC.unpack (urlDecode False name)))
     _                        -> rejectRequest pending "not found"
   where
     accept handler = do
