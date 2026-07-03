@@ -20,7 +20,7 @@ import { WireTickList } from "./fileview";
 function JournalPanel({
   branch, journal, journalMarker, onSetJournalMarker,
   contextAtoms, contextAnnotations, onToggleContextAtom, onToggleContextAnnotation,
-  onTrack, onHoverAtoms, onHoverEnd, onEditAtom,
+  onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onAppend,
 }: {
   branch: string;
   journal: FileConn | undefined;
@@ -37,12 +37,21 @@ function JournalPanel({
   onHoverAtoms: (tickIds: Set<string>, color: string) => void;
   onHoverEnd: () => void;
   onEditAtom: (tickId: string, content: string, marker: string | null) => void;
+  onAppend: (text: string, marker: string | null) => void;
 }) {
   const color = characterColor(branch);
   const journalTicks = journal?.ticks ?? {};
   const journalHead = journal?.head ?? null;
   const chain = tickChain(journalTicks, journalHead);
   const atoms = chain.filter((t) => t.kind === "atom");
+
+  const [draft, setDraft] = useState("");
+  function submitAppend() {
+    const text = draft.trim();
+    if (!text) return;
+    onAppend(text, journalMarker);
+    setDraft("");
+  }
 
   return (
     <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
@@ -91,6 +100,24 @@ function JournalPanel({
           />
         </div>
       )}
+
+      {journal && (
+        <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+          <input
+            value={draft} onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAppend(); } }}
+            placeholder={journalMarker ? "Append at the marker…" : "Append to journal…"}
+            style={{ flex: 1, fontSize: 10, padding: "3px 6px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--foreground)", outline: "none" }}
+          />
+          <button
+            onClick={submitAppend}
+            disabled={!draft.trim()}
+            style={{ fontSize: 10, padding: "3px 8px", background: "var(--amber)", border: "none", borderRadius: 4, color: "oklch(0.15 0.01 60)", fontWeight: 600, cursor: draft.trim() ? "pointer" : "default", opacity: draft.trim() ? 1 : 0.5 }}
+          >
+            Add
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -101,7 +128,7 @@ function CharacterCard({
   branch, conn, journal, expanded, onToggleExpand, onLeave,
   journalMarker, onSetJournalMarker,
   contextAtoms, contextAnnotations, onToggleContextAtom, onToggleContextAnnotation,
-  onTrack, onHoverAtoms, onHoverEnd, onEditAtom,
+  onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onAppend,
 }: {
   branch: string;
   conn: CharacterConn | undefined;
@@ -119,6 +146,7 @@ function CharacterCard({
   onHoverAtoms: (tickIds: Set<string>, color: string) => void;
   onHoverEnd: () => void;
   onEditAtom: (tickId: string, content: string, marker: string | null) => void;
+  onAppend: (text: string, marker: string | null) => void;
 }) {
   const connected = conn !== undefined;
   const name = conn?.name ?? displayName(branch);
@@ -162,7 +190,7 @@ function CharacterCard({
           contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
           onToggleContextAtom={onToggleContextAtom} onToggleContextAnnotation={onToggleContextAnnotation}
           onTrack={onTrack} onHoverAtoms={onHoverAtoms} onHoverEnd={onHoverEnd}
-          onEditAtom={onEditAtom}
+          onEditAtom={onEditAtom} onAppend={onAppend}
         />
       )}
     </div>
@@ -174,7 +202,7 @@ function CharacterCard({
 export function CharacterSidebar({
   selectedFile, branches, ticks, head, rebaseMarker, openCharacters,
   openCharacter, closeCharacter, openJournals, openJournal, closeJournal,
-  journalMarkers, setJournalMarker, trackJournal, editJournalAtom,
+  journalMarkers, setJournalMarker, trackJournal, editJournalAtom, appendJournal,
   contextAtoms, contextAnnotations, toggleContextAtom, toggleContextAnnotation,
   onHoverAtoms, onHoverEnd, enterScene, leaveScene,
 }: {
@@ -198,6 +226,7 @@ export function CharacterSidebar({
   setJournalMarker: (branch: string, tickId: string | null) => void;
   trackJournal: (characterBranch: string, fromPath: string) => void;
   editJournalAtom: (branch: string, tickId: string, content: string, marker: string | null) => void;
+  appendJournal: (branch: string, content: string, marker: string | null) => void;
   // Shared, connection-agnostic tick selection — the same sets the main file
   // view uses. Delete/Fix on this selection are driven from the main view's
   // own controls (page.tsx), not duplicated here.
@@ -299,6 +328,7 @@ export function CharacterSidebar({
               onTrack={() => selectedFile && trackJournal(b, selectedFile)}
               onHoverAtoms={onHoverAtoms} onHoverEnd={onHoverEnd}
               onEditAtom={(tickId, content, marker) => editJournalAtom(b, tickId, content, marker)}
+              onAppend={(text, marker) => appendJournal(b, text, marker)}
             />
           ))
         )}

@@ -122,7 +122,7 @@ export default function Home() {
     openCharacters, openJournals, journalMarkers, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
     hoverHighlight, connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
-    editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker,
+    editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker, appendJournal,
     setHoverHighlight, clearHoverHighlight, enterScene, leaveScene,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote,
@@ -463,7 +463,7 @@ export default function Home() {
               openJournals={openJournals}
               openJournal={openJournal} closeJournal={closeJournal}
               journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
-              trackJournal={trackJournal} editJournalAtom={editJournalAtom}
+              trackJournal={trackJournal} editJournalAtom={editJournalAtom} appendJournal={appendJournal}
               contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
               toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
               onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}

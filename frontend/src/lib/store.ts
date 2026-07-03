@@ -130,6 +130,7 @@ interface StoryState {
   openJournal:    (branch: string) => Promise<void>;
   closeJournal:   (branch: string) => void;
   trackJournal:   (characterBranch: string, fromPath: string) => void;
+  appendJournal:     (branch: string, content: string, marker: string | null) => void;
   editJournalAtom:   (branch: string, tickId: string, content: string, marker: string | null) => void;
   deleteJournalAtom: (branch: string, tickId: string, marker: string | null) => void;
   journalFix:        (branch: string, text: string, targets: string[], marker: string | null) => void;
@@ -692,6 +693,10 @@ export const useStory = create<StoryState>((set, get) => ({
   // the journal's own local time-travel position (see character-sidebar.tsx
   // / lib/utils.nearestJournalMarker), not the store's global 'rebaseMarker'
   // (which is scoped to whichever scene file is open).
+  appendJournal: (branch, content, marker) => {
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.append", content }));
+  },
+
   editJournalAtom: (branch, tickId, content, marker) => {
     get().openJournals[branch]?.conn.send(atRebase(marker, { type: "edit.atom", tickId, content }));
   },
