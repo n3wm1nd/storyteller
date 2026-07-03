@@ -26,6 +26,7 @@ module Storyteller.Types
     -- * Built-in tick kinds
   , Root(..)
   , Note(..)
+  , Fixup(..)
 
     -- * Utilities
   , tickTypeOf
@@ -164,3 +165,21 @@ instance TickType Note where
   fromTick t = do
     body <- decodePayload @Note t
     Just Note { noteRefs = tickRefs (tickData t), noteBody = body }
+
+-- | An agent's own record of why it changed something — distinct from
+--   'Note' (user-authored commentary): a 'Fixup' is agent-authored, tied to
+--   the specific atom(s) it just replaced, kept so the reasoning behind a
+--   change can be traced back later.
+data Fixup = Fixup
+  { fixupRefs   :: [TickId]
+  , fixupReason :: Text
+  } deriving (Show, Eq)
+
+instance TickType Fixup where
+  tickTypeName = "fixup"
+
+  toDraft (Fixup refs reason) = encodeDraft @Fixup refs [] reason
+
+  fromTick t = do
+    reason <- decodePayload @Fixup t
+    Just Fixup { fixupRefs = tickRefs (tickData t), fixupReason = reason }
