@@ -436,7 +436,7 @@ withStorageDiscard = fmap fst . withStorageWithCallback (\_ _ -> pure ())
 --   but nothing in here reaches back out to 'StoryStorage' to notice
 --   writes made by another, concurrently-open scope. A caller that needs a
 --   fresh view of a branch after some other write reopens the scope (see
---   'runBranchAndFS'/'Server.Util.withBranch') rather than relying on this
+--   'runBranchAndFS'/'Server.Core.Util.withBranch') rather than relying on this
 --   interpreter to notice mid-flight — that's what makes the 'withStorage'
 --   transaction boundary and this scope's snapshot semantics agree: both
 --   sync exactly once, at open.

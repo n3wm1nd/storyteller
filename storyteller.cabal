@@ -52,22 +52,25 @@ library
                   , Storyteller.Atom
                   , Storyteller.Annotation
                   , Storyteller.Edit
-                  , Server.Env
-                  , Server.Notification
-                  , Server.Protocol
-                  , Server.Run
-                  , Server.Util
-                  , Server.Session.Protocol
-                  , Server.Session.Connection
-                  , Server.Session.Dispatch
-                  , Server.Branch
-                  , Server.File
-                  , Server.Branch.Protocol
-                  , Server.Branch.Connection
-                  , Server.Branch.Dispatch
-                  , Server.File.Protocol
-                  , Server.File.Connection
-                  , Server.File.Dispatch
+                  , Server.Core.Protocol
+                  , Server.Core.Util
+                  , Server.Core.Run
+                  , Server.Core.Branch
+                  , Server.Core.File
+                  , Server.Writer.Env
+                  , Server.Writer.Notification
+                  , Server.Writer.Run
+                  , Server.Writer.Session.Protocol
+                  , Server.Writer.Session.Connection
+                  , Server.Writer.Session.Dispatch
+                  , Server.Writer.Branch
+                  , Server.Writer.File
+                  , Server.Writer.Branch.Protocol
+                  , Server.Writer.Branch.Connection
+                  , Server.Writer.Branch.Dispatch
+                  , Server.Writer.File.Protocol
+                  , Server.Writer.File.Connection
+                  , Server.Writer.File.Dispatch
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix

@@ -26,10 +26,10 @@ import Network.HTTP.Types (urlDecode)
 import System.IO (hPutStrLn, stderr)
 
 import qualified Data.Text as T
-import Server.Env (ServerEnv, loadServerEnv, envPort)
-import Server.Branch.Connection (runBranch)
-import Server.File.Connection (runFile)
-import Server.Session.Connection (runSession)
+import Server.Writer.Env (ServerEnv, loadServerEnv, envPort)
+import Server.Writer.Branch.Connection (runBranch)
+import Server.Writer.File.Connection (runFile)
+import Server.Writer.Session.Connection (runSession)
 
 main :: IO ()
 main = do

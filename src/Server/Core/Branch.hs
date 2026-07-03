@@ -1,30 +1,26 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Branch-level business logic.
+-- | Branch-level business logic that isn't specific to any one application:
+-- state queries and tick-chain mutations that make sense for any app built
+-- on top of the branch/tick storage model.
 --
--- Most of these functions assume the branch's storage/filesystem scope
--- ('BranchOpen') is already live in the ambient stack. The connection (see
--- 'Server.Branch.Connection') reopens that scope fresh around each command,
--- nested inside a 'Storyteller.Git.withStorage' transaction, so a command's
--- writes are all-or-nothing and visible immediately, not just at
+-- These functions assume the branch's storage/filesystem scope ('BranchOpen')
+-- is already live in the ambient stack — the connection (e.g.
+-- 'Server.Writer.Branch.Connection') reopens that scope fresh around each
+-- command, nested inside a 'Storyteller.Git.withStorage' transaction, so a
+-- command's writes are all-or-nothing and visible immediately, not just at
 -- disconnect — these functions don't need to know that; they just see
--- 'BranchOpen' as already open. Only 'trackFiles' and 'charGen' open their
--- own (additional) branch scopes on top of that, because the branch they
--- need (the source to track from, or a brand-new target) is only known
--- from the command payload at dispatch time — those scopes are opened
--- within the same per-command transaction, so their writes are covered by
--- it too.
+-- 'BranchOpen' as already open.
 --
 -- No JSON, no WebSocket, no T.Text ids — callers handle the boundary.
 -- These functions are the unit under test.
-module Server.Branch
+module Server.Core.Branch
   ( Main
   , BranchOpen
   , branchState
@@ -32,38 +28,26 @@ module Server.Branch
   , addNote
   , moveTickInBranch
   , deleteTickFromBranch
-  , trackFiles
-  , charGen
   ) where
 
 import Control.Monad (void)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Polysemy (Members, Sem)
-import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
 
-import Server.Protocol (Update(..), tickToWireTick)
-import Server.Run (SessionEffects)
+import Server.Core.Protocol (Update(..), tickToWireTick)
 
-import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
-import Storyteller.Agent.Tracker (trackBranch)
 import Storyteller.Annotation (addNote)
 import Storyteller.Edit (deleteTick, moveTick)
-import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch, follow, reset)
-import Storyteller.Types (BranchName(..), TickId(..), tickId, tickParent, unTickId)
-import qualified Data.Yaml as Yaml
+import Storyteller.Git (BranchTag(..))
+import Storyteller.Storage (StoryBranch, StoryStorage, follow, reset)
+import Storyteller.Types (TickId(..), tickId, tickParent, unTickId)
 
 data Main
-data Source
-data Tracker
-data CharBranch
 
 -- | The effects live once a branch connection has entered its branch's
---   scope — reopened fresh per command by 'Server.Branch.Connection', not
---   held for the connection's whole lifetime (see the module comment).
+--   scope — reopened fresh per command by the connection handler, not held
+--   for the connection's whole lifetime (see the module comment).
 type BranchOpen r =
   Members '[ StoryBranch Main
            , StoryStorage
@@ -130,54 +114,3 @@ moveTickInBranch tid mAfter = void $ moveTick @Main tid mAfter
 -- | Delete a tick from the chain.
 deleteTickFromBranch :: BranchOpen r => TickId -> Sem r ()
 deleteTickFromBranch tid = void $ deleteTick @Main tid
-
--- ---------------------------------------------------------------------------
--- Operations that open their own (additional) branch scopes
--- ---------------------------------------------------------------------------
-
--- | Track files from a source branch into a target branch.
---   Creates the target branch if it doesn't exist.
---   Returns the destination paths of tracked files.
---
---   Opens its own 'Source'/'Tracker'-tagged scopes rather than using the
---   ambient 'BranchOpen' one: the source branch is a different branch
---   entirely, known only from the command payload, and the target may not
---   exist yet (so it can't reuse a scope that assumes the branch is already
---   open and unchanging).
-trackFiles
-  :: SessionEffects r
-  => BranchName           -- ^ target branch
-  -> BranchName           -- ^ source branch
-  -> [(FilePath, FilePath)] -- ^ (from, to) pairs
-  -> Sem r [FilePath]
-trackFiles target source pairs = do
-  getBranch target >>= \case
-    Nothing -> void $ createBranch target
-    Just _  -> return ()
-  let destPaths = map snd pairs
-  runBranchAndFS @Source source
-    $ runBranchAndFS @Tracker target $ do
-        mapM_ (trackBranch @Source @Tracker) pairs
-        return destPaths
-
--- | Run chargen and commit the result to a branch.
---   Creates the branch if it doesn't exist.
---
---   Opens its own 'CharBranch'-tagged scope for the same reason as
---   'trackFiles': the target branch may need to be created first.
-charGen
-  :: SessionEffects r
-  => BranchName
-  -> FilePath
-  -> T.Text     -- ^ YAML scenario
-  -> Maybe Int  -- ^ RNG seed
-  -> Sem r ()
-charGen name path scenario seed = do
-  template <- case Yaml.decodeEither' (TE.encodeUtf8 scenario) of
-    Left  err -> throw (Yaml.prettyPrintParseException err)
-    Right val -> return (ScenarioTemplate val)
-  getBranch name >>= \case
-    Nothing -> void $ createBranch name
-    Just _  -> return ()
-  runBranchAndFS @CharBranch name $
-    void $ charGenCommit @CharBranch template (RngSeed <$> seed) path

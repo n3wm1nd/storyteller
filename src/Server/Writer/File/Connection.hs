@@ -30,7 +30,7 @@
 -- its own stack, 'lastHead' is a plain recursive-loop accumulator inside
 -- that thread's loop — no shared mutable state between the two stacks, no
 -- possibility of their pushes racing.
-module Server.File.Connection
+module Server.Writer.File.Connection
   ( runFile
   ) where
 
@@ -45,16 +45,17 @@ import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed, runM)
 import Polysemy.Error (Error, catch)
 
-import Server.Env (ServerEnv(..))
-import Server.File (FileOpen, fileState, fileStateSince)
-import Server.File.Dispatch (runCommand)
-import Server.File.Protocol
-import Server.Notification (BranchNotification(..), watchBranch)
-import Server.Protocol (Update(..))
+import Server.Writer.Env (ServerEnv(..))
+import Server.Core.File (FileOpen, fileState, fileStateSince)
+import Server.Writer.File.Dispatch (runCommand)
+import Server.Writer.File.Protocol
+import Server.Writer.Notification (BranchNotification(..), watchBranch)
+import Server.Core.Protocol (Update(..))
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
-import Server.Run (SessionEffects, actionStack, wsAction)
-import Server.Util (withBranch)
+import Server.Core.Run (SessionEffects)
+import Server.Writer.Run (actionStack, wsAction)
+import Server.Core.Util (withBranch)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
 import Storyteller.Git (withStorage)
 import Storyteller.Runtime (Main)

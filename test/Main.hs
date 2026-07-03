@@ -22,14 +22,14 @@ main = hspec $ do
   describe "Storyteller.Splitter"       Storyteller.SplitterSpec.spec
   describe "Storyteller.Tracker"        Storyteller.TrackerSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
-  -- Server.Branch/Server.File are written once against 'TestRunner' (see
-  -- Server.TestStack) and run under both interpreters: eager, and
-  -- buffered through 'Storyteller.Git.withStorage' — the transaction
-  -- wrapping every real server command actually runs under. A bug once
-  -- slipped past the whole suite by only showing up through the buffered
-  -- path; running both here is what closes that gap.
-  describe "Server.Branch (eager)"              (Server.BranchSpec.spec testStack)
-  describe "Server.Branch (withStorage)"        (Server.BranchSpec.spec testStackTransactional)
-  describe "Server.File (eager)"                (Server.FileSpec.spec testStack)
-  describe "Server.File (withStorage)"          (Server.FileSpec.spec testStackTransactional)
-  describe "Server.Notification"        Server.NotificationSpec.spec
+  -- Server.Core.Branch/Server.Core.File are written once against
+  -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
+  -- eager, and buffered through 'Storyteller.Git.withStorage' — the
+  -- transaction wrapping every real server command actually runs under. A
+  -- bug once slipped past the whole suite by only showing up through the
+  -- buffered path; running both here is what closes that gap.
+  describe "Server.Core.Branch (eager)"         (Server.BranchSpec.spec testStack)
+  describe "Server.Core.Branch (withStorage)"   (Server.BranchSpec.spec testStackTransactional)
+  describe "Server.Core.File (eager)"           (Server.FileSpec.spec testStack)
+  describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
+  describe "Server.Writer.Notification"         Server.NotificationSpec.spec

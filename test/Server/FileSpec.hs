@@ -24,8 +24,8 @@ import Storyteller.Storage hiding (get, drop)
 import Storyteller.Runtime (Main)
 import Storyteller.Types
 
-import Server.File
-import Server.Protocol (Update(..), WireTick(..))
+import Server.Core.File
+import Server.Core.Protocol (Update(..), WireTick(..))
 import Server.TestStack
 
 -- ---------------------------------------------------------------------------

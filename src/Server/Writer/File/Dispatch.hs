@@ -4,25 +4,33 @@
 
 -- | Dispatch for /branch/{name}/{path} connections.
 --
--- Routing only: decode FileCommand → call Server.File. No business logic
--- lives here. Runs against the ambient, already-open branch scope
--- ('FileOpen') — see 'Server.File.Connection' for where that scope is
--- entered.
+-- Routing only: decode FileCommand → call Server.Core.File /
+-- Server.Writer.File. No business logic lives here. Runs against the
+-- ambient, already-open branch scope ('FileOpen') — see
+-- 'Server.Writer.File.Connection' for where that scope is entered.
+--
+-- 'ChatAppend'/'EditAtom'/'DeleteAtom'/'MoveAtom'/'ChatNote' are generic
+-- atom-chain operations, so they call straight into 'Server.Core.File'.
+-- 'ChatWriter'/'ChatFixer' are Writer-specific, so they call
+-- 'Server.Writer.File' instead — this module is where the two layers
+-- actually get assembled into one protocol. 'At' is generic either way — it
+-- just recurses back into this same dispatch for whichever inner command.
 --
 -- Successful mutations reach the client via the ref-move notification, same
 -- as anyone else's write — this just runs the mutation. Throws
 -- (Error String) on failure — the caller catches it and turns it into a
 -- FileError push rather than ending the connection.
-module Server.File.Dispatch
+module Server.Writer.File.Dispatch
   ( runCommand
   ) where
 
 import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
-import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatWriter, chatFixer, chatNote)
-import Server.File.Protocol (FileCommand(..))
-import Server.Run (SessionEffects)
+import Server.Core.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatNote)
+import Server.Writer.File (chatWriter, chatFixer)
+import Server.Writer.File.Protocol (FileCommand(..))
+import Server.Core.Run (SessionEffects)
 import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Runtime (Main)
 import qualified Storyteller.Storage as Storage

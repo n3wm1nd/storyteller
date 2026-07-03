@@ -5,10 +5,10 @@
 -- rebase/replace/move rewrites tick ids and updates cross-branch references
 -- accordingly.
 --
--- 'RefMoved' is posted by 'Server.Run.gitNotify' whenever a story branch ref
--- is created or updated; connections filter it to their own branch, then
--- refetch and re-push their state. 'TicksRemapped' is posted by
--- 'Server.Run.storageNotify' whenever 'Storyteller.Storage.updateReferences'
+-- 'RefMoved' is posted by 'Server.Writer.Run.gitNotify' whenever a story
+-- branch ref is created or updated; connections filter it to their own
+-- branch, then refetch and re-push their state. 'TicksRemapped' is posted by
+-- 'Server.Writer.Run.storageNotify' whenever 'Storyteller.Storage.updateReferences'
 -- runs with a non-empty mapping; it is delivered to every connection
 -- regardless of branch, since applying a remap to ids you aren't tracking is
 -- a no-op — the client checks whether it holds any of the affected ids
@@ -16,7 +16,7 @@
 --
 -- This is purely an internal signal — 'RefMoved' never goes over the wire
 -- itself; 'TicksRemapped' is forwarded to clients as a 'tick.remap' event.
-module Server.Notification
+module Server.Writer.Notification
   ( BranchNotification(..)
   , watchBranch
   ) where

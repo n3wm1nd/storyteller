@@ -3,7 +3,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Shared test interpreter stack for Server.Branch and Server.File specs.
+-- | Shared test interpreter stack for Server.Core.Branch and Server.Core.File specs.
 module Server.TestStack
   ( TestEffects
   , TestRunner
@@ -29,7 +29,7 @@ type TestEffects r = StoryStorage : Git : State GitState : Logging : Fail : Erro
 --   every 'StoryStorage' write eagerly, as it happens. 'testStackTransactional'
 --   instead runs the same action inside 'Storyteller.Git.withStorage' —
 --   the buffering every real server command's writes go through (see
---   'Server.Branch.Connection'/'Server.File.Connection') — so it needs one
+--   'Server.Writer.Branch.Connection'/'Server.Writer.File.Connection') — so it needs one
 --   extra 'StoryStorage' layer for 'withStorage' to buffer through and
 --   replay into the real one underneath.
 --
@@ -41,7 +41,7 @@ type TestEffects r = StoryStorage : Git : State GitState : Logging : Fail : Erro
 --   real client command actually takes.
 --
 --   This wraps a whole test — a real client instead opens a fresh
---   transaction per command (see 'Server.Branch.Connection.commandLoop'),
+--   transaction per command (see 'Server.Writer.Branch.Connection.commandLoop'),
 --   so a test with several sequential writes is, under this alone, a
 --   coarser scenario than production: everything stays in one buffer the
 --   whole time rather than each write round-tripping through git before

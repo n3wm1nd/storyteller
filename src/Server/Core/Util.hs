@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
-module Server.Util
+module Server.Core.Util
   ( withBranch
   ) where
 
@@ -22,8 +22,8 @@ import Storyteller.Types (BranchName(..))
 import Polysemy.Fail (Fail)
 
 -- | Open a branch's storage/filesystem scope. Callers that open this once
---   for a whole connection's lifetime (see 'Server.File.Connection',
---   'Server.Branch.Connection') and dispatch many commands through it
+--   for a whole connection's lifetime (see 'Server.Writer.File.Connection',
+--   'Server.Writer.Branch.Connection') and dispatch many commands through it
 --   should wrap each individual command in 'Storyteller.Git.withStorage'
 --   themselves — wrapping the whole long-lived scope here would buffer
 --   every command's ref writes together, only publishing (and therefore

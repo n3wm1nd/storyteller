@@ -7,19 +7,24 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Polysemy interpreter stacks for each connection level.
+-- | Polysemy interpreter stacks for the Writer server's connection levels.
 --
--- SessionEffects: storage-level effects, no branch open.
--- BranchEffects:  extends SessionEffects with an open StoryBranch + FS.
+-- 'SessionEffects' (the effect-membership vocabulary handlers are written
+-- against) lives in 'Server.Core.Run' — a library declaration, not wiring.
+-- Everything here is the actual assembly that satisfies it for this one
+-- app: git/storage ref-move and tick-remap notification wiring, LLM
+-- routing, and the logging/streaming-preview interpreters wired to a
+-- specific WebSocket connection. A second server (Roleplay, Lector) would
+-- likely need its own version of this module, not a shared one — see
+-- STRUCTURE.md.
 --
--- Handlers are written against these constraints and never see IO, HTTP,
--- or websocket types.
-module Server.Run
+-- Handlers are written against 'SessionEffects' and never see IO, HTTP, or
+-- websocket types.
+module Server.Writer.Run
   ( runAction
   , actionStack
   , loggingWS
   , wsAction
-  , SessionEffects
   ) where
 
 import Control.Concurrent.STM (TChan, atomically, writeTChan)
@@ -28,19 +33,15 @@ import Data.Aeson (encode, object, (.=), Value)
 import qualified Network.WebSockets as WS
 import Polysemy
 import Polysemy.Error (Error, runError)
-import Polysemy.Fail (Fail)
 import Runix.Git (Git(..))
 import Runix.Logging (Logging(..), Level(..))
-import Runix.LLM (LLM)
-import Runix.Random (Random)
-import Runix.Time (Time, Sleep)
-import Runix.HTTP (HTTPStreaming)
 import Runix.StreamChunk (StreamChunk(..), ignoreChunks)
 import Runix.Config (runConfig)
 import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent(..), StreamingEnabled(..))
 
-import Server.Env (ServerEnv(..))
-import Server.Notification (BranchNotification(..))
+import Server.Core.Run (SessionEffects)
+import Server.Writer.Env (ServerEnv(..))
+import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.CLI.Env (modelConfigs)
 import Storyteller.Runtime (runInfrastructure, StoryModel, storyModel)
 import Storyteller.Storage (StoryStorage(..))
@@ -147,12 +148,6 @@ streamChunksWS :: Member (Embed IO) r => WS.Connection -> Sem (StreamChunk Strea
 streamChunksWS conn = interpret $ \(EmitChunk event) ->
   maybe (return ()) (embed . WS.sendTextData conn . encode) (previewEvent event)
 
--- | Effects available at the session level (no branch open). Deliberately
---   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
---   network through the 'LLM' effect, never directly.
-type SessionEffects r =
-  Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel] r
-
 actionStack env action =
   let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
   in runError @String
@@ -186,9 +181,9 @@ runAction env action = runM (ignoreChunks @StreamEvent (actionStack env action))
 --   'actionStack's own return row instead of needing to be threaded through
 --   'action'; 'streamChunksWS' has to consume it out here.
 --
---   Both 'Server.File.Connection' and 'Server.Branch.Connection' had been
---   assembling this composition independently; this is the one place it's
---   built. Callers still own 'runM' at their own call site.
+--   Both 'Server.Writer.File.Connection' and 'Server.Writer.Branch.Connection'
+--   had been assembling this composition independently; this is the one
+--   place it's built. Callers still own 'runM' at their own call site.
 wsAction
   :: ServerEnv -> WS.Connection
   -> (forall r. (SessionEffects r, Member (Embed IO) r, Member (Error String) r) => Sem r a)

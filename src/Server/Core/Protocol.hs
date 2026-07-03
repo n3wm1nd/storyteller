@@ -5,7 +5,7 @@
 -- The central invariant: the server pushes state to clients, clients send
 -- intent commands. Clients never request a resync — reconnecting triggers
 -- the full state push automatically.
-module Server.Protocol
+module Server.Core.Protocol
   ( WireTick(..)
   , Update(..)
   , toWireTick

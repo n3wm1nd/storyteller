@@ -5,12 +5,12 @@
 --
 -- Commands: branch-level operations (file tracking, generation, annotations,
 --           tick reordering). No resync command — reconnect is resync.
---           chat.prompt lives on the file connection (Server.File.Protocol) —
+--           chat.prompt lives on the file connection (Server.Writer.File.Protocol) —
 --           path is implicit from the URL there.
 -- Events:   structural events (ready, file list changes) plus tick updates.
 --           All tick state arrives as Update — the full filtered chain on
 --           connect, affected ticks after each mutation.
-module Server.Branch.Protocol
+module Server.Writer.Branch.Protocol
   ( BranchCommand(..)
   , BranchEvent(..)
   , TrackFile(..)
@@ -20,7 +20,7 @@ import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
 import qualified Data.Text as T
 
-import Server.Protocol (Update, withId)
+import Server.Core.Protocol (Update, withId)
 
 data TrackFile = TrackFile
   { trackFrom :: FilePath

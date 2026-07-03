@@ -6,7 +6,7 @@
 -- Commands: branch management. No tick or file operations at this level.
 -- Events:   branch list, confirmations, errors.
 -- No resync command — reconnect triggers a fresh state push.
-module Server.Session.Protocol
+module Server.Writer.Session.Protocol
   ( SessionCommand(..)
   , SessionEvent(..)
   ) where
@@ -15,7 +15,7 @@ import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
 import qualified Data.Text as T
 
-import Server.Protocol (withId)
+import Server.Core.Protocol (withId)
 
 data SessionCommand
   = ListBranches { scId :: Maybe T.Text }

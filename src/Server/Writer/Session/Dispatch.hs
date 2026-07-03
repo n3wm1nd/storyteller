@@ -7,10 +7,10 @@
 --
 -- Routing only: decode SessionCommand → call Storyteller.Storage → push the
 -- event. Runs against the ambient, already-open session scope — see
--- 'Server.Session.Connection' for where that scope is entered. Throws
+-- 'Server.Writer.Session.Connection' for where that scope is entered. Throws
 -- (Error String) on failure — the caller catches it and turns it into a
 -- SessionError push rather than ending the connection.
-module Server.Session.Dispatch
+module Server.Writer.Session.Dispatch
   ( runCommand
   ) where
 
@@ -20,8 +20,8 @@ import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed)
 import Polysemy.Error (throw)
 
-import Server.Run (SessionEffects)
-import Server.Session.Protocol
+import Server.Core.Run (SessionEffects)
+import Server.Writer.Session.Protocol
 import Storyteller.Storage (listBranches, createBranch, getBranch, deleteBranch)
 import Storyteller.Types (BranchName(..), Branch(..))
 

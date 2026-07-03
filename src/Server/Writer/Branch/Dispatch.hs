@@ -4,27 +4,32 @@
 
 -- | Dispatch for /branch/{name} connections.
 --
--- Routing only: decode BranchCommand → call Server.Branch → return events.
--- No business logic lives here. Runs against the ambient, already-open
--- branch scope ('BranchOpen') — see 'Server.Branch.Connection' for where
--- that scope is entered.
+-- Routing only: decode BranchCommand → call Server.Core.Branch /
+-- Server.Writer.Branch → return events. No business logic lives here. Runs
+-- against the ambient, already-open branch scope ('BranchOpen') — see
+-- 'Server.Writer.Branch.Connection' for where that scope is entered.
+--
+-- 'MoveTick'/'DeleteTick'/'AddNote' are generic tick-chain operations, so
+-- they call straight into 'Server.Core.Branch'. 'Track'/'CharGen' are
+-- Writer-specific, so they call 'Server.Writer.Branch' instead — this
+-- module is where the two layers actually get assembled into one protocol.
 --
 -- Returns only what a ref-move notification can't convey: structural events
 -- (FileAdded) for this specific command. Successful mutations otherwise
 -- reach the client via the ref-move notification, same as anyone else's
 -- write. Throws (Error String) on failure — the caller catches it and turns
 -- it into a BranchError push rather than ending the connection.
-module Server.Branch.Dispatch
+module Server.Writer.Branch.Dispatch
   ( runCommand
   ) where
 
 import qualified Data.Text as T
 import Polysemy (Sem)
 
-import Server.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch,
-                      trackFiles, charGen)
-import Server.Branch.Protocol
-import Server.Run (SessionEffects)
+import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
+import Server.Writer.Branch (trackFiles, charGen)
+import Server.Writer.Branch.Protocol
+import Server.Core.Run (SessionEffects)
 import Storyteller.Types (BranchName(..), TickId(..))
 
 runCommand

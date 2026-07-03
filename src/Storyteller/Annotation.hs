@@ -13,8 +13,9 @@
 -- agent produces than to a chain-editing primitive. Agents introduce new
 -- annotation tick types fairly freely (see 'Storyteller.Types.Note'), so
 -- this is where that vocabulary and its constructors collect, rather than
--- under either 'Server.Branch' or 'Server.File' (both need it, neither
--- owns it) or under 'Storyteller.Edit' (it isn't restructuring anything).
+-- under either 'Server.Core.Branch' or 'Server.Core.File' (both need it,
+-- neither owns it) or under 'Storyteller.Edit' (it isn't restructuring
+-- anything).
 module Storyteller.Annotation
   ( addNote
   ) where

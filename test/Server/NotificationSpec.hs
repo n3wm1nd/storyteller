@@ -10,7 +10,7 @@ import Control.Monad (void)
 import Polysemy (embed, runM)
 import Test.Hspec
 
-import Server.Notification (BranchNotification(..), watchBranch)
+import Server.Writer.Notification (BranchNotification(..), watchBranch)
 
 -- | Poll 'mv' until it holds at least 'n' elements or we give up. A fixed
 --   'threadDelay' would either be too short under load or waste time when

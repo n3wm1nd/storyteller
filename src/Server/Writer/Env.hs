@@ -5,7 +5,7 @@
 -- 'ServerEnv' is built once at startup and threaded through every request
 -- via a Polysemy 'Reader' effect. Handlers spin up a fresh interpreter stack
 -- per request; anything that must survive across requests lives in 'appState'.
-module Server.Env
+module Server.Writer.Env
   ( ServerEnv(..)
   , AppState(..)
   , emptyAppState
@@ -17,7 +17,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
-import Server.Notification (BranchNotification)
+import Server.Writer.Notification (BranchNotification)
 
 -- | Mutable shared state across requests. Starts empty; extended as needed.
 data AppState = AppState

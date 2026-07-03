@@ -11,7 +11,7 @@
 -- SessionReady, then loop receiving commands via 'embed'. A command that
 -- fails is caught locally with 'Polysemy.Error.catch' and reported as a
 -- SessionError without unwinding the stack or ending the connection.
-module Server.Session.Connection
+module Server.Writer.Session.Connection
   ( runSession
   ) where
 
@@ -25,10 +25,11 @@ import Polysemy.Error (catch)
 
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
-import Server.Env (ServerEnv)
-import Server.Run (SessionEffects, actionStack)
-import Server.Session.Dispatch (runCommand)
-import Server.Session.Protocol
+import Server.Writer.Env (ServerEnv)
+import Server.Core.Run (SessionEffects)
+import Server.Writer.Run (actionStack)
+import Server.Writer.Session.Dispatch (runCommand)
+import Server.Writer.Session.Protocol
 
 -- | No agent commands run on a session connection (session-level commands
 --   are list/create/delete-branch only) so there's never anything to

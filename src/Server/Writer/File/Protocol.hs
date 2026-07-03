@@ -8,7 +8,7 @@
 --           resync commands — reconnect triggers a full state push.
 -- Events:   FilePresent/FileAbsent on connect, FileUpdate after mutations,
 --           plus AgentLog and FileError.
-module Server.File.Protocol
+module Server.Writer.File.Protocol
   ( FileCommand(..)
   , FileEvent(..)
   , ContextItem(..)
@@ -19,7 +19,7 @@ import Data.Aeson.Types (Parser)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
-import Server.Protocol (Update, withId)
+import Server.Core.Protocol (Update, withId)
 
 -- | A piece of pinned context the client attaches to a chat prompt — an
 --   atom or annotation the user selected as reference material. 'ciContent'
@@ -104,9 +104,10 @@ instance FromJSON FileCommand where
 --
 --   Not modeled here: "chat.preview.start"/"chat.preview"/"chat.preview.thinking"/
 --   "chat.preview.end", the ephemeral LLM streaming preview. Those are pushed
---   directly by 'Server.Run.streamChunksWS', which is installed once per
---   connection (file or branch alike) around the whole command loop rather
---   than constructed by any 'Server.File'/'Server.Branch' handler — the wire
+--   directly by 'Server.Writer.Run.streamChunksWS', which is installed once
+--   per connection (file or branch alike) around the whole command loop
+--   rather than constructed by any 'Server.Writer.File'/'Server.Writer.Branch'
+--   handler — the wire
 --   shape is identical for both connection types, so there's nothing
 --   File-specific for a 'FileEvent' constructor to add. See WS-PROTOCOL.md.
 data FileEvent

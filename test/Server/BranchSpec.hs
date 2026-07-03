@@ -29,8 +29,8 @@ import Storyteller.Types
 
 import Server.TestStack
 
-import Server.Branch
-import Server.Protocol (Update(..), WireTick(..))
+import Server.Core.Branch
+import Server.Core.Protocol (Update(..), WireTick(..))
 
 import Prelude hiding (writeFile)
 
@@ -94,9 +94,9 @@ headIsIn :: Update -> Bool
 headIsIn upd = updateHead upd `elem` tickIds upd
 
 -- | Counts every real 'CreateRef'/'UpdateRef' that reaches git — the same
---   observation point 'Server.Run.gitNotify' uses to decide when to
+--   observation point 'Server.Writer.Run.gitNotify' uses to decide when to
 --   broadcast a ref-move notification. Mirrors gitNotify's shape (see
---   Server.Run) so it sits in the stack the same way: above the real git
+--   Server.Writer.Run) so it sits in the stack the same way: above the real git
 --   backend, below 'runStoryStorageGit'.
 countRefWrites :: Members '[Git, State Int] r => Sem (Git : r) a -> Sem r a
 countRefWrites = interpret $ \case
@@ -174,7 +174,7 @@ spec runner = do
     -- one, for either the raw 'WorkingTree' (already true before) or
     -- 'branchStateSince' (StoryStorage-backed, previously always live).
     -- Freshness comes from reopening the scope, not from re-reading within
-    -- an already-open one — see 'Server.Branch.Connection's notifier,
+    -- an already-open one — see 'Server.Writer.Branch.Connection's notifier,
     -- which now reopens per notification for exactly this reason.
     it "a still-open scope does not see a write made by a separately-opened one" $ do
       let result = withBranch_ testStack (BranchName "test") $ do
@@ -302,7 +302,7 @@ spec runner = do
 
     -- Regression: a real client only ever sees a move's effect through a
     -- single command wrapped in exactly one 'withStorage' transaction (see
-    -- 'Server.Branch.Connection.commandLoop'), with the branch scope
+    -- 'Server.Writer.Branch.Connection.commandLoop'), with the branch scope
     -- reopened fresh for *that* command specifically — not reused from
     -- whatever scope did the seeding. Seeding and the move must be
     -- genuinely separate commands (separate 'runBranchAndFS' scopes, the
@@ -335,7 +335,7 @@ spec runner = do
 
     -- Regression for a duplication bug in the frontend Ticks view: runs
     -- moveTickInBranch the way the real server actually does — nested
-    -- inside 'withStorage', the way 'Server.Branch.Connection.commandLoop'
+    -- inside 'withStorage', the way 'Server.Writer.Branch.Connection.commandLoop'
     -- wraps every command — and counts how many real git ref writes that
     -- one logical move produces. Before the fix in
     -- 'Storyteller.Git.withStorage', a move nesting two 'At' calls plus a
@@ -367,7 +367,7 @@ spec runner = do
                   return n1
                 put (0 :: Int)
                 -- 'withStorage' outermost, the branch scope opened inside
-                -- it — matching how 'Server.Branch.Connection.commandLoop'
+                -- it — matching how 'Server.Writer.Branch.Connection.commandLoop'
                 -- actually wraps every command. A scope opened *before*
                 -- 'withStorage' resolves its internal ref writes against
                 -- the outer, unbuffered StoryStorage, bypassing the

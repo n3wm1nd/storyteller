@@ -1,0 +1,22 @@
+# Build artifacts
+dist-newstyle/
+dist/
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+.ghc.environment.*
+
+# Local machine config, never shared
+cabal.project.local
+.env
+
+# Per-developer agent instructions, not project documentation
+CLAUDE.md
+
+# Catch-all for dotfiles/dot-directories (editor/tool config, local scratch —
+# .env and cabal.project.local above are called out explicitly since they
+# predate this, but new dotfiles default to ignored too). Un-ignore
+# explicitly (!.foo) if something dotfile-shaped should actually be tracked.
+.*
+!.gitignore

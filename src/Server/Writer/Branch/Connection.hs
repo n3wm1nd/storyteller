@@ -30,7 +30,7 @@
 -- 'runM' on it), 'lastHead' is a plain recursive-loop accumulator inside
 -- that thread's loop — no shared mutable state between the two stacks, no
 -- possibility of their pushes racing.
-module Server.Branch.Connection
+module Server.Writer.Branch.Connection
   ( runBranch
   ) where
 
@@ -45,16 +45,17 @@ import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed, runM)
 import Polysemy.Error (Error, catch)
 
-import Server.Branch (Main, BranchOpen, branchState, branchStateSince)
-import Server.Branch.Dispatch (runCommand)
-import Server.Branch.Protocol
-import Server.Env (ServerEnv(..))
-import Server.Notification (BranchNotification(..), watchBranch)
-import Server.Protocol (Update(..))
+import Server.Core.Branch (Main, BranchOpen, branchState, branchStateSince)
+import Server.Writer.Branch.Dispatch (runCommand)
+import Server.Writer.Branch.Protocol
+import Server.Writer.Env (ServerEnv(..))
+import Server.Writer.Notification (BranchNotification(..), watchBranch)
+import Server.Core.Protocol (Update(..))
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
-import Server.Run (SessionEffects, actionStack, wsAction)
-import Server.Util (withBranch)
+import Server.Core.Run (SessionEffects)
+import Server.Writer.Run (actionStack, wsAction)
+import Server.Core.Util (withBranch)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
 import Storyteller.Git (withStorage)
 import Storyteller.Types (TickId(..))
@@ -125,7 +126,7 @@ commandLoop conn branch = loop
           Just cmd -> handle cmd >> loop
 
     -- Each command is its own transaction — see the comment in
-    -- Server.File.Connection.commandLoop.
+    -- Server.Writer.File.Connection.commandLoop.
     handle cmd =
       catch @String
         (withStorage (withBranch @Main branch (runCommand branch cmd)) >>= embed . mapM_ (WS.sendTextData conn . encode))
