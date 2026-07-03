@@ -8,7 +8,7 @@
 -- 'RefMoved' is posted by 'Server.Writer.Run.gitNotify' whenever a story
 -- branch ref is created or updated; connections filter it to their own
 -- branch, then refetch and re-push their state. 'TicksRemapped' is posted by
--- 'Server.Writer.Run.storageNotify' whenever 'Storyteller.Storage.updateReferences'
+-- 'Server.Writer.Run.storageNotify' whenever 'Storyteller.Core.Storage.updateReferences'
 -- runs with a non-empty mapping; it is delivered to every connection
 -- regardless of branch, since applying a remap to ids you aren't tracking is
 -- a no-op — the client checks whether it holds any of the affected ids

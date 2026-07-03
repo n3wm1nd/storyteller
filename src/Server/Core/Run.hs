@@ -21,8 +21,8 @@ import Runix.LLM (LLM)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
-import Storyteller.Runtime (StoryModel)
-import Storyteller.Storage (StoryStorage)
+import Storyteller.Core.Runtime (StoryModel)
+import Storyteller.Core.Storage (StoryStorage)
 
 -- | Effects available at the session level (no branch open). Deliberately
 --   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the

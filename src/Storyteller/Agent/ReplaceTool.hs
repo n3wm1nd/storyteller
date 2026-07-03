@@ -16,13 +16,13 @@
 -- both reduce to: "here is one atom, here is an instruction, does it need
 -- to change, and if so to what — and why".
 --
--- The reason is stored as its own 'Storyteller.Types.Fixup' tick alongside
+-- The reason is stored as its own 'Storyteller.Core.Types.Fixup' tick alongside
 -- the replacement, agent-authored and distinct from a user's 'Note', so a
 -- later reader can trace back why an atom changed.
 --
 -- Under the hood this is @UniversalLLM@'s tool-calling support (see
 -- @TOOLCALLS.md@ in universal-llm): 'replaceAtomTool' is a plain function
--- wrapped with 'mkToolWithMeta', and applying it is 'Storyteller.Edit.editAtom'
+-- wrapped with 'mkToolWithMeta', and applying it is 'Storyteller.Core.Edit.editAtom'
 -- — the same in-place-replace-preserving-position mechanics the working-tree
 -- commit path already uses.
 module Storyteller.Agent.ReplaceTool
@@ -47,12 +47,12 @@ import UniversalLLM.Tools
   )
 
 import Storyteller.Agent (Instruction(..))
-import Storyteller.CLI.Env (modelConfigs)
-import Storyteller.Edit (editAtom)
-import Storyteller.Git (BranchTag)
-import Storyteller.Runtime (StoryModel)
-import Storyteller.Storage (StoryBranch, StoryStorage, FileTick(..), fileTicks, storeAs)
-import Storyteller.Types (TickId(..), Fixup(..))
+import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Edit (editAtom)
+import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Runtime (StoryModel)
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, FileTick(..), fileTicks, storeAs)
+import Storyteller.Core.Types (TickId(..), Fixup(..))
 
 -- | The tool's result, round-tripped through JSON only to travel from the
 --   tool call back to us — never inspected by the model itself (tool

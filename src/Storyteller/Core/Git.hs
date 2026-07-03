@@ -23,7 +23,7 @@
 --   * 'WorkingTree' is a complete in-memory filesystem: files carry their content,
 --     directories are explicit empty entries.  On 'Store' it is serialised to a git
 --     tree object; on branch checkout it is reconstructed from the commit's tree.
-module Storyteller.Git
+module Storyteller.Core.Git
   ( -- * Branch tag for filesystem effects
     BranchTag(..)
 
@@ -70,9 +70,9 @@ import Runix.FileSystem
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 
-import Storyteller.Types
-import Storyteller.Storage hiding (get, drop, Get)
-import qualified Storyteller.Storage as S
+import Storyteller.Core.Types
+import Storyteller.Core.Storage hiding (get, drop, Get)
+import qualified Storyteller.Core.Storage as S
 
 -- ---------------------------------------------------------------------------
 -- In-memory filesystem
@@ -955,7 +955,7 @@ walkFrom acc step hash = do
 --
 --   Takes each branch's current head as an explicit @pairs@ argument rather
 --   than reading raw git refs itself — a caller running inside a buffered
---   transaction (see 'Storyteller.Git.withStorage') must pass heads
+--   transaction (see 'Storyteller.Core.Git.withStorage') must pass heads
 --   overlaid with its own pending writes so far, not raw git, or a branch
 --   already correctly rewritten earlier in the same transaction would
 --   still read as pointing at its stale, pre-rewrite head here (nothing

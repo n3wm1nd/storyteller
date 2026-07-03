@@ -27,11 +27,11 @@ import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Agent.Splitter (Splitter)
-import Storyteller.CLI.Env (modelConfigs)
-import Storyteller.Git (BranchTag)
-import Storyteller.Runtime (StoryModel)
-import Storyteller.Storage (StoryBranch, StoryStorage, FileTick(..), fileTicks)
-import Storyteller.Types (TickId(..))
+import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Runtime (StoryModel)
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, FileTick(..), fileTicks)
+import Storyteller.Core.Types (TickId(..))
 
 -- | @targets@ is the set of atoms the user selected as the subject of
 --   @instruction@. Empty is valid — a future self-selecting Fixer (picking

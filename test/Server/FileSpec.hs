@@ -19,10 +19,10 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile, readFile)
 import Prelude hiding (writeFile, readFile)
 
-import Storyteller.Git
-import Storyteller.Storage hiding (get, drop)
-import Storyteller.Runtime (Main)
-import Storyteller.Types
+import Storyteller.Core.Git
+import Storyteller.Core.Storage hiding (get, drop)
+import Storyteller.Core.Runtime (Main)
+import Storyteller.Core.Types
 
 import Server.Core.File
 import Server.Core.Protocol (Update(..), WireTick(..))
@@ -64,7 +64,7 @@ headIsIn upd = null (updateTicks upd) || updateHead upd `elem` map wtTickId (upd
 --   command dispatch — rather than opening its own: 'StoryBranch's head is
 --   a point-in-time snapshot from whenever a scope was opened, so a nested
 --   'runBranchAndFS' here would be invisible to the outer scope's later
---   reads (see 'Storyteller.Git.runStoryBranchGit').
+--   reads (see 'Storyteller.Core.Git.runStoryBranchGit').
 storeAtom :: Members '[ StoryBranch Main
                       , FileSystemWrite (BranchTag Main)
                       , FileSystemRead  (BranchTag Main)

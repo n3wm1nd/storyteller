@@ -25,14 +25,14 @@
 --     at the same position, and (since the tick id necessarily changes) a
 --     mapping entry recording old→new so references get updated.
 --   * Trimmed down to nothing (after folding) → *dropped*: the tick
---     disappears from the chain entirely, like 'Storyteller.Edit.deleteTick'.
+--     disappears from the chain entirely, like 'Storyteller.Core.Edit.deleteTick'.
 --   * New content between two atoms folds onto the preceding atom's back
 --     if it's already changing there, else the following atom's front if
 --     it's already changing there (fewer created ticks either way), else
 --     it's a standalone new tick unrelated to any existing atom.
 --
 -- These properties currently FAIL: 'commitWorkingTree' only supports pure
--- growth today (see 'Storyteller.Edit.ModificationDetected' — any file
+-- growth today (see 'Storyteller.Core.Edit.ModificationDetected' — any file
 -- whose total length shrinks is rejected outright, and the position-based
 -- walk it does use assumes monotonic growth, so even same-total-length
 -- edits are silently misattributed rather than rejected). This spec is the
@@ -55,12 +55,12 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile, 
 import qualified Data.List as List
 import Prelude hiding (readFile, writeFile, appendFile, drop)
 
-import Storyteller.Atom (Atom(..))
-import Storyteller.Git
-import Storyteller.Storage hiding (get, drop)
-import qualified Storyteller.Storage as S
-import Storyteller.Types
-import Storyteller.Edit (commitWorkingTree)
+import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Git
+import Storyteller.Core.Storage hiding (get, drop)
+import qualified Storyteller.Core.Storage as S
+import Storyteller.Core.Types
+import Storyteller.Core.Edit (commitWorkingTree)
 
 -- ---------------------------------------------------------------------------
 -- Phantom branch tag + fixed path (single-file focus; multi-file is a

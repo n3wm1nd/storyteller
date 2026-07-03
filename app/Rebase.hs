@@ -29,12 +29,12 @@ import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
-import Storyteller.Git (BranchTag, runBranchAndFS)
-import Storyteller.Runtime (Main, runInfrastructure, runStoryStorageGit)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
-import Storyteller.Types (BranchName(..), TickId(..))
-import Storyteller.Edit (commitWorkingTree)
-import Storyteller.CLI.Env (StoryEnv(..), loadEnv)
+import Storyteller.Core.Git (BranchTag, runBranchAndFS)
+import Storyteller.Core.Runtime (Main, runInfrastructure, runStoryStorageGit)
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Types (BranchName(..), TickId(..))
+import Storyteller.Core.Edit (commitWorkingTree)
+import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 
 main :: IO ()
 main = do

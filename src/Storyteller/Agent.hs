@@ -23,7 +23,7 @@ module Storyteller.Agent
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Storyteller.Types (TickType(..), TickData(..), Tick(..), encodeDraft, decodePayload)
+import Storyteller.Core.Types (TickType(..), TickData(..), Tick(..), encodeDraft, decodePayload)
 
 -- | Raw text from the user — no semantic assumption about intent.
 --   The agent or dispatch layer decides what to do with it.

@@ -44,9 +44,9 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystemWrite, writeFile)
 import Runix.Random (Random, randomInt)
 
-import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage (StoryBranch, store)
-import Storyteller.Types (TickId)
+import Storyteller.Core.Git (BranchTag(..))
+import Storyteller.Core.Storage (StoryBranch, store)
+import Storyteller.Core.Types (TickId)
 
 import Prelude hiding (writeFile)
 

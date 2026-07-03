@@ -32,9 +32,9 @@ import Server.Writer.File (chatWriter, chatFixer)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Agent.Splitter (Splitter)
-import Storyteller.Runtime (Main)
-import qualified Storyteller.Storage as Storage
-import Storyteller.Types (TickId(..))
+import Storyteller.Core.Runtime (Main)
+import qualified Storyteller.Core.Storage as Storage
+import Storyteller.Core.Types (TickId(..))
 
 runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r ()
 runCommand path cmd = case cmd of

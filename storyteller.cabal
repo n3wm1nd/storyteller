@@ -33,12 +33,12 @@ library gitlib-effect
 
 library
   exposed-modules:  Storyteller
-                  , Storyteller.Types
+                  , Storyteller.Core.Types
                   , Storyteller.Agent
-                  , Storyteller.Storage
-                  , Storyteller.Git
-                  , Storyteller.Runtime
-                  , Storyteller.CLI.Env
+                  , Storyteller.Core.Storage
+                  , Storyteller.Core.Git
+                  , Storyteller.Core.Runtime
+                  , Storyteller.Core.CLI.Env
                   , Storyteller.Agent.Continuation
                   , Storyteller.Agent.CharContext
                   , Storyteller.Agent.Splitter
@@ -49,9 +49,9 @@ library
                   , Storyteller.Agent.FlowWrite
                   , Storyteller.Agent.Fix
                   , Storyteller.Agent.ReplaceTool
-                  , Storyteller.Atom
-                  , Storyteller.Annotation
-                  , Storyteller.Edit
+                  , Storyteller.Core.Atom
+                  , Storyteller.Core.Annotation
+                  , Storyteller.Core.Edit
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run

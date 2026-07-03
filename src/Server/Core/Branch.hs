@@ -13,7 +13,7 @@
 -- These functions assume the branch's storage/filesystem scope ('BranchOpen')
 -- is already live in the ambient stack — the connection (e.g.
 -- 'Server.Writer.Branch.Connection') reopens that scope fresh around each
--- command, nested inside a 'Storyteller.Git.withStorage' transaction, so a
+-- command, nested inside a 'Storyteller.Core.Git.withStorage' transaction, so a
 -- command's writes are all-or-nothing and visible immediately, not just at
 -- disconnect — these functions don't need to know that; they just see
 -- 'BranchOpen' as already open.
@@ -37,11 +37,11 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFil
 
 import Server.Core.Protocol (Update(..), tickToWireTick)
 
-import Storyteller.Annotation (addNote)
-import Storyteller.Edit (deleteTick, moveTick)
-import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage (StoryBranch, StoryStorage, follow, reset)
-import Storyteller.Types (TickId(..), tickId, tickParent, unTickId)
+import Storyteller.Core.Annotation (addNote)
+import Storyteller.Core.Edit (deleteTick, moveTick)
+import Storyteller.Core.Git (BranchTag(..))
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, follow, reset)
+import Storyteller.Core.Types (TickId(..), tickId, tickParent, unTickId)
 
 data Main
 

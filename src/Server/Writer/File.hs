@@ -26,10 +26,10 @@ import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Agent.Write (writeAgent)
 import Storyteller.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Agent.Fix (fixAgent)
-import Storyteller.Runtime (Main)
-import Storyteller.Storage (storeAs)
-import Storyteller.Types (TickId(..))
-import Storyteller.Git (BranchTag)
+import Storyteller.Core.Runtime (Main)
+import Storyteller.Core.Storage (storeAs)
+import Storyteller.Core.Types (TickId(..))
+import Storyteller.Core.Git (BranchTag)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see

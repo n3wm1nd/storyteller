@@ -27,7 +27,7 @@
 -- the tick's snapshot minus its parent's snapshot) so that pushTick can
 -- re-apply exactly those bytes at the new position, regardless of what the
 -- outer WorkingTree state is.
-module Storyteller.Edit
+module Storyteller.Core.Edit
   ( -- * Position-free tick representation
     TDraft(..)
   , popTick
@@ -62,13 +62,13 @@ import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
   , appendFile, writeFile, fileExists, readFile, listFiles, isDirectory
   )
-import Storyteller.Atom (Atom(..))
-import Storyteller.Git (BranchTag)
-import Storyteller.Storage
+import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Storage
   ( StoryBranch, StoryStorage
   , at, sneakyAt, sneakyAtWithFS, atWithFS, readAtWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
   )
-import Storyteller.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
+import Storyteller.Core.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
 
 import Prelude hiding (appendFile, drop, get, readFile, writeFile)
 

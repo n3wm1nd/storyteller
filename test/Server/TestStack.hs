@@ -20,14 +20,14 @@ import Git.Mock
 import Runix.Git (Git)
 import Runix.Logging (Logging, loggingNull)
 
-import Storyteller.Git
-import Storyteller.Storage (StoryStorage)
+import Storyteller.Core.Git
+import Storyteller.Core.Storage (StoryStorage)
 
 type TestEffects r = StoryStorage : Git : State GitState : Logging : Fail : Error String : r
 
 -- | A way to run a whole test action to completion. 'testStack' commits
 --   every 'StoryStorage' write eagerly, as it happens. 'testStackTransactional'
---   instead runs the same action inside 'Storyteller.Git.withStorage' —
+--   instead runs the same action inside 'Storyteller.Core.Git.withStorage' —
 --   the buffering every real server command's writes go through (see
 --   'Server.Writer.Branch.Connection'/'Server.Writer.File.Connection') — so it needs one
 --   extra 'StoryStorage' layer for 'withStorage' to buffer through and

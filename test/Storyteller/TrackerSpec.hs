@@ -22,9 +22,9 @@ import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
 
 import Prelude hiding (readFile, writeFile)
 
-import Storyteller.Git hiding (emptyWorkingTree)
-import Storyteller.Storage hiding (drop)
-import Storyteller.Types
+import Storyteller.Core.Git hiding (emptyWorkingTree)
+import Storyteller.Core.Storage hiding (drop)
+import Storyteller.Core.Types
 import Storyteller.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
 
 -- ---------------------------------------------------------------------------

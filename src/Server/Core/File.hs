@@ -12,7 +12,7 @@
 -- These functions assume the branch's storage/filesystem scope ('FileOpen')
 -- is already live in the ambient stack. The connection (e.g.
 -- 'Server.Writer.File.Connection') reopens that scope fresh around each
--- command, nested inside a 'Storyteller.Git.withStorage' transaction, so a
+-- command, nested inside a 'Storyteller.Core.Git.withStorage' transaction, so a
 -- command's writes are all-or-nothing and visible immediately, not just at
 -- disconnect — these functions don't need to know that; they just see
 -- 'FileOpen' as already open.
@@ -41,13 +41,13 @@ import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
 
 import Storyteller.Agent.Append (appendUnsplit)
-import Storyteller.Annotation (addNote)
-import Storyteller.Runtime (Main)
-import qualified Storyteller.Storage as Storage
-import Storyteller.Storage (FileTick, StoryBranch, StoryStorage, fileTicks)
-import Storyteller.Edit (deleteTick, editAtom, moveTick)
-import Storyteller.Types (TickId(..))
-import Storyteller.Git (BranchTag)
+import Storyteller.Core.Annotation (addNote)
+import Storyteller.Core.Runtime (Main)
+import qualified Storyteller.Core.Storage as Storage
+import Storyteller.Core.Storage (FileTick, StoryBranch, StoryStorage, fileTicks)
+import Storyteller.Core.Edit (deleteTick, editAtom, moveTick)
+import Storyteller.Core.Types (TickId(..))
+import Storyteller.Core.Git (BranchTag)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
 -- | The effects live once a file connection has entered its branch's scope —
@@ -94,12 +94,12 @@ appendToFile path content = do
 
 -- | Replace an atom's content in-place. 'editAtom' broadcasts its own
 --   old->new mapping (including the edited tick's own pivot pair) via
---   'Storyteller.Storage.at', so there's nothing left to do here.
+--   'Storyteller.Core.Storage.at', so there's nothing left to do here.
 editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
 editFileAtom path tid content = void $ editAtom @Main tid path (TE.encodeUtf8 content)
 
 -- | Delete an atom from the file's chain. 'deleteTick' broadcasts its own
---   mapping via 'Storyteller.Storage.at', so there's nothing left to do here.
+--   mapping via 'Storyteller.Core.Storage.at', so there's nothing left to do here.
 deleteFileAtom :: FileOpen r => TickId -> Sem r ()
 deleteFileAtom tid = void $ deleteTick @Main tid
 

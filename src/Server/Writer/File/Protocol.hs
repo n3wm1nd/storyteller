@@ -61,7 +61,7 @@ data FileCommand
   --   command executed there, then every later tick is replayed on top of
   --   whatever the inner command produced. Lets a client re-target any
   --   command at a historical point without a dedicated code path per
-  --   command — see 'Storyteller.Storage.atWithFS'.
+  --   command — see 'Storyteller.Core.Storage.atWithFS'.
   | At         { fcId :: Maybe T.Text, fcTickId :: T.Text, fcCommand :: FileCommand }
   deriving (Show)
 

@@ -23,9 +23,9 @@ import Runix.Git (Git(..))
 import Runix.Logging (loggingNull)
 
 import Git.Mock (GitState, emptyGitState, runGitMock)
-import Storyteller.Git (BranchTag, runBranchAndFS, withStorage, runStoryStorageGit)
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, storeAs, store)
-import Storyteller.Types
+import Storyteller.Core.Git (BranchTag, runBranchAndFS, withStorage, runStoryStorageGit)
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, storeAs, store)
+import Storyteller.Core.Types
 
 import Server.TestStack
 
@@ -47,7 +47,7 @@ import Prelude hiding (writeFile)
 --
 -- 'runner' (a 'TestRunner', see 'Server.TestStack') is threaded through
 -- most tests below and, per 'test/Main.hs', each is run once eagerly and
--- once through 'Storyteller.Git.withStorage'. The two 'branchStateSince'
+-- once through 'Storyteller.Core.Git.withStorage'. The two 'branchStateSince'
 -- tests are pinned to eager 'testStack' explicitly, since they're about
 -- eager, cross-scope semantics specifically (see their own comment). The
 -- "under withStorage specifically" section near the bottom is pinned to
@@ -78,7 +78,7 @@ withBranch_ runner name action = run $ runner $ do
 --   fresh 'Main' scope (its own 'WorkingTree' load + commit + head), nested
 --   inside an already-open outer scope. The outer scope's own state was
 --   loaded before this runs and, by design, won't see it — see
---   'Storyteller.Git.runStoryBranchGit' and the tests below.
+--   'Storyteller.Core.Git.runStoryBranchGit' and the tests below.
 externalWrite :: BranchName -> FilePath -> Sem (StoryStorage : TestEffects '[]) TickId
 externalWrite name path = runBranchAndFS @Main name $ do
   writeFile @(BranchTag Main) path "content"
@@ -169,7 +169,7 @@ spec runner = do
     -- whenever the scope was opened and never reaches back out afterwards —
     -- deliberately: it's what makes the 'withStorage' transaction boundary
     -- and this scope's snapshot semantics agree, both syncing exactly once,
-    -- at open (see the docs on 'Storyteller.Git.runStoryBranchGit'). So a
+    -- at open (see the docs on 'Storyteller.Core.Git.runStoryBranchGit'). So a
     -- still-open scope does not see a write made by a separately-opened
     -- one, for either the raw 'WorkingTree' (already true before) or
     -- 'branchStateSince' (StoryStorage-backed, previously always live).
@@ -314,7 +314,7 @@ spec runner = do
     -- with atoms line1/line2/line3, after moving line2 to sit after line3,
     -- ended up with line3 committed *twice* under different ids while the
     -- file content itself still happened to read correctly. 'moveTick'
-    -- nests two 'At' calls (see 'Storyteller.Edit.moveTick'); running that
+    -- nests two 'At' calls (see 'Storyteller.Core.Edit.moveTick'); running that
     -- nesting through 'withStorage's buffering, in its own transaction,
     -- duplicates a tick in the resulting chain.
     it "a single move preserves content and produces no duplicate ids" $ do
@@ -338,7 +338,7 @@ spec runner = do
     -- inside 'withStorage', the way 'Server.Writer.Branch.Connection.commandLoop'
     -- wraps every command — and counts how many real git ref writes that
     -- one logical move produces. Before the fix in
-    -- 'Storyteller.Git.withStorage', a move nesting two 'At' calls plus a
+    -- 'Storyteller.Core.Git.withStorage', a move nesting two 'At' calls plus a
     -- multi-entry 'updateReferences' cascade buffered one ref write per
     -- step and replayed every one of them individually — each a real,
     -- eagerly-visible git ref update and a real 'RefMoved' notification.
@@ -381,7 +381,7 @@ spec runner = do
 
     -- A command that fails partway through a move should leave the branch
     -- exactly as it was — 'withStorage' only replays its buffered writes
-    -- once the wrapped action succeeds (see 'Storyteller.Git.withStorage'),
+    -- once the wrapped action succeeds (see 'Storyteller.Core.Git.withStorage'),
     -- so nothing should reach real git at all. Threads 'GitState' by hand
     -- across separate runs (setup, the aborted attempt, two after-checks)
     -- rather than one shared 'Sem' computation, so the aborted attempt's

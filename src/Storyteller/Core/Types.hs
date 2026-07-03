@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Storyteller.Types
+module Storyteller.Core.Types
   ( -- * Identity
     TickId(..)
   , BranchName(..)

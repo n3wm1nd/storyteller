@@ -24,9 +24,9 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
                         , appendFile, readFile, fileExists )
-import Storyteller.Git (BranchTag(..))
-import Storyteller.Storage ( StoryBranch, StoryStorage, follow, storeData, readAtWithFS )
-import Storyteller.Types ( Tick(..), TickData(..), TickId(..), tickId, tickParent )
+import Storyteller.Core.Git (BranchTag(..))
+import Storyteller.Core.Storage ( StoryBranch, StoryStorage, follow, storeData, readAtWithFS )
+import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), tickId, tickParent )
 
 import Prelude hiding (appendFile, readFile)
 

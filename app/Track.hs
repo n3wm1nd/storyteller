@@ -26,12 +26,12 @@ import System.IO (hPutStrLn, stderr)
 
 import Polysemy
 import Polysemy.Error (runError)
-import Storyteller.Runtime
+import Storyteller.Core.Runtime
   ( runInfrastructure, runBranchAndFS, runStoryStorageGit, BranchTag(..) )
-import Storyteller.Storage (createBranch, getBranch)
-import Storyteller.Types (BranchName(..), TickId)
+import Storyteller.Core.Storage (createBranch, getBranch)
+import Storyteller.Core.Types (BranchName(..), TickId)
 import Storyteller.Agent.Tracker (trackBranch)
-import Storyteller.CLI.Env (StoryEnv(..), loadEnv)
+import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 
 -- | Phantom tags for the two branches open simultaneously.
 data Source

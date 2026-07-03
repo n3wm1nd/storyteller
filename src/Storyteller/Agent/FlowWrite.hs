@@ -34,11 +34,11 @@ import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Agent.Splitter (Splitter)
-import Storyteller.CLI.Env (modelConfigs)
-import Storyteller.Git (BranchTag)
-import Storyteller.Runtime (StoryModel)
-import Storyteller.Storage (StoryBranch, StoryStorage, fileTicks, ticksSince)
-import Storyteller.Types (TickId(..))
+import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Runtime (StoryModel)
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, fileTicks, ticksSince)
+import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. @charProjects@ is the same @(label, summary action)@
 --   shape 'writeAgent' takes.

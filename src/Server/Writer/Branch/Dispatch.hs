@@ -30,7 +30,7 @@ import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTi
 import Server.Writer.Branch (trackFiles, charGen)
 import Server.Writer.Branch.Protocol
 import Server.Core.Run (SessionEffects)
-import Storyteller.Types (BranchName(..), TickId(..))
+import Storyteller.Core.Types (BranchName(..), TickId(..))
 
 runCommand
   :: (BranchOpen r, SessionEffects r)

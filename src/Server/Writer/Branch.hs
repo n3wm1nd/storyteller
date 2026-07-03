@@ -26,9 +26,9 @@ import Server.Core.Run (SessionEffects)
 
 import Storyteller.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Agent.Tracker (trackBranch)
-import Storyteller.Git (runBranchAndFS)
-import Storyteller.Storage (createBranch, getBranch)
-import Storyteller.Types (BranchName(..))
+import Storyteller.Core.Git (runBranchAndFS)
+import Storyteller.Core.Storage (createBranch, getBranch)
+import Storyteller.Core.Types (BranchName(..))
 import qualified Data.Yaml as Yaml
 
 data Source

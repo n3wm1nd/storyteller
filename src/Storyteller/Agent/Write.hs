@@ -24,11 +24,11 @@ import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), Char
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.Splitter (Splitter)
-import Storyteller.CLI.Env (modelConfigs)
-import Storyteller.Git (BranchTag(..))
-import Storyteller.Runtime (StoryModel)
-import Storyteller.Storage (StoryBranch)
-import Storyteller.Types (TickId)
+import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Git (BranchTag(..))
+import Storyteller.Core.Runtime (StoryModel)
+import Storyteller.Core.Storage (StoryBranch)
+import Storyteller.Core.Types (TickId)
 
 -- | Generate prose and commit it, given the target branch and any number of
 --   character branches already open on the effect stack.

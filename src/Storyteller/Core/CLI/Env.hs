@@ -5,7 +5,7 @@
 -- All tools read from the same set of ENV vars so they share context
 -- without requiring repeated arguments. Individual tools may require
 -- additional vars that are documented per-tool.
-module Storyteller.CLI.Env
+module Storyteller.Core.CLI.Env
   ( StoryEnv(..)
   , loadEnv
   , requireEnv
@@ -21,7 +21,7 @@ import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 import UniversalLLM (ModelConfig(..))
-import Storyteller.Runtime (StoryModel)
+import Storyteller.Core.Runtime (StoryModel)
 
 data StoryEnv = StoryEnv
   { envRepo        :: FilePath  -- ^ STORY_REPO: path to git repository

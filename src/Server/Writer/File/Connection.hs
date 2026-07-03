@@ -23,7 +23,7 @@
 -- commands, another connection, or a background agent. It does *not* hold
 -- one long-lived branch scope the way it once did: 'StoryBranch' reads are
 -- a point-in-time snapshot from whenever a scope was opened (see
--- 'Storyteller.Git.runStoryBranchGit'), so a scope opened once at connect
+-- 'Storyteller.Core.Git.runStoryBranchGit'), so a scope opened once at connect
 -- would never notice anything written afterwards. Each notification
 -- reopens the scope fresh instead (see 'onNotify') — the same "sync
 -- happens at open" rule 'commandLoop' follows. Because each thread owns
@@ -57,8 +57,8 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction)
 import Server.Core.Util (withBranch)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
-import Storyteller.Git (withStorage)
-import Storyteller.Runtime (Main)
+import Storyteller.Core.Git (withStorage)
+import Storyteller.Core.Runtime (Main)
 
 runFile :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runFile env branch path conn = do

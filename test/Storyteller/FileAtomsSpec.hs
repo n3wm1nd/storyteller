@@ -22,10 +22,10 @@ import Prelude hiding (appendFile, readFile, writeFile)
 
 import Git.Mock
 
-import Storyteller.Types
-import Storyteller.Storage hiding (get, drop)
-import qualified Storyteller.Storage as S
-import Storyteller.Git
+import Storyteller.Core.Types
+import Storyteller.Core.Storage hiding (get, drop)
+import qualified Storyteller.Core.Storage as S
+import Storyteller.Core.Git
 import Storyteller.Agent (Prompt(..))
 
 -- ---------------------------------------------------------------------------

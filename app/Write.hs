@@ -37,16 +37,16 @@ import Runix.Logging (Logging)
 
 import Prelude hiding (readFile, writeFile)
 
-import Storyteller.Runtime ( Main, StoryModel, runStoryGit
+import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
-import Storyteller.Storage (StoryBranch, StoryStorage)
-import Storyteller.Types (BranchName(..))
+import Storyteller.Core.Storage (StoryBranch, StoryStorage)
+import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
 import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.CharContext (charSummaryAgent)
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.Splitter (Splitter, splitByParagraph)
-import Storyteller.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
+import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 -- | Phantom tag for character branches opened temporarily within the action.
 data Char_

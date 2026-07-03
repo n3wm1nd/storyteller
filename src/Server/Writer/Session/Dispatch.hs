@@ -5,7 +5,7 @@
 
 -- | Dispatch for /session connections.
 --
--- Routing only: decode SessionCommand → call Storyteller.Storage → push the
+-- Routing only: decode SessionCommand → call Storyteller.Core.Storage → push the
 -- event. Runs against the ambient, already-open session scope — see
 -- 'Server.Writer.Session.Connection' for where that scope is entered. Throws
 -- (Error String) on failure — the caller catches it and turns it into a
@@ -22,8 +22,8 @@ import Polysemy.Error (throw)
 
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Session.Protocol
-import Storyteller.Storage (listBranches, createBranch, getBranch, deleteBranch)
-import Storyteller.Types (BranchName(..), Branch(..))
+import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
+import Storyteller.Core.Types (BranchName(..), Branch(..))
 
 runCommand :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> SessionCommand -> Sem r ()
 runCommand conn cmd = case cmd of

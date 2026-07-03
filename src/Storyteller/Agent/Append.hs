@@ -22,10 +22,10 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile)
 
 import Storyteller.Agent.Splitter (Splitter, splitAtoms)
-import Storyteller.Atom (Atom(..))
-import Storyteller.Git (BranchTag)
-import Storyteller.Storage (StoryBranch, storeAs)
-import Storyteller.Types (TickId)
+import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Storage (StoryBranch, storeAs)
+import Storyteller.Core.Types (TickId)
 
 import Prelude hiding (appendFile)
 

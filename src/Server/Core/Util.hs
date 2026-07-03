@@ -16,15 +16,15 @@ import Polysemy.Error (Error, throw)
 import Runix.Git (Git)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
-import Storyteller.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Storage (StoryBranch, StoryStorage, getBranch)
-import Storyteller.Types (BranchName(..))
+import Storyteller.Core.Git (BranchTag(..), runBranchAndFS)
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, getBranch)
+import Storyteller.Core.Types (BranchName(..))
 import Polysemy.Fail (Fail)
 
 -- | Open a branch's storage/filesystem scope. Callers that open this once
 --   for a whole connection's lifetime (see 'Server.Writer.File.Connection',
 --   'Server.Writer.Branch.Connection') and dispatch many commands through it
---   should wrap each individual command in 'Storyteller.Git.withStorage'
+--   should wrap each individual command in 'Storyteller.Core.Git.withStorage'
 --   themselves — wrapping the whole long-lived scope here would buffer
 --   every command's ref writes together, only publishing (and therefore
 --   notifying) once the connection closes.

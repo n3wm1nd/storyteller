@@ -9,7 +9,7 @@
 {-# LANGUAGE TypeOperators #-}
 
 -- | Shared runtime: model, interpreters, and IO effect stacks.
-module Storyteller.Runtime
+module Storyteller.Core.Runtime
   ( -- * Model
     StoryModel
   , storyModel
@@ -22,7 +22,7 @@ module Storyteller.Runtime
   , runStoryGit
 
     -- * Re-exported for custom stacks
-  , module Storyteller.Git
+  , module Storyteller.Core.Git
   , runStoryStorageGit
   , Git
   ) where
@@ -43,9 +43,9 @@ import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
 import Runix.Git (Git, runGitIO, withGitCache)
-import Storyteller.Types (BranchName(..))
-import Storyteller.Git
-import Storyteller.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Core.Git
+import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
 
 import UniversalLLM (Model(..), ModelConfig, Routing(..))
 import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))

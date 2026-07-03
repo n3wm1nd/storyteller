@@ -8,7 +8,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
-module Storyteller.Storage
+module Storyteller.Core.Storage
   ( -- * Branch-level effect
     StoryBranch(..)
   , store
@@ -47,7 +47,7 @@ import Data.List (find)
 import Polysemy
 import Polysemy.Fail
 import Data.Text (Text)
-import Storyteller.Types (TickId, BranchName(..), Branch(..), Tick, TickData(..), TickType(..), draft)
+import Storyteller.Core.Types (TickId, BranchName(..), Branch(..), Tick, TickData(..), TickType(..), draft)
 
 -- | A single tick entry from the file-tick projection of a branch.
 --   Oldest-first when returned by 'fileTicks'.
@@ -148,7 +148,7 @@ reset = send @(StoryBranch branch) Reset
 -- | Run branch operations at the given position, save/restore working tree,
 --   then replay the tail — without broadcasting the resulting id mapping via
 --   'updateReferences'. For callers that need to combine this mapping with
---   something else before broadcasting once (see 'Storyteller.Edit'). Most
+--   something else before broadcasting once (see 'Storyteller.Core.Edit'). Most
 --   callers want 'at' instead, which broadcasts automatically; for reads
 --   that make no changes worth keeping, use 'readAt' instead, which skips
 --   the replay entirely rather than just deferring its broadcast.
