@@ -104,7 +104,9 @@ business-logic layer, not the wire protocol), run once each under an eager
 interpreter and once buffered through `Storyteller.Core.Git.withStorage` (see
 `test/Main.hs`). `NotificationSpec` exercises `Server.Writer.Notification`.
 
-# Part 2: SDK — `Storyteller.Core` vs. `Storyteller.Agent`
+# Part 2: SDK — `Storyteller.Core` vs. `Storyteller.Common` vs. `Storyteller.Agent`
+
+This turned out to need three tiers, not two — see "the middle tier" below.
 
 ## `Storyteller.Core.*` — the storage engine
 
@@ -114,14 +116,36 @@ unmodified if a Roleplay or Lector app were built on the same substrate.
 
 | Module | Contains |
 |---|---|
-| `Storyteller.Core.Types` | `TickId`, `Tick`, `TickData`, `TickPos`, `Branch`, `BranchName`, the `TickType` typeclass — the base tick vocabulary |
+| `Storyteller.Core.Types` | `TickId`, `Tick`, `TickData`, `TickPos`, `Branch`, `BranchName`, the `TickType` typeclass, the `Root` tick kind — the base tick vocabulary |
 | `Storyteller.Core.Storage` | `StoryBranch`/`StoryStorage` effects: `store`, `replace`, `drop`, `get`, `reset`, `at`, `sneakyAt`, `readAt`, `withFS`, `atWithFS` — the storage effect interface |
 | `Storyteller.Core.Git` | The git-backed interpreters for `StoryStorage`/`StoryBranch` — ref layout, commit encoding, working-tree (de)serialization |
 | `Storyteller.Core.Edit` | Chain editing: `deleteTick`, `editAtom`, `moveTick`, `commitWorkingTree` — composed from storage primitives, no LLM/splitter involvement |
 | `Storyteller.Core.Atom` | The `Atom` tick kind (file-append ticks) |
-| `Storyteller.Core.Annotation` | `addNote` and the annotation-tick vocabulary — new ticks that reference an existing one, distinct from `Edit`'s in-place chain restructuring |
 | `Storyteller.Core.Runtime` | `StoryModel`, the `Main` branch-phantom, `runInfrastructure`/`runStoryGit` — shared IO effect-stack assembly |
 | `Storyteller.Core.CLI.Env` | `StoryEnv`, `loadEnv`, `modelConfigs` — the ENV-variable configuration shared by all CLI entry points |
+
+## The middle tier: `Storyteller.Common.*`
+
+Not every tick kind is foundational the way `Root` is (every branch needs a
+root tick regardless of app), but not every tick kind is app-specific either
+— some are things *any* agent, in any app built on this storage model, would
+plausibly want to produce: a user comment, a record of why an agent changed
+something. Those go in `Storyteller.Common`, not `Storyteller.Core`:
+
+| Module | Contains |
+|---|---|
+| `Storyteller.Common.Types` | `Note` (user-authored comment on zero or more ticks), `Fixup` (agent-authored record of why it changed an atom) |
+| `Storyteller.Common.Annotation` | `addNote` — the operation that creates a `Note` tick |
+
+`Fixup` is the fuzzier of the two calls — it's currently only produced by one
+agent (`Storyteller.Agent.ReplaceTool`, used by `Fix`/`FlowWrite`), so
+"common" is a judgment call rather than something a second caller has
+already proven. Revisit if it turns out to be genuinely Fix/FlowWrite-only.
+
+`Storyteller.Common.Agent.*` doesn't exist yet — reserved for agents that
+turn out to be common rather than Core or Writer-specific as that
+distinction gets made (see the still-unfinished agent-internal split below;
+`Splitter`/`Tracker` are the current candidates).
 
 ## `Storyteller.Agent.*` — the business logic (unchanged)
 

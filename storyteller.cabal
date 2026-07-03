@@ -50,8 +50,9 @@ library
                   , Storyteller.Agent.Fix
                   , Storyteller.Agent.ReplaceTool
                   , Storyteller.Core.Atom
-                  , Storyteller.Core.Annotation
                   , Storyteller.Core.Edit
+                  , Storyteller.Common.Types
+                  , Storyteller.Common.Annotation
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run

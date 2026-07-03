@@ -37,7 +37,7 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFil
 
 import Server.Core.Protocol (Update(..), tickToWireTick)
 
-import Storyteller.Core.Annotation (addNote)
+import Storyteller.Common.Annotation (addNote)
 import Storyteller.Core.Edit (deleteTick, moveTick)
 import Storyteller.Core.Git (BranchTag(..))
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, follow, reset)

@@ -41,7 +41,7 @@ import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
 
 import Storyteller.Agent.Append (appendUnsplit)
-import Storyteller.Core.Annotation (addNote)
+import Storyteller.Common.Annotation (addNote)
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
 import Storyteller.Core.Storage (FileTick, StoryBranch, StoryStorage, fileTicks)

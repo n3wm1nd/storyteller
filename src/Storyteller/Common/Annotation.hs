@@ -11,12 +11,14 @@
 -- itself (delete/move/replace an existing tick in place). Annotations are
 -- just new ticks referencing an existing one — closer in kind to what an
 -- agent produces than to a chain-editing primitive. Agents introduce new
--- annotation tick types fairly freely (see 'Storyteller.Core.Types.Note'), so
--- this is where that vocabulary and its constructors collect, rather than
+-- annotation tick types fairly freely (see 'Storyteller.Common.Types.Note'),
+-- so this is where that vocabulary and its constructors collect, rather than
 -- under either 'Server.Core.Branch' or 'Server.Core.File' (both need it,
 -- neither owns it) or under 'Storyteller.Core.Edit' (it isn't restructuring
--- anything).
-module Storyteller.Core.Annotation
+-- anything). Lives in 'Common' rather than 'Core' for the same reason 'Note'
+-- itself does: not foundational (unlike 'Storyteller.Core.Types.Root'), but
+-- not specific to any one app either.
+module Storyteller.Common.Annotation
   ( addNote
   ) where
 
@@ -25,7 +27,8 @@ import Polysemy
 import Polysemy.Fail
 
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, follow, storeAs)
-import Storyteller.Core.Types (TickId(..), Note(..), tickId, tickParent)
+import Storyteller.Core.Types (TickId(..), tickId, tickParent)
+import Storyteller.Common.Types (Note(..))
 
 -- | Add an annotation note referencing zero or more existing ticks — zero
 --   is valid, a free-floating remark rather than a comment on any specific

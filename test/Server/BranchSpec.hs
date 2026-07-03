@@ -26,6 +26,7 @@ import Git.Mock (GitState, emptyGitState, runGitMock)
 import Storyteller.Core.Git (BranchTag, runBranchAndFS, withStorage, runStoryStorageGit)
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, storeAs, store)
 import Storyteller.Core.Types
+import Storyteller.Common.Types (Note(..))
 
 import Server.TestStack
 

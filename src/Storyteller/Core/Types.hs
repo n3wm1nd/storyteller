@@ -25,8 +25,6 @@ module Storyteller.Core.Types
 
     -- * Built-in tick kinds
   , Root(..)
-  , Note(..)
-  , Fixup(..)
 
     -- * Utilities
   , tickTypeOf
@@ -149,37 +147,6 @@ instance TickType Root where
   toDraft (Root name) = encodeDraft @Root [] [] (unBranchName name)
   fromTick t = Root . BranchName <$> decodePayload @Root t
 
--- | An annotation attached to zero or more existing ticks — a comment on a
---   specific set of atoms, or (with no refs) a free-floating remark on the
---   file/story so far.
-data Note = Note
-  { noteRefs :: [TickId]
-  , noteBody :: Text
-  } deriving (Show, Eq)
-
-instance TickType Note where
-  tickTypeName = "note"
-
-  toDraft (Note refs body) = encodeDraft @Note refs [] body
-
-  fromTick t = do
-    body <- decodePayload @Note t
-    Just Note { noteRefs = tickRefs (tickData t), noteBody = body }
-
--- | An agent's own record of why it changed something — distinct from
---   'Note' (user-authored commentary): a 'Fixup' is agent-authored, tied to
---   the specific atom(s) it just replaced, kept so the reasoning behind a
---   change can be traced back later.
-data Fixup = Fixup
-  { fixupRefs   :: [TickId]
-  , fixupReason :: Text
-  } deriving (Show, Eq)
-
-instance TickType Fixup where
-  tickTypeName = "fixup"
-
-  toDraft (Fixup refs reason) = encodeDraft @Fixup refs [] reason
-
-  fromTick t = do
-    reason <- decodePayload @Fixup t
-    Just Fixup { fixupRefs = tickRefs (tickData t), fixupReason = reason }
+-- Other built-in tick kinds ('Note', 'Fixup') live in 'Storyteller.Common.Types'
+-- — not foundational the way 'Root' is (every branch needs a root tick
+-- regardless of app), but not specific to any one app either.
