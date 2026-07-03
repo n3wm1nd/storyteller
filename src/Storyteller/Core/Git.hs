@@ -331,14 +331,14 @@ withStorageWithCallback onRef action =
       -- rebuilding a second, wrong chain from stale ancestry alongside the
       -- correct one 'At' already built — this is what actually caused a
       -- moved tick's sibling to be duplicated in the chain.
-      UpdateReferences mapping ->
-        mapM_ (\(o, n) -> do
-          pairs   <- raise $ listRefs storyRefPrefix
-          pending <- get
-          let current = [ (storyRef (branchName b), ObjectHash (unTickId (branchHead b)))
-                        | b <- overlayRefs (map resolveToHead pairs) pending ]
-          cascadeReplace current applyRef (ObjectHash (unTickId o)) (ObjectHash (unTickId n))
-          ) mapping
+      UpdateReferences mapping -> do
+        pairs   <- raise $ listRefs storyRefPrefix
+        pending <- get
+        let current = [ (storyRef (branchName b), ObjectHash (unTickId (branchHead b)))
+                      | b <- overlayRefs (map resolveToHead pairs) pending ]
+            hashMapping = Map.fromList
+              [ (ObjectHash (unTickId o), ObjectHash (unTickId n)) | (o, n) <- mapping ]
+        cascadeReplace current applyRef hashMapping
 
       SetRef name mtid -> applyRef name mtid
 
@@ -522,7 +522,8 @@ runStoryBranchGit branch action = do
           -- see 'cascadeReplace's own comment for why that matters.
           current <- raise $ map (\b -> (storyRef (branchName b), ObjectHash (unTickId (branchHead b))))
                        <$> listBranches
-          raise $ cascadeReplaceOtherBranches current setRef branch (ObjectHash (unTickId oldId)) newHash
+          raise $ cascadeReplaceOtherBranches current setRef branch
+                    (Map.singleton (ObjectHash (unTickId oldId)) newHash)
           raise $ put @ObjectHash newHash
           raise $ setRef branch (Just newId)
           pureT $ Right newId
@@ -982,58 +983,69 @@ walkFrom acc step hash = do
 --
 --   Only commit parent links are rewritten — trees and blobs are not tick
 --   references and are left untouched.
+--
+--   Takes the whole old→new mapping at once rather than one pair at a
+--   time: 'rewriteChain' below walks each branch's ancestry exactly once,
+--   checking every commit against the full mapping as it goes, instead of
+--   re-walking the same ancestry once per mapping entry. A mapping with M
+--   entries against B branches of chain length L used to cost O(M x B x L)
+--   (each of the M entries independently re-listing every branch and
+--   re-walking each one's full ancestry from head); batching drops that to
+--   O(B x L), the walk each branch already has to do at minimum to find
+--   its own affected suffix. See bench/PerfCascade.hs for the regression
+--   probe this fixes.
 cascadeReplace
   :: Members '[Git, Fail] r
-  => [(RefName, ObjectHash)]  -- ^ each branch's current head
+  => [(RefName, ObjectHash)]      -- ^ each branch's current head
   -> (BranchName -> Maybe TickId -> Sem r ())
-  -> ObjectHash  -- ^ old commit hash (now superseded)
-  -> ObjectHash  -- ^ new commit hash (the replacement)
+  -> Map ObjectHash ObjectHash    -- ^ old commit hash -> new commit hash, for every superseded tick
   -> Sem r ()
-cascadeReplace pairs applyRef old new =
-  mapM_ (rewriteRef applyRef old new) pairs
+cascadeReplace pairs applyRef mapping =
+  mapM_ (rewriteRef applyRef mapping) pairs
 
 -- | Like 'cascadeReplace' but skips the given branch — used by 'Replace'
 --   inside 'At' where the current branch is being rebuilt by the rewind.
 cascadeReplaceOtherBranches
   :: Members '[Git, Fail] r
-  => [(RefName, ObjectHash)]  -- ^ each branch's current head
+  => [(RefName, ObjectHash)]      -- ^ each branch's current head
   -> (BranchName -> Maybe TickId -> Sem r ())
   -> BranchName
-  -> ObjectHash
-  -> ObjectHash
+  -> Map ObjectHash ObjectHash
   -> Sem r ()
-cascadeReplaceOtherBranches pairs applyRef skipBranch old new = do
+cascadeReplaceOtherBranches pairs applyRef skipBranch mapping = do
   let others = filter (\(ref, _) -> ref /= storyRef skipBranch) pairs
-  mapM_ (rewriteRef applyRef old new) others
+  mapM_ (rewriteRef applyRef mapping) others
 
 rewriteRef
   :: Members '[Git, Fail] r
   => (BranchName -> Maybe TickId -> Sem r ())
-  -> ObjectHash
-  -> ObjectHash
+  -> Map ObjectHash ObjectHash
   -> (RefName, ObjectHash)
   -> Sem r ()
-rewriteRef applyRef old new (ref, headHash) = do
-  newHead <- rewriteChain old new headHash
+rewriteRef applyRef mapping (ref, headHash) = do
+  newHead <- rewriteChain mapping headHash
   when (newHead /= headHash) $
     case refBranchName ref of
       Just name -> applyRef name (Just (TickId (unObjectHash newHead)))
       Nothing   -> return ()
 
--- | Walk a commit chain rewriting any commit that has @old@ as a parent.
---   Returns the (possibly new) head hash. Works bottom-up by recursing to
---   parents first, so a single rewrite propagates upward automatically.
+-- | Walk a commit chain rewriting any commit that appears as a key in
+--   @mapping@. Returns the (possibly new) head hash. Works bottom-up by
+--   recursing to parents first, so a single rewrite propagates upward
+--   automatically. Checks the whole mapping at each commit (one Map
+--   lookup) rather than being called once per mapping entry — see
+--   'cascadeReplace's comment for why that distinction is the difference
+--   between this being linear or quadratic in mapping size.
 rewriteChain
   :: Members '[Git, Fail] r
-  => ObjectHash
-  -> ObjectHash
+  => Map ObjectHash ObjectHash
   -> ObjectHash
   -> Sem r ObjectHash
-rewriteChain old new hash
-  | hash == old = return new
-  | otherwise   = do
-      cd         <- readCommit hash
-      newParents <- mapM (rewriteChain old new) (commitParents cd)
-      if newParents == commitParents cd
-        then return hash
-        else writeCommit cd { commitParents = newParents }
+rewriteChain mapping hash = case Map.lookup hash mapping of
+  Just new -> return new
+  Nothing  -> do
+    cd         <- readCommit hash
+    newParents <- mapM (rewriteChain mapping) (commitParents cd)
+    if newParents == commitParents cd
+      then return hash
+      else writeCommit cd { commitParents = newParents }
