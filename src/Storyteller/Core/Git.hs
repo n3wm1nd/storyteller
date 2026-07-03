@@ -991,9 +991,21 @@ walkFrom acc step hash = do
 --   entries against B branches of chain length L used to cost O(M x B x L)
 --   (each of the M entries independently re-listing every branch and
 --   re-walking each one's full ancestry from head); batching drops that to
---   O(B x L), the walk each branch already has to do at minimum to find
---   its own affected suffix. See bench/PerfCascade.hs for the regression
---   probe this fixes.
+--   O(B x L) -- but a second, separate cost remained: a commit's parents
+--   include cross-branch tick refs (e.g. a tracked atom's ref back to its
+--   source tick), and 'rewriteChain' recurses into those uniformly along
+--   with the branch's own chain parent. When a ref-parent's hash *isn't* a
+--   mapping key, that recursion doesn't stop -- it walks that foreign
+--   commit's own ancestry all the way down to prove nothing there needs
+--   rewriting either. With N ref-parents whose targets' ancestries mostly
+--   overlap (consecutive ticks on the same source branch nest inside each
+--   other), that redid the same overlapping work up to N times: O(N^2)
+--   again, just triggered by ref-parent misses instead of mapping size.
+--   'rewriteChain' now shares one memo table (@hash -> resolved hash@)
+--   across the whole call, so any hash reached by more than one path --
+--   a branch's own chain, or several different ref-parents landing in the
+--   same region -- is resolved once, not once per path. See
+--   bench/PerfCascade.hs for the regression probe this fixes.
 cascadeReplace
   :: Members '[Git, Fail] r
   => [(RefName, ObjectHash)]      -- ^ each branch's current head
@@ -1001,7 +1013,8 @@ cascadeReplace
   -> Map ObjectHash ObjectHash    -- ^ old commit hash -> new commit hash, for every superseded tick
   -> Sem r ()
 cascadeReplace pairs applyRef mapping =
-  mapM_ (rewriteRef applyRef mapping) pairs
+  evalState (Map.empty :: Map ObjectHash ObjectHash) $
+    mapM_ (rewriteRef (\n t -> raise (applyRef n t)) mapping) pairs
 
 -- | Like 'cascadeReplace' but skips the given branch — used by 'Replace'
 --   inside 'At' where the current branch is being rebuilt by the rewind.
@@ -1014,10 +1027,11 @@ cascadeReplaceOtherBranches
   -> Sem r ()
 cascadeReplaceOtherBranches pairs applyRef skipBranch mapping = do
   let others = filter (\(ref, _) -> ref /= storyRef skipBranch) pairs
-  mapM_ (rewriteRef applyRef mapping) others
+  evalState (Map.empty :: Map ObjectHash ObjectHash) $
+    mapM_ (rewriteRef (\n t -> raise (applyRef n t)) mapping) others
 
 rewriteRef
-  :: Members '[Git, Fail] r
+  :: Members '[Git, Fail, State (Map ObjectHash ObjectHash)] r
   => (BranchName -> Maybe TickId -> Sem r ())
   -> Map ObjectHash ObjectHash
   -> (RefName, ObjectHash)
@@ -1030,22 +1044,26 @@ rewriteRef applyRef mapping (ref, headHash) = do
       Nothing   -> return ()
 
 -- | Walk a commit chain rewriting any commit that appears as a key in
---   @mapping@. Returns the (possibly new) head hash. Works bottom-up by
---   recursing to parents first, so a single rewrite propagates upward
---   automatically. Checks the whole mapping at each commit (one Map
---   lookup) rather than being called once per mapping entry — see
---   'cascadeReplace's comment for why that distinction is the difference
---   between this being linear or quadratic in mapping size.
+--   @mapping@, memoizing every hash it resolves along the way (see
+--   'cascadeReplace's comment). Returns the (possibly new) head hash.
+--   Works bottom-up by recursing to parents first, so a single rewrite
+--   propagates upward automatically.
 rewriteChain
-  :: Members '[Git, Fail] r
+  :: Members '[Git, Fail, State (Map ObjectHash ObjectHash)] r
   => Map ObjectHash ObjectHash
   -> ObjectHash
   -> Sem r ObjectHash
 rewriteChain mapping hash = case Map.lookup hash mapping of
   Just new -> return new
   Nothing  -> do
-    cd         <- readCommit hash
-    newParents <- mapM (rewriteChain mapping) (commitParents cd)
-    if newParents == commitParents cd
-      then return hash
-      else writeCommit cd { commitParents = newParents }
+    memo <- get
+    case Map.lookup hash memo of
+      Just resolved -> return resolved
+      Nothing -> do
+        cd         <- readCommit hash
+        newParents <- mapM (rewriteChain mapping) (commitParents cd)
+        resolved   <- if newParents == commitParents cd
+          then return hash
+          else writeCommit cd { commitParents = newParents }
+        modify (Map.insert hash resolved)
+        return resolved
