@@ -205,6 +205,26 @@ Not implemented: no commands, no wire types, and no push event exist for this ye
 **Events:** an `update`-shaped push whenever a tick lands inside the range or a referencing entity-branch tick appears.  
 **Why separate from `/branch/{name}/{path}`:** keeps the (large, per-atom) prose stream and the (small, cross-cutting) metadata stream from duplicating each other over the wire — a panel that only needs the chrome (breadcrumb, summary, cast list) doesn't have to receive or filter the full atom chain to get it.
 
+### `/character/{charBranch}` *(planned, app-specific)*
+
+**Scope:** sidebar-facing data about one character — not its journal (see
+"New scopes are app-specific, not core" above; journal stays on the file
+connection). Naming/structure conventions (`sheet.md`, `journal.md`,
+`character/{id}` branch prefix) are documented in WRITER.md, not here — this
+section only covers the connection.  
+**On connect:** composed, augmented-but-not-processed character data —
+starting with name + sheet content, expected to grow (mood, status, ...) as
+sidebar features are added. May read across more than one branch to assemble
+its payload.  
+**Commands:** none yet envisioned — read-only; sheet edits happen through the
+file connection.  
+**Events:** an `update`-shaped push whenever the underlying sheet (or
+whatever else the payload composes from) changes.  
+**Why separate from `/branch/{name}`:** `/branch/{name}` is generic and
+knows nothing about "character" — it wouldn't know to read `sheet.md`'s
+content, compose it with other data, or scope by character branch
+independent of whichever story branch happens to be open.
+
 ### `/agent/{id}` *(planned)*
 
 **Scope:** a running agent.  

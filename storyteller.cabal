@@ -53,6 +53,8 @@ library
                   , Storyteller.Core.Edit
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation
+                  , Storyteller.Writer.Types
+                  , Storyteller.Writer.Presence
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run
@@ -184,6 +186,7 @@ test-suite storyteller-test
                   , Storyteller.SplitterSpec
                   , Storyteller.TrackerSpec
                   , Storyteller.CharGenSpec
+                  , Storyteller.PresenceSpec
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.FileSpec
