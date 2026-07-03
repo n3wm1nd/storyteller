@@ -12,6 +12,7 @@ import {
   type SessionCommand, type SessionEvent,
   type BranchCommand,  type BranchEvent,
   type FileCommand,    type FileEvent,
+  type ContextItem,
 } from "./ws";
 import { tickChain } from "./utils";
 
@@ -68,6 +69,15 @@ interface StoryState {
   // state, cleared on branch/file change.
   rebaseMarker: string | null;
 
+  // A chat.writer/chat.fixer/chat.append command submitted while a previous
+  // generation ('preview') was still in flight. Held here instead of sent
+  // immediately (the server processes one command at a time per
+  // connection), and flushed the moment the in-flight generation's
+  // "chat.preview.end" arrives. See project notes on FlowWriter — a queued
+  // chat.writer captures 'flowTid' (HEAD at queue-time) into its command
+  // when it's built, not when it's flushed.
+  pendingSubmit: { path: string; cmd: FileCommand } | null;
+
   // Actions
   connect:        () => Promise<void>;
   createBranch:   (name: string) => void;
@@ -81,7 +91,8 @@ interface StoryState {
   addNote:        (refTickId: string, text: string) => void;
   moveTick:       (tickId: string, afterTickId?: string) => void;
   deleteTickEntry:(tickId: string) => void;
-  chatPrompt:              (path: string, text: string) => void;
+  chatWrite:                (path: string, text: string) => void;
+  chatFix:                  (path: string, text: string) => void;
   toggleContextAtom:       (tickId: string) => void;
   toggleContextAnnotation: (tickId: string) => void;
   clearContext:            () => void;
@@ -148,7 +159,7 @@ function schedulePreviewPlaceholder(set: Setter) {
   }, PREVIEW_DELAY_MS);
 }
 
-function handleChatPreview(set: Setter, evt: ChatPreviewEvent) {
+function handleChatPreview(set: Setter, get: () => StoryState, evt: ChatPreviewEvent) {
   clearPreviewDelayTimer();
   set((s) => {
     switch (evt.type) {
@@ -162,6 +173,50 @@ function handleChatPreview(set: Setter, evt: ChatPreviewEvent) {
         return { preview: null };
     }
   });
+  if (evt.type === "chat.preview.end") flushPendingSubmit(set, get);
+}
+
+// Send the submission that was held back while the previous generation was
+// still streaming, now that it's done. Built at queue-time (see
+// 'sendChatCommand'), so nothing left to do but send it.
+function flushPendingSubmit(set: Setter, get: () => StoryState) {
+  const pending = get().pendingSubmit;
+  if (!pending) return;
+  set({ pendingSubmit: null });
+  get().openFiles[pending.path]?.conn.send(atRebase(get().rebaseMarker, pending.cmd));
+}
+
+// Build the read-only context items for a chat command from the current
+// atom/annotation selection — chain order, atoms then annotations, per
+// SPEC-SELECTION-ANNOTATIONS.md.
+function buildContextItems(s: StoryState, path: string): ContextItem[] {
+  const fc = s.openFiles[path];
+  if (!fc) return [];
+  const chain = tickChain(fc.ticks, fc.head);
+  const atoms       = chain.filter((t) => s.contextAtoms.has(t.tickId));
+  const annotations = chain.filter((t) => s.contextAnnotations.has(t.tickId));
+  return [...atoms, ...annotations].map((t) => ({
+    tickId: t.tickId,
+    kind: t.kind,
+    content: t.content ?? t.message,
+  }));
+}
+
+// Send a chat.* command now, or hold it if a generation is already
+// streaming on this connection (server processes one command at a time).
+// 'buildCmd' receives the captured flowTid (HEAD at queue-time) only when
+// the command is actually being queued — an immediate send has no
+// in-flight generation to be provisional about.
+function sendChatCommand(get: () => StoryState, set: Setter, path: string, buildCmd: (flowTid?: string) => FileCommand) {
+  const s = get();
+  const fc = s.openFiles[path];
+  if (!fc) return;
+  if (s.preview !== null) {
+    set({ pendingSubmit: { path, cmd: buildCmd(fc.head ?? undefined) } });
+  } else {
+    schedulePreviewPlaceholder(set);
+    fc.conn.send(atRebase(s.rebaseMarker, buildCmd(undefined)));
+  }
 }
 
 // Apply a server-computed old->new tickId remap (from a rebase/replace/move)
@@ -238,6 +293,7 @@ export const useStory = create<StoryState>((set, get) => ({
   contextAtoms: new Set(),
   contextAnnotations: new Set(),
   rebaseMarker: null,
+  pendingSubmit: null,
   _session: null,
   _branch: null,
 
@@ -306,6 +362,7 @@ export const useStory = create<StoryState>((set, get) => ({
       contextAtoms: new Set(),
       contextAnnotations: new Set(),
       rebaseMarker: null,
+      pendingSubmit: null,
       conns: setConnStatus(s.conns, label, "connecting"),
     }));
 
@@ -333,7 +390,7 @@ export const useStory = create<StoryState>((set, get) => ({
       } else if (evt.type === "agent.log") {
         handleAgentLog(set, evt);
       } else if (isChatPreviewEvent(evt)) {
-        handleChatPreview(set, evt);
+        handleChatPreview(set, get, evt);
       } else if (evt.type === "error") {
         clearPreviewDelayTimer();
         set({ preview: null });
@@ -348,7 +405,7 @@ export const useStory = create<StoryState>((set, get) => ({
   openFile: async (path) => {
     const { activeBranch, openFiles } = get();
     if (!activeBranch) return;
-    set({ rebaseMarker: null });
+    set({ rebaseMarker: null, pendingSubmit: null });
     if (openFiles[path]) return;
 
     const label = `file:${path}`;
@@ -391,7 +448,7 @@ export const useStory = create<StoryState>((set, get) => ({
       } else if (evt.type === "agent.log") {
         handleAgentLog(set, evt);
       } else if (isChatPreviewEvent(evt)) {
-        handleChatPreview(set, evt);
+        handleChatPreview(set, get, evt);
       } else if (evt.type === "error") {
         clearPreviewDelayTimer();
         set({ preview: null });
@@ -415,9 +472,8 @@ export const useStory = create<StoryState>((set, get) => ({
   },
 
   appendToFile: (path, content) => {
-    get().openFiles[path]?.conn.send(
-      atRebase(get().rebaseMarker, { type: "append", content: content.replace(/^\/+/, "") })
-    );
+    const text = content.replace(/^\/+/, "");
+    sendChatCommand(get, set, path, () => ({ type: "chat.append", content: text }));
   },
 
   editAtom: (path, tickId, content) => {
@@ -444,9 +500,15 @@ export const useStory = create<StoryState>((set, get) => ({
     get()._branch?.send({ type: "delete.tick", tickId });
   },
 
-  chatPrompt: (path, text) => {
-    schedulePreviewPlaceholder(set);
-    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "chat.prompt", text }));
+  chatWrite: (path, text) => {
+    const context = buildContextItems(get(), path);
+    sendChatCommand(get, set, path, (flowTid) => ({ type: "chat.writer", text, context, flowTid }));
+  },
+
+  chatFix: (path, text) => {
+    const context = buildContextItems(get(), path);
+    const targets = [...get().contextAtoms];
+    sendChatCommand(get, set, path, () => ({ type: "chat.fixer", text, context, targets }));
   },
 
   toggleContextAtom: (tickId) => {

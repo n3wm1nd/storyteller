@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, History, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles, Wrench } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/store";
 import { type AnnotationMode } from "@/lib/utils";
@@ -645,7 +645,19 @@ export function ChatPreviewStrip({ preview }: {
 
 // ── Input bar ─────────────────────────────────────────────────────────────────
 
-export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite }: {
+// Routable agents behind the input bar. 'write' is Writer (or FlowWriter,
+// implicitly, when a generation is already in flight — see the store's
+// chatWrite). 'fix' targets the current atom selection. 'append' is the
+// instant, non-LLM verbatim insert.
+type AgentId = "write" | "fix" | "append";
+
+const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof Sparkles | null }> = {
+  write:  { label: "Write",  title: "Send to writer agent",              icon: Sparkles },
+  fix:    { label: "Fix",    title: "Send to fixer agent (edit targets)", icon: Wrench },
+  append: { label: "Append", title: "Append verbatim, instant",           icon: null },
+};
+
+export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix }: {
   enabled: boolean;
   contextAtomCount: number;
   contextAnnotationCount: number;
@@ -654,16 +666,40 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   onClearContext: () => void;
   onAppend: (text: string) => void;
   onWrite:  (text: string) => void;
+  onFix:    (text: string) => void;
 }) {
   const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const hasContext = contextAtomCount > 0 || contextAnnotationCount > 0;
 
-  function send(action: (t: string) => void) {
+  // Sane defaults so the two keybinds cover the common cases without
+  // reaching for the dropdown: no selection → Write main / Append alt;
+  // selection present → Fix main / Write alt (selection stays reference
+  // context for Write, not an edit target).
+  const mainId: AgentId = hasContext ? "fix" : "write";
+  const altId:  AgentId = hasContext ? "write" : "append";
+
+  const actionFor: Record<AgentId, (t: string) => void> = { write: onWrite, fix: onFix, append: onAppend };
+
+  function fire(id: AgentId) {
     const t = text.trim();
-    if (t) { action(t); setText(""); }
+    if (!t) return;
+    actionFor[id](t);
+    setText("");
+    setMenuOpen(false);
   }
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDocClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [menuOpen]);
 
   function onDragHandleMouseDown(e: React.MouseEvent) {
     e.preventDefault();
@@ -709,32 +745,65 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && e.metaKey  && !e.shiftKey) { e.preventDefault(); send(onAppend); }
-            if (e.key === "Enter" && e.metaKey  &&  e.shiftKey) { e.preventDefault(); send(onWrite);  }
-            if (e.key === "Enter" && e.ctrlKey  && !e.shiftKey) { e.preventDefault(); send(onAppend); }
-            if (e.key === "Enter" && e.ctrlKey  &&  e.shiftKey) { e.preventDefault(); send(onWrite);  }
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) { e.preventDefault(); fire(mainId); }
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) &&  e.shiftKey) { e.preventDefault(); fire(altId);  }
           }}
-          placeholder={enabled ? "⌘↵ append · ⌘⇧↵ write" : "Open a file to write"}
+          placeholder={enabled ? `⌘↵ ${AGENT_META[mainId].label.toLowerCase()} · ⌘⇧↵ ${AGENT_META[altId].label.toLowerCase()}` : "Open a file to write"}
           style={{
             flex: 1, resize: "none", fontFamily: "Georgia, serif", fontSize: 12,
             background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
             color: "var(--foreground)", padding: "6px 8px", outline: "none",
           }}
         />
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "flex-end" }}>
-          <button onClick={() => send(onAppend)} title="Append verbatim (⌘↵)" style={{
+        <div ref={menuRef} style={{ position: "relative", display: "flex", flexDirection: "column", gap: 4, justifyContent: "flex-end" }}>
+          <button onClick={() => fire(altId)} title={`${AGENT_META[altId].title} (⌘⇧↵)`} style={{
             padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5,
             color: "oklch(0.15 0.01 60)", fontWeight: 600, fontSize: 11, cursor: "pointer",
-          }}>Append</button>
-          <button onClick={() => send(onWrite)} title="Send to writer agent (⌘⇧↵)" style={{
-            padding: "4px 10px",
-            background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)",
-            borderRadius: 5, color: "var(--amber)", fontWeight: 600, fontSize: 11, cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 4,
-          }}>
-            <Sparkles style={{ width: 10, height: 10 }} />
-            Write
-          </button>
+          }}>{AGENT_META[altId].label}</button>
+
+          <div style={{ display: "flex", gap: 2 }}>
+            <button onClick={() => fire(mainId)} title={`${AGENT_META[mainId].title} (⌘↵)`} style={{
+              flex: 1, padding: "4px 10px",
+              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)",
+              borderRadius: "5px 0 0 5px", color: "var(--amber)", fontWeight: 600, fontSize: 11, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
+            }}>
+              {(() => { const Icon = AGENT_META[mainId].icon; return Icon ? <Icon style={{ width: 10, height: 10 }} /> : null; })()}
+              {AGENT_META[mainId].label}
+            </button>
+            <button onClick={() => setMenuOpen((o) => !o)} title="Choose agent" style={{
+              padding: "4px 5px",
+              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)",
+              borderLeft: "1px solid oklch(0.78 0.10 65 / 0.35)",
+              borderRadius: "0 5px 5px 0", color: "var(--amber)", cursor: "pointer",
+              display: "flex", alignItems: "center",
+            }}>
+              <ChevronDown style={{ width: 11, height: 11 }} />
+            </button>
+          </div>
+
+          {menuOpen && (
+            <div style={{
+              position: "absolute", bottom: "100%", right: 0, marginBottom: 4, zIndex: 10,
+              background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
+              boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", overflow: "hidden", minWidth: 120,
+            }}>
+              {(Object.keys(AGENT_META) as AgentId[]).map((id) => {
+                const meta = AGENT_META[id];
+                const Icon = meta.icon;
+                return (
+                  <button key={id} onClick={() => fire(id)} title={meta.title} style={{
+                    display: "flex", alignItems: "center", gap: 6, width: "100%",
+                    padding: "6px 10px", background: "transparent", border: "none",
+                    color: "var(--foreground)", fontSize: 11, cursor: "pointer", textAlign: "left",
+                  }}>
+                    {Icon ? <Icon style={{ width: 11, height: 11, color: "var(--amber)" }} /> : <span style={{ width: 11 }} />}
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

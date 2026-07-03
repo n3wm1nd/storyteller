@@ -46,6 +46,9 @@ library
                   , Storyteller.Agent.CharGen
                   , Storyteller.Agent.Append
                   , Storyteller.Agent.Write
+                  , Storyteller.Agent.FlowWrite
+                  , Storyteller.Agent.Fix
+                  , Storyteller.Agent.ReplaceTool
                   , Storyteller.Atom
                   , Storyteller.Edit
                   , Server.Env
@@ -78,6 +81,7 @@ library
                   , storyteller:gitlib-effect
                   , polysemy-plugin
                   , aeson
+                  , autodocodec
                   , scientific
                   , vector
                   , random

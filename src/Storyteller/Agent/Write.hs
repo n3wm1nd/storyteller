@@ -20,7 +20,7 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), WordCount(..))
+import Storyteller.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), ContextBlock(..), WordCount(..))
 import Storyteller.Agent.Append (appendAgent)
 import Storyteller.Agent.Continuation (continueFileAgent)
 import Storyteller.Agent.Splitter (Splitter)
@@ -44,12 +44,13 @@ writeAgent
                 , StoryBranch branch, Splitter, Logging, Fail ] r )
   => FilePath                                       -- ^ file to append to
   -> Instruction
+  -> [ContextBlock]                                  -- ^ extra context (e.g. user's pinned selection)
   -> [(CharLabel, Sem r [CharContextBlock])]         -- ^ (label, summary action) per active char branch
   -> Sem r [TickId]
-writeAgent path instruction charActions = do
+writeAgent path instruction extraContext charActions = do
   charContexts <- fmap concat $ mapM (\(CharLabel name, action) -> do
     blocks <- action
     return $ CharContextBlock ("## Character: " <> name) : blocks) charActions
   Prose generated <- continueFileAgent @project @StoryModel
-                       modelConfigs (Just (WordCount 300)) charContexts path instruction
+                       modelConfigs (Just (WordCount 300)) charContexts extraContext path instruction
   appendAgent @branch path generated

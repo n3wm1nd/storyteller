@@ -27,6 +27,7 @@ module Storyteller.Storage
   , readAtWithFS
   , follow
   , fileTicks
+  , ticksSince
 
     -- * File tick projection
   , FileTick(..)
@@ -205,6 +206,15 @@ readAtWithFS tid action = readAt @branch tid (withFS @branch action)
 -- | Extract the file-relevant tick list for @path@ from the branch history (oldest-first).
 fileTicks :: forall branch r. Member (StoryBranch branch) r => FilePath -> Sem r [FileTick]
 fileTicks path = send @(StoryBranch branch) (FileTicks path)
+
+-- | Drop everything up to and including the tick named by @since@. If it
+--   isn't found (e.g. rewritten away by a move/replace), return everything —
+--   the correct fallback when we can't tell what's actually new/in-flight.
+ticksSince :: Maybe Text -> [FileTick] -> [FileTick]
+ticksSince Nothing ticks = ticks
+ticksSince (Just tid) ticks = case break ((== tid) . ftTickId) ticks of
+  (_, _ : rest) -> rest
+  (_, [])       -> ticks
 
 -- | Operations across all branches.
 data StoryStorage m a where

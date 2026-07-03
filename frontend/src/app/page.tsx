@@ -115,7 +115,7 @@ export default function Home() {
     agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
-    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatPrompt,
+    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix,
     setRebaseMarker,
   } = useStory();
 
@@ -346,7 +346,8 @@ export default function Home() {
               onClearRebase={() => setRebaseMarker(null)}
               onClearContext={clearContext}
               onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
-              onWrite={(text)  => selectedFile && chatPrompt(selectedFile, text)}
+              onWrite={(text)  => selectedFile && chatWrite(selectedFile, text)}
+              onFix={(text)    => selectedFile && chatFix(selectedFile, text)}
             />
           </>}
 

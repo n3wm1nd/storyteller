@@ -90,6 +90,6 @@ writeAction outFile instruction activeChars = do
     return $ CharContextBlock ("## Character: " <> charBranch) : blocks
 
   Prose generated <- continueFileAgent @(BranchTag Main) @StoryModel
-                               modelConfigs (Just (WordCount 300)) charContexts outFile instruction
+                               modelConfigs (Just (WordCount 300)) charContexts [] outFile instruction
   _ <- appendAgent @Main outFile generated
   return generated

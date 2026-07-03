@@ -11,23 +11,47 @@
 module Server.File.Protocol
   ( FileCommand(..)
   , FileEvent(..)
+  , ContextItem(..)
   ) where
 
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 import Server.Protocol (Update, withId)
 
+-- | A piece of pinned context the client attaches to a chat prompt — an
+--   atom or annotation the user selected as reference material. 'ciContent'
+--   is what the agent actually reads; 'ciTickId'/'ciKind' are for
+--   traceability only. See SPEC-SELECTION-ANNOTATIONS.md.
+data ContextItem = ContextItem
+  { ciTickId  :: T.Text
+  , ciKind    :: T.Text
+  , ciContent :: T.Text
+  } deriving (Show)
+
+instance FromJSON ContextItem where
+  parseJSON = withObject "ContextItem" $ \o ->
+    ContextItem <$> o .: "tickId" <*> o .: "kind" <*> o .: "content"
+
 -- | Commands the client may send on a file connection.
 --   Each is an intent — the server decides what ticks result.
+--
+--   The three "chat.*" variants are the input bar's routable targets:
+--   'ChatAppend' is the instant, non-LLM verbatim insert; 'ChatWriter' is
+--   Writer (or FlowWriter, implicitly, when 'cwFlowTid' is set — the tick
+--   that was HEAD when the user started typing, so the agent can judge
+--   whether atoms generated since then are still provisional); 'ChatFixer'
+--   targets specific existing atoms for (eventually) in-place editing.
 data FileCommand
-  = Append     { fcId :: Maybe T.Text, fcContent :: T.Text }
+  = ChatAppend { fcId :: Maybe T.Text, fcContent :: T.Text }
   | Delete     { fcId :: Maybe T.Text }
   | EditAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   | DeleteAtom { fcId :: Maybe T.Text, fcTickId :: T.Text }
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
-  | ChatPrompt { fcId :: Maybe T.Text, fcPromptText :: T.Text }
+  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
+  | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
   -- | Run 'fcCommand' rebased at 'fcTickId': the chain is temporarily wound
   --   back to that tick, the filesystem set to its snapshot, the inner
   --   command executed there, then every later tick is replayed on top of
@@ -42,12 +66,19 @@ instance FromJSON FileCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "append"      -> Append     i <$> o .: "content"
+      "chat.append" -> ChatAppend i <$> o .: "content"
       "delete"      -> pure (Delete i)
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
       "delete.atom" -> DeleteAtom i <$> o .: "tickId"
       "move.atom"   -> MoveAtom   i <$> o .: "tickId" <*> o .:? "afterTickId"
-      "chat.prompt" -> ChatPrompt i <$> o .: "text"
+      "chat.writer" -> do
+        context <- fromMaybe [] <$> o .:? "context"
+        flowTid <- o .:? "flowTid"
+        ChatWriter i <$> o .: "text" <*> pure context <*> pure flowTid
+      "chat.fixer"  -> do
+        context <- fromMaybe [] <$> o .:? "context"
+        targets <- fromMaybe [] <$> o .:? "targets"
+        ChatFixer i <$> o .: "text" <*> pure context <*> pure targets
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown file command: " <> T.unpack t)
 

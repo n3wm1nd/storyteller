@@ -20,7 +20,7 @@ module Server.File.Dispatch
 import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
-import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatPrompt)
+import Server.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatWriter, chatFixer)
 import Server.File.Protocol (FileCommand(..))
 import Server.Run (SessionEffects)
 import Storyteller.Agent.Splitter (Splitter)
@@ -31,7 +31,7 @@ import Storyteller.Types (TickId(..))
 runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r ()
 runCommand path cmd = case cmd of
 
-  Append _mid content ->
+  ChatAppend _mid content ->
     appendToFile path content
 
   Delete _mid ->
@@ -46,8 +46,11 @@ runCommand path cmd = case cmd of
   MoveAtom _mid tid mAfter ->
     moveFileAtom (TickId tid) (TickId <$> mAfter)
 
-  ChatPrompt _mid prompt ->
-    chatPrompt path prompt
+  ChatWriter _mid prompt context flowTid ->
+    chatWriter path prompt context (TickId <$> flowTid)
+
+  ChatFixer _mid prompt context targets ->
+    chatFixer path prompt context (map TickId targets)
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it

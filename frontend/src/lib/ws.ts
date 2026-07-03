@@ -84,13 +84,27 @@ export type BranchEvent =
 
 // ── File protocol ─────────────────────────────────────────────────────────────
 
+// A pinned atom/annotation attached to a chat.writer/chat.fixer command as
+// reference context. `content` is what the agent reads; `tickId`/`kind` are
+// for traceability only. See SPEC-SELECTION-ANNOTATIONS.md.
+export interface ContextItem {
+  tickId:  string;
+  kind:    string;
+  content: string;
+}
+
 export type FileCommand =
-  | { type: "append";      id?: string; content: string }
+  | { type: "chat.append"; id?: string; content: string }
   | { type: "delete";      id?: string }
   | { type: "edit.atom";   id?: string; tickId: string; content: string }
   | { type: "delete.atom"; id?: string; tickId: string }
   | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string }
-  | { type: "chat.prompt"; id?: string; text: string }
+  // Writer, or FlowWriter (implicitly) when `flowTid` is set — the tick
+  // that was HEAD when the user started typing, so the agent can judge
+  // whether atoms generated since then are still provisional.
+  | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; flowTid?: string }
+  // Fixer: `targets` are the atoms flagged as the subject of `text`.
+  | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
   // Rebase: run `command` as if `tickId` were HEAD, then replay everything
   // that came after it on top of the result. Lets the client re-target any
   // command at a historical point in the file's chain.

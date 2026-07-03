@@ -27,7 +27,8 @@ module Server.File
   , editFileAtom
   , deleteFileAtom
   , moveFileAtom
-  , chatPrompt
+  , chatWriter
+  , chatFixer
   ) where
 
 import Control.Monad (void)
@@ -38,12 +39,15 @@ import Polysemy.Fail (Fail)
 import Runix.Logging (info)
 
 import Server.Protocol (Update(..), toWireTick)
+import Server.File.Protocol (ContextItem(..))
 import Server.Run (SessionEffects)
 
-import Storyteller.Agent (Prompt(..), Instruction(..))
+import Storyteller.Agent (Prompt(..), Instruction(..), ContextBlock(..))
 import Storyteller.Agent.Append (appendUnsplit)
 import Storyteller.Agent.Splitter (Splitter)
 import Storyteller.Agent.Write (writeAgent)
+import Storyteller.Agent.FlowWrite (flowWriteAgent)
+import Storyteller.Agent.Fix (fixAgent)
 import Storyteller.Runtime (Main)
 import qualified Storyteller.Storage as Storage
 import Storyteller.Storage (FileTick, StoryBranch, StoryStorage, fileTicks, storeAs)
@@ -109,13 +113,33 @@ deleteFileAtom tid = void $ deleteTick @Main tid
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
 moveFileAtom tid mAfter = void $ moveTick @Main tid mAfter
 
--- | Store a prompt tick then run the write agent against this file.
-chatPrompt :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
-chatPrompt path prompt = do
+-- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
+--   set (the tick that was HEAD when the user started typing — see
+--   'Storyteller.Agent.FlowWrite').
+chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe TickId -> Sem r ()
+chatWriter path prompt context mFlowTid = do
   _ <- storeAs @Main (Prompt path prompt)
-  info $ "writer agent starting: " <> T.pack path
-  _ <- writeAgent @(BranchTag Main) @Main path (Instruction prompt) []
-  info $ "writer agent done: " <> T.pack path
+  let ctxBlocks = toContextBlocks context
+  case mFlowTid of
+    Just flowTid -> do
+      info $ "flow writer agent starting: " <> T.pack path
+      _ <- flowWriteAgent @(BranchTag Main) @Main path flowTid (Instruction prompt) ctxBlocks []
+      info $ "flow writer agent done: " <> T.pack path
+    Nothing -> do
+      info $ "writer agent starting: " <> T.pack path
+      _ <- writeAgent @(BranchTag Main) @Main path (Instruction prompt) ctxBlocks []
+      info $ "writer agent done: " <> T.pack path
+
+-- | Store a prompt tick then run the Fixer agent against the given targets.
+chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
+chatFixer path prompt context targets = do
+  _ <- storeAs @Main (Prompt path prompt)
+  info $ "fixer agent starting: " <> T.pack path
+  _ <- fixAgent @(BranchTag Main) @Main path targets (Instruction prompt) (toContextBlocks context)
+  info $ "fixer agent done: " <> T.pack path
+
+toContextBlocks :: [ContextItem] -> [ContextBlock]
+toContextBlocks = map (ContextBlock . ciContent)
 
 -- ---------------------------------------------------------------------------
 -- Internal
@@ -123,17 +147,8 @@ chatPrompt path prompt = do
 
 fileUpdateSince :: Maybe T.Text -> [FileTick] -> Update
 fileUpdateSince since ticks = Update
-  { updateTicks = map toWireTick (dropSince since ticks)
+  { updateTicks = map toWireTick (Storage.ticksSince since ticks)
   , updateHead  = case reverse ticks of
                     []    -> ""
                     (t:_) -> Storage.ftTickId t
   }
-
--- | Drop everything up to and including the tick named by 'since'. If it
---   isn't found (e.g. rewritten away by a move/replace), return everything —
---   the correct fallback when we can't tell what's actually new.
-dropSince :: Maybe T.Text -> [FileTick] -> [FileTick]
-dropSince Nothing ticks = ticks
-dropSince (Just tid) ticks = case break ((== tid) . Storage.ftTickId) ticks of
-  (_, _ : rest) -> rest
-  (_, [])       -> ticks

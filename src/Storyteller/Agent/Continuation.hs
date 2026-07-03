@@ -83,22 +83,26 @@ proseAgent configs outputHint charContexts contextBlocks (ExistingContent existi
 
 -- | Read the target file and all branch context files, then delegate to
 --   'proseAgent'. Requires the target branch's filesystem to be in scope.
+--   'extraContext' is additional, caller-supplied context blocks (e.g. the
+--   user's pinned atom/annotation selection) merged in alongside the ones
+--   read from the branch's own files.
 continueFileAgent
   :: forall project model r
   .  Members '[FileSystem project, FileSystemRead project, LLM model, Fail] r
   => [ModelConfig model]
   -> Maybe WordCount
   -> [CharContextBlock]
+  -> [ContextBlock]         -- ^ extra context (e.g. selection), merged with branch files
   -> FilePath               -- ^ file to continue
   -> Instruction
   -> Sem r Prose
-continueFileAgent configs outputHint charContexts path instruction = do
-  files         <- List.sort <$> listAllFiles @project "/"
-  contextBlocks <- mapM (readContextFile @project) files
-  existing      <- fileExists @project path >>= \case
+continueFileAgent configs outputHint charContexts extraContext path instruction = do
+  files          <- List.sort <$> listAllFiles @project "/"
+  fileContext    <- mapM (readContextFile @project) files
+  existing       <- fileExists @project path >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @project path
     False -> return (ExistingContent "")
-  proseAgent @model configs outputHint charContexts contextBlocks existing instruction
+  proseAgent @model configs outputHint charContexts (extraContext <> fileContext) existing instruction
 
 readContextFile
   :: forall project r
