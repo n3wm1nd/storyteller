@@ -47,6 +47,20 @@ export function activeCharacterBranches(ticks: Record<string, WireTick>, head: s
   return active;
 }
 
+// Every character/{id} branch that ever appeared in a presence tick on this
+// chain, in first-appearance order — unlike 'activeCharacterBranches', a
+// character who later left is not removed. Used for the "show all
+// characters' presence" toggle in the file view.
+export function allPresentCharacters(ticks: Record<string, WireTick>, head: string | null): string[] {
+  const seen: string[] = [];
+  for (const t of tickChain(ticks, head)) {
+    if (t.kind !== "presence") continue;
+    const character = tickField(t, "character");
+    if (character && !seen.includes(character)) seen.push(character);
+  }
+  return seen;
+}
+
 // Which atom tickIds were written while `character` was present in the
 // scene, derived by folding the branch's full chain (atoms and presence
 // ticks interleaved) in order. An atom counts as "during" if the character
@@ -71,6 +85,21 @@ export function presentDuringAtoms(ticks: Record<string, WireTick>, head: string
 export function characterDisplayName(branch: string): string {
   const stripped = branch.startsWith("character/") ? branch.slice("character/".length) : branch;
   return decodeURIComponent(stripped);
+}
+
+// Deterministic per-character color so a given character's presence bar
+// stays the same hue across hovers/sessions instead of being reassigned.
+// Hashes the display name, not the raw branch — character branches share
+// the long "character/" prefix, which otherwise dominates a simple
+// multiplicative hash and leaves only the last couple characters to
+// perturb the result, producing near-identical hues for e.g. alice/bob.
+// Muted (lower lightness/chroma) so the bar reads as a subtle marker, not
+// a highlight competing with the prose.
+export function characterColor(branch: string): string {
+  const name = characterDisplayName(branch);
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return `oklch(0.58 0.10 ${hash % 360})`;
 }
 
 export function statusColor(status: string): string {

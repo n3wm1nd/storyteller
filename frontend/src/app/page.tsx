@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2 } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users } from "lucide-react";
 import { useStory } from "@/lib/store";
-import { tickChain, statusColor, presentDuringAtoms, type AnnotationMode } from "@/lib/utils";
+import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar } from "./fileview";
+import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceBar } from "./fileview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
 
@@ -128,6 +128,7 @@ export default function Home() {
   } = useStory();
 
   const [annotationMode, setAnnotationMode] = useState<AnnotationMode>("expanded");
+  const [showAllPresence, setShowAllPresence] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
   const [leftWidth, setLeftWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
@@ -191,7 +192,17 @@ export default function Home() {
   const isAbsent = fileConn?.absent ?? false;
   const atomCount       = fileTicks.filter((t) => t.kind === "atom").length;
   const annotationCount = fileTicks.filter((t) => t.kind !== "atom").length;
-  const highlightedTickIds = hoveredCharacter ? presentDuringAtoms(ticks, branchHead, hoveredCharacter) : null;
+  // "Show all" (persistent, toolbar toggle) wins over hover — first-appearance
+  // order both here and in 'allPresentCharacters' itself, so lane 0 (closest
+  // to the text) is always whoever entered the scene first, per the same
+  // ordering 'activeCharacterBranches' already uses for the sidebar.
+  const presenceBars: PresenceBar[] = showAllPresence
+    ? allPresentCharacters(ticks, branchHead).map((c) => ({
+        character: c, color: characterColor(c), tickIds: presentDuringAtoms(ticks, branchHead, c),
+      }))
+    : hoveredCharacter
+    ? [{ character: hoveredCharacter, color: characterColor(hoveredCharacter), tickIds: presentDuringAtoms(ticks, branchHead, hoveredCharacter) }]
+    : [];
 
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
@@ -330,6 +341,13 @@ export default function Home() {
                 >
                   {annotationMode === "hidden" ? <EyeOff style={{ width: 11, height: 11 }} /> : <Eye style={{ width: 11, height: 11, opacity: annotationMode === "dots" ? 0.6 : 1 }} />}
                 </button>
+                <button
+                  onClick={() => setShowAllPresence((v) => !v)}
+                  title={showAllPresence ? "Hide character presence bars" : "Show character presence bars"}
+                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: showAllPresence ? "oklch(0.58 0.10 200 / 0.15)" : "transparent", color: showAllPresence ? "oklch(0.68 0.12 200)" : "var(--text-dim)" }}
+                >
+                  <Users style={{ width: 11, height: 11 }} />
+                </button>
               </div>
             )}
 
@@ -356,7 +374,7 @@ export default function Home() {
                 resetKey={selectedFile}
                 rebaseMarker={rebaseMarker}
                 onSetRebaseMarker={setRebaseMarker}
-                highlightedTickIds={highlightedTickIds}
+                presenceBars={presenceBars}
                 onEdit={handleEditAtom}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}

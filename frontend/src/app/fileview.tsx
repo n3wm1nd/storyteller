@@ -1,12 +1,24 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/store";
-import { type AnnotationMode } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
+
+// A character's presence, as a set of this file's own atom tickIds — not
+// fromTickId/toTickId, since a character can enter/leave more than once
+// within one file, producing more than one bar. The file view doesn't care
+// why this set was populated (hover vs. a future pinned/always-on toggle,
+// see lib/utils.presentDuringAtoms) — it just draws one line per contiguous
+// run of membership, one lane per entry in the array.
+export interface PresenceBar {
+  character: string;
+  color: string;
+  tickIds: Set<string>;
+}
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
@@ -38,11 +50,10 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
 
 // ── Atom block ────────────────────────────────────────────────────────────────
 
-const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, highlighted, onEdit, onToggleContext }: {
+const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext }: {
   atom: WireTick;
   isLast: boolean;
   inContext: boolean;
-  highlighted: boolean;
   onEdit: (tickId: string, content: string) => void;
   onToggleContext: (tickId: string) => void;
 }) {
@@ -67,7 +78,6 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, highlighted
 
   const barColor = inContext
     ? "var(--amber)"
-    : highlighted ? "oklch(0.65 0.15 200)"
     : hovered ? "oklch(0.40 0.03 60)" : "oklch(0.20 0.01 60)";
 
   return (
@@ -77,8 +87,8 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, highlighted
       style={{
         position: "relative",
         paddingLeft: 10, marginLeft: -12,
-        background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : highlighted ? "oklch(0.65 0.15 200 / 0.06)" : "transparent",
-        borderRadius: inContext || highlighted ? 4 : 0,
+        background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : "transparent",
+        borderRadius: inContext ? 4 : 0,
         marginBottom: isLast ? 0 : editing ? 16 : undefined,
         transition: "background 0.15s",
       }}
@@ -341,7 +351,7 @@ const RebaseDropZone = memo(function RebaseDropZone({ isMarker, isCandidate, onD
 
 export function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
-  rebaseMarker, onSetRebaseMarker, highlightedTickIds,
+  rebaseMarker, onSetRebaseMarker, presenceBars,
   onEdit, onToggleContextAtom, onToggleContextAnnotation,
 }: {
   ticks: WireTick[];
@@ -351,10 +361,7 @@ export function WireTickList({
   resetKey: unknown;
   rebaseMarker: string | null;
   onSetRebaseMarker: (tickId: string | null) => void;
-  // Atoms written while a hovered character (left sidebar's Characters tab)
-  // was present in the scene — see lib/utils.presentDuringAtoms. Null when
-  // nothing is hovered.
-  highlightedTickIds: Set<string> | null;
+  presenceBars: PresenceBar[];
   onEdit: (tickId: string, content: string) => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
@@ -364,6 +371,8 @@ export function WireTickList({
 
   const atoms = ticks.filter((t) => t.kind === "atom");
   const atomRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [barRects, setBarRects] = useState<{ character: string; color: string; lane: number; top: number; height: number }[]>([]);
 
   const [dragging, setDragging] = useState(false);
   const [candidate, setCandidateState] = useState<string | null>(null);
@@ -459,10 +468,72 @@ export function WireTickList({
 
   const markerIdx = rebaseMarker ? atoms.findIndex((a) => a.tickId === rebaseMarker) : -1;
 
+  // Recompute presence-bar pixel spans whenever the set of runs to draw
+  // changes, or the content reflows for any other reason (editing a
+  // textarea open, annotations toggling, window resize) — a ResizeObserver
+  // on the content box covers all of those uniformly rather than trying to
+  // enumerate every cause of a layout shift. Positions are read as
+  // 'offsetTop'/'offsetHeight' relative to 'contentRef' (the nearest
+  // positioned ancestor), so no scroll-position math is needed.
+  const barsKey = presenceBars.map((b) => `${b.character}:${[...b.tickIds].sort().join(",")}`).join("|");
+  const atomsKey = atoms.map((a) => a.tickId).join(",");
+  useLayoutEffect(() => {
+    function recompute() {
+      const rects: typeof barRects = [];
+      presenceBars.forEach((bar, lane) => {
+        let runStart = -1;
+        for (let i = 0; i <= atoms.length; i++) {
+          const inRun = i < atoms.length && bar.tickIds.has(atoms[i].tickId);
+          if (inRun && runStart === -1) runStart = i;
+          if (!inRun && runStart !== -1) {
+            const startEl = atomRefs.current.get(atoms[runStart].tickId);
+            const endEl   = atomRefs.current.get(atoms[i - 1].tickId);
+            if (startEl && endEl) {
+              rects.push({
+                character: bar.character, color: bar.color, lane,
+                top: startEl.offsetTop,
+                height: (endEl.offsetTop + endEl.offsetHeight) - startEl.offsetTop,
+              });
+            }
+            runStart = -1;
+          }
+        }
+      });
+      setBarRects(rects);
+    }
+    recompute();
+    const container = contentRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(recompute);
+    ro.observe(container);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [barsKey, atomsKey]);
+
   return (
     <div style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
-        <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px" }}>
+        <div ref={contentRef} style={{ maxWidth: 680, margin: "0 auto", padding: "28px 32px 48px", position: "relative" }}>
+          {barRects.map((r, idx) => (
+            <div
+              key={`${r.character}-${idx}`}
+              title={characterDisplayName(r.character)}
+              style={{
+                // 'left' for an absolutely positioned child is measured from
+                // the container's padding-box edge — i.e. left:0 sits at the
+                // very start of the 32px padding, *before* it, not at the
+                // content start after it. Atom text actually starts around
+                // x=30 (32px container padding, minus AtomBlock's own -12
+                // margin, plus its own +10 padding). Positive offsets here,
+                // just inside that gutter, land next to the atom's own
+                // selection bar (its hit-zone sits at x≈20 in this same
+                // frame) — not negative ones pushing further past the edge.
+                position: "absolute", top: r.top, height: r.height,
+                left: 16 - r.lane * 3, width: 1.5, borderRadius: 0.75,
+                background: r.color, pointerEvents: "none",
+              }}
+            />
+          ))}
           {leading.length > 0 && annotationMode !== "hidden" && (
             annotationMode === "dots" ? (
               <AnnotationDots annotations={leading} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
@@ -497,7 +568,6 @@ export function WireTickList({
                   <AtomBlock
                     atom={atom} isLast={isLast}
                     inContext={contextAtoms.has(atom.tickId)}
-                    highlighted={highlightedTickIds?.has(atom.tickId) ?? false}
                     onEdit={onEdit}
                     onToggleContext={onToggleContextAtom}
                   />
