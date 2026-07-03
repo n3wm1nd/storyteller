@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PanelLeftClose, PanelLeftOpen, Eye, EyeOff, Trash2 } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2 } from "lucide-react";
 import { useStory } from "@/lib/store";
 import { tickChain, statusColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar } from "./fileview";
 import { TicksView } from "./ticksview";
+import { CharacterSidebar } from "./character-sidebar";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -52,9 +53,11 @@ const iconBtnStyle: React.CSSProperties = {
   color: "var(--text-dim)", borderRadius: 5, flexShrink: 0,
 };
 
-function Toolbar({ leftOpen, onToggleLeft, selectedFile, onCloseFile, onNewFile, centerTab, onCenterTab }: {
+function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFile, onCloseFile, onNewFile, centerTab, onCenterTab }: {
   leftOpen: boolean;
   onToggleLeft: () => void;
+  rightOpen: boolean;
+  onToggleRight: () => void;
   selectedFile: string | null;
   onCloseFile: () => void;
   onNewFile: () => void;
@@ -103,6 +106,10 @@ function Toolbar({ leftOpen, onToggleLeft, selectedFile, onCloseFile, onNewFile,
           + new file
         </button>
       )}
+      <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
+      <button onClick={onToggleRight} style={{ ...iconBtnStyle, alignSelf: "center" }}>
+        {rightOpen ? <PanelRightClose style={{ width: 14, height: 14 }} /> : <PanelRightOpen style={{ width: 14, height: 14 }} />}
+      </button>
     </div>
   );
 }
@@ -112,8 +119,9 @@ function Toolbar({ leftOpen, onToggleLeft, selectedFile, onCloseFile, onNewFile,
 export default function Home() {
   const {
     conns, error, branches, activeBranch, files, ticks, branchHead, openFiles,
-    agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
+    openCharacters, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
     connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
+    openCharacter, closeCharacter, enterScene, leaveScene,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote,
     setRebaseMarker,
@@ -123,6 +131,9 @@ export default function Home() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [leftWidth, setLeftWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
+  const [rightOpen, setRightOpen] = useState(true);
+  const [rightWidth, setRightWidth] = useState(260);
+  const [isResizingRight, setIsResizingRight] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches">("branches");
   const [centerTab, setCenterTab] = useState<"file" | "ticks">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -219,8 +230,18 @@ export default function Home() {
     window.addEventListener("mouseup", onUp);
   }
 
+  function onRightSidebarResizeMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    setIsResizingRight(true);
+    const startX = e.clientX, startW = rightWidth;
+    function onMove(ev: MouseEvent) { setRightWidth(Math.max(200, Math.min(420, startW - (ev.clientX - startX)))); }
+    function onUp() { setIsResizingRight(false); window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", cursor: isResizing ? "col-resize" : undefined }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", cursor: (isResizing || isResizingRight) ? "col-resize" : undefined }}>
       <TopBar sessionStatus={sessionStatus} branches={branches} activeBranch={activeBranch} />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -252,6 +273,7 @@ export default function Home() {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
           <Toolbar
             leftOpen={leftOpen} onToggleLeft={() => setLeftOpen((v) => !v)}
+            rightOpen={rightOpen} onToggleRight={() => setRightOpen((v) => !v)}
             selectedFile={selectedFile}
             onCloseFile={handleCloseFile}
             onNewFile={() => setShowNewFile((v) => !v)}
@@ -360,6 +382,29 @@ export default function Home() {
             />
           )}
         </div>
+
+        {rightOpen && (
+          <div style={{ width: rightWidth, minWidth: rightWidth, position: "relative", display: "flex", flexDirection: "column" }}>
+            <div
+              onMouseDown={onRightSidebarResizeMouseDown}
+              style={{
+                position: "absolute", top: 0, left: 0, bottom: 0, width: 4,
+                cursor: "col-resize", zIndex: 10,
+                borderLeft: "1px solid var(--border-subtle)",
+                background: isResizingRight ? "oklch(0.25 0.015 60 / 0.4)" : "transparent",
+                transition: "background 0.15s",
+              }}
+            />
+            <CharacterSidebar
+              activeBranch={activeBranch}
+              branches={branches}
+              ticks={ticks} branchHead={branchHead} rebaseMarker={rebaseMarker}
+              openCharacters={openCharacters}
+              openCharacter={openCharacter} closeCharacter={closeCharacter}
+              enterScene={enterScene} leaveScene={leaveScene}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

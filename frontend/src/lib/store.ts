@@ -2,16 +2,17 @@
 
 import { create } from "zustand";
 import {
-  sessionConn, branchConn, fileConn,
+  sessionConn, branchConn, fileConn, characterConn,
   type StoryWS,
   type WireTick,
   type Update,
   type AgentLogEvent,
   type ChatPreviewEvent,
   type ErrorEvent,
-  type SessionCommand, type SessionEvent,
-  type BranchCommand,  type BranchEvent,
-  type FileCommand,    type FileEvent,
+  type SessionCommand,   type SessionEvent,
+  type BranchCommand,    type BranchEvent,
+  type FileCommand,      type FileEvent,
+  type CharacterEvent,
   type ContextItem,
 } from "./ws";
 import { tickChain } from "./utils";
@@ -35,6 +36,15 @@ export interface FileConn {
   conn:   StoryWS<FileCommand, FileEvent>;
 }
 
+// A character connection: no tick chain, just the flat sidebar snapshot the
+// server composes and re-pushes on every change.
+export interface CharacterConn {
+  branch: string;
+  name:   string;
+  sheet:  string | null;
+  conn:   StoryWS<never, CharacterEvent>;
+}
+
 interface StoryState {
   conns: ConnInfo[];
   error: string | null;
@@ -50,6 +60,12 @@ interface StoryState {
 
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
+
+  // Open character connections keyed by branch name — membership is driven
+  // by presence ticks (see 'activeCharacterBranches' in lib/utils), reconciled
+  // by whichever component renders the character sidebar, not by the store
+  // itself; this just holds whatever's currently open.
+  openCharacters: Record<string, CharacterConn>;
 
   // Agent log entries (ephemeral, capped ring buffer)
   agentLogs: { level: string; message: string }[];
@@ -85,6 +101,10 @@ interface StoryState {
   selectBranch:   (name: string) => Promise<void>;
   openFile:       (path: string) => Promise<void>;
   closeFile:      (path: string) => void;
+  openCharacter:  (branch: string) => Promise<void>;
+  closeCharacter: (branch: string) => void;
+  enterScene:     (character: string) => void;
+  leaveScene:     (character: string) => void;
   appendToFile:   (path: string, content: string) => void;
   editAtom:       (path: string, tickId: string, content: string) => void;
   deleteAtom:     (path: string, tickId: string) => void;
@@ -289,6 +309,7 @@ export const useStory = create<StoryState>((set, get) => ({
   ticks: {},
   branchHead: null,
   openFiles: {},
+  openCharacters: {},
   agentLogs: [],
   preview: null,
   contextAtoms: new Set(),
@@ -352,6 +373,7 @@ export const useStory = create<StoryState>((set, get) => ({
     }
 
     for (const fc of Object.values(get().openFiles)) fc.conn.close();
+    for (const cc of Object.values(get().openCharacters)) cc.conn.close();
 
     const label = `branch:${name}`;
     set((s) => ({
@@ -360,6 +382,7 @@ export const useStory = create<StoryState>((set, get) => ({
       ticks: {},
       branchHead: null,
       openFiles: {},
+      openCharacters: {},
       contextAtoms: new Set(),
       contextAnnotations: new Set(),
       rebaseMarker: null,
@@ -470,6 +493,54 @@ export const useStory = create<StoryState>((set, get) => ({
       delete next[path];
       return { openFiles: next, conns: removeConn(s.conns, `file:${path}`) };
     });
+  },
+
+  openCharacter: async (branch) => {
+    if (get().openCharacters[branch]) return;
+
+    const label = `character:${branch}`;
+    set((s) => ({ conns: setConnStatus(s.conns, label, "connecting") }));
+
+    const cc = characterConn(branch);
+
+    cc.onStatus((s) => {
+      if (s !== "connected")
+        set((st) => ({ conns: setConnStatus(st.conns, label, "connecting") }));
+    });
+
+    cc.subscribe((evt) => {
+      set((s) => ({ conns: bumpActivity(s.conns, label) }));
+      if (evt.type === "character.update") {
+        set((s) => ({
+          openCharacters: { ...s.openCharacters, [branch]: { branch, name: evt.name, sheet: evt.sheet ?? null, conn: cc } },
+          conns: setConnStatus(s.conns, label, "connected"),
+        }));
+      } else if (evt.type === "error") {
+        handleError(set, evt);
+      }
+    });
+
+    await cc.connect();
+    set((s) => ({
+      openCharacters: { ...s.openCharacters, [branch]: { branch, name: branch, sheet: null, conn: cc } },
+    }));
+  },
+
+  closeCharacter: (branch) => {
+    get().openCharacters[branch]?.conn.close();
+    set((s) => {
+      const next = { ...s.openCharacters };
+      delete next[branch];
+      return { openCharacters: next, conns: removeConn(s.conns, `character:${branch}`) };
+    });
+  },
+
+  enterScene: (character) => {
+    get()._branch?.send({ type: "enter.scene", character });
+  },
+
+  leaveScene: (character) => {
+    get()._branch?.send({ type: "leave.scene", character });
   },
 
   appendToFile: (path, content) => {

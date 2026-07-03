@@ -25,6 +25,28 @@ export function tickField(tick: WireTick, key: string): string | undefined {
   return tick.fields?.[key];
 }
 
+// Which character/{id} branches are currently active, derived by folding
+// "presence" ticks (enter/leave, see WRITER.md) from root to head — not
+// stored separately, since the chain is already the source of truth.
+// Preserves first-entered order rather than tick order, so a character who
+// re-enters after leaving doesn't jump to the end of the list.
+export function activeCharacterBranches(ticks: Record<string, WireTick>, head: string | null): string[] {
+  const active: string[] = [];
+  for (const t of tickChain(ticks, head)) {
+    if (t.kind !== "presence") continue;
+    const character = tickField(t, "character");
+    const event = tickField(t, "event");
+    if (!character) continue;
+    if (event === "enter") {
+      if (!active.includes(character)) active.push(character);
+    } else if (event === "leave") {
+      const i = active.indexOf(character);
+      if (i !== -1) active.splice(i, 1);
+    }
+  }
+  return active;
+}
+
 export function statusColor(status: string): string {
   switch (status) {
     case "connected":  return "var(--emerald)";

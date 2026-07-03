@@ -105,6 +105,35 @@ spec runner = do
       (run $ runner $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (fileState "file.md"))
         `shouldSatisfy` either (const False) headIsIn
 
+    -- Regression: 'walkFileTicks' filters the branch chain down to one
+    -- file's ticks, but originally left 'ftParent' pointing at the tick's
+    -- true git-chain parent — which may not be in the filtered set at all
+    -- (a tick with no refs and no matching "file" field, e.g. a 'presence'
+    -- tick from Storyteller.Writer.Types, interleaved between two atoms of
+    -- this file). A client walking '.parent' from HEAD then stopped dead at
+    -- that gap, silently truncating everything older than the most recent
+    -- excluded tick — "the file only renders after the last unrelated
+    -- tick." Fixed by relinking each returned tick's parent to the nearest
+    -- *included* ancestor. This test constructs that shape directly
+    -- (an unrelated, file-less, ref-less tick between two atoms) without
+    -- depending on Storyteller.Writer, which Server.Core must not import.
+    it "an unrelated tick with no refs and no file field does not break the parent chain" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            t1 <- storeAtom "story.md" "first"
+            _  <- storeData @Main (draft "type:presence\nunrelated standalone tick")
+            t2 <- appendAtom "story.md" " second"
+            fileState "story.md" >>= \upd -> return (t1, t2, upd)
+      case result of
+        Left err -> expectationFailure err
+        Right (t1, t2, upd) -> do
+          let ids = map wtTickId (updateTicks upd)
+          ids `shouldContain` [unTickId t1]
+          ids `shouldContain` [unTickId t2]
+          -- The projection must be self-contained: every non-root parent
+          -- pointer resolves to another tick in this same list, so a
+          -- client's '.parent' walk from HEAD never falls out of it.
+          all (\t -> maybe True (`elem` ids) (wtParent t)) (updateTicks upd) `shouldBe` True
+
   describe "deleteFileAtom" $ do
 
     it "deleted atom no longer appears in fileState" $ do

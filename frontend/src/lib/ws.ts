@@ -1,9 +1,10 @@
 // WebSocket connection abstractions for the storyteller server.
 //
-// Three connection types mirror the server's three endpoints:
-//   sessionConn  (/session)              — branch management
-//   branchConn   (/branch/{name})        — full branch tick chain + file tree
-//   fileConn     (/branch/{name}/{path}) — file-scoped tick chain
+// Four connection types mirror the server's four endpoints:
+//   sessionConn    (/session)              — branch management
+//   branchConn     (/branch/{name})        — full branch tick chain + file tree
+//   fileConn       (/branch/{name}/{path}) — file-scoped tick chain
+//   characterConn  (/character/{name})     — sidebar-facing character state (read-only)
 //
 // All connections support auto-reconnect. Reconnecting is the only resync
 // mechanism — the server pushes full state on every new connection.
@@ -72,7 +73,12 @@ export type BranchCommand =
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
-  | { type: "delete.tick"; id?: string; tickId: string };
+  | { type: "delete.tick"; id?: string; tickId: string }
+  // Presence: a character (character/{id} branch) enters or leaves the
+  // scene at this point in the chain — recorded as a "presence" tick, not
+  // a separate entity. See WRITER.md.
+  | { type: "enter.scene"; id?: string; character: string }
+  | { type: "leave.scene"; id?: string; character: string };
 
 export type BranchEvent =
   | { type: "branch.ready"; id?: string; branch: string; files: string[] }
@@ -124,6 +130,15 @@ export type FileEvent =
   | { type: "tick.remap"; mapping: [string, string][] }
   | AgentLogEvent
   | ChatPreviewEvent
+  | ErrorEvent;
+
+// ── Character protocol ────────────────────────────────────────────────────────
+
+// Read-only: no commands. Every field is collected-and-augmented server-side
+// (see Server/Writer/Character.hs) — sheet edits go through the file
+// connection for sheet.md, never through this one.
+export type CharacterEvent =
+  | { type: "character.update"; name: string; sheet?: string }
   | ErrorEvent;
 
 // ── Connection ────────────────────────────────────────────────────────────────
@@ -235,4 +250,9 @@ export function branchConn(name: string) {
 export function fileConn(branch: string, path: string) {
   const encodedPath = path.split("/").map((p) => encodeURIComponent(decodeURIComponent(p))).join("/");
   return new StoryWS<FileCommand, FileEvent>(`${wsBase()}/branch/${encodeURIComponent(branch)}/${encodedPath}`);
+}
+
+// No commands, so 'Cmd' is 'never' — nothing can be sent on this connection.
+export function characterConn(branch: string) {
+  return new StoryWS<never, CharacterEvent>(`${wsBase()}/character/${encodeURIComponent(branch)}`);
 }
