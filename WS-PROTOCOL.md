@@ -10,6 +10,50 @@ Connections do interact at the storage level — a write on a file connection cr
 
 ---
 
+## Scope design principles
+
+A connection scope models *some object the client cares about* — a branch, a file, eventually a chapter, a character. The rules below govern how new scopes get drawn and what they may contain.
+
+### Read is raw-but-complete, not raw-but-partial
+
+"Raw" describes how much interpretation the server does — none: no truncation, no display formatting, no pre-built UI objects — not how much data it sends. Every reference within a scope's payload must be fully resolved before it is sent: no tick id the client has to separately look up, no field that requires a second connection to complete. The connection open *is* the request; there is no follow-up round trip.
+
+This doubles as the test for whether a scope is drawn correctly: if fully resolving a scope's references means pulling in a large, open-ended fraction of the graph (e.g. every entity branch that ever touched the story), the scope is too big and needs to be split or narrowed. A scope has to stay push-cheap indefinitely, not just at connect time.
+
+### The decode/encode burden tracks who acts on the data, not who displays it
+
+- **Read side:** the server does no interpretation; the client decodes raw ticks into whatever concepts it needs (chapter, character, whatever). The client must understand the raw structure — it is not shielded from it.
+- **Write side:** the client sends unprocessed intent; the server decodes that intent into a structurally valid mutation (respecting append-only, atom boundaries, rebase). The client does not need to understand how intent becomes a tick operation.
+
+The asymmetry follows responsibility, not secrecy: whoever performs the mutation must own turning intent into structure, because storage correctness is its job (the server); whoever renders must own turning structure into meaning, because presentation is its job (the client).
+
+### Backend-authoritative vs. frontend-advisory duplication
+
+Both sides end up independently deriving the same domain concepts from the same raw substrate — "a chapter is the files under `chapters/`" gets encoded once server-side (because an agent, e.g. the Summarizer, has to act on it) and once client-side (because a panel has to render it). This duplication is expected, not a smell — and it is not symmetric:
+
+- The **server's** version is authoritative: it's what agents actually execute against, and what enforces the append-only/rebase invariants. If it's wrong, it corrupts data or misleads an agent.
+- The **client's** version is advisory: it exists only to render and to pre-empt requests already known to fail. If it's wrong, the cost is a UI bug — a wrongly grayed-out range, a misplaced note, an offered action that errors when sent. Never data corruption, because the server re-derives and re-validates everything itself regardless of what the client assumed.
+
+Practical test for any given piece of logic: **does something server-side (an agent, the storage layer) act on this, or does a human only look at it?** If an agent acts on it, it must be server-authoritative, full stop. If only a human looks at it, the client is free to have its own approximate, occasionally-wrong copy — fixing it is a client-only change, never a data-integrity concern.
+
+### Preview vs. commit
+
+Live interactive feedback — a timeline drag preview, a hover state, a grayed-out range while dragging — is always a client-local derivation from data already held on an already-open connection, never its own round trip. Standing up a connection or firing a request per frame of a drag would apply server authority to a moment where nothing is actually being committed yet. The server only re-enters the picture once, at actual commit time, through the ordinary intent-command path — re-validated exactly the same way any other write is, regardless of what the client's preview assumed.
+
+### The client never mutates synced data locally
+
+Everything the client displays must trace back to something a connection actually sent — with one exception: volatile, display-only state (which panel is open, what's typed in an input box, scroll position, selection). Outside of that exception, the client does not get to change data in response to a local action. It communicates intent and waits for the resulting `update` (or `error`) to arrive; the cached tick map is never edited directly by client code.
+
+This does not forbid an optimistic-feeling UI. An in-flight edit can show its expected result immediately, but only via a client-only *override* layered on top of the real cached value — "display this atom as X instead of the cached content, until the real update arrives" — never by writing X into the tick map itself. The override is discarded the moment the corresponding `update` or `error` lands (whichever comes first, same rule as the chat preview above), and it does not survive a reload, because it was never part of the synced state to begin with. The tick map is exactly what "reconnecting is resync" (see Core model) reconstructs from scratch — anything durable enough to survive a refresh has to have actually come from the server, by construction.
+
+### New scopes are app-specific, not core
+
+`/branch/{name}` and `/branch/{name}/{path}` are generic, storage-shaped scopes with no domain vocabulary — they're reusable across whatever application gets built on this backend. A scope like `/chapters/{id}` (chapter metadata only — title, tick-range boundaries, summary tick, character-presence list; deliberately *not* prose content, which still comes from the file connection) is specific to one application build and isn't meant to generalize to a hypothetical sibling app's scopes. Duplicating connection/dispatch glue across future app-specific servers, rather than abstracting it into a shared framework, is the expected and accepted cost.
+
+Because scope boundaries are drawn by judgment, not derived mechanically, expect them to be imperfect: a panel occasionally opening more connections than strictly necessary, or receiving a few unused fields on one it already has open. Both failure modes are cheap and reversible — reshuffling which scope owns a field is a local fix, not a protocol renegotiation.
+
+---
+
 ## Server → Client: state pushes
 
 ### Tick updates
@@ -152,6 +196,14 @@ Planned commands, none implemented yet:
 - **Save** — runs the diff-and-merge path: reconciles the working tree's raw content against the last-saved tick chain and produces one or more atoms — appending where possible, merging into history where not, so the append-only invariant on the tick chain always holds afterward. This is the only point at which ticks are created; raw writes never touch the tick chain directly.
 
 Not implemented: no commands, no wire types, and no push event exist for this yet. `WorkingTree` today is purely an internal storage detail — shared `State WorkingTree` used transiently within a single handler call — not something a client can address.
+
+### `/chapters/{id}` *(planned, app-specific)*
+
+**Scope:** metadata for one chapter — not its prose (see "New scopes are app-specific, not core" above).  
+**On connect:** title, tick-range boundaries (start/end refs), the summary tick if one exists, character-presence list (resolved from cross-branch refs into the range).  
+**Commands:** none yet envisioned — this scope is read-only; edits happen through the file connection for the chapter's content.  
+**Events:** an `update`-shaped push whenever a tick lands inside the range or a referencing entity-branch tick appears.  
+**Why separate from `/branch/{name}/{path}`:** keeps the (large, per-atom) prose stream and the (small, cross-cutting) metadata stream from duplicating each other over the wire — a panel that only needs the chrome (breadcrumb, summary, cast list) doesn't have to receive or filter the full atom chain to get it.
 
 ### `/agent/{id}` *(planned)*
 
