@@ -53,6 +53,7 @@ import Control.Monad (foldM, when)
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.FilePath (splitDirectories, joinPath)
@@ -881,8 +882,25 @@ walkFileTicks path headHash = do
       fileHinted = [ ftTickId ft | ft <- allTicks
                                  , ftContent ft == Nothing
                                  , lookup "file" (ftFields ft) == Just fileHint ]
-  return [ ft | ft <- allTicks, ftTickId ft `elem` memberIds || ftTickId ft `elem` fileHinted ]
+      included  = Set.fromList (memberIds ++ fileHinted)
+  -- 'ftParent' as computed by 'diffChain' is the tick's true git-chain
+  -- parent, which may not be in this file's projection at all (e.g. a
+  -- 'presence' tick interleaved between two of this file's atoms — it
+  -- references nothing and carries no "file" field, so it's excluded
+  -- above). Left as-is, a client walking '.parent' from HEAD would stop
+  -- dead the moment it hit such a gap, truncating everything older than
+  -- the most recent excluded tick. Rewrite each included tick's parent to
+  -- the nearest *included* ancestor instead, so the projection is a
+  -- self-contained chain no client-side walk can fall out of.
+  return (relinkParents included Nothing allTicks)
   where
+    relinkParents :: Set.Set Text -> Maybe Text -> [FileTick] -> [FileTick]
+    relinkParents _ _ [] = []
+    relinkParents included lastIncluded (ft : rest)
+      | Set.member (ftTickId ft) included =
+          ft { ftParent = lastIncluded } : relinkParents included (Just (ftTickId ft)) rest
+      | otherwise = relinkParents included lastIncluded rest
+
     collectChain :: Members '[Git, Fail] r => ObjectHash -> [(ObjectHash, CommitData)] -> Sem r [(ObjectHash, CommitData)]
     collectChain hash acc = do
       cd <- readCommit hash
