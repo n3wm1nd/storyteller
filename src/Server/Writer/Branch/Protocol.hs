@@ -99,6 +99,15 @@ instance FromJSON BranchCommand where
 --   BranchUpdate: tick state push — upsert all ticks, set head to updateHead.
 --   AgentLog:     progress message from a running agent.
 --   BranchError:  something went wrong; message is human-readable.
+--
+-- FIXME: file tree changes are only tracked one-directionally — FileAdded
+-- covers Track/CharGen/Upload creating a path, but there's no
+-- FileRemoved/FileRenamed (or any push at all) for a file disappearing or
+-- being renamed/moved from the tree. Once delete/rename/move-file commands
+-- exist (see TODO.md), a connected client's cached file list can silently
+-- drift from the real tree with no event to correct it — 'pushIncremental'
+-- (Connection.hs) only re-derives tick state on notify, never the file
+-- list itself.
 data BranchEvent
   = BranchReady  { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
   | FileAdded    { beId :: Maybe T.Text, bePath :: FilePath }

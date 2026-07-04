@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Users, UserPlus, X, ChevronDown, ChevronRight, History, RefreshCw } from "lucide-react";
 import { type CharacterConn, type FileConn, type WireTick } from "@/lib/store";
+import { type CharacterSummary } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
 import { WireTickList } from "./fileview";
 
@@ -153,7 +154,12 @@ function CharacterCard({
   onAppend: (text: string, marker: string | null) => void;
 }) {
   const connected = conn !== undefined;
-  const name = conn?.name ?? displayName(branch);
+  // 'conn.name' (from the /character/{branch} connection's CharacterState)
+  // is just the branch id with the prefix stripped — the server never
+  // extracts a display name from the sheet (see WS-PROTOCOL.md's
+  // "read is raw-but-complete" rule). Decode the real name from the raw
+  // sheet content here, same as the character list in sidebar.tsx.
+  const name = displayName(branch, conn?.sheet);
 
   return (
     <div style={{
@@ -204,7 +210,7 @@ function CharacterCard({
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export function CharacterSidebar({
-  selectedFile, branches, ticks, head, rebaseMarker, openCharacters,
+  selectedFile, characterBranches, ticks, head, rebaseMarker, openCharacters,
   openCharacter, closeCharacter, openJournals, openJournal, closeJournal,
   journalMarkers, setJournalMarker, trackJournal, editJournalAtom, appendJournal,
   contextAtoms, contextAnnotations, toggleContextAtom, toggleContextAnnotation,
@@ -214,7 +220,10 @@ export function CharacterSidebar({
   // WRITER.md — so this sidebar reflects whichever file is open, not the
   // branch as a whole. 'ticks'/'head' are that file's own projected chain.
   selectedFile: string | null;
-  branches: string[];
+  // Live-tracked character/* list with raw sheet content (see
+  // Server.Writer.Session.Connection) — used here so the "add to scene"
+  // picker can show real character names, not just branch ids.
+  characterBranches: CharacterSummary[];
   ticks: Record<string, WireTick>;
   head: string | null;
   // When set (time-travel/rebase mode — see fileview.tsx's RebaseHandle),
@@ -288,7 +297,7 @@ export function CharacterSidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeKey]);
 
-  const available = branches.filter((b) => b.startsWith("character/") && !active.includes(b));
+  const available = characterBranches.filter((c) => !active.includes(c.branch));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--sidebar)" }}>
@@ -345,10 +354,10 @@ export function CharacterSidebar({
               {available.length === 0 ? (
                 <div style={{ fontSize: 10, color: "var(--text-ghost)", padding: "4px 2px" }}>No other character branches</div>
               ) : (
-                available.map((b) => (
+                available.map((c) => (
                   <button
-                    key={b}
-                    onClick={() => { enterScene(selectedFile, b); setShowAdd(false); }}
+                    key={c.branch}
+                    onClick={() => { enterScene(selectedFile, c.branch); setShowAdd(false); }}
                     style={{
                       display: "block", width: "100%", textAlign: "left",
                       fontSize: 11, padding: "4px 6px", borderRadius: 4,
@@ -356,7 +365,7 @@ export function CharacterSidebar({
                       color: "var(--text-secondary)",
                     }}
                   >
-                    {displayName(b)}
+                    {displayName(c.branch, c.sheet)}
                   </button>
                 ))
               )}

@@ -112,7 +112,7 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
 
 export default function Home() {
   const {
-    conns, error, branches, activeBranch, files, ticks, branchHead, openFiles,
+    conns, error, branches, characterBranches, activeBranch, files, ticks, branchHead, openFiles,
     openCharacters, openJournals, journalMarkers, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
     hoverHighlight, connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
     openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
@@ -289,7 +289,7 @@ export default function Home() {
           <div style={{ width: leftWidth, minWidth: leftWidth, position: "relative", display: "flex", flexDirection: "column" }}>
             <LeftSidebar
               tab={sidebarTab} setTab={setSidebarTab}
-              branches={branches} activeBranch={activeBranch}
+              branches={branches} characterBranches={characterBranches} activeBranch={activeBranch}
               files={files} selectedFile={selectedFile}
               onSelectBranch={handleSelectBranch}
               onSelectFile={handleSelectFile}
@@ -427,7 +427,7 @@ export default function Home() {
             />
             <CharacterSidebar
               selectedFile={selectedFile}
-              branches={branches}
+              characterBranches={characterBranches}
               ticks={fileChainTicks} head={fileChainHead} rebaseMarker={rebaseMarker}
               openCharacters={openCharacters}
               openCharacter={openCharacter} closeCharacter={closeCharacter}

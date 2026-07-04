@@ -80,11 +80,20 @@ export function presentDuringAtoms(ticks: Record<string, WireTick>, head: string
   return result;
 }
 
-// Display name for a character/{id} branch — id decoded, prefix stripped.
-// Shared by the character sidebar and the ticks view's presence rendering.
-export function characterDisplayName(branch: string): string {
+// Display name for a character/{id} branch. Per WRITER.md's convention, the
+// real name is the first Markdown H1 line in sheet.md — a nickname or a
+// rename the branch id itself can't hold verbatim (spaces, special
+// characters). Falls back to the id (decoded, prefix stripped) when no
+// sheet content is available or it has no H1 line — the server never
+// extracts this itself (see WS-PROTOCOL.md's "read is raw-but-complete"
+// rule), so every caller either has sheet content to pass or accepts the
+// id-based fallback.
+export function characterDisplayName(branch: string, sheet?: string | null): string {
   const stripped = branch.startsWith("character/") ? branch.slice("character/".length) : branch;
-  return decodeURIComponent(stripped);
+  const fallback = decodeURIComponent(stripped);
+  if (!sheet) return fallback;
+  const h1 = sheet.split("\n").find((line) => line.startsWith("# "));
+  return h1 ? h1.slice(2).trim() : fallback;
 }
 
 // Deterministic per-character color so a given character's presence bar

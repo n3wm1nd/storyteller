@@ -57,13 +57,28 @@ export interface Update {
 export type SessionCommand =
   | { type: "list-branches"; id?: string }
   | { type: "create-branch"; id?: string; branch: string }
-  | { type: "delete-branch"; id?: string; branch: string };
+  | { type: "delete-branch"; id?: string; branch: string }
+  // Lightweight, name-only listing of character/* branches. Also pushed
+  // unprompted (no id) whenever a character branch is created or deleted by
+  // any connection — see Server.Writer.Session.Connection's notifier.
+  | { type: "list-characters"; id?: string };
+
+// One character branch's raw summary — sheet.md content, unprocessed (see
+// WS-PROTOCOL.md's "read is raw-but-complete" rule). The client is
+// responsible for decoding this into a display name (first Markdown H1
+// line, falling back to the branch id) the same way it decodes any other
+// raw content into a concept it needs.
+export interface CharacterSummary {
+  branch: string;
+  sheet: string | null;
+}
 
 export type SessionEvent =
   | { type: "session.ready" }
-  | { type: "branch.list";    id?: string; branches: string[] }
-  | { type: "branch.created"; id?: string; branch: string }
-  | { type: "branch.deleted"; id?: string; branch: string }
+  | { type: "branch.list";     id?: string; branches: string[] }
+  | { type: "branch.created";  id?: string; branch: string }
+  | { type: "branch.deleted";  id?: string; branch: string }
+  | { type: "character.list";  id?: string; characters: CharacterSummary[] }
   | ErrorEvent;
 
 // ── Branch protocol ───────────────────────────────────────────────────────────

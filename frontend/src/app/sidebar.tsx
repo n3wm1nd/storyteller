@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Folder, GitBranch, Plus, Users } from "lucide-react";
 import { type ConnInfo } from "@/lib/store";
+import { type CharacterSummary } from "@/lib/ws";
 import { statusColor, characterDisplayName } from "@/lib/utils";
 import { FileTree } from "./filetree";
 
@@ -38,8 +39,8 @@ function BranchItem({ name, active, onSelect, onDelete }: {
   );
 }
 
-function CharacterListItem({ branch, active, onSelect, onDelete, onHoverStart, onHoverEnd }: {
-  branch: string; active: boolean; onSelect: () => void; onDelete: () => void;
+function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart, onHoverEnd }: {
+  character: CharacterSummary; active: boolean; onSelect: () => void; onDelete: () => void;
   onHoverStart: () => void; onHoverEnd: () => void;
 }) {
   const [hover, setHover] = useState(false);
@@ -60,7 +61,7 @@ function CharacterListItem({ branch, active, onSelect, onDelete, onHoverStart, o
         flex: 1, fontSize: 12, color: active ? "oklch(0.75 0.12 200)" : "var(--text-secondary)",
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         fontWeight: active ? 500 : 400,
-      }}>{characterDisplayName(branch)}</span>
+      }}>{characterDisplayName(character.branch, character.sheet)}</span>
       {hover && (
         <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{
           background: "none", border: "none", cursor: "pointer",
@@ -75,7 +76,7 @@ function CharacterListItem({ branch, active, onSelect, onDelete, onHoverStart, o
 
 export function LeftSidebar({
   tab, setTab,
-  branches, activeBranch, files, selectedFile,
+  branches, characterBranches, activeBranch, files, selectedFile,
   onSelectBranch, onSelectFile,
   onCreateBranch, onDeleteBranch,
   onHoverCharacter,
@@ -85,6 +86,11 @@ export function LeftSidebar({
   tab: "explorer" | "branches" | "characters";
   setTab: (t: "explorer" | "branches" | "characters") => void;
   branches: string[];
+  // Live-tracked character/* branch list from the session connection (see
+  // Server.Writer.Session.Connection's notifier) — kept up to date across
+  // any connection creating/deleting one, not just this session's own
+  // create-branch/delete-branch commands.
+  characterBranches: CharacterSummary[];
   activeBranch: string | null;
   files: string[];
   selectedFile: string | null;
@@ -97,7 +103,6 @@ export function LeftSidebar({
   conns: ConnInfo[];
   error: string | null;
 }) {
-  const characterBranches = branches.filter((b) => b.startsWith("character/"));
   const [newBranch, setNewBranch] = useState("");
 
   return (
@@ -189,11 +194,11 @@ export function LeftSidebar({
               No character branches — create one from the Branches tab (e.g. "character/alice")
             </div>
           ) : (
-            characterBranches.map((b) => (
-              <CharacterListItem key={b} branch={b} active={b === activeBranch}
-                onSelect={() => onSelectBranch(b)}
-                onDelete={() => onDeleteBranch(b)}
-                onHoverStart={() => onHoverCharacter(b)}
+            characterBranches.map((c) => (
+              <CharacterListItem key={c.branch} character={c} active={c.branch === activeBranch}
+                onSelect={() => onSelectBranch(c.branch)}
+                onDelete={() => onDeleteBranch(c.branch)}
+                onHoverStart={() => onHoverCharacter(c.branch)}
                 onHoverEnd={() => onHoverCharacter(null)} />
             ))
           )}

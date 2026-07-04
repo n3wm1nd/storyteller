@@ -13,6 +13,7 @@ import {
   type BranchCommand,    type BranchEvent,
   type FileCommand,      type FileEvent,
   type CharacterEvent,
+  type CharacterSummary,
   type ContextItem,
 } from "./ws";
 import { tickChain } from "./utils";
@@ -53,6 +54,13 @@ interface StoryState {
 
   // Session level
   branches: string[];
+  // character/* branch list with raw sheet.md content, kept live by the
+  // server's own notifier (see Server.Writer.Session.Connection) — unlike
+  // 'branches', this reflects character branches created by any connection
+  // (e.g. Track/CharGen from a branch connection), not just this session's
+  // own create-branch/delete-branch commands. Sheet content is raw (see
+  // WS-PROTOCOL.md); decode into a display name via lib/utils.characterDisplayName.
+  characterBranches: CharacterSummary[];
 
   // Branch level
   activeBranch: string | null;
@@ -393,6 +401,7 @@ export const useStory = create<StoryState>((set, get) => ({
   conns: [],
   error: null,
   branches: [],
+  characterBranches: [],
   activeBranch: null,
   files: [],
   ticks: {},
@@ -426,6 +435,7 @@ export const useStory = create<StoryState>((set, get) => ({
       if (evt.type === "session.ready") {
         set((s) => ({ conns: setConnStatus(s.conns, "session", "connected") }));
         get()._session?.send({ type: "list-branches" });
+        get()._session?.send({ type: "list-characters" });
       } else if (evt.type === "branch.list") {
         set({ branches: evt.branches });
       } else if (evt.type === "branch.created") {
@@ -435,6 +445,8 @@ export const useStory = create<StoryState>((set, get) => ({
           branches: s.branches.filter((b) => b !== evt.branch),
           activeBranch: s.activeBranch === evt.branch ? null : s.activeBranch,
         }));
+      } else if (evt.type === "character.list") {
+        set({ characterBranches: evt.characters });
       } else if (evt.type === "error") {
         handleError(set, evt);
       }
