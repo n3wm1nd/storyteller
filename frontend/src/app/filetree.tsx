@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, ChevronRight } from "lucide-react";
+import { Folder, FolderOpen, FileText, ChevronRight, Plus } from "lucide-react";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
 
@@ -122,9 +122,22 @@ export function FileTree({
   onUploadFiles: (files: { path: string; content: string }[]) => void;
 }) {
   const [rootDragOver, setRootDragOver] = useState(false);
+  const [newFilePath, setNewFilePath] = useState("");
 
   function handleDropFiles(folderPath: string, fileList: FileList) {
     resolveDroppedFiles(folderPath, fileList).then(onUploadFiles);
+  }
+
+  // No dedicated folder-creation affordance yet — a path typed with "/"s
+  // just nests under those segments via 'buildTree', same as a dropped
+  // upload's destination. No rename yet either, so this is purely additive:
+  // selecting a not-yet-existing path opens it "absent" (see WS-PROTOCOL.md)
+  // and it's created for real on first write.
+  function handleCreateFile() {
+    const path = newFilePath.trim().replace(/^\/+/, "");
+    if (!path) return;
+    setNewFilePath("");
+    onSelectFile(path);
   }
 
   return (
@@ -167,6 +180,32 @@ export function FileTree({
         buildTree(files).map((node) => (
           <FileTreeNode key={node.path} node={node} depth={0} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={handleDropFiles} />
         ))
+      )}
+
+      {activeBranch && (
+        <div style={{ padding: "6px 8px 4px", display: "flex", gap: 4 }}>
+          <input
+            value={newFilePath}
+            onChange={(e) => setNewFilePath(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleCreateFile(); }}
+            placeholder="path/to/file.md"
+            style={{
+              flex: 1, fontSize: 11, padding: "3px 7px",
+              background: "var(--card)", border: "1px solid var(--border-subtle)",
+              borderRadius: 5, color: "var(--foreground)", outline: "none",
+            }}
+          />
+          <button
+            onClick={handleCreateFile}
+            style={{
+              width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)",
+              borderRadius: 5, color: "var(--amber)", cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            <Plus style={{ width: 11, height: 11 }} />
+          </button>
+        </div>
       )}
     </div>
   );

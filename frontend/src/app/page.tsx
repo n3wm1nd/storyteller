@@ -53,14 +53,13 @@ const iconBtnStyle: React.CSSProperties = {
   color: "var(--text-dim)", borderRadius: 5, flexShrink: 0,
 };
 
-function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFile, onCloseFile, onNewFile, centerTab, onCenterTab }: {
+function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFile, onCloseFile, centerTab, onCenterTab }: {
   leftOpen: boolean;
   onToggleLeft: () => void;
   rightOpen: boolean;
   onToggleRight: () => void;
   selectedFile: string | null;
   onCloseFile: () => void;
-  onNewFile: () => void;
   centerTab: "file" | "ticks";
   onCenterTab: (t: "file" | "ticks") => void;
 }) {
@@ -101,11 +100,6 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
       }}>Ticks</button>
 
       <span style={{ flex: 1 }} />
-      {!selectedFile && (
-        <button onClick={onNewFile} style={{ alignSelf: "center", fontSize: 10, padding: "3px 8px", background: "transparent", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-label)", cursor: "pointer" }}>
-          + new file
-        </button>
-      )}
       <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
       <button onClick={onToggleRight} style={{ ...iconBtnStyle, alignSelf: "center" }}>
         {rightOpen ? <PanelRightClose style={{ width: 14, height: 14 }} /> : <PanelRightOpen style={{ width: 14, height: 14 }} />}
@@ -141,8 +135,6 @@ export default function Home() {
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<"file" | "ticks">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [showNewFile, setShowNewFile] = useState(false);
-  const [newFilePath, setNewFilePath] = useState("");
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
@@ -268,14 +260,6 @@ export default function Home() {
     }
   }
 
-  function handleCreateFile() {
-    const path = newFilePath.trim().replace(/^\/+/, "");
-    if (!path) return;
-    setShowNewFile(false);
-    setNewFilePath("");
-    if (activeBranch) handleSelectFile(path);
-  }
-
   function onSidebarResizeMouseDown(e: React.MouseEvent) {
     e.preventDefault();
     setIsResizing(true);
@@ -334,7 +318,6 @@ export default function Home() {
             rightOpen={rightOpen} onToggleRight={() => setRightOpen((v) => !v)}
             selectedFile={selectedFile}
             onCloseFile={handleCloseFile}
-            onNewFile={() => setShowNewFile((v) => !v)}
             centerTab={centerTab} onCenterTab={(tab) => {
               setCenterTab(tab);
               pushPath(activeBranch, tab === "file" ? selectedFile : null);
@@ -342,19 +325,6 @@ export default function Home() {
           />
 
           {centerTab === "file" && <>
-            {showNewFile && (
-              <div style={{ flexShrink: 0, padding: "7px 14px", borderBottom: "1px solid var(--border-subtle)", background: "var(--card)", display: "flex", gap: 8, alignItems: "center" }}>
-                <input
-                  value={newFilePath} onChange={(e) => setNewFilePath(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateFile(); if (e.key === "Escape") setShowNewFile(false); }}
-                  placeholder="path/to/file.md" autoFocus
-                  style={{ flex: 1, fontSize: 11, padding: "4px 8px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--foreground)", outline: "none" }}
-                />
-                <button onClick={handleCreateFile} style={{ fontSize: 11, padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5, color: "oklch(0.15 0.01 60)", fontWeight: 600, cursor: "pointer" }}>Open</button>
-                <button onClick={() => setShowNewFile(false)} style={{ fontSize: 11, padding: "4px 8px", background: "transparent", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-label)", cursor: "pointer" }}>✕</button>
-              </div>
-            )}
-
             {selectedFile && !isAbsent && fileTicks.length > 0 && (
               <div style={{ flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center" }}>
                 {contextAtoms.size > 0 && (
