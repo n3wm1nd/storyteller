@@ -80,8 +80,12 @@ function JournalPanel({
       ) : (
         // maxHeight (not a fixed height) so a short journal doesn't leave
         // dead space below it — it only starts scrolling internally once
-        // entries actually exceed the cap.
-        <div style={{ maxHeight: 420, display: "flex", flexDirection: "column", overflow: "hidden", borderRadius: 4 }}>
+        // entries actually exceed the cap. Only one accordion row can be
+        // expanded at a time (see 'expandedBranch' below), so this can
+        // afford to use most of the viewport rather than a small fixed cap.
+        // overflow must be "auto", not "hidden" — WireTickList's compact
+        // mode (fileview.tsx) deliberately leaves scrolling to the caller.
+        <div style={{ maxHeight: "70vh", display: "flex", flexDirection: "column", overflow: "auto", borderRadius: 4 }}>
           <WireTickList
             ticks={chain}
             annotationMode="hidden"
