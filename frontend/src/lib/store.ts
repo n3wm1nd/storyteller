@@ -238,23 +238,39 @@ function flushPendingSubmit(set: Setter, get: () => StoryState) {
   const pending = get().pendingSubmit;
   if (!pending) return;
   set({ pendingSubmit: null });
-  get().openFiles[pending.path]?.conn.send(atRebase(get().rebaseMarker, pending.cmd));
+  get().openFiles[pending.path]?.conn.send(atRebase(get().rebaseMarker, pending.cmd, get().journalMarkers));
 }
 
 // Build the read-only context items for a chat command from the current
 // atom/annotation selection — chain order, atoms then annotations, per
-// SPEC-SELECTION-ANNOTATIONS.md.
+// SELECTION.md. contextAtoms/contextAnnotations are shared across the open
+// file and every open journal (see 'openJournal' above), so a selection made
+// in a character's journal is a genuine cross-branch reference when it rides
+// along on a command sent to the main file's connection — tagged with its
+// own branch, since only the *file's* branch is implied by the connection.
 function buildContextItems(s: StoryState, path: string): ContextItem[] {
   const fc = s.openFiles[path];
   if (!fc) return [];
   const chain = tickChain(fc.ticks, fc.head);
   const atoms       = chain.filter((t) => s.contextAtoms.has(t.tickId));
   const annotations = chain.filter((t) => s.contextAnnotations.has(t.tickId));
-  return [...atoms, ...annotations].map((t) => ({
+  const local: ContextItem[] = [...atoms, ...annotations].map((t) => ({
     tickId: t.tickId,
     kind: t.kind,
     content: t.content ?? t.message,
   }));
+
+  const crossBranch: ContextItem[] = [];
+  for (const [branch, jc] of Object.entries(s.openJournals)) {
+    const jchain = tickChain(jc.ticks, jc.head);
+    const jAtoms       = jchain.filter((t) => s.contextAtoms.has(t.tickId));
+    const jAnnotations = jchain.filter((t) => s.contextAnnotations.has(t.tickId));
+    for (const t of [...jAtoms, ...jAnnotations]) {
+      crossBranch.push({ tickId: t.tickId, kind: t.kind, content: t.content ?? t.message, branch });
+    }
+  }
+
+  return [...local, ...crossBranch];
 }
 
 // Target ids for chat.fixer/chat.note, scoped to this file's own chain —
@@ -284,7 +300,7 @@ function sendChatCommand(get: () => StoryState, set: Setter, path: string, build
     set({ pendingSubmit: { path, cmd: buildCmd(fc.head ?? undefined) } });
   } else {
     schedulePreviewPlaceholder(set);
-    fc.conn.send(atRebase(s.rebaseMarker, buildCmd(undefined)));
+    fc.conn.send(atRebase(s.rebaseMarker, buildCmd(undefined), s.journalMarkers));
   }
 }
 
@@ -356,9 +372,18 @@ function handleError(set: Setter, evt: ErrorEvent) {
   set(() => ({ error: evt.message }));
 }
 
-// Wrap a command in an "at" rebase if a marker is set, otherwise send it as-is.
-function atRebase(marker: string | null, cmd: FileCommand): FileCommand {
-  return marker ? { type: "at", tickId: marker, command: cmd } : cmd;
+// Wrap a command in an "at" rebase if a marker is set, otherwise send it
+// as-is. When rebasing, attaches every active character's journal position
+// (see 'journalMarkers' and character-sidebar.tsx's nearestJournalMarker
+// effect, which keeps it following the scene's own marker) as the `branches`
+// field — skipping any character whose corresponding position couldn't be
+// derived (null), rather than sending a meaningless entry. See SELECTION.md.
+function atRebase(marker: string | null, cmd: FileCommand, journalMarkers: Record<string, string | null>): FileCommand {
+  if (!marker) return cmd;
+  const branches = Object.entries(journalMarkers)
+    .filter((entry): entry is [string, string] => entry[1] !== null)
+    .map(([branch, tickId]) => ({ branch, tickId }));
+  return { type: "at", tickId: marker, command: cmd, ...(branches.length > 0 ? { branches } : {}) };
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -694,15 +719,15 @@ export const useStory = create<StoryState>((set, get) => ({
   // / lib/utils.nearestJournalMarker), not the store's global 'rebaseMarker'
   // (which is scoped to whichever scene file is open).
   appendJournal: (branch, content, marker) => {
-    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.append", content }));
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.append", content }, {}));
   },
 
   editJournalAtom: (branch, tickId, content, marker) => {
-    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "edit.atom", tickId, content }));
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "edit.atom", tickId, content }, {}));
   },
 
   deleteJournalAtom: (branch, tickId, marker) => {
-    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "delete.atom", tickId }));
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "delete.atom", tickId }, {}));
   },
 
   // Fix, scoped to the journal itself — this is what "rewrite to exclude
@@ -711,7 +736,7 @@ export const useStory = create<StoryState>((set, get) => ({
   // character-sidebar.tsx's selection-intersection), sent as a chat.fixer
   // on the journal's connection, same shape as the main view's chatFix.
   journalFix: (branch, text, targets, marker) => {
-    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.fixer", text, targets }));
+    get().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.fixer", text, targets }, {}));
   },
 
   setJournalMarker: (branch, tickId) => {
@@ -730,11 +755,11 @@ export const useStory = create<StoryState>((set, get) => ({
   // WRITER.md — so this sends on the file connection, same as any other
   // mutating file command, and gets rebase-at-marker for free via 'atRebase'.
   enterScene: (path, character) => {
-    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "enter.scene", character }));
+    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "enter.scene", character }, get().journalMarkers));
   },
 
   leaveScene: (path, character) => {
-    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "leave.scene", character }));
+    get().openFiles[path]?.conn.send(atRebase(get().rebaseMarker, { type: "leave.scene", character }, get().journalMarkers));
   },
 
   appendToFile: (path, content) => {
@@ -744,13 +769,13 @@ export const useStory = create<StoryState>((set, get) => ({
 
   editAtom: (path, tickId, content) => {
     get().openFiles[path]?.conn.send(
-      atRebase(get().rebaseMarker, { type: "edit.atom", tickId, content })
+      atRebase(get().rebaseMarker, { type: "edit.atom", tickId, content }, get().journalMarkers)
     );
   },
 
   deleteAtom: (path, tickId) => {
     get().openFiles[path]?.conn.send(
-      atRebase(get().rebaseMarker, { type: "delete.atom", tickId })
+      atRebase(get().rebaseMarker, { type: "delete.atom", tickId }, get().journalMarkers)
     );
   },
 

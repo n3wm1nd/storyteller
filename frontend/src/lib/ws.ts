@@ -90,11 +90,15 @@ export type BranchEvent =
 
 // A pinned atom/annotation attached to a chat.writer/chat.fixer command as
 // reference context. `content` is what the agent reads; `tickId`/`kind` are
-// for traceability only. See SPEC-SELECTION-ANNOTATIONS.md.
+// for traceability only. `branch` is set only when the item comes from a
+// branch other than the one this command is being sent on (e.g. a character
+// journal selection pinned to a story-file command) — the connection's own
+// branch is always implied and never needs restating. See SELECTION.md.
 export interface ContextItem {
   tickId:  string;
   kind:    string;
   content: string;
+  branch?: string;
 }
 
 export type FileCommand =
@@ -122,8 +126,14 @@ export type FileCommand =
   | { type: "leave.scene"; id?: string; character: string }
   // Rebase: run `command` as if `tickId` were HEAD, then replay everything
   // that came after it on top of the result. Lets the client re-target any
-  // command at a historical point in the file's chain.
-  | { type: "at";          id?: string; tickId: string; command: FileCommand };
+  // command at a historical point in the file's chain. `branches` carries
+  // the corresponding "as of" position (a tick id) in every other branch
+  // relevant to this file — currently the journal of each character present
+  // in the scene at `tickId` — so a command run at a historical point in the
+  // file doesn't silently see those characters' journals still at their
+  // live HEAD. See SELECTION.md. Optional and currently unconsumed
+  // server-side; sent ahead of the backend reading it.
+  | { type: "at";          id?: string; tickId: string; command: FileCommand; branches?: { branch: string; tickId: string }[] };
 
 export type FileEvent =
   | { type: "file.present"; id?: string }
