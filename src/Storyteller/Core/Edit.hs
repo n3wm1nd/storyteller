@@ -40,6 +40,7 @@ module Storyteller.Core.Edit
 
     -- * Working-tree commit
   , commitWorkingTree
+  , commitFiles
 
     -- * Ordering invariant check (exported for use in Dispatch)
   , checkMoveOrder
@@ -352,8 +353,26 @@ commitWorkingTree
                 , StoryStorage
                 , Fail ] r )
   => Sem r [(TickId, TickId)]
-commitWorkingTree = do
-  files   <- listFiles @project "/"
+commitWorkingTree = listFiles @project "/" >>= commitFiles @project @branch
+
+-- | Reconcile only the given files' working-tree content against their atom
+--   history, rather than every file in the branch — same rule as
+--   'commitWorkingTree' ('commitFile' per existing file, 'storeNewFiles' for
+--   ones with no history yet), just scoped to a caller-chosen subset. Used
+--   directly where a command only ever touches specific paths (e.g. a
+--   branch-level file upload) and reconciling unrelated files' pending
+--   working-tree edits would be out of scope for that command.
+commitFiles
+  :: forall project branch r
+  .  ( project ~ BranchTag branch
+     , Members '[ FileSystem      project
+                , FileSystemRead  project
+                , FileSystemWrite project
+                , StoryBranch branch
+                , StoryStorage
+                , Fail ] r )
+  => [FilePath] -> Sem r [(TickId, TickId)]
+commitFiles files = do
   mapping <- foldM (commitFile @project @branch) Map.empty files
   newFiles <- filterM (fmap null . buildAtomHistory @project @branch) files
   storeNewFiles @project @branch newFiles

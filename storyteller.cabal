@@ -193,6 +193,7 @@ test-suite storyteller-test
                   , Storyteller.PresenceSpec
                   , Server.TestStack
                   , Server.BranchSpec
+                  , Server.Writer.BranchSpec
                   , Server.FileSpec
                   , Server.CharacterSpec
                   , Server.NotificationSpec

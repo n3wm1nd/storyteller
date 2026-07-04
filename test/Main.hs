@@ -10,6 +10,7 @@ import qualified Storyteller.TrackerSpec
 import qualified Storyteller.CharGenSpec
 import qualified Storyteller.PresenceSpec
 import qualified Server.BranchSpec
+import qualified Server.Writer.BranchSpec
 import qualified Server.FileSpec
 import qualified Server.CharacterSpec
 import qualified Server.NotificationSpec
@@ -33,6 +34,8 @@ main = hspec $ do
   -- buffered path; running both here is what closes that gap.
   describe "Server.Core.Branch (eager)"         (Server.BranchSpec.spec testStack)
   describe "Server.Core.Branch (withStorage)"   (Server.BranchSpec.spec testStackTransactional)
+  describe "Server.Writer.Branch (eager)"       (Server.Writer.BranchSpec.spec testStack)
+  describe "Server.Writer.Branch (withStorage)" (Server.Writer.BranchSpec.spec testStackTransactional)
   describe "Server.Core.File (eager)"           (Server.FileSpec.spec testStack)
   describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
   describe "Server.Writer.Character"            Server.CharacterSpec.spec

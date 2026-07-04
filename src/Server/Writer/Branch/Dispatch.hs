@@ -33,7 +33,7 @@ import qualified Data.Text as T
 import Polysemy (Sem)
 
 import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
-import Server.Writer.Branch (trackFiles, charGen)
+import Server.Writer.Branch (trackFiles, charGen, uploadFiles)
 import Server.Writer.Branch.Protocol
 import Server.Core.Run (SessionEffects)
 import qualified Storyteller.Core.Storage as Storage
@@ -65,6 +65,10 @@ runCommand branch cmd =
       deleteTickFromBranch (TickId tid)
       return []
 
+    Upload mid uploads -> do
+      paths <- uploadFiles (map toUploadPair uploads)
+      return (map (FileAdded mid) paths)
+
     -- Rebase 'inner' at 'tid': wind the chain back, run it against that
     -- tick's filesystem snapshot, then replay the tail on top of whatever it
     -- produced. 'reset' reloads the working tree from the (now rebased)
@@ -83,3 +87,6 @@ runCommand branch cmd =
 
 toPair :: TrackFile -> (FilePath, FilePath)
 toPair tf = (trackFrom tf, trackTo tf)
+
+toUploadPair :: UploadFile -> (FilePath, T.Text)
+toUploadPair uf = (uploadPath uf, uploadContent uf)

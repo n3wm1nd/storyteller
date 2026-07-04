@@ -14,6 +14,7 @@
 module Server.Writer.Branch
   ( trackFiles
   , charGen
+  , uploadFiles
   ) where
 
 import Control.Monad (void)
@@ -23,10 +24,12 @@ import Polysemy (Sem)
 import Polysemy.Error (throw)
 import Runix.FileSystem (writeFile)
 
+import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
 
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
+import Storyteller.Core.Edit (commitFiles)
 import Storyteller.Core.Git (BranchTag, runBranchAndFS)
 import Storyteller.Core.Storage (createBranch, getBranch, store)
 import Storyteller.Core.Types (BranchName(..))
@@ -86,3 +89,27 @@ charGen name path scenario seed = do
     let sheet = charGenAgent template rngSeed
     writeFile @(BranchTag CharBranch) path (TE.encodeUtf8 (unSheet sheet))
     void $ store @CharBranch "character sheet"
+
+-- | Write one or more dropped files' content directly into the branch,
+--   bypassing the chat-agent pipeline (see TODO.md's Upload/download work
+--   packet — a drag-and-drop upload isn't an LLM-authored append, it's raw
+--   bytes the user already chose). Runs on the branch scope already open for
+--   this connection ('BranchOpen'), unlike 'trackFiles'/'charGen': an upload
+--   always targets the branch the client is connected to, never a separate
+--   one that might still need creating.
+--
+--   Each path is reconciled independently via 'commitFiles' — same
+--   new-file-vs-edit-existing-file logic 'commitWorkingTree' uses, just
+--   scoped to the uploaded paths instead of the whole branch, so an upload
+--   never touches any other file's pending working-tree state.
+--
+--   Returns the uploaded paths, so the caller can push 'FileAdded' events.
+uploadFiles
+  :: BranchOpen r
+  => [(FilePath, T.Text)] -- ^ (path, content) pairs
+  -> Sem r [FilePath]
+uploadFiles files = do
+  mapM_ (\(path, content) -> writeFile @(BranchTag Main) path (TE.encodeUtf8 content)) files
+  let paths = map fst files
+  _ <- commitFiles @(BranchTag Main) @Main paths
+  return paths

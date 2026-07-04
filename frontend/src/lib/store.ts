@@ -142,6 +142,7 @@ interface StoryState {
   appendToFile:   (path: string, content: string) => void;
   editAtom:       (path: string, tickId: string, content: string) => void;
   deleteAtom:     (path: string, tickId: string) => void;
+  uploadFiles:    (files: { path: string; content: string }[]) => void;
   addNote:        (refTickId: string, text: string) => void;
   moveTick:       (tickId: string, afterTickId?: string) => void;
   deleteTickEntry:(tickId: string) => void;
@@ -777,6 +778,13 @@ export const useStory = create<StoryState>((set, get) => ({
     get().openFiles[path]?.conn.send(
       atRebase(get().rebaseMarker, { type: "delete.atom", tickId }, get().journalMarkers)
     );
+  },
+
+  // Drag-and-drop upload — one or more dropped files, written directly to
+  // their paths (no chat-agent round trip). 'files' are already
+  // path-resolved (destination folder + dropped filename) by the caller.
+  uploadFiles: (files) => {
+    get()._branch?.send({ type: "upload", files });
   },
 
   addNote: (refTickId, text) => {

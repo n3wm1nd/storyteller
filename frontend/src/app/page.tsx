@@ -124,7 +124,7 @@ export default function Home() {
     openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
     editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker, appendJournal,
     setHoverHighlight, clearHoverHighlight, enterScene, leaveScene,
-    appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry,
+    appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry, uploadFiles,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote,
     setRebaseMarker,
   } = useStory();
@@ -312,6 +312,7 @@ export default function Home() {
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
               onHoverCharacter={setHoveredCharacter}
+              onUploadFiles={uploadFiles}
               conns={conns} error={error}
             />
             <div

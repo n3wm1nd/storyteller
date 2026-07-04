@@ -35,22 +35,48 @@ function buildTree(paths: string[]): TreeNode[] {
   return root;
 }
 
-function FileTreeNode({ node, depth, selectedFile, onSelectFile }: {
+// Reads every dropped file as text and hands the caller (path, content)
+// pairs resolved against the drop target folder — one upload command for
+// the whole batch, per the "prefer multi-file over single-file" decision in
+// TODO.md. Files are markdown/text by convention (see WRITER.md); no binary
+// upload support.
+async function resolveDroppedFiles(folderPath: string, fileList: FileList): Promise<{ path: string; content: string }[]> {
+  const files = Array.from(fileList);
+  return Promise.all(files.map(async (file) => ({
+    path: folderPath ? `${folderPath}/${file.name}` : file.name,
+    content: await file.text(),
+  })));
+}
+
+function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles }: {
   node: TreeNode; depth: number; selectedFile: string | null; onSelectFile: (p: string) => void;
+  onDropFiles: (folderPath: string, files: FileList) => void;
 }) {
   const [open, setOpen] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
   const active = selectedFile === node.path;
   const pad = 8 + depth * 14;
 
   if (node.isDir) {
     return (
       <div>
-        <button onClick={() => setOpen((v) => !v)} style={{
-          display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
-          padding: `3px 8px 3px ${pad}px`,
-          background: "transparent", border: "none", cursor: "pointer", borderRadius: 5,
-          color: "var(--text-muted)", fontSize: 11,
-        }}>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragOver(false);
+            onDropFiles(node.path, e.dataTransfer.files);
+          }}
+          style={{
+            display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
+            padding: `3px 8px 3px ${pad}px`,
+            background: dragOver ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+            border: "none", cursor: "pointer", borderRadius: 5,
+            color: "var(--text-muted)", fontSize: 11,
+          }}>
           <ChevronRight style={{ width: 11, height: 11, flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
           {open
             ? <FolderOpen style={{ width: 12, height: 12, flexShrink: 0 }} />
@@ -58,7 +84,7 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile }: {
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
         </button>
         {open && node.children.map((child) => (
-          <FileTreeNode key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onSelectFile={onSelectFile} />
+          <FileTreeNode key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={onDropFiles} />
         ))}
       </div>
     );
@@ -152,6 +178,7 @@ export function LeftSidebar({
   onSelectBranch, onSelectFile,
   onCreateBranch, onDeleteBranch,
   onHoverCharacter,
+  onUploadFiles,
   conns, error,
 }: {
   tab: "explorer" | "branches" | "characters";
@@ -165,11 +192,17 @@ export function LeftSidebar({
   onCreateBranch: (name: string) => void;
   onDeleteBranch: (name: string) => void;
   onHoverCharacter: (branch: string | null) => void;
+  onUploadFiles: (files: { path: string; content: string }[]) => void;
   conns: ConnInfo[];
   error: string | null;
 }) {
   const characterBranches = branches.filter((b) => b.startsWith("character/"));
   const [newBranch, setNewBranch] = useState("");
+  const [rootDragOver, setRootDragOver] = useState(false);
+
+  function handleDropFiles(folderPath: string, fileList: FileList) {
+    resolveDroppedFiles(folderPath, fileList).then(onUploadFiles);
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--sidebar)" }}>
@@ -196,7 +229,21 @@ export function LeftSidebar({
       </div>
 
       {tab === "explorer" && (
-        <div style={{ flex: 1, overflow: "auto", padding: "4px 4px" }}>
+        <div
+          onDragOver={(e) => { if (activeBranch) { e.preventDefault(); setRootDragOver(true); } }}
+          onDragLeave={() => setRootDragOver(false)}
+          onDrop={(e) => {
+            if (!activeBranch) return;
+            e.preventDefault();
+            setRootDragOver(false);
+            handleDropFiles("", e.dataTransfer.files);
+          }}
+          style={{
+            flex: 1, overflow: "auto", padding: "4px 4px",
+            background: rootDragOver ? "oklch(0.78 0.10 65 / 0.06)" : "transparent",
+            outline: rootDragOver ? "1px dashed var(--amber)" : "none", outlineOffset: -2,
+          }}
+        >
           <div style={{
             padding: "5px 10px 4px", marginBottom: 2,
             display: "flex", alignItems: "center", gap: 6,
@@ -215,11 +262,11 @@ export function LeftSidebar({
             </div>
           ) : files.length === 0 ? (
             <div style={{ padding: "12px 12px", fontSize: 11, color: "var(--text-ghost)" }}>
-              Empty branch
+              Empty branch — drop files here to upload
             </div>
           ) : (
             buildTree(files).map((node) => (
-              <FileTreeNode key={node.path} node={node} depth={0} selectedFile={selectedFile} onSelectFile={onSelectFile} />
+              <FileTreeNode key={node.path} node={node} depth={0} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={handleDropFiles} />
             ))
           )}
         </div>

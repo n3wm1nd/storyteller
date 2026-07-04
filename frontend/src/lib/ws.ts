@@ -74,6 +74,11 @@ export type BranchCommand =
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
   | { type: "delete.tick"; id?: string; tickId: string }
+  // Upload: write one or more dropped files' content directly into this
+  // branch, bypassing the chat-agent pipeline — see TODO.md's
+  // Upload/download packet. Bulk and not scoped to an already-open file
+  // connection, so it lives here rather than on FileCommand.
+  | { type: "upload";      id?: string; files: { path: string; content: string }[] }
   // Rebase, same shape as FileCommand's — generic capability, no client
   // trigger uses this yet (would be a future Ticks-view rebase marker).
   | { type: "at";          id?: string; tickId: string; command: BranchCommand };
