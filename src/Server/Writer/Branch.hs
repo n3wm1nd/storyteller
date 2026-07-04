@@ -21,15 +21,18 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Polysemy (Sem)
 import Polysemy.Error (throw)
+import Runix.FileSystem (writeFile)
 
 import Server.Core.Run (SessionEffects)
 
-import Storyteller.Writer.Agent.CharGen (charGenCommit, ScenarioTemplate(..), RngSeed(..))
+import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-import Storyteller.Core.Git (runBranchAndFS)
-import Storyteller.Core.Storage (createBranch, getBranch)
+import Storyteller.Core.Git (BranchTag, runBranchAndFS)
+import Storyteller.Core.Storage (createBranch, getBranch, store)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Data.Yaml as Yaml
+
+import Prelude hiding (writeFile)
 
 data Source
 data Tracker
@@ -78,5 +81,8 @@ charGen name path scenario seed = do
   getBranch name >>= \case
     Nothing -> void $ createBranch name
     Just _  -> return ()
-  runBranchAndFS @CharBranch name $
-    void $ charGenCommit @CharBranch template (RngSeed <$> seed) path
+  runBranchAndFS @CharBranch name $ do
+    rngSeed <- maybe drawSeed return (RngSeed <$> seed)
+    let sheet = charGenAgent template rngSeed
+    writeFile @(BranchTag CharBranch) path (TE.encodeUtf8 (unSheet sheet))
+    void $ store @CharBranch "character sheet"

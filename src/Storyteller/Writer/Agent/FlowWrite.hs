@@ -2,7 +2,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -18,7 +17,10 @@
 -- generated since 'flowTid' gets its own single-atom 'reworkAtomsAt' call
 -- (see @Storyteller.Writer.Agent.ReplaceTool@) against the new instruction, so the
 -- model can patch anything the new instruction invalidates before building
--- on top of it.
+-- on top of it. That rework genuinely needs filesystem/storage access (tick
+-- ids shift as each replacement rebases, see 'reworkAtomsAt') and commits as
+-- it goes; the new continuation itself is left as 'Prose' for the caller to
+-- split and append, same as 'Storyteller.Writer.Agent.Write.writeAgent'.
 module Storyteller.Writer.Agent.FlowWrite
   ( flowWriteAgent
   ) where
@@ -27,38 +29,31 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
-import Runix.Logging (Logging)
 
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), ContextBlock(..), WordCount(..))
-import Storyteller.Writer.Agent.Continuation (continueFileAgent)
+import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
+import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
-import Storyteller.Common.Splitter (Splitter, splitAtoms)
-import Storyteller.Core.Append (append)
-import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, fileTicks, ticksSince)
 import Storyteller.Core.Types (TickId(..))
 
--- | See module header. @charProjects@ is the same @(label, summary action)@
---   shape 'writeAgent' takes.
+-- | See module header. @charBlocks@ is the same @(label, resolved summary
+--   blocks)@ shape 'writeAgent' takes.
 flowWriteAgent
   :: forall project branch r
   .  ( project ~ BranchTag branch
      , Members '[ LLM StoryModel
                 , FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Splitter, Logging, Fail ] r )
-  => FilePath                                       -- ^ file to append to
+                , StoryBranch branch, StoryStorage, Fail ] r )
+  => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
-  -> Instruction
+  -> ExistingContent
   -> [ContextBlock]                                  -- ^ extra context (e.g. user's pinned selection)
-  -> [(CharLabel, Sem r [CharContextBlock])]         -- ^ (label, summary action) per active char branch
-  -> Sem r [TickId]
-flowWriteAgent path flowTid instruction extraContext charActions = do
-  charContexts <- fmap concat $ mapM (\(CharLabel name, action) -> do
-    blocks <- action
-    return $ CharContextBlock ("## Character: " <> name) : blocks) charActions
-
+  -> Instruction
+  -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
+  -> Sem r ([TickId], Prose)
+flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
   allTicks <- fileTicks @branch path
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
@@ -66,10 +61,8 @@ flowWriteAgent path flowTid instruction extraContext charActions = do
     then return []
     else reworkAtomsAt @branch @project path (flowInstruction instruction) inFlightIdxs
 
-  Prose generated <- continueFileAgent @project @StoryModel
-                       modelConfigs (Just (WordCount 300)) charContexts extraContext path instruction
-  contTids <- mapM (append @branch path) =<< splitAtoms generated
-  return (reworkedTids <> contTids)
+  generated <- writeAgent existing extraContext instruction charBlocks
+  return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already
 --   queued, so it may not account for it — frame the instruction with that

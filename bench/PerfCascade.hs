@@ -314,10 +314,10 @@ defaultSweeps = do
   printf "%8s  %10s  %12s  %10s\n"
     ("N" :: String) ("ms" :: String) ("totalOps" :: String) ("ops/ms" :: String)
   deadline <- (+ sweep4BudgetPicos) <$> getCPUTime
-  goSweep4 deadline [30, 100, 300, 600]
+  goSweep4 deadline [30, 60, 100, 150]
   where
     sweep4BudgetPicos :: Integer
-    sweep4BudgetPicos = 15 * 1000000000000  -- 15s CPU-time budget for the whole sweep
+    sweep4BudgetPicos = 6 * 1000000000000  -- 6s CPU-time budget for the whole sweep
 
     goSweep4 :: Integer -> [Int] -> IO ()
     goSweep4 _ [] = return ()
@@ -332,7 +332,7 @@ defaultSweeps = do
     -- actually abort a single runaway call rather than just checking the
     -- budget *between* calls, which wouldn't help if one single N blows up).
     perRunTimeoutMicros :: Int
-    perRunTimeoutMicros = 10 * 1000000
+    perRunTimeoutMicros = 4 * 1000000
 
     goSweep4Step :: Integer -> [Int] -> Int -> IO ()
     goSweep4Step deadline rest n = do

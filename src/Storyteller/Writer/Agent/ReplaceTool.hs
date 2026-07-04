@@ -9,24 +9,34 @@
 -- | Shared per-atom "should this change, and if so how" tool call.
 --
 -- The tool the model is given is deliberately narrow: it takes the
--- replacement text plus a short reason, and the target atom (its tick id
--- and file path) is bound into the tool by the caller rather than supplied
--- by the model — so the model has no way to ever target the wrong atom.
+-- replacement text plus a short reason and hands both straight back as data
+-- — it does not itself decide *whether* to apply anything, so it needs no
+-- filesystem or storage effect at all, only enough to construct a value.
 -- This is what @Storyteller.Writer.Agent.Fix@ and @Storyteller.Writer.Agent.FlowWrite@
 -- both reduce to: "here is one atom, here is an instruction, does it need
 -- to change, and if so to what — and why".
 --
--- The reason is stored as its own 'Storyteller.Common.Types.Fixup' tick
--- alongside the replacement, agent-authored and distinct from a user's
--- 'Note', so a later reader can trace back why an atom changed.
+-- 'reworkAtom' is the pure decision core: given one atom's text and an
+-- instruction, it asks the model and returns the proposed replacement (or
+-- 'Nothing' if no change is warranted) — needing only 'LLM'/'Fail'.
+--
+-- 'reworkAtomsAt' is the machinery around that core: it walks the file's
+-- tick chain, and for every atom 'reworkAtom' proposes a change for, applies
+-- it via 'Storyteller.Core.Edit.editAtom' (the same in-place-replace-
+-- preserving-position mechanics the working-tree commit path already uses)
+-- and records the model's reason as its own 'Storyteller.Common.Types.Fixup'
+-- tick, agent-authored and distinct from a user's 'Note', so a later reader
+-- can trace back why an atom changed. This step can't be hoisted to the
+-- caller the way a plain append can: positions stay put but tick ids shift
+-- with every replacement, so the chain has to be re-read before each
+-- application to target the atom currently at that position.
 --
 -- Under the hood this is @UniversalLLM@'s tool-calling support (see
--- @TOOLCALLS.md@ in universal-llm): 'replaceAtomTool' is a plain function
--- wrapped with 'mkToolWithMeta', and applying it is 'Storyteller.Core.Edit.editAtom'
--- — the same in-place-replace-preserving-position mechanics the working-tree
--- commit path already uses.
+-- @TOOLCALLS.md@ in universal-llm): the tool given to the model is a plain
+-- function wrapped with 'mkToolWithMeta'.
 module Storyteller.Writer.Agent.ReplaceTool
-  ( reworkAtom
+  ( ReplaceProposal(..)
+  , reworkAtom
   , reworkAtomsAt
   ) where
 
@@ -55,19 +65,22 @@ import Storyteller.Core.Storage (StoryBranch, StoryStorage, FileTick(..), fileTi
 import Storyteller.Core.Types (TickId(..))
 import Storyteller.Common.Types (Fixup(..))
 
--- | The tool's result, round-tripped through JSON only to travel from the
---   tool call back to us — never inspected by the model itself (tool
---   results aren't sent to it again here; each atom gets one single-turn
---   call).
-newtype ReplaceResult = ReplaceResult { rrNewTickId :: T.Text }
+-- | The model's proposed replacement: the new text plus its reason. Plain
+--   data — whether and how it gets applied is entirely up to the caller.
+data ReplaceProposal = ReplaceProposal
+  { rpNewText :: T.Text
+  , rpReason  :: T.Text
+  }
 
-instance HasCodec ReplaceResult where
-  codec = object "ReplaceResult" $
-    ReplaceResult <$> requiredField "new_tick_id" "id of the tick after replacement" .= rrNewTickId
+instance HasCodec ReplaceProposal where
+  codec = object "ReplaceProposal" $
+    ReplaceProposal
+      <$> requiredField "new_text" "the full corrected replacement text for this atom" .= rpNewText
+      <*> requiredField "reason"   "brief explanation of why this atom needed to change"  .= rpReason
 
-instance ToolParameter ReplaceResult where
-  paramName = "replace_result"
-  paramDescription = "result of replacing an atom's text"
+instance ToolParameter ReplaceProposal where
+  paramName = "replace_proposal"
+  paramDescription = "the proposed replacement text and reason for an atom"
 
 -- | The model's stated reason for a replacement — the one thing about a
 --   change only the model can supply; everything else ('Fixup's ref) is
@@ -81,37 +94,25 @@ instance ToolParameter FixDescription where
   paramName = "reason"
   paramDescription = "brief explanation of why this atom needed to change, kept for later tracing"
 
--- | The tool itself: the atom's identity is closed over, not a parameter,
---   so the only thing the model supplies is the replacement text and its
---   reason. The reason is committed as a 'Fixup' tick referencing the
---   atom's new id right alongside the replacement.
-replaceAtomTool
-  :: forall branch project r
-  .  ( project ~ BranchTag branch
-     , Members '[ FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Fail ] r )
-  => TickId -> FilePath -> T.Text -> FixDescription -> Sem r ReplaceResult
-replaceAtomTool tid path newText (FixDescription reason) = do
-  (newTid, _mapping) <- editAtom @branch tid path (TE.encodeUtf8 newText)
-  _ <- storeAs @branch (Fixup [newTid] reason)
-  return (ReplaceResult (unTickId newTid))
+-- | The tool itself: just packages the model's two arguments into a
+--   'ReplaceProposal'. No filesystem/storage effect — the tool doesn't
+--   decide whether or how anything gets applied, it only reports what the
+--   model proposed.
+proposeReplacement :: forall r. T.Text -> FixDescription -> Sem r ReplaceProposal
+proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newText reason)
 
--- | Ask the model whether one specific atom needs to change given an
---   instruction, and if so replace it in place. Returns the new tick id if
---   a replacement happened, 'Nothing' if the model judged no change needed
---   (or didn't call the tool at all).
+-- | Ask the model whether one atom needs to change given an instruction.
+--   The pure decision core: only 'LLM'/'Fail', no filesystem or storage
+--   access — applying a proposal is 'reworkAtomsAt's job.
 reworkAtom
-  :: forall branch project r
-  .  ( project ~ BranchTag branch
-     , Members '[ LLM StoryModel
-                , FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Fail ] r )
-  => FilePath -> TickId -> T.Text -> Instruction -> Sem r (Maybe TickId)
-reworkAtom path tid content (Instruction instr) = do
+  :: forall r
+  .  Members '[LLM StoryModel, Fail] r
+  => T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
+reworkAtom content (Instruction instr) = do
   let tool = mkToolWithMeta
                "replace_atom"
                "Replace this one atom's text with a corrected version. Only call this if the atom actually needs to change because of the instruction; otherwise don't call it."
-               (replaceAtomTool @branch @project tid path)
+               (proposeReplacement @r)
                "new_text" "The full corrected replacement text for this atom, replacing it entirely"
                "reason"   "Brief explanation of why this atom needed to change, for later tracing"
       tools = [LLMTool tool]
@@ -127,16 +128,18 @@ reworkAtom path tid content (Instruction instr) = do
       result <- executeToolCallFromList tools call
       case toolResultOutput result of
         Right value -> case parseEither parseJSONViaCodec value of
-          Right (ReplaceResult newTid) -> return (Just (TickId newTid))
-          Left _                       -> return Nothing
+          Right proposal -> return (Just proposal)
+          Left _         -> return Nothing
         Left _ -> return Nothing
     [] -> return Nothing
 
 -- | Apply 'reworkAtom' at each of the given (oldest-first) positions in the
---   file's tick chain. Positions, not tick ids: replacing one atom rebases
---   every atom after it onto new ids, but leaves position untouched, so the
---   chain is re-fetched before each attempt rather than trusting ids
---   captured before the loop started.
+--   file's tick chain, committing every proposed replacement as it's made.
+--   Positions, not tick ids: replacing one atom rebases every atom after it
+--   onto new ids, but leaves position untouched, so the chain is re-fetched
+--   before each attempt rather than trusting ids captured before the loop
+--   started — this is the one place ids and content genuinely can't be
+--   gathered upfront and handed to a pure core.
 reworkAtomsAt
   :: forall branch project r
   .  ( project ~ BranchTag branch
@@ -149,6 +152,12 @@ reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
     oneAt idx = do
       ticks <- fileTicks @branch path
       case drop idx ticks of
-        (FileTick { ftTickId = tid, ftContent = Just content } : _) ->
-          reworkAtom @branch @project path (TickId tid) content instruction
+        (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
+          mProposal <- reworkAtom content instruction
+          case mProposal of
+            Nothing -> return Nothing
+            Just (ReplaceProposal newText reason) -> do
+              (newTid, _mapping) <- editAtom @branch (TickId tid) path (TE.encodeUtf8 newText)
+              _ <- storeAs @branch (Fixup [newTid] reason)
+              return (Just newTid)
         _ -> return Nothing

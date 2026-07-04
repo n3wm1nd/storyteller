@@ -11,11 +11,12 @@
 --   Given a scenario template (parsed YAML) and a seed, resolves random
 --   selections and numeric rolls into a character sheet.
 --
---   'charGenAgent' is pure. 'charGenCommit' is the Polysemy action that
---   generates the sheet and commits it to a branch.
+--   'charGenAgent' is pure — its result is 'CharSheet', plain 'Text', not a
+--   file. Whether and where it gets written is the caller's business: see
+--   'Storyteller.Core.Storage.store' at the call site.
 module Storyteller.Writer.Agent.CharGen
   ( charGenAgent
-  , charGenCommit
+  , drawSeed
   , ScenarioTemplate(..)
   , RngSeed(..)
   , CharSheet(..)
@@ -40,15 +41,7 @@ import           System.Random (StdGen, mkStdGen, uniformR)
 import           Text.Read (readMaybe)
 
 import Polysemy
-import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystemWrite, writeFile)
 import Runix.Random (Random, randomInt)
-
-import Storyteller.Core.Git (BranchTag(..))
-import Storyteller.Core.Storage (StoryBranch, store)
-import Storyteller.Core.Types (TickId)
-
-import Prelude hiding (writeFile)
 
 -- ---------------------------------------------------------------------------
 -- Public API
@@ -58,25 +51,9 @@ newtype ScenarioTemplate = ScenarioTemplate { unTemplate :: Value }
 newtype RngSeed          = RngSeed          { unSeed     :: Int  }
 newtype CharSheet        = CharSheet        { unSheet    :: Text }
 
--- | Effectful entry point: generate a character sheet and commit it to a branch.
---   If the branch doesn't exist it is created. The seed is drawn from
---   'Runix.Random' so callers never need 'Embed IO'.
--- | Generate a character sheet and commit it to the current branch.
---   If no seed is provided, one is drawn from 'Random'.
-charGenCommit
-  :: forall branch r
-  .  Members '[ FileSystemWrite (BranchTag branch)
-              , StoryBranch branch
-              , Random
-              , Fail
-              ] r
-  => ScenarioTemplate -> Maybe RngSeed -> FilePath -> Sem r (CharSheet, RngSeed, TickId)
-charGenCommit template mSeed file = do
-  seed <- maybe (RngSeed <$> randomInt) (return) mSeed
-  let sheet = charGenAgent template seed
-  writeFile @(BranchTag branch) file (TE.encodeUtf8 (unSheet sheet))
-  tid <- store @branch "character sheet"
-  return (sheet, seed, tid)
+-- | Draw a fresh seed when the caller doesn't already have one to reuse.
+drawSeed :: Member Random r => Sem r RngSeed
+drawSeed = RngSeed <$> randomInt
 
 charGenAgent :: ScenarioTemplate -> RngSeed -> CharSheet
 charGenAgent (ScenarioTemplate raw) (RngSeed seed) =

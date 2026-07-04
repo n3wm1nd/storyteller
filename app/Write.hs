@@ -23,27 +23,24 @@ module Main (main) where
 import Control.Monad (forM)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.Text.Encoding as TE
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
-                        , fileExists, readFile )
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
-
-import Prelude hiding (readFile, writeFile)
 
 import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
 import Storyteller.Core.Storage (StoryBranch, StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), WordCount(..))
-import Storyteller.Writer.Agent.Continuation (continueFileAgent)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..))
+import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitByParagraph)
 import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
@@ -83,13 +80,13 @@ writeAction
               , Logging, Fail] r
   => FilePath -> Instruction -> [T.Text] -> Sem r T.Text
 writeAction outFile instruction activeChars = do
-  charContexts <- fmap concat $ forM activeChars $ \charBranch -> do
+  charBlocks <- forM activeChars $ \charBranch -> do
     let branchName = BranchName charBranch
     blocks <- runBranchAndFS @Char_ branchName
             $ charSummaryAgent @(BranchTag Char_)
-    return $ CharContextBlock ("## Character: " <> charBranch) : blocks
+    return (CharLabel charBranch, blocks)
 
-  Prose generated <- continueFileAgent @(BranchTag Main) @StoryModel
-                               modelConfigs (Just (WordCount 300)) charContexts [] outFile instruction
+  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) outFile
+  Prose generated <- writeAgent existing fileCtx instruction charBlocks
   _ <- mapM (append @Main outFile) =<< splitAtoms generated
   return generated

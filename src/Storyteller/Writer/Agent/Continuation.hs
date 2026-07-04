@@ -13,11 +13,15 @@
 -- text. No filesystem access — all context is passed in explicitly, making
 -- it easy to extend with new effects (style guides, persona, etc.) in isolation.
 --
--- 'continueFileAgent' wraps 'proseAgent' with the common case of reading the
--- target file to supply the existing content.
+-- 'proseAgent' doesn't need to read a file — it needs to know that file's
+-- content. 'gatherFileContext' is the machinery that answers that: it reads
+-- the target file and every other branch file, and hands back plain data.
+-- Callers compose the two themselves (@gatherFileContext >=> ...@), the same
+-- way appending an agent's output is the caller's job on the write side —
+-- keeps the read side and the write side symmetric.
 module Storyteller.Writer.Agent.Continuation
   ( proseAgent
-  , continueFileAgent
+  , gatherFileContext
   ) where
 
 import qualified Data.List as List
@@ -81,28 +85,23 @@ proseAgent configs outputHint charContexts contextBlocks (ExistingContent existi
   response <- queryLLM @model configs [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
--- | Read the target file and all branch context files, then delegate to
---   'proseAgent'. Requires the target branch's filesystem to be in scope.
---   'extraContext' is additional, caller-supplied context blocks (e.g. the
---   user's pinned atom/annotation selection) merged in alongside the ones
---   read from the branch's own files.
-continueFileAgent
-  :: forall project model r
-  .  Members '[FileSystem project, FileSystemRead project, LLM model, Fail] r
-  => [ModelConfig model]
-  -> Maybe WordCount
-  -> [CharContextBlock]
-  -> [ContextBlock]         -- ^ extra context (e.g. selection), merged with branch files
-  -> FilePath               -- ^ file to continue
-  -> Instruction
-  -> Sem r Prose
-continueFileAgent configs outputHint charContexts extraContext path instruction = do
-  files          <- List.sort <$> listAllFiles @project "/"
-  fileContext    <- mapM (readContextFile @project) files
-  existing       <- fileExists @project path >>= \case
+-- | Read the target file's existing content and every other branch file,
+--   as plain data — no LLM involved. Requires the target branch's
+--   filesystem to be in scope. This is the machinery 'proseAgent' needs fed
+--   in; composing the two is the caller's job, e.g.
+--   @gatherFileContext path >>= \\(existing, ctx) -> proseAgent configs hint chars (extra <> ctx) existing instr@.
+gatherFileContext
+  :: forall project r
+  .  Members '[FileSystem project, FileSystemRead project, Fail] r
+  => FilePath               -- ^ file to continue
+  -> Sem r (ExistingContent, [ContextBlock])
+gatherFileContext path = do
+  files       <- List.sort <$> listAllFiles @project "/"
+  fileContext <- mapM (readContextFile @project) files
+  existing    <- fileExists @project path >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @project path
     False -> return (ExistingContent "")
-  proseAgent @model configs outputHint charContexts (extraContext <> fileContext) existing instruction
+  return (existing, fileContext)
 
 readContextFile
   :: forall project r
