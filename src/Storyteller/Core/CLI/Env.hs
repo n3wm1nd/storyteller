@@ -54,9 +54,11 @@ requireEnv var = do
       hPutStrLn stderr $ "Error: " <> var <> " is not set"
       exitFailure
 
+-- | Sampling defaults shared by every agent. System prompts are agent-owned
+--   (see 'Storyteller.Core.Prompt') and layered on top of this by each
+--   agent, rather than baked in here.
 modelConfigs :: [ModelConfig StoryModel]
 modelConfigs =
-  [ SystemPrompt "You are a creative writing assistant. Write only what is asked. Output only prose, nothing else."
-  , MaxTokens 2048
+  [ MaxTokens 2048
   , Temperature 0.8
   ]

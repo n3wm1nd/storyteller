@@ -58,6 +58,7 @@ import UniversalLLM.Tools
 
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
 import Storyteller.Core.Edit (editAtom)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (StoryModel)
@@ -106,9 +107,12 @@ proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newTe
 --   access — applying a proposal is 'reworkAtomsAt's job.
 reworkAtom
   :: forall r
-  .  Members '[LLM StoryModel, Fail] r
+  .  Members '[LLM StoryModel, PromptStorage, Fail] r
   => T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
 reworkAtom content (Instruction instr) = do
+  Prompt systemPrompt <- getPrompt "agent.fixer.system" defaultFixerSystemPrompt
+  Prompt template     <- getPrompt "agent.fixer.template" defaultFixerTemplate
+
   let tool = mkToolWithMeta
                "replace_atom"
                "Replace this one atom's text with a corrected version. Only call this if the atom actually needs to change because of the instruction; otherwise don't call it."
@@ -116,13 +120,12 @@ reworkAtom content (Instruction instr) = do
                "new_text" "The full corrected replacement text for this atom, replacing it entirely"
                "reason"   "Brief explanation of why this atom needed to change, for later tracing"
       tools = [LLMTool tool]
-      prompt = "Atom under review:\n\n" <> content
-             <> "\n\nInstruction: " <> instr
-             <> "\n\nIf this atom needs to change because of the instruction, call replace_atom \
-                \with the corrected text and a brief reason why. If it is already fine as-is, just \
-                \reply briefly and do not call the tool."
+      Prompt prompt = applyTemplate (Prompt template)
+        [ ("content", Prompt content), ("instruction", Prompt instr) ]
 
-  response <- queryLLM @StoryModel (Tools (map llmToolToDefinition tools) : modelConfigs) [UserText prompt]
+  response <- queryLLM @StoryModel
+    (SystemPrompt systemPrompt : Tools (map llmToolToDefinition tools) : modelConfigs)
+    [UserText prompt]
   case [tc | AssistantTool tc <- response] of
     (call : _) -> do
       result <- executeToolCallFromList tools call
@@ -132,6 +135,20 @@ reworkAtom content (Instruction instr) = do
           Left _         -> return Nothing
         Left _ -> return Nothing
     [] -> return Nothing
+
+-- | Fallback for @agent.fixer.system@, used until an override is committed
+--   to the 'Storyteller.Core.Runtime.Prompts' branch.
+defaultFixerSystemPrompt :: Prompt
+defaultFixerSystemPrompt = "You are a careful copy editor."
+
+-- | Fallback for @agent.fixer.template@. Slots: {{content}}, {{instruction}}.
+defaultFixerTemplate :: Prompt
+defaultFixerTemplate =
+  "Atom under review:\n\n{{content}}\n\n\
+  \Instruction: {{instruction}}\n\n\
+  \If this atom needs to change because of the instruction, call replace_atom \
+  \with the corrected text and a brief reason why. If it is already fine as-is, just \
+  \reply briefly and do not call the tool."
 
 -- | Apply 'reworkAtom' at each of the given (oldest-first) positions in the
 --   file's tick chain, committing every proposed replacement as it's made.
@@ -143,7 +160,7 @@ reworkAtom content (Instruction instr) = do
 reworkAtomsAt
   :: forall branch project r
   .  ( project ~ BranchTag branch
-     , Members '[ LLM StoryModel
+     , Members '[ LLM StoryModel, PromptStorage
                 , FileSystem project, FileSystemRead project, FileSystemWrite project
                 , StoryBranch branch, StoryStorage, Fail ] r )
   => FilePath -> Instruction -> [Int] -> Sem r [TickId]

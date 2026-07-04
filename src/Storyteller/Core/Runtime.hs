@@ -14,8 +14,9 @@ module Storyteller.Core.Runtime
     StoryModel
   , storyModel
 
-    -- * Branch phantom
+    -- * Branch phantoms
   , Main
+  , Prompts
 
     -- * Runners
   , runInfrastructure
@@ -65,6 +66,12 @@ storyModel = Model Qwen35_40B LlamaCpp
 -- ---------------------------------------------------------------------------
 
 data Main
+
+-- | Phantom for the dedicated, project-scoped branch backing
+--   'Storyteller.Core.Prompt.PromptStorage'. Not a content branch — it holds
+--   only prompt/template overrides, keyed by path, independent of any story
+--   or character branch.
+data Prompts
 
 -- ---------------------------------------------------------------------------
 -- Auth

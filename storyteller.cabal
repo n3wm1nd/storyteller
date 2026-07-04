@@ -38,6 +38,7 @@ library
                   , Storyteller.Core.Storage
                   , Storyteller.Core.Git
                   , Storyteller.Core.Runtime
+                  , Storyteller.Core.Prompt
                   , Storyteller.Core.CLI.Env
                   , Storyteller.Writer.Agent.Continuation
                   , Storyteller.Writer.Agent.CharContext

@@ -23,6 +23,7 @@ import Runix.LLM (LLM)
 import Storyteller.Writer.Agent (Instruction, Prose, CharContextBlock(..), CharLabel(..), ContextBlock, ExistingContent, WordCount(..))
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (StoryModel)
 
 -- | Generate prose given already-gathered context.
@@ -34,7 +35,7 @@ import Storyteller.Core.Runtime (StoryModel)
 --   equivalent) by the time this is called.
 writeAgent
   :: forall r
-  .  Members '[LLM StoryModel, Fail] r
+  .  Members '[LLM StoryModel, PromptStorage, Fail] r
   => ExistingContent
   -> [ContextBlock]                              -- ^ extra context (e.g. user's pinned selection)
   -> Instruction

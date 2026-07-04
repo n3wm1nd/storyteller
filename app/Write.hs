@@ -35,6 +35,7 @@ import Runix.Logging (Logging)
 
 import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, runBranchAndFS )
+import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryBranch, StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..))
@@ -62,7 +63,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (splitByParagraph $ writeAction outFile (Instruction instruction) (envActiveChars env))
+    (interpretPromptStorageFS $ splitByParagraph $ writeAction outFile (Instruction instruction) (envActiveChars env))
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -70,6 +71,7 @@ main = do
 
 writeAction
   :: Members '[ LLM StoryModel
+              , PromptStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)

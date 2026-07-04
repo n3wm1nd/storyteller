@@ -44,6 +44,7 @@ import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Runtime (runInfrastructure, StoryModel, storyModel)
+import Storyteller.Core.Prompt (interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage(..))
 import Storyteller.Core.Git (runStoryStorageGit, refBranchName)
 import Storyteller.Core.Types (unBranchName, unTickId)
@@ -155,6 +156,7 @@ actionStack env action =
    . gitNotify (envNotifyChan env)
    . runStoryStorageGit
    . storageNotify (envNotifyChan env)
+   . interpretPromptStorageFS
    . runConfig (StreamingEnabled True)
    . restapiHTTP auth
    . llmStreamingRestAPI @StoryModel auth

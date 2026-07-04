@@ -23,9 +23,10 @@ import Runix.Time (Time, Sleep)
 
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (StoryStorage)
+import Storyteller.Core.Prompt (PromptStorage)
 
 -- | Effects available at the session level (no branch open). Deliberately
 --   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
 --   network through the 'LLM' effect, never directly.
 type SessionEffects r =
-  Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel] r
+  Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel, PromptStorage] r

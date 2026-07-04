@@ -33,6 +33,7 @@ import Runix.LLM (LLM)
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
+import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, fileTicks, ticksSince)
@@ -43,7 +44,7 @@ import Storyteller.Core.Types (TickId(..))
 flowWriteAgent
   :: forall project branch r
   .  ( project ~ BranchTag branch
-     , Members '[ LLM StoryModel
+     , Members '[ LLM StoryModel, PromptStorage
                 , FileSystem project, FileSystemRead project, FileSystemWrite project
                 , StoryBranch branch, StoryStorage, Fail ] r )
   => FilePath                                       -- ^ file being continued
