@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -50,7 +51,8 @@
 --                                                             -- single (N, K, depth) run
 module Main (main) where
 
-import Control.Monad (forM_)
+import Control.Exception (SomeException, evaluate, try)
+import Control.Monad (foldM_, forM_)
 import qualified Data.ByteString.Char8 as BS
 import Data.ByteString (ByteString)
 import Data.List (maximumBy)
@@ -58,20 +60,24 @@ import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Ord (comparing)
 import qualified Data.Text as T
+import GHC.Clock (getMonotonicTime)
+import System.CPUTime (getCPUTime)
 import System.Environment (getArgs)
+import System.IO (BufferMode(..), hSetBuffering, stdout)
+import System.Timeout (timeout)
 import Text.Printf (printf)
 
 import Polysemy
 import Polysemy.Fail (runFail)
-import Polysemy.State (State, evalState, get, modify, put)
+import Polysemy.State (State, evalState, get, modify, runState)
 
 import Runix.Git (Git(..))
 import Runix.FileSystem (writeFile, readFile)
 
-import Git.Mock (emptyGitState, runGitMock)
+import Git.Mock (GitState, emptyGitState, runGitMock)
 import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStoryStorageGit)
 import Storyteller.Core.Storage (createBranch, store, follow, atWithFS)
-import Storyteller.Core.Types (BranchName(..), tickId, tickParent)
+import Storyteller.Core.Types (BranchName(..), TickId, tickId, tickParent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 
 import Prelude hiding (writeFile, readFile)
@@ -107,35 +113,38 @@ countGitOps = interpret $ \case
     bump :: Member (State OpCounts) r' => String -> Sem r' ()
     bump k = modify (Map.insertWith (+) k (1 :: Int))
 
--- | Strictly append-only content for the Nth atom, so each 'store' call
---   respects the branch's append-only invariant.
-atomContent :: Int -> ByteString
-atomContent n = BS.concat [ BS.pack ("paragraph " <> show i <> "\n") | i <- [1 .. n] ]
+-- | The delta for the Nth atom -- appended, not rebuilt, so N atoms costs
+--   O(N) total instead of O(N^2) (rebuilding the whole file from scratch
+--   on every atom is an easy trap to fall into for an append-only harness,
+--   and would swamp the very scaling behaviour this bench exists to
+--   measure at the large N sweep 4 tests).
+atomDelta :: Int -> ByteString
+atomDelta n = BS.pack ("paragraph " <> show n <> "\n")
 
 trackerName :: Int -> BranchName
 trackerName j = BranchName (T.pack ("tracker" <> show j))
 
--- | Build N atoms on Source, track all of them into K tracker branches (N
---   real commit-parent edges into Source per tracker), then edit Source at
---   the given depth (0 = near root, 1 = near head) via 'atWithFS'. Returns
---   the git op counts for that single edit only -- setup's own git ops are
---   excluded by resetting the counter right before the timed step.
-runScenario :: Int -> Int -> Double -> Either String OpCounts
-runScenario n k depthFrac =
+-- | Build N atoms on Source and track all of them into K tracker branches
+--   (N real commit-parent edges into Source per tracker) -- everything the
+--   timed edit below needs already in place. Returns the resulting mock
+--   git state and the tick id to edit at, so the timed step can start from
+--   a fully-built history without setup cost polluting the measurement.
+buildScenario :: Int -> Int -> Double -> Either String (GitState, TickId)
+buildScenario n k depthFrac =
   run
   . runFail
-  . evalState emptyGitState
-  . evalState (Map.empty :: OpCounts)
+  . runState emptyGitState
   . runGitMock
-  . countGitOps
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "source")
       runBranchAndFS @Source (BranchName "source") $
-        forM_ [1 .. n] $ \i -> do
-          writeFile @(BranchTag Source) "story.md" (atomContent i)
-          _ <- store @Source (T.pack ("atom " <> show i))
-          return ()
+        foldM_ (\prevContent i -> do
+                  let !content = prevContent <> atomDelta i
+                  writeFile @(BranchTag Source) "story.md" content
+                  _ <- store @Source (T.pack ("atom " <> show i))
+                  return content
+               ) BS.empty [1 .. n]
 
       forM_ [1 .. k] $ \j -> do
         _ <- createBranch (trackerName j)
@@ -143,19 +152,63 @@ runScenario n k depthFrac =
           . runBranchAndFS @Tracker (trackerName j)
           $ trackBranch @Source @Tracker ("story.md", "story.md")
 
-      mid <- runBranchAndFS @Source (BranchName "source") $ do
+      runBranchAndFS @Source (BranchName "source") $ do
         sourceTicks <- follow @Source [] (\acc t -> (tickId t : acc, tickParent t))
         let len = length sourceTicks
             idx = max 1 (min (len - 1) (round (depthFrac * fromIntegral (len - 1))))
         return (sourceTicks !! idx)
 
-      put (Map.empty :: OpCounts)
+-- | Run just the "Append while time-travelled" edit against an
+--   already-built history (see 'buildScenario'). Returns the git op counts
+--   for this step alone -- this is the thing worth timing.
+timedEdit :: GitState -> TickId -> Either String OpCounts
+timedEdit gs mid =
+  run
+  . runFail
+  . evalState (Map.empty :: OpCounts)
+  . evalState gs
+  . runGitMock
+  . countGitOps
+  . runStoryStorageGit
+  $ do
       _ <- runBranchAndFS @Source (BranchName "source") $
         atWithFS @Source mid $ do
           existing <- readFile @(BranchTag Source) "story.md"
           writeFile @(BranchTag Source) "story.md" (existing <> "\nEDIT\n")
           store @Source "edit while at"
       get
+
+-- | Build N atoms on Source, track all of them into K tracker branches (N
+--   real commit-parent edges into Source per tracker), then edit Source at
+--   the given depth (0 = near root, 1 = near head) via 'atWithFS'. Returns
+--   the git op counts for that single edit only -- setup's own git ops are
+--   excluded, since it's built and timed separately (see 'buildScenario'/
+--   'timedEdit').
+runScenario :: Int -> Int -> Double -> Either String OpCounts
+runScenario n k depthFrac = do
+  (gs, mid) <- buildScenario n k depthFrac
+  timedEdit gs mid
+
+-- | Like 'runScenario' but also reports wall-clock CPU time for the edit
+--   step alone (milliseconds), and catches exceptions (stack overflow,
+--   out of memory) that a naive recursive walk can hit well before op
+--   counts alone would predict trouble -- the practical ceiling this
+--   sweep exists to find, not just the asymptotic one.
+timedRunScenario :: Int -> Int -> Double -> IO (Either String (Integer, OpCounts))
+timedRunScenario n k depthFrac = do
+  r <- try go :: IO (Either SomeException (Integer, OpCounts))
+  case r of
+    Left ex     -> return (Left ("exception (likely stack/heap limit): " <> show ex))
+    Right ok    -> return (Right ok)
+  where
+    go :: IO (Integer, OpCounts)
+    go = do
+      (gs, mid) <- either fail return (buildScenario n k depthFrac)
+      t0 <- getCPUTime
+      counts <- either fail return (timedEdit gs mid)
+      !total <- evaluate (totalOf counts)
+      t1 <- total `seq` getCPUTime
+      return ((t1 - t0) `div` 1000000000, counts)  -- picoseconds -> milliseconds
 
 -- ---------------------------------------------------------------------------
 -- Reporting
@@ -197,10 +250,18 @@ runSweep title cases = do
 
 main :: IO ()
 main = do
+  hSetBuffering stdout LineBuffering
+  t0 <- getMonotonicTime
   args <- getArgs
   case map read args :: [Double] of
     [n, k, d] -> singleRun (round n) (round k) d
     _         -> defaultSweeps
+  t1 <- getMonotonicTime
+  -- Wall-clock, not CPU time: this build is -threaded -N, so CPU time sums
+  -- across every core (including idle/GC spin) and wildly overstates how
+  -- long a person actually waited -- wall-clock is what "under 30s" means.
+  printf "\nTotal wall-clock time: %.1fs (sanity-check budget: should stay well under 30s)\n"
+    (t1 - t0)
 
 singleRun :: Int -> Int -> Double -> IO ()
 singleRun n k d = do
@@ -240,3 +301,51 @@ defaultSweeps = do
   printf "Steepest per-doubling growth: %s at %.2fx per doubling.\n" (fst ranked) (snd ranked)
   putStrLn "(Depth isn't doubled in sweep 3, so it's not included in this ranking --\n\
            \ read its table directly: cost should scale with (chain length - depth*chain length).)"
+
+  putStrLn ""
+  putStrLn "Sweep 4: small-scale wall-clock sanity check, K=2 trackers, edit at midpoint."
+  putStrLn "This is an in-memory mock with no git subprocess or disk I/O, so treat the ms"
+  putStrLn "column as a lower bound on real server latency, not an absolute prediction."
+  putStrLn "NOTE: kept deliberately small -- setup (writing+tracking N atoms) has its own"
+  putStrLn "unfixed O(N^2) cost (see Tracker.copyAtom's batch catch-up, project memory),"
+  putStrLn "separate from the cascade cost this bench targets; that made earlier attempts"
+  putStrLn "at N=1000+ too slow for a sanity check. A time-budget guard below stops this"
+  putStrLn "sweep early regardless, so a regression here can't hang the whole bench."
+  printf "%8s  %10s  %12s  %10s\n"
+    ("N" :: String) ("ms" :: String) ("totalOps" :: String) ("ops/ms" :: String)
+  deadline <- (+ sweep4BudgetPicos) <$> getCPUTime
+  goSweep4 deadline [30, 100, 300, 600]
+  where
+    sweep4BudgetPicos :: Integer
+    sweep4BudgetPicos = 15 * 1000000000000  -- 15s CPU-time budget for the whole sweep
+
+    goSweep4 :: Integer -> [Int] -> IO ()
+    goSweep4 _ [] = return ()
+    goSweep4 deadline (n : rest) = do
+      now <- getCPUTime
+      if now >= deadline
+        then putStrLn "  (sweep 4 time budget exhausted -- stopping here)"
+        else goSweep4Step deadline rest n
+
+    -- Per-run hard wall-clock cap (wall time, not CPU time -- 'timeout' can
+    -- only interrupt between allocations, but it's the only thing that can
+    -- actually abort a single runaway call rather than just checking the
+    -- budget *between* calls, which wouldn't help if one single N blows up).
+    perRunTimeoutMicros :: Int
+    perRunTimeoutMicros = 10 * 1000000
+
+    goSweep4Step :: Integer -> [Int] -> Int -> IO ()
+    goSweep4Step deadline rest n = do
+      mResult <- timeout perRunTimeoutMicros (timedRunScenario n 2 0.5)
+      case mResult of
+        Nothing -> do
+          printf "%8d  timed out after %ds\n" n (perRunTimeoutMicros `div` 1000000)
+          putStrLn "  (stopping sweep 4 here -- this is the practical ceiling for this shape)"
+        Just (Left err) -> do
+          printf "%8d  %s\n" n err
+          putStrLn "  (stopping sweep 4 here -- this is the practical ceiling for this shape)"
+        Just (Right (ms, counts)) -> do
+          let total = totalOf counts
+              opsPerMs = if ms <= 0 then "-" else printf "%.0f" (fromIntegral total / fromIntegral ms :: Double)
+          printf "%8d  %10d  %12d  %10s\n" n ms total (opsPerMs :: String)
+          goSweep4 deadline rest
