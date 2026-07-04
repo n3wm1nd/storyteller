@@ -28,17 +28,22 @@ module Server.Core.File
   , deleteFileAtom
   , moveFileAtom
   , chatNote
+  , readFileContent
   ) where
 
 import Control.Monad (void)
+import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Polysemy (Members, Sem)
+import Polysemy.Error (Error)
 import Polysemy.Fail (Fail)
+import Runix.Git (Git)
 import Runix.Logging (info)
 
 import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
+import Server.Core.Util (withBranch)
 
 import Storyteller.Core.Append (append)
 import Storyteller.Common.Annotation (addNote)
@@ -49,6 +54,7 @@ import Storyteller.Core.Edit (deleteTick, editAtom, moveTick)
 import Storyteller.Core.Types (TickId(..))
 import Storyteller.Core.Git (BranchTag)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import qualified Runix.FileSystem as FS
 
 -- | The effects live once a file connection has entered its branch's scope —
 --   one 'StoryBranch'/filesystem instance for the connection's whole
@@ -110,6 +116,13 @@ moveFileAtom tid mAfter = void $ moveTick @Main tid mAfter
 --   free-floating remark rather than a comment on any specific one.
 chatNote :: FileOpen r => T.Text -> [TickId] -> Sem r ()
 chatNote text targets = addNote @Main targets text
+
+-- | Raw current content of a file, for the HTTP download/embed endpoint —
+--   a one-shot fetch outside any connection's lifetime, so (unlike the
+--   other operations here) it opens its own branch scope rather than
+--   assuming 'FileOpen' is already live.
+readFileContent :: (Members '[StoryStorage, Error String, Git, Fail] r) => T.Text -> FilePath -> Sem r BS.ByteString
+readFileContent branch path = withBranch @Main branch (FS.readFile @(BranchTag Main) path)
 
 -- ---------------------------------------------------------------------------
 -- Internal

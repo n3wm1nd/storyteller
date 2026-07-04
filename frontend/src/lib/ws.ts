@@ -15,6 +15,34 @@ function wsBase() {
   return `${proto}//${window.location.hostname}:8090`;
 }
 
+// Same server, plain HTTP — for the GET/PUT /branch/{name}/{path} endpoints
+// (file download/embed and upload), which don't go over the WS connections
+// below at all. Derived from 'wsBase()' rather than duplicating the
+// NEXT_PUBLIC_WS_URL/hostname:8090 fallback logic.
+function httpBase() {
+  return wsBase().replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+}
+
+function encodePath(path: string) {
+  return path.split("/").map((p) => encodeURIComponent(decodeURIComponent(p))).join("/");
+}
+
+// Current raw content of a branch file — for downloading or embedding
+// (e.g. <img src>) directly, without tunneling bytes through the WS
+// connection just to simulate it.
+export function branchFileUrl(branch: string, path: string) {
+  return `${httpBase()}/branch/${encodeURIComponent(branch)}/${encodePath(path)}`;
+}
+
+// Upload/replace a branch file's content directly from its bytes — the PUT
+// counterpart to 'branchFileUrl'. Replaces the old WS 'upload' command: a
+// dropped file's bytes go straight over HTTP instead of being read as text,
+// JSON-encoded, and tunneled through the branch connection.
+export async function uploadBranchFile(branch: string, path: string, content: Blob) {
+  const res = await fetch(branchFileUrl(branch, path), { method: "PUT", body: content });
+  if (!res.ok) throw new Error(`upload failed: ${res.status} ${path}`);
+}
+
 // ── Shared event types ────────────────────────────────────────────────────────
 
 export type ErrorEvent    = { type: "error";     message: string };
@@ -89,11 +117,6 @@ export type BranchCommand =
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
   | { type: "delete.tick"; id?: string; tickId: string }
-  // Upload: write one or more dropped files' content directly into this
-  // branch, bypassing the chat-agent pipeline — see TODO.md's
-  // Upload/download packet. Bulk and not scoped to an already-open file
-  // connection, so it lives here rather than on FileCommand.
-  | { type: "upload";      id?: string; files: { path: string; content: string }[] }
   // Rebase, same shape as FileCommand's — generic capability, no client
   // trigger uses this yet (would be a future Ticks-view rebase marker).
   | { type: "at";          id?: string; tickId: string; command: BranchCommand };

@@ -18,7 +18,6 @@ module Server.Writer.Branch.Protocol
   ( BranchCommand(..)
   , BranchEvent(..)
   , TrackFile(..)
-  , UploadFile(..)
   ) where
 
 import Data.Aeson hiding (Error)
@@ -39,21 +38,6 @@ instance FromJSON TrackFile where
 instance ToJSON TrackFile where
   toJSON tf = object [ "from" .= trackFrom tf, "to" .= trackTo tf ]
 
--- | One dropped file's destination path and raw text content — see
---   'Upload' below. Content is plain text (files are markdown by
---   convention, see WRITER.md); no binary upload support.
-data UploadFile = UploadFile
-  { uploadPath    :: FilePath
-  , uploadContent :: T.Text
-  } deriving (Show)
-
-instance FromJSON UploadFile where
-  parseJSON = withObject "UploadFile" $ \o ->
-    UploadFile <$> o .: "path" <*> o .: "content"
-
-instance ToJSON UploadFile where
-  toJSON uf = object [ "path" .= uploadPath uf, "content" .= uploadContent uf ]
-
 -- | Commands the client may send on a branch connection.
 --   Each is an intent — the server decides what ticks result.
 data BranchCommand
@@ -62,13 +46,6 @@ data BranchCommand
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
-  -- Upload: write one or more dropped files' content directly into this
-  -- branch, bypassing the chat-agent pipeline entirely — see TODO.md's
-  -- Upload/download packet. Lives here rather than on the file connection
-  -- because it isn't an operation on an already-open single file: it sends
-  -- files in bulk, and a fresh path may not have a connection open for it
-  -- at all yet.
-  | Upload     { bcId :: Maybe T.Text, bcUploads :: [UploadFile] }
   -- Rebase: run @command@ as if @tickId@ were HEAD, then replay everything
   -- that came after it on top of the result — same as 'FileCommand's 'At'
   -- (see Server.Writer.File.Protocol), just for branch-level commands (e.g.
@@ -88,7 +65,6 @@ instance FromJSON BranchCommand where
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
-      "upload"      -> Upload     i <$> o .: "files"
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown branch command: " <> T.unpack t)
 
@@ -101,7 +77,10 @@ instance FromJSON BranchCommand where
 --   BranchError:  something went wrong; message is human-readable.
 --
 -- FIXME: file tree changes are only tracked one-directionally — FileAdded
--- covers Track/CharGen/Upload creating a path, but there's no
+-- covers Track/CharGen creating a path (uploads now go over the HTTP
+-- PUT /branch/{name}/{path} endpoint instead of a BranchCommand, so the
+-- client updates its own file list optimistically on a successful PUT
+-- rather than waiting for an event here), but there's no
 -- FileRemoved/FileRenamed (or any push at all) for a file disappearing or
 -- being renamed/moved from the tree. Once delete/rename/move-file commands
 -- exist (see TODO.md), a connected client's cached file list can silently

@@ -99,7 +99,7 @@ export function LeftSidebar({
   onCreateBranch: (name: string) => void;
   onDeleteBranch: (name: string) => void;
   onHoverCharacter: (branch: string | null) => void;
-  onUploadFiles: (files: { path: string; content: string }[]) => void;
+  onUploadFiles: (files: { path: string; content: File }[]) => void;
   conns: ConnInfo[];
   error: string | null;
 }) {

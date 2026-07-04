@@ -33,17 +33,15 @@ function buildTree(paths: string[]): TreeNode[] {
   return root;
 }
 
-// Reads every dropped file as text and hands the caller (path, content)
-// pairs resolved against the drop target folder — one upload command for
-// the whole batch, per the "prefer multi-file over single-file" decision in
-// TODO.md. Files are markdown/text by convention (see WRITER.md); no binary
-// upload support.
-async function resolveDroppedFiles(folderPath: string, fileList: FileList): Promise<{ path: string; content: string }[]> {
-  const files = Array.from(fileList);
-  return Promise.all(files.map(async (file) => ({
+// Hands the caller (path, content) pairs resolved against the drop target
+// folder — 'content' is each dropped 'File' itself (a 'Blob'), uploaded as
+// raw bytes over HTTP PUT (see 'uploadBranchFile'/store.ts's 'uploadFiles'),
+// so unlike the old WS-JSON upload this isn't limited to text/markdown.
+function resolveDroppedFiles(folderPath: string, fileList: FileList): { path: string; content: File }[] {
+  return Array.from(fileList).map((file) => ({
     path: folderPath ? `${folderPath}/${file.name}` : file.name,
-    content: await file.text(),
-  })));
+    content: file,
+  }));
 }
 
 function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles }: {
@@ -119,13 +117,13 @@ export function FileTree({
   files: string[];
   selectedFile: string | null;
   onSelectFile: (f: string) => void;
-  onUploadFiles: (files: { path: string; content: string }[]) => void;
+  onUploadFiles: (files: { path: string; content: File }[]) => void;
 }) {
   const [rootDragOver, setRootDragOver] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
 
   function handleDropFiles(folderPath: string, fileList: FileList) {
-    resolveDroppedFiles(folderPath, fileList).then(onUploadFiles);
+    onUploadFiles(resolveDroppedFiles(folderPath, fileList));
   }
 
   // No dedicated folder-creation affordance yet — a path typed with "/"s

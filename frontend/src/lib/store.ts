@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import {
   sessionConn, branchConn, fileConn, characterConn,
+  uploadBranchFile,
   type StoryWS,
   type WireTick,
   type Update,
@@ -150,7 +151,7 @@ interface StoryState {
   appendToFile:   (path: string, content: string) => void;
   editAtom:       (path: string, tickId: string, content: string) => void;
   deleteAtom:     (path: string, tickId: string) => void;
-  uploadFiles:    (files: { path: string; content: string }[]) => void;
+  uploadFiles:    (files: { path: string; content: Blob }[]) => void;
   addNote:        (refTickId: string, text: string) => void;
   moveTick:       (tickId: string, afterTickId?: string) => void;
   deleteTickEntry:(tickId: string) => void;
@@ -793,10 +794,24 @@ export const useStory = create<StoryState>((set, get) => ({
   },
 
   // Drag-and-drop upload — one or more dropped files, written directly to
-  // their paths (no chat-agent round trip). 'files' are already
+  // their paths via HTTP PUT (see 'uploadBranchFile'), no chat-agent round
+  // trip and no WS/JSON text detour for the bytes. 'files' are already
   // path-resolved (destination folder + dropped filename) by the caller.
+  // Each PUT is independent, so one file's fetch failing (surfaced via
+  // 'error', same as a WS command's) doesn't block the others; the branch
+  // connection's own ref-move notification isn't relied on here — the file
+  // list is updated optimistically on that upload's own success instead
+  // (see the FIXME in Server.Writer.Branch.Protocol).
   uploadFiles: (files) => {
-    get()._branch?.send({ type: "upload", files });
+    const branch = get().activeBranch;
+    if (!branch) return;
+    files.forEach(({ path, content }) => {
+      uploadBranchFile(branch, path, content)
+        .then(() => set((s) => ({
+          files: s.files.includes(path) ? s.files : [...s.files, path].sort(),
+        })))
+        .catch((err) => set({ error: err instanceof Error ? err.message : String(err) }));
+    });
   },
 
   addNote: (refTickId, text) => {

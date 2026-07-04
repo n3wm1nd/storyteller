@@ -23,14 +23,14 @@ import Server.TestStack
 
 import Prelude hiding (readFile)
 
--- | 'uploadFiles' is the plain 'Sem' function
---   'Server.Writer.Branch.Dispatch' calls for an 'Upload' command, exercised
---   here directly with no WebSocket/dispatch layer involved — same as
---   'Server.BranchSpec' tests 'Server.Core.Branch' directly. It does write
---   through 'StoryStorage' (via 'commitFiles'), so — like the mutating
---   operations in 'Server.BranchSpec' — it's run under both 'runner'
---   variants (see 'test/Main.hs'): eager, and buffered through
---   'Storyteller.Core.Git.withStorage', the transaction a real upload
+-- | 'uploadFiles' is the plain 'Sem' function 'Server.Writer.Branch.uploadFile'
+--   calls for the HTTP PUT upload endpoint, exercised here directly with no
+--   HTTP layer involved — same as 'Server.BranchSpec' tests
+--   'Server.Core.Branch' directly. It does write through 'StoryStorage' (via
+--   'commitFiles'), so — like the mutating operations in 'Server.BranchSpec'
+--   — it's run under both 'runner' variants (see 'test/Main.hs'): eager, and
+--   buffered through 'Storyteller.Core.Git.withStorage', the transaction a
+--   real upload
 --   command actually runs inside.
 withBranch_
   :: TestRunner

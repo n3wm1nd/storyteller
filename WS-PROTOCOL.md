@@ -54,6 +54,19 @@ Because scope boundaries are drawn by judgment, not derived mechanically, expect
 
 ---
 
+## HTTP endpoints (not part of this protocol)
+
+Everything above is metadata and tick history — even a `WireTick`'s `content` is one atom's text, not "this file's current bytes." Getting the latter in or out doesn't belong on a persistent connection at all: it's a snapshot request (give me these bytes / here are new bytes), not a stream, and a browser already has first-class primitives for exactly that (`<img>`, `<a download>`, `fetch`). So alongside the WS endpoints, the server exposes two plain HTTP ones on the same port (`app/Server.hs`):
+
+- **`GET /branch/{name}/{path}`** — the file's current raw content, `Content-Type` guessed from the extension. Lets the frontend embed an image directly (`<img src="…/branch/{name}/{path}">`) or link a download — no fetch-and-blob-URL dance, no base64 through JSON, no WS round trip to simulate what the browser already does natively.
+- **`PUT /branch/{name}/{path}`** — replace the file's content with the request body and commit it as a tick (`Server.Writer.Branch.uploadFile`, the same `commitFiles` path other writes use, just for whole raw bytes instead of an LLM-authored atom). This is the only way to upload now — there is no WS command for it.
+
+These don't follow the rules above (no scope, no push-on-change, no "reconnecting is resync") — each is a one-shot request that opens and closes its own branch scope server-side. But they do still interact with everything above: a `PUT` commits through the same `gitNotify`/`storageNotify` machinery every WS write goes through, so a `/branch/{name}` or `/branch/{name}/{path}` connection watching that branch sees the resulting tick via its ordinary ref-move notification, same as if the write had come in over WS.
+
+The delimiter this draws: **WS carries what's inherently a stream** — tick history, live change notification, file lists, presence, agent logs. **HTTP carries what's inherently a snapshot** — a path's bytes, right now, in or out. Neither transport is asked to fake the other's job.
+
+---
+
 ## Server → Client: state pushes
 
 ### Tick updates
@@ -185,11 +198,12 @@ The `message` field carries the full encoded form including the `type:<kind>\n` 
 **After first write:** server pushes `file.present` + `update` — the connection transitions from absent to present without reconnecting.  
 **Commands:** `chat.append`, `edit.atom`, `delete.atom`, `move.atom`, `delete`, `chat.writer`, `chat.fixer`, `chat.note`, `enter.scene`, `leave.scene`, `at` (rebase wrapper — any command above, including `enter.scene`/`leave.scene`, can be sent wrapped in `at` to run as of a historical tick).  
 **Events:** `file.present`, `file.absent`, `update`, `tick.remap`, `agent.log`, `chat.preview*`, `error`.  
-**Head semantics:** the most recent atom tick for this file.
+**Head semantics:** the most recent atom tick for this file.  
+**Not here:** the file's raw current bytes — for downloading, embedding, or uploading a file wholesale (as opposed to editing it atom-by-atom), see "HTTP endpoints" above; `GET`/`PUT /branch/{name}/{path}` are plain HTTP, not WS.
 
 ### Working tree access *(planned)*
 
-Neither connection type currently exposes the raw, ephemeral **working tree** described in DATA-MODEL.md — only the tick chain. Planned extension: raw working-tree content becomes part of connection state, the same way ticks are today. A `/branch/{name}` connection's working tree covers every file in the branch; a `/branch/{name}/{path}` connection's covers just that path. No `open`/`list` command is needed — the same connect-time-push-then-push-on-every-change model that already governs ticks (see "Core model" above) applies: on connect, the working tree's current raw content is pushed as part of state; any edit — from this connection, another connection, an agent, or the save process itself — produces an immediate update with the new raw content.
+Neither connection type currently exposes the raw, ephemeral **working tree** described in DATA-MODEL.md as *live, uncommitted, editable* state — only the tick chain. This is a different feature from the `GET`/`PUT /branch/{name}/{path}` HTTP endpoints above: those read/replace-and-commit a file's bytes in one shot (no staging, no partial edit visible before commit); what's planned here is the working tree itself becoming addressable mid-edit, independent of any single write landing as a tick. Planned extension: raw working-tree content becomes part of connection state, the same way ticks are today. A `/branch/{name}` connection's working tree covers every file in the branch; a `/branch/{name}/{path}` connection's covers just that path. No `open`/`list` command is needed — the same connect-time-push-then-push-on-every-change model that already governs ticks (see "Core model" above) applies: on connect, the working tree's current raw content is pushed as part of state; any edit — from this connection, another connection, an agent, or the save process itself — produces an immediate update with the new raw content.
 
 Planned commands, none implemented yet:
 - **Write** — overwrite (or patch) a file's raw content in the working tree. No tick is created.
