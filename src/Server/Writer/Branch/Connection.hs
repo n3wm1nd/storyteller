@@ -56,7 +56,7 @@ import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction)
 import Server.Core.Util (withBranch)
-import Storyteller.Common.Splitter (Splitter, splitByParagraph)
+import Storyteller.Common.Splitter (splitByParagraph)
 import Storyteller.Core.Git (withStorage)
 import Storyteller.Core.Types (TickId(..))
 
@@ -89,7 +89,7 @@ runNotifier env branch conn chan = do
   either (reportError conn) return result
 
 onNotify
-  :: (SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
 onNotify branch conn since note = case note of
   RefMoved _      -> withBranch @Main branch (pushIncremental conn since)
@@ -113,7 +113,7 @@ pushInitial conn branch = do
 --   wired to whichever 'StoryStorage' was ambient when *it* was opened, not
 --   to one introduced later around an individual command.
 commandLoop
-  :: (Member Splitter r, SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  :: (SessionEffects r, Member (Embed IO) r)
   => WS.Connection -> T.Text -> Sem r ()
 commandLoop conn branch = loop
   where

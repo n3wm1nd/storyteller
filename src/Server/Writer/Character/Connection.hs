@@ -33,7 +33,6 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as T
 import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed, runM)
-import Polysemy.Error (Error)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
@@ -65,7 +64,7 @@ runNotifier env branch conn chan = do
   either (reportError conn) return result
 
 onNotify
-  :: (SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> () -> BranchNotification -> Sem r ()
 onNotify branch conn () = \case
   RefMoved _      -> withBranch @Main branch (push conn branch)
