@@ -156,6 +156,15 @@ export type FileCommand =
   | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; flowTid?: string }
   // Fixer: `targets` are the atoms flagged as the subject of `text`.
   | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
+  // Regen: rewrite this chapter to fit its beat sheet (ch{N}.outline.md by
+  // convention), respecting `text` as the user's steer. A reconciliation, not
+  // a wipe — unchanged prose keeps its atoms. `byBeat` selects the
+  // beat-by-beat driver over the whole-chapter one.
+  | { type: "chat.regen";  id?: string; text: string; context?: ContextItem[]; byBeat?: boolean }
+  // Outline: split this file (a whole-story outline, outline.md by convention)
+  // into per-chapter beat sheets. No prompt — the outline text is the whole
+  // input; the model decides the chapter breakdown and writes each sheet.
+  | { type: "chat.outline"; id?: string }
   // Note: instant, non-LLM, like chat.append — attaches `text` as an
   // annotation on each of `targets`, or (when empty) on the file's current
   // HEAD tick.

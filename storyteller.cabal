@@ -47,6 +47,7 @@ library
                   , Storyteller.Writer.Agent.CharGen
                   , Storyteller.Writer.Agent.Write
                   , Storyteller.Writer.Agent.FlowWrite
+                  , Storyteller.Writer.Agent.Outline
                   , Storyteller.Writer.Agent.Fix
                   , Storyteller.Writer.Agent.ReplaceTool
                   , Storyteller.Core.Atom
@@ -144,6 +145,18 @@ common exe-common
 executable story-write
   import:           exe-common
   main-is:          Write.hs
+  hs-source-dirs:   app
+
+-- | Expand a story outline into a chapter beat sheet.
+executable story-outline
+  import:           exe-common
+  main-is:          Outline.hs
+  hs-source-dirs:   app
+
+-- | Generate a chapter's prose from its beat sheet.
+executable story-chapter
+  import:           exe-common
+  main-is:          Chapter.hs
   hs-source-dirs:   app
 
 -- | Copy atoms from a source branch into an entity/tracker branch.

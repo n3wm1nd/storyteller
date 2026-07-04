@@ -53,6 +53,17 @@ data FileCommand
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
   | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
+  -- | Regenerate the chapter (this file) to fit its beat sheet
+  --   (@ch{N}.outline.md@ by convention), respecting 'fcPromptText' as the
+  --   user's steer. 'fcByBeat' selects the beat-by-beat driver over the
+  --   whole-chapter one. A reconciliation, not a wipe — see
+  --   'Server.Writer.File.chatChapterRegen'.
+  | ChatRegen  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcByBeat :: Bool }
+  -- | Split this file (a whole-story outline, @outline.md@ by convention)
+  --   into per-chapter beat sheets. No prompt or targets — the outline text is
+  --   the whole input; the model decides the chapter breakdown. See
+  --   'Server.Writer.File.chatSplitOutline'.
+  | ChatOutline { fcId :: Maybe T.Text }
   -- | Instant, non-LLM: attach a note to each of 'fcTargets', or (when
   --   empty) to the file's current HEAD tick.
   | ChatNote   { fcId :: Maybe T.Text, fcNoteText :: T.Text, fcTargets :: [T.Text] }
@@ -88,6 +99,11 @@ instance FromJSON FileCommand where
         context <- fromMaybe [] <$> o .:? "context"
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatFixer i <$> o .: "text" <*> pure context <*> pure targets
+      "chat.regen"  -> do
+        context <- fromMaybe [] <$> o .:? "context"
+        byBeat  <- fromMaybe False <$> o .:? "byBeat"
+        ChatRegen i <$> o .: "text" <*> pure context <*> pure byBeat
+      "chat.outline" -> pure (ChatOutline i)
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatNote i <$> o .: "text" <*> pure targets

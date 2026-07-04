@@ -158,6 +158,8 @@ interface StoryState {
   chatWrite:                (path: string, text: string) => void;
   chatFix:                  (path: string, text: string) => void;
   chatNote:                 (path: string, text: string) => void;
+  chatRegen:                (path: string, text: string, byBeat: boolean) => void;
+  chatOutline:              (path: string) => void;
   toggleContextAtom:       (tickId: string) => void;
   toggleContextAnnotation: (tickId: string) => void;
   clearContext:            () => void;
@@ -840,6 +842,15 @@ export const useStory = create<StoryState>((set, get) => ({
   chatNote: (path, text) => {
     const targets = buildContextTargets(get(), path);
     sendChatCommand(get, set, path, () => ({ type: "chat.note", text, targets }));
+  },
+
+  chatRegen: (path, text, byBeat) => {
+    const context = buildContextItems(get(), path);
+    sendChatCommand(get, set, path, () => ({ type: "chat.regen", text, context, byBeat }));
+  },
+
+  chatOutline: (path) => {
+    sendChatCommand(get, set, path, () => ({ type: "chat.outline" }));
   },
 
   toggleContextAtom: (tickId) => {

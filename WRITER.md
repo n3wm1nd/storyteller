@@ -35,6 +35,54 @@ Writer-specific.
 
 - `chapters/ch{N}.md` — one file per chapter, narrative order.
 
+## Outlines and beat sheets
+
+Two levels of planning artifact, both **ordinary markdown files on the story
+branch** — no special tick kind, no parser contract, nothing the storage
+layer knows about. They are context that happens to be written before the
+prose, which the append-only model already makes safe: a beat can only be
+referenced by prose that comes after it, so "outline before prose" holds by
+construction (DATA-MODEL.md, monotonic-reference invariant) without anything
+enforcing it.
+
+- `outline.md` — the whole-story plan. One markdown heading per chapter (or
+  arc), with prose notes underneath: what happens, why it matters, where it
+  sits in the larger shape. Coarse.
+
+- `chapters/ch{N}.outline.md` — the **beat sheet** for one chapter, expanded
+  from the relevant slice of `outline.md`. One heading per beat, and under
+  each, prose covering what happens, the logistics (who's where, what has to
+  be true), the emotional turn, and a rough length. This is the reviewable
+  middle rung: coarser than prose, finer than the story outline. It is
+  **disposable scaffolding** — edit it to steer a chapter, or delete it once
+  the prose exists and you no longer care. Nothing holds a hard reference to
+  it, so deleting it breaks nothing (it's a forward `Replace`, still
+  reachable via `At`).
+
+**Not a schema.** These are "sensible markdown a person would write," used
+consistently so the model produces them reliably and a human can skim them —
+not fields anything greps for. The generation pipeline reads them as free
+text; it never parses them into a rigid structure. A file that doesn't
+follow the convention is still a valid file, it just won't read as cleanly
+to the model or the author.
+
+**The pipeline** (see `Storyteller.Writer.Agent.Outline` and the
+`story-outline`/`story-chapter` tools) is one `expand` step applied per
+level — `outline.md` → `ch{N}.outline.md` → `chapters/ch{N}.md` — three
+levels, fixed for now. A fourth (act) tier is the same `expand` applied once
+more, added only if a story needs it. Prose generation from a beat sheet
+comes in two variants under trial (whole-chapter in one call vs. an
+LLM-driven beat-by-beat loop); both read the same free-form beat sheet and
+share the same prose core, so any quality difference is attributable to
+chunking strategy alone.
+
+**Back-references (extra credit, not yet wired).** Because chapters live in
+separate files, the beat-sheet→prose correspondence is already encoded
+positionally (`ch{N}.outline.md` ↔ `chapters/ch{N}.md`). A finer, per-beat
+link — a prose atom carrying a `tickRefs` back to the beat atom it realizes,
+enabling a `follow`-based "which beats have no prose yet" coverage query — is
+a deferred optional step, not needed for either prose variant to work.
+
 ## Character structure
 
 - `sheet.md` — current-state description (mood, traits, whatever a sheet

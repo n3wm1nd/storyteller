@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, History, Sparkles, Wrench } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/store";
 import { type AnnotationMode, characterDisplayName } from "@/lib/utils";
@@ -784,16 +784,18 @@ export function ChatPreviewStrip({ preview }: {
 // attaches the text as an annotation on the current selection, or (with
 // nothing selected) on the file's HEAD tick. Dropdown-only for now, no
 // default main/alt slot — see the routing table in the input-bar plan.
-type AgentId = "write" | "fix" | "append" | "note";
+type AgentId = "write" | "fix" | "append" | "note" | "regen" | "regenBeat";
 
 const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof Sparkles | null }> = {
-  write:  { label: "Write",  title: "Send to writer agent",              icon: Sparkles },
-  fix:    { label: "Fix",    title: "Send to fixer agent (edit targets)", icon: Wrench },
-  append: { label: "Append", title: "Append verbatim, instant",           icon: null },
-  note:   { label: "Note",   title: "Attach as a note, instant",          icon: StickyNote },
+  write:     { label: "Write",       title: "Send to writer agent",              icon: Sparkles },
+  fix:       { label: "Fix",         title: "Send to fixer agent (edit targets)", icon: Wrench },
+  append:    { label: "Append",      title: "Append verbatim, instant",           icon: null },
+  note:      { label: "Note",        title: "Attach as a note, instant",          icon: StickyNote },
+  regen:     { label: "Regen",       title: "Regenerate this chapter to fit its beat sheet (whole-chapter)", icon: RefreshCw },
+  regenBeat: { label: "Regen · beat", title: "Regenerate this chapter to fit its beat sheet (beat by beat)", icon: RefreshCw },
 };
 
-export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote }: {
+export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen }: {
   enabled: boolean;
   contextAtomCount: number;
   contextAnnotationCount: number;
@@ -804,6 +806,7 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   onWrite:  (text: string) => void;
   onFix:    (text: string) => void;
   onNote:   (text: string) => void;
+  onRegen:  (text: string, byBeat: boolean) => void;
 }) {
   const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
@@ -819,7 +822,10 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   const mainId: AgentId = hasContext ? "fix" : "write";
   const altId:  AgentId = hasContext ? "write" : "append";
 
-  const actionFor: Record<AgentId, (t: string) => void> = { write: onWrite, fix: onFix, append: onAppend, note: onNote };
+  const actionFor: Record<AgentId, (t: string) => void> = {
+    write: onWrite, fix: onFix, append: onAppend, note: onNote,
+    regen: (t) => onRegen(t, false), regenBeat: (t) => onRegen(t, true),
+  };
 
   function fire(id: AgentId) {
     const t = text.trim();

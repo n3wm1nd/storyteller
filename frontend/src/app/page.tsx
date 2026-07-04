@@ -1,13 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree } from "lucide-react";
 import { useStory } from "@/lib/store";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceBar } from "./fileview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
+
+// The whole-story outline is `outline.md` (optionally in a subdir). Chapter
+// beat sheets are `ch{N}.outline.md` — those are outputs of the split, not
+// inputs to it, so only the bare `outline.md` gets the "generate beat sheets"
+// action (see WRITER.md).
+function isOutlineFile(path: string): boolean {
+  const name = decodeURIComponent(path.split("/").pop() ?? "");
+  return name === "outline.md";
+}
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -119,7 +128,7 @@ export default function Home() {
     editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker, appendJournal,
     setHoverHighlight, clearHoverHighlight, enterScene, leaveScene,
     appendToFile, editAtom, deleteAtom, addNote, moveTick, deleteTickEntry, uploadFiles,
-    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote,
+    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote, chatRegen, chatOutline,
     setRebaseMarker,
   } = useStory();
 
@@ -337,6 +346,16 @@ export default function Home() {
                     Delete {contextAtoms.size}
                   </button>
                 )}
+                {selectedFile && isOutlineFile(selectedFile) && (
+                  <button
+                    onClick={() => chatOutline(selectedFile)}
+                    title="Generate a per-chapter beat sheet for each chapter this outline implies"
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: contextAtoms.size > 0 ? 6 : 0 }}
+                  >
+                    <ListTree style={{ width: 10, height: 10 }} />
+                    Generate beat sheets
+                  </button>
+                )}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 9, color: "var(--text-ghost)", marginRight: 8 }}>
                   {atomCount} atom{atomCount !== 1 ? "s" : ""}
@@ -401,6 +420,7 @@ export default function Home() {
               onWrite={(text)  => selectedFile && chatWrite(selectedFile, text)}
               onFix={handleFix}
               onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
+              onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
             />
           </>}
 

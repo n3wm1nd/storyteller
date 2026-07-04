@@ -14,31 +14,44 @@
 module Server.Writer.File
   ( chatWriter
   , chatFixer
+  , chatChapterRegen
+  , chatSplitOutline
+  , RegenMode(..)
   , setPresence
   ) where
 
 import Control.Monad (void)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import Data.List (isSuffixOf)
 import Polysemy (Member, Sem)
 import Runix.Logging (info)
+import Runix.FileSystem (fileExists, readFile, writeFile)
 
 import Server.Core.File (FileOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.File.Protocol (ContextItem(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Append (append)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
+import Storyteller.Writer.Agent.Outline
+  ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
+  , reconcileChapter, reconcileChapterByBeat, splitOutlineAgent )
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (PresenceEvent)
-import Storyteller.Core.Runtime (Main)
+import Storyteller.Core.CLI.Env (modelConfigs)
+import Storyteller.Core.Runtime (Main, StoryModel)
 import Storyteller.Core.Storage (storeAs)
+import Storyteller.Core.Edit (commitFiles)
 import Storyteller.Core.Types (BranchName, TickId(..))
 import Storyteller.Core.Git (BranchTag)
+
+import Prelude hiding (readFile, writeFile)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
@@ -78,6 +91,84 @@ chatFixer path prompt _context targets = do
   info $ "fixer agent starting: " <> T.pack path
   _ <- fixAgent @(BranchTag Main) @Main path targets (Instruction prompt)
   info $ "fixer agent done: " <> T.pack path
+
+-- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
+--   single call or the beat-by-beat loop (see
+--   'Storyteller.Writer.Agent.Outline'). Chosen by the client per command.
+data RegenMode = RegenWhole | RegenByBeat
+  deriving (Show, Eq)
+
+-- | Regenerate a chapter to fit its beat sheet, respecting the user's steer.
+--
+--   A /reconciliation/, not a rewrite-from-scratch: the current chapter prose
+--   is fed to the agent as reference (preserve what works, fix what
+--   contradicts the outline), together with the beat sheet and the user's
+--   instruction. The new chapter is written into the working tree and
+--   reconciled against the atom chain with 'commitFiles', so prose that
+--   didn't need to change keeps its atom ids and non-atom ticks (presence,
+--   notes) are left untouched — only genuinely changed atoms get rewritten.
+--
+--   The beat sheet path is derived from the chapter path by the WRITER.md
+--   convention (@chapters/ch{N}.md@ → @chapters/ch{N}.outline.md@); a missing
+--   beat sheet is a clear failure, not a silent no-op.
+chatChapterRegen :: (FileOpen r, SessionEffects r) => RegenMode -> FilePath -> T.Text -> [ContextItem] -> Sem r ()
+chatChapterRegen mode path prompt context = do
+  let sheetPath = beatSheetPathFor path
+  haveSheet <- fileExists @(BranchTag Main) sheetPath
+  if not haveSheet
+    then fail ("no beat sheet at " <> sheetPath <> " — generate one before regenerating from outline")
+    else do
+      _ <- storeAs @Main (Prompt path prompt)
+      sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
+      current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
+      (_, fileCtx) <- gatherFileContext @(BranchTag Main) path
+      let extraContext = toContextBlocks context <> fileCtx
+          instruction  = Instruction prompt
+          noChars      = [] :: [CharContextBlock]
+      info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path
+      Prose regenerated <- case mode of
+        RegenWhole  -> reconcileChapter @StoryModel modelConfigs (Just (WordCount 1200))
+                         noChars extraContext current instruction sheet
+        RegenByBeat -> reconcileChapterByBeat @StoryModel modelConfigs (Just (WordCount 300))
+                         noChars extraContext current instruction sheet maxBeats
+      -- Overwrite the file in the working tree, then reconcile against the
+      -- chain: unchanged atoms keep their ids, changed atoms replace in place,
+      -- removed prose drops, new prose appends. commitFiles broadcasts its own
+      -- ref mapping, so nothing to push explicitly here.
+      writeFile @(BranchTag Main) path (TE.encodeUtf8 regenerated)
+      _ <- commitFiles @(BranchTag Main) @Main [path]
+      info $ "chapter regen done: " <> T.pack path
+  where
+    maxBeats = 40 :: Int
+
+-- | Split a whole-story outline (this file, by convention @outline.md@) into
+--   per-chapter beat sheets. The model decides the chapter breakdown and the
+--   output paths — the chapter files needn't exist yet — and each returned
+--   beat sheet is written as its own file (atomized by the splitter, same as
+--   generated prose). Existing beat-sheet files are left alone: writing only
+--   happens for paths the model emits, and a path it re-emits appends rather
+--   than clobbers, so this is safe to re-run.
+chatSplitOutline :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> Sem r ()
+chatSplitOutline path = do
+  outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
+  (_, fileCtx) <- gatherFileContext @(BranchTag Main) path
+  info $ "outline split starting: " <> T.pack path
+  sheets <- splitOutlineAgent modelConfigs fileCtx outline
+  mapM_ writeSheet sheets
+  info $ "outline split done: " <> T.pack path <> " (" <> T.pack (show (length sheets)) <> " chapters)"
+  where
+    writeSheet (ChapterBeats sheetPath (BeatSheet body)) = do
+      info $ "  beat sheet: " <> T.pack sheetPath
+      mapM_ (append @Main sheetPath) =<< splitAtoms body
+
+-- | @chapters/ch1.md@ → @chapters/ch1.outline.md@; any @.md@ path → its
+--   @.outline.md@ sibling (see WRITER.md). A path without @.md@ just gets the
+--   suffix appended, which will then fail the existence check with a clear
+--   message rather than silently mis-targeting.
+beatSheetPathFor :: FilePath -> FilePath
+beatSheetPathFor path
+  | ".md" `isSuffixOf` path = take (length path - length (".md" :: String)) path <> ".outline.md"
+  | otherwise               = path <> ".outline.md"
 
 toContextBlocks :: [ContextItem] -> [ContextBlock]
 toContextBlocks = map (ContextBlock . ciContent)

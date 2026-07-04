@@ -30,7 +30,7 @@ import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
 import Server.Core.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, chatNote)
-import Server.Writer.File (chatWriter, chatFixer, setPresence)
+import Server.Writer.File (chatWriter, chatFixer, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -62,6 +62,12 @@ runCommand path cmd = case cmd of
 
   ChatFixer _mid prompt context targets ->
     chatFixer path prompt context (map TickId targets)
+
+  ChatRegen _mid prompt context byBeat ->
+    chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt context
+
+  ChatOutline _mid ->
+    chatSplitOutline path
 
   ChatNote _mid text targets ->
     chatNote text (map TickId targets)
