@@ -101,3 +101,18 @@ spec = describe "appendAtom" $ do
               ambientB      <- readFile @(BranchTag Main) "b.md"
               return (existedBefore, existsNow, ambientB)
     result `shouldBe` Right (False, False, "pending")
+
+  -- Deliberate design choice, not an oversight: 'appendAtom' never checks
+  -- whether the target file already had its own pending edit before this
+  -- call. It just appends on top of whatever's there. The atom's own
+  -- commit still only ever contains this one clean append onto HEAD's own
+  -- value for the file (built in isolation, per the tests above) — so the
+  -- working tree ends up holding more than that one commit's message
+  -- claims, which is exactly the ordinary "pending diff against HEAD"
+  -- situation reconciliation already handles, not a new failure mode.
+  it "still succeeds, unconditionally, when the target file already has a pending edit" $ do
+    let result = runAppend $ do
+          writeFile @(BranchTag Main) "a.md" "pending edit"
+          _ <- appendAtom @Main "a.md" " plus atom"
+          readFile @(BranchTag Main) "a.md"
+    result `shouldBe` Right "pending edit plus atom"
