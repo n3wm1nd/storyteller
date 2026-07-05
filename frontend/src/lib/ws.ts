@@ -83,13 +83,8 @@ export interface Update {
 // ── Session protocol ──────────────────────────────────────────────────────────
 
 export type SessionCommand =
-  | { type: "list-branches"; id?: string }
   | { type: "create-branch"; id?: string; branch: string }
-  | { type: "delete-branch"; id?: string; branch: string }
-  // Lightweight, name-only listing of character/* branches. Also pushed
-  // unprompted (no id) whenever a character branch is created or deleted by
-  // any connection — see Server.Writer.Session.Connection's notifier.
-  | { type: "list-characters"; id?: string };
+  | { type: "delete-branch"; id?: string; branch: string };
 
 // One character branch's raw summary — sheet.md content, unprocessed (see
 // WS-PROTOCOL.md's "read is raw-but-complete" rule). The client is
@@ -101,12 +96,16 @@ export interface CharacterSummary {
   sheet: string | null;
 }
 
+// branch.list and character.list are always unprompted — pushed once right
+// after session.ready, and again whenever the underlying set changes (see
+// Server.Writer.Session.Connection's notifier). There is no request for
+// either: a session only ever listens.
 export type SessionEvent =
   | { type: "session.ready" }
-  | { type: "branch.list";     id?: string; branches: string[] }
+  | { type: "branch.list";     branches: string[] }
   | { type: "branch.created";  id?: string; branch: string }
   | { type: "branch.deleted";  id?: string; branch: string }
-  | { type: "character.list";  id?: string; characters: CharacterSummary[] }
+  | { type: "character.list";  characters: CharacterSummary[] }
   | ErrorEvent;
 
 // ── Branch protocol ───────────────────────────────────────────────────────────

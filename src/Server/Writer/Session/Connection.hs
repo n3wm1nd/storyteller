@@ -7,18 +7,19 @@
 --
 -- On connect: enter the storage-level scope exactly once for the
 -- connection's whole lifetime (no branch open — a session has no one
--- branch's tick state to snapshot), push SessionReady, then loop receiving
--- commands via 'embed'. A command that fails is caught locally with
+-- branch's tick state to snapshot), push SessionReady followed immediately
+-- by the current branch and character lists, then loop receiving commands
+-- via 'embed'. A command that fails is caught locally with
 -- 'Polysemy.Error.catch' and reported as a SessionError without unwinding
 -- the stack or ending the connection.
 --
--- A second thread tracks the character list live, the same shape as
--- 'Server.Writer.Branch.Connection's notifier: 'gitNotify' (see
--- 'Server.Writer.Run') already broadcasts a 'RefMoved' on
--- 'envNotifyChan' for every branch ref creation/update, from any
--- connection — a session simply filters that generic, already-existing
--- broadcast to the 'character/' prefix instead of one exact branch name,
--- so live character-list tracking needs no new plumbing underneath it.
+-- There is no list-branches/list-characters command: a session never has to
+-- ask for either list, only listen. A second thread keeps both live: 'gitNotify'
+-- (see 'Server.Writer.Run') already broadcasts a 'RefMoved' on 'envNotifyChan'
+-- for every branch ref creation/update, from any connection — the notifier
+-- re-pushes 'BranchList' on every such move, and 'CharacterList' too when the
+-- moved ref is a 'character/*' one, so live tracking needs no new plumbing
+-- underneath it.
 module Server.Writer.Session.Connection
   ( runSession
   ) where
@@ -40,7 +41,7 @@ import Server.Core.Logging (logCommand)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Notification (BranchNotification(..))
 import Server.Writer.Run (actionStack)
-import Server.Writer.Session.Dispatch (runCommand, characterSummaries)
+import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames)
 import Server.Writer.Session.Protocol
 
 runSession :: ServerEnv -> WS.Connection -> IO ()
@@ -50,41 +51,53 @@ runSession env conn = do
   runCommands env conn `finally` killThread notifier
 
 -- | No agent commands run on a session connection (session-level commands
---   are list/create/delete-branch only) so there's never anything to
---   stream; drop chunks rather than push them anywhere.
+--   are create/delete-branch only) so there's never anything to stream;
+--   drop chunks rather than push them anywhere.
 runCommands :: ServerEnv -> WS.Connection -> IO ()
 runCommands env conn = do
   result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
     embed $ WS.sendTextData conn (encode SessionReady')
+    pushBranchList conn
+    pushCharacterList conn
     commandLoop conn
   either (reportError conn) return result
 
--- | Re-push the character list whenever a 'character/*' branch ref moves —
---   covers creation and deletion alike, since both go through
---   'Storyteller.Core.Storage.createBranch'/'deleteBranch', which (like any
---   other ref write) reaches 'gitNotify'. Only 'RefMoved' is relevant here;
---   'TicksRemapped' is about tick-id remapping within a branch's own chain,
---   not the existence of branches, so it's ignored.
+-- | Re-push the branch (and, when relevant, character) list whenever any
+--   branch ref moves — covers creation and deletion alike, since both go
+--   through 'Storyteller.Core.Storage.createBranch'/'deleteBranch', which
+--   (like any other ref write) reaches 'gitNotify'. Only 'RefMoved' is
+--   relevant here; 'TicksRemapped' is about tick-id remapping within a
+--   branch's own chain, not the existence of branches, so it's ignored.
 runNotifier :: ServerEnv -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ watchCharacterBranches chan (pushCharacterList conn)
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ watchBranchMoves chan (onBranchMove conn)
   either (reportError conn) return result
 
-watchCharacterBranches
+watchBranchMoves
   :: Member (Embed IO) r
-  => TChan BranchNotification -> Sem r () -> Sem r ()
-watchCharacterBranches chan onMatch = loop
+  => TChan BranchNotification -> (T.Text -> Sem r ()) -> Sem r ()
+watchBranchMoves chan onMove = loop
   where
     loop = do
       note <- embed $ atomically (readTChan chan)
       case note of
-        RefMoved b | "character/" `T.isPrefixOf` b -> onMatch >> loop
-        _                                           -> loop
+        RefMoved b -> onMove b >> loop
+        _          -> loop
+
+onBranchMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> T.Text -> Sem r ()
+onBranchMove conn b = do
+  pushBranchList conn
+  if "character/" `T.isPrefixOf` b then pushCharacterList conn else return ()
+
+pushBranchList :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
+pushBranchList conn = do
+  names <- branchNames
+  embed $ WS.sendTextData conn (encode (BranchList names))
 
 pushCharacterList :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 pushCharacterList conn = do
   summaries <- characterSummaries
-  embed $ WS.sendTextData conn (encode (CharacterList Nothing summaries))
+  embed $ WS.sendTextData conn (encode (CharacterList summaries))
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (SessionError (T.pack err)))

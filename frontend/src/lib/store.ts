@@ -456,8 +456,6 @@ export const useStory = create<StoryState>((set, get) => ({
       set((s) => ({ conns: bumpActivity(s.conns, "session") }));
       if (evt.type === "session.ready") {
         set((s) => ({ conns: setConnStatus(s.conns, "session", "connected") }));
-        get()._session?.send({ type: "list-branches" });
-        get()._session?.send({ type: "list-characters" });
       } else if (evt.type === "branch.list") {
         set({ branches: evt.branches });
       } else if (evt.type === "branch.created") {

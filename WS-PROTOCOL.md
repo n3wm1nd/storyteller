@@ -176,10 +176,10 @@ The `message` field carries the full encoded form including the `type:<kind>\n` 
 
 ### `/session`
 
-**Scope:** the user's session — branch list, settings.  
-**On connect:** `session.ready`, then responds to `list-branches` with `branch.list`.  
-**Commands:** `list-branches`, `create-branch`, `delete-branch`.  
-**Events:** `session.ready`, `branch.list`, `branch.created`, `branch.deleted`, `error`.  
+**Scope:** the user's session — branch list, character-branch list, settings.  
+**On connect:** `session.ready`, then, unprompted, `branch.list` and `character.list` — there is no list-branches/list-characters command; a session only ever listens, never asks. Both are re-pushed unprompted again whenever the underlying set changes anywhere (any branch ref move), regardless of which connection caused it.  
+**Commands:** `create-branch`, `delete-branch`.  
+**Events:** `session.ready`, `branch.list`, `branch.created`, `branch.deleted`, `character.list`, `error`.  
 **No tick state** — sessions don't have a tick chain.
 
 ### `/branch/{name}`

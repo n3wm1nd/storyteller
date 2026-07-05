@@ -13,6 +13,7 @@
 module Server.Writer.Session.Dispatch
   ( runCommand
   , characterSummaries
+  , branchNames
   ) where
 
 import Data.Aeson (encode)
@@ -34,10 +35,6 @@ import Prelude hiding (readFile)
 runCommand :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> SessionCommand -> Sem r ()
 runCommand conn cmd = case cmd of
 
-  ListBranches mid -> do
-    names <- map (unBranchName . branchName) <$> listBranches
-    push (BranchList mid names)
-
   CreateBranch mid branch -> do
     let name = BranchName branch
     getBranch name >>= \case
@@ -52,25 +49,26 @@ runCommand conn cmd = case cmd of
       Nothing -> throw @String ("branch not found: " <> T.unpack branch)
       Just _  -> deleteBranch name >> push (BranchDeleted mid branch)
 
-  ListCharacters mid -> do
-    summaries <- characterSummaries
-    push (CharacterList mid summaries)
-
   where
     push = embed . WS.sendTextData conn . encode
 
 data SummaryBranch
 
+-- | Every branch name — shared by the connection's initial push and its
+--   notifier (see 'Server.Writer.Session.Connection'), which re-pushes this
+--   same list whenever any branch ref moves.
+branchNames :: SessionEffects r => Sem r [T.Text]
+branchNames = map (unBranchName . branchName) <$> listBranches
+
 -- | Every 'character/*' branch, each with its raw @sheet.md@ content (if
---   any) — shared by the 'ListCharacters' command above and the
---   connection's notifier (see 'Server.Writer.Session.Connection'), which
---   re-pushes this same list whenever a matching branch ref moves. Opens
---   each branch's own transient FS scope to read its sheet, the same way
---   'Server.Writer.Branch.trackFiles' opens a scope for a branch other than
---   the one already ambiently open.
+--   any) — shared by the connection's initial push and its notifier (see
+--   'Server.Writer.Session.Connection'), which re-pushes this same list
+--   whenever a matching branch ref moves. Opens each branch's own transient
+--   FS scope to read its sheet, the same way 'Server.Writer.Branch.trackFiles'
+--   opens a scope for a branch other than the one already ambiently open.
 characterSummaries :: SessionEffects r => Sem r [CharacterSummary]
 characterSummaries = do
-  names <- filter ("character/" `T.isPrefixOf`) . map (unBranchName . branchName) <$> listBranches
+  names <- filter ("character/" `T.isPrefixOf`) <$> branchNames
   mapM readSummary names
   where
     readSummary branch = runBranchAndFS @SummaryBranch (BranchName branch) $ do
