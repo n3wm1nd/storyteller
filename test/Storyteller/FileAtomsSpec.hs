@@ -17,8 +17,8 @@ import Polysemy.State
 import Runix.Git (Git)
 import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
-  , writeFile, readFile, remove )
-import Prelude hiding (appendFile, readFile, writeFile)
+  , readFile, remove )
+import Prelude hiding (readFile)
 
 import Git.Mock
 
@@ -26,6 +26,7 @@ import Storyteller.Core.Types
 import Storyteller.Common.Types (Note(..))
 import Storyteller.Core.Storage hiding (get, drop)
 import qualified Storyteller.Core.Storage as S
+import Storyteller.Core.Append (appendAtom)
 import Storyteller.Core.Git
 import Storyteller.Writer.Agent (Prompt(..))
 
@@ -34,13 +35,6 @@ import Storyteller.Writer.Agent (Prompt(..))
 -- ---------------------------------------------------------------------------
 
 data Main
-
-appendFile :: forall branch r. Members '[FileSystemRead (BranchTag branch), FileSystemWrite (BranchTag branch), Fail] r
-           => FilePath -> BS.ByteString -> Sem r ()
-appendFile path content = do
-  existing <- runFail $ readFile @(BranchTag branch) path
-  let base = either (const BS.empty) id existing
-  writeFile @(BranchTag branch) path (base <> content)
 
 runTestFS
   :: Sem '[ StoryBranch Main
@@ -88,8 +82,7 @@ spec = describe "fileTicks" $ do
 
   it "returns one atom tick after a single append" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "hello\n"
-          _ <- store @Main "first"
+          _ <- appendAtom @Main "scene.md" "hello\n"
           fileTicks @Main "scene.md"
     case result of
       Left err     -> fail err
@@ -100,12 +93,9 @@ spec = describe "fileTicks" $ do
 
   it "returns atoms oldest-first with correct content splits" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "p1\n"
-          _ <- store @Main "first"
-          appendFile @Main "scene.md" "p2\n"
-          _ <- store @Main "second"
-          appendFile @Main "scene.md" "p3\n"
-          _ <- store @Main "third"
+          _ <- appendAtom @Main "scene.md" "p1\n"
+          _ <- appendAtom @Main "scene.md" "p2\n"
+          _ <- appendAtom @Main "scene.md" "p3\n"
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
@@ -119,12 +109,9 @@ spec = describe "fileTicks" $ do
 
   it "tick IDs match chain order: each parent is the previous atom's tickId" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "a\n"
-          t1 <- store @Main "t1"
-          appendFile @Main "scene.md" "b\n"
-          t2 <- store @Main "t2"
-          appendFile @Main "scene.md" "c\n"
-          t3 <- store @Main "t3"
+          t1 <- appendAtom @Main "scene.md" "a\n"
+          t2 <- appendAtom @Main "scene.md" "b\n"
+          t3 <- appendAtom @Main "scene.md" "c\n"
           ticks <- fileTicks @Main "scene.md"
           return (ticks, [t1, t2, t3])
     case result of
@@ -136,12 +123,9 @@ spec = describe "fileTicks" $ do
 
   it "commits that don't touch the file are not included" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "a\n"
-          _ <- store @Main "scene tick"
-          appendFile @Main "notes.md" "note\n"
-          _ <- store @Main "notes tick"
-          appendFile @Main "scene.md" "b\n"
-          _ <- store @Main "scene tick 2"
+          _ <- appendAtom @Main "scene.md" "a\n"
+          _ <- appendAtom @Main "notes.md" "note\n"
+          _ <- appendAtom @Main "scene.md" "b\n"
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
@@ -152,12 +136,10 @@ spec = describe "fileTicks" $ do
 
   it "after file deletion and re-creation, only post-creation atoms appear" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "before\n"
-          _ <- store @Main "add"
+          _ <- appendAtom @Main "scene.md" "before\n"
           remove @(BranchTag Main) False "scene.md"
           _ <- store @Main "delete"
-          appendFile @Main "scene.md" "after\n"
-          _ <- store @Main "recreate"
+          _ <- appendAtom @Main "scene.md" "after\n"
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
@@ -170,12 +152,9 @@ spec = describe "fileTicks" $ do
 
   it "concatenating all atom contents reconstructs the full file" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "line one\n"
-          _ <- store @Main "t1"
-          appendFile @Main "scene.md" "line two\n"
-          _ <- store @Main "t2"
-          appendFile @Main "scene.md" "line three\n"
-          _ <- store @Main "t3"
+          _ <- appendAtom @Main "scene.md" "line one\n"
+          _ <- appendAtom @Main "scene.md" "line two\n"
+          _ <- appendAtom @Main "scene.md" "line three\n"
           ticks   <- fileTicks @Main "scene.md"
           current <- readFile @(BranchTag Main) "scene.md"
           return (ticks, current)
@@ -186,22 +165,20 @@ spec = describe "fileTicks" $ do
             contents = [ c | Just c <- map S.ftContent atoms ]
         in BS.concat (map (BS.pack . T.unpack) contents) `shouldBe` current
 
-  it "message field carries the commit message" $ do
+  it "message field carries the atom's own content (an atom's message *is* its content)" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "x\n"
-          _ <- store @Main "my commit message"
+          _ <- appendAtom @Main "scene.md" "x\n"
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
       Right ticks ->
         case atomsOnly ticks of
-          [atom] -> S.ftMessage atom `shouldBe` "my commit message"
+          [atom] -> S.ftMessage atom `shouldBe` "x\n"
           atoms  -> fail $ "expected 1 atom, got " <> show (length atoms)
 
   it "note referencing a file atom is included in that file's ticks" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "content\n"
-          atomId <- store @Main "atom"
+          atomId <- appendAtom @Main "scene.md" "content\n"
           noteId <- storeAs @Main (Note [atomId] "a note")
           fileTicks @Main "scene.md"
     case result of
@@ -217,11 +194,9 @@ spec = describe "fileTicks" $ do
 
   it "note referencing an atom in a different file is not included" $ do
     let result = runTestFS $ do
-          appendFile @Main "other.md" "other content\n"
-          atomId <- store @Main "other atom"
+          atomId <- appendAtom @Main "other.md" "other content\n"
           _noteId <- storeAs @Main (Note [atomId] "note about other file")
-          appendFile @Main "scene.md" "scene content\n"
-          _ <- store @Main "scene atom"
+          _ <- appendAtom @Main "scene.md" "scene content\n"
           fileTicks @Main "scene.md"
     case result of
       Left err    -> fail err
@@ -231,8 +206,7 @@ spec = describe "fileTicks" $ do
 
   it "note referencing a note is included transitively" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "content\n"
-          atomId  <- store @Main "atom"
+          atomId  <- appendAtom @Main "scene.md" "content\n"
           noteId  <- storeAs @Main (Note [atomId] "first note")
           _note2Id <- storeAs @Main (Note [noteId] "note about note")
           fileTicks @Main "scene.md"
@@ -244,8 +218,7 @@ spec = describe "fileTicks" $ do
 
   it "prompt with matching file field is included" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "content\n"
-          _ <- store @Main "atom"
+          _ <- appendAtom @Main "scene.md" "content\n"
           _ <- storeAs @Main (Prompt "scene.md" "write more")
           fileTicks @Main "scene.md"
     case result of
@@ -254,8 +227,7 @@ spec = describe "fileTicks" $ do
 
   it "prompt for a different file is not included" $ do
     let result = runTestFS $ do
-          appendFile @Main "scene.md" "content\n"
-          _ <- store @Main "atom"
+          _ <- appendAtom @Main "scene.md" "content\n"
           _ <- storeAs @Main (Prompt "other.md" "write more")
           fileTicks @Main "scene.md"
     case result of

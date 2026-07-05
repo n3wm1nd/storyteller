@@ -68,12 +68,10 @@ import Runix.Git
 import Runix.FileSystem
   ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
 
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.Encoding.Error as TEE
-
 import Storyteller.Core.Types
 import Storyteller.Core.Storage hiding (get, drop, Get)
 import qualified Storyteller.Core.Storage as S
+import qualified Storyteller.Core.Atom as Atom
 
 -- ---------------------------------------------------------------------------
 -- In-memory filesystem
@@ -880,9 +878,11 @@ runAtH replay tid current action
 
 -- | Walk the branch from HEAD and collect all ticks belonging to @path@.
 --
--- First builds the atom set by walking the chain with 'walkFrom', diffing blobs
--- at each step. Then calls 'walkFrom' again to expand the member set: any tick
--- whose extra-parent refs intersect the current member set is included, repeated
+-- An atom's own content lives verbatim in its commit message (see
+-- 'Storyteller.Core.Atom.contentFor'), so membership and content are both
+-- read straight off each commit's message — no tree/blob lookups needed.
+-- First builds the atom set from the chain, then expands it: any tick whose
+-- extra-parent refs intersect the current member set is included, repeated
 -- until stable (two passes suffices for current tick types).
 -- Returns oldest-first.
 walkFileTicks
@@ -891,9 +891,9 @@ walkFileTicks
   -> ObjectHash
   -> Sem r [FileTick]
 walkFileTicks path headHash = do
-  raw      <- collectChain headHash []  -- oldest-first (prepend walks root to front)
-  allTicks <- diffChain Nothing raw    -- oldest-first, with blob suffix
-  let fileHint  = T.pack path
+  raw <- collectChain headHash []  -- oldest-first (prepend walks root to front)
+  let allTicks  = map (uncurry toFileTick) raw
+      fileHint  = T.pack path
       atomIds   = [ ftTickId ft | ft <- allTicks, ftContent ft /= Nothing ]
       memberIds = expandRefs atomIds allTicks
       -- Also include ticks with a matching file field (e.g. prompts that don't ref atoms)
@@ -901,15 +901,14 @@ walkFileTicks path headHash = do
                                  , ftContent ft == Nothing
                                  , lookup "file" (ftFields ft) == Just fileHint ]
       included  = Set.fromList (memberIds ++ fileHinted)
-  -- 'ftParent' as computed by 'diffChain' is the tick's true git-chain
-  -- parent, which may not be in this file's projection at all (e.g. a
-  -- 'presence' tick interleaved between two of this file's atoms — it
-  -- references nothing and carries no "file" field, so it's excluded
-  -- above). Left as-is, a client walking '.parent' from HEAD would stop
-  -- dead the moment it hit such a gap, truncating everything older than
-  -- the most recent excluded tick. Rewrite each included tick's parent to
-  -- the nearest *included* ancestor instead, so the projection is a
-  -- self-contained chain no client-side walk can fall out of.
+  -- Each tick's own git-chain parent may not be in this file's projection at
+  -- all (e.g. a 'presence' tick interleaved between two of this file's
+  -- atoms — it references nothing and carries no "file" field, so it's
+  -- excluded above). Left as-is, a client walking '.parent' from HEAD would
+  -- stop dead the moment it hit such a gap, truncating everything older
+  -- than the most recent excluded tick. Rewrite each included tick's
+  -- parent to the nearest *included* ancestor instead, so the projection
+  -- is a self-contained chain no client-side walk can fall out of.
   return (relinkParents included Nothing allTicks)
   where
     relinkParents :: Set.Set Text -> Maybe Text -> [FileTick] -> [FileTick]
@@ -926,18 +925,6 @@ walkFileTicks path headHash = do
         []      -> return ((hash, cd) : acc)
         (p : _) -> collectChain p ((hash, cd) : acc)
 
-    diffChain :: Members '[Git, Fail] r => Maybe BS.ByteString -> [(ObjectHash, CommitData)] -> Sem r [FileTick]
-    diffChain _ [] = return []
-    diffChain prev ((hash, cd) : rest) = do
-      mBH     <- lookupPath (commitTree cd) path
-      curBlob <- case mBH of { Nothing -> return Nothing; Just h -> Just <$> readBlob h }
-      let mSuffix = curBlob >>= \cur ->
-            let old = maybe BS.empty id prev
-            in if cur == old then Nothing
-               else Just (TE.decodeUtf8With TEE.lenientDecode (BS.drop (BS.length old) cur))
-      tl <- diffChain curBlob rest
-      return (toFileTick hash cd mSuffix : tl)
-
     expandRefs :: [Text] -> [FileTick] -> [Text]
     expandRefs members ticks =
       let step ms = ms ++ [ ftTickId ft
@@ -946,14 +933,17 @@ walkFileTicks path headHash = do
                            , any (`elem` ms) (ftRefs ft) ]
       in step (step members)
 
-    toFileTick :: ObjectHash -> CommitData -> Maybe Text -> FileTick
-    toFileTick hash cd mSuffix =
-      let tick = commitToTick hash cd
-          td   = tickData tick
-          kind = case tickTypeOf tick of
-                   Just t  -> t
-                   Nothing -> if mSuffix /= Nothing then "atom" else "unknown"
-          msg  = stripTypeTag kind (tickMessage td)
+    toFileTick :: ObjectHash -> CommitData -> FileTick
+    toFileTick hash cd =
+      let tick    = commitToTick hash cd
+          td      = tickData tick
+          mSuffix = case fromTick tick :: Maybe Atom.Atom of
+                      Just (Atom.Atom f content) | f == path -> Just content
+                      _                                      -> Nothing
+          kind    = case tickTypeOf tick of
+                      Just t  -> t
+                      Nothing -> if mSuffix /= Nothing then "atom" else "unknown"
+          msg     = stripTypeTag kind (tickMessage td)
       in FileTick
         { ftTickId  = unObjectHash hash
         , ftKind    = kind

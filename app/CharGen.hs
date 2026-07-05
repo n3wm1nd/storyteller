@@ -39,9 +39,10 @@ import           Runix.Logging (Logging)
 import           Storyteller.Writer.Agent.CharGen
   (charGenAgent, ScenarioTemplate(..), RngSeed(..), unSheet)
 import           Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
+import           Storyteller.Core.Edit (commitFiles)
 import           Storyteller.Core.Git (BranchTag(..))
 import           Storyteller.Core.Runtime (runInfrastructure, runBranchAndFS, runStoryStorageGit)
-import           Storyteller.Core.Storage (StoryBranch, StoryStorage, store)
+import           Storyteller.Core.Storage (StoryBranch, StoryStorage)
 import           Storyteller.Core.Types (BranchName(..), TickId)
 
 import           Prelude hiding (writeFile)
@@ -86,10 +87,10 @@ charGenAction
               , StoryStorage
               , Logging, Fail
               ] r
-  => FilePath -> T.Text -> Sem r TickId
+  => FilePath -> T.Text -> Sem r [(TickId, TickId)]
 charGenAction sheetFile text = do
   writeFile @(BranchTag branch) sheetFile (TE.encodeUtf8 text)
-  store @branch "character sheet"
+  commitFiles @(BranchTag branch) @branch [sheetFile]
 
 parseArgs :: [String] -> IO (FilePath, FilePath, Maybe Int)
 parseArgs args = go args Nothing Nothing Nothing

@@ -34,7 +34,7 @@ import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, Scenar
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Core.Edit (commitFiles)
 import Storyteller.Core.Git (BranchTag, runBranchAndFS, withStorage)
-import Storyteller.Core.Storage (createBranch, getBranch, store)
+import Storyteller.Core.Storage (createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Data.Yaml as Yaml
 
@@ -91,7 +91,7 @@ charGen name path scenario seed = do
     rngSeed <- maybe drawSeed return (RngSeed <$> seed)
     let sheet = charGenAgent template rngSeed
     writeFile @(BranchTag CharBranch) path (TE.encodeUtf8 (unSheet sheet))
-    void $ store @CharBranch "character sheet"
+    void $ commitFiles @(BranchTag CharBranch) @CharBranch [path]
 
 -- | Write one or more files' content directly into the branch, bypassing
 --   the chat-agent pipeline entirely (an upload isn't an LLM-authored

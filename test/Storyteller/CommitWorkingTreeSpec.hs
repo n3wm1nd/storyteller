@@ -41,6 +41,8 @@ module Storyteller.CommitWorkingTreeSpec (spec) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 
 import Test.Hspec
 import Test.QuickCheck
@@ -51,11 +53,11 @@ import Polysemy.State (evalState, State)
 
 import Git.Mock
 import Runix.Git (Git)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile, writeFile, appendFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile, writeFile)
 import qualified Data.List as List
-import Prelude hiding (readFile, writeFile, appendFile, drop)
+import Prelude hiding (readFile, writeFile, drop)
 
-import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Append (appendAtom)
 import Storyteller.Core.Git
 import Storyteller.Core.Storage hiding (get, drop)
 import qualified Storyteller.Core.Storage as S
@@ -112,9 +114,7 @@ storeAtoms
   => [BS.ByteString] -> Sem r [TickId]
 storeAtoms = mapM storeOne
   where
-    storeOne content = do
-      appendFile @(BranchTag Main) path content
-      storeAs @Main (Atom path "")
+    storeOne content = appendAtom @Main path (TE.decodeUtf8With TEE.lenientDecode content)
 
 -- | All tick ids currently reachable on the chain, oldest-first, root
 --   excluded — used to check that dropped atoms are truly gone and kept

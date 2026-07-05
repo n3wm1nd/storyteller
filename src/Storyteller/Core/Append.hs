@@ -16,6 +16,7 @@
 -- special case this module needs to know about.
 module Storyteller.Core.Append
   ( append
+  , appendAtom
   ) where
 
 import qualified Data.Text as T
@@ -26,7 +27,7 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile
 
 import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git (BranchTag)
-import Storyteller.Core.Storage (StoryBranch, storeAs)
+import Storyteller.Core.Storage (StoryBranch, storeAs, withFS)
 import Storyteller.Core.Types (TickId)
 
 import Prelude hiding (appendFile)
@@ -40,10 +41,44 @@ append
               , FileSystemWrite (BranchTag branch)
               , Fail ] r
   => FilePath -> T.Text -> Sem r TickId
-append path content = do
-  let content' = ensureTrailingNewline content
-  appendFile @(BranchTag branch) path (TE.encodeUtf8 content')
-  storeAs @branch (Atom path content')
+append path content = appendAtom @branch path (ensureTrailingNewline content)
+
+-- | Append @content@ to @path@ and commit it as a real 'Atom' tick, with no
+-- newline normalization — the primitive 'append' builds on, and the one
+-- call this project should use anywhere a file write needs to land on the
+-- chain as a real atom. An atom's own content lives verbatim in its commit
+-- message (see 'Storyteller.Core.Atom.contentFor'), so pairing a raw
+-- filesystem write with anything other than 'storeAs' of the same content —
+-- a plain 'Storyteller.Core.Storage.store', a hand-built 'TickData' — leaves
+-- that content invisible to every reader that decodes it from the message
+-- (fileTicks, popTick, buildAtomHistory, trackBranch) without the type
+-- system ever flagging the mismatch.
+--
+-- The working tree changes exactly once, for real, right here — the same
+-- ordinary edit any caller would make on their own. What follows isn't a
+-- second edit: it's packaging that one edit into a commit whose parent is
+-- HEAD, using a throwaway 'withFS' copy freshly loaded from HEAD (not the
+-- live ambient) purely to compute a tree with just @path@ changed. That
+-- scratch copy is discarded the moment the commit is written; the real
+-- working tree it briefly stood in for is left exactly as this one edit
+-- made it. Any other file's pending, not-yet-committed edits are
+-- untouched throughout — the scratch copy never saw them (it was built
+-- from HEAD, not the ambient), so there was never anything to fold in or
+-- protect against. The commit's diff comes out small not because the
+-- working tree was made small, but because of what it's diffed against.
+appendAtom
+  :: forall branch r
+  .  Members '[ StoryBranch branch
+              , FileSystem      (BranchTag branch)
+              , FileSystemRead  (BranchTag branch)
+              , FileSystemWrite (BranchTag branch)
+              , Fail ] r
+  => FilePath -> T.Text -> Sem r TickId
+appendAtom path content = do
+  appendFile @(BranchTag branch) path (TE.encodeUtf8 content)
+  withFS @branch $ do
+    appendFile @(BranchTag branch) path (TE.encodeUtf8 content)
+    storeAs @branch (Atom path content)
 
 -- | Ensure text ends with a newline — an appended atom is one text block on
 -- disk, and a block should end its line.

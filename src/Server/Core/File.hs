@@ -39,7 +39,6 @@ import Data.List (sortOn)
 import Data.Ord (Down(..))
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Polysemy (Member, Members, Sem)
 import Polysemy.Error (Error)
 import Polysemy.Fail (Fail)
@@ -121,7 +120,7 @@ appendToFile path content = do
 --   old->new mapping (including the edited tick's own pivot pair) via
 --   'Storyteller.Core.Storage.at', so there's nothing left to do here.
 editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
-editFileAtom path tid content = void $ editAtom @Main tid path (TE.encodeUtf8 content)
+editFileAtom path tid content = void $ editAtom @Main tid path content
 
 -- | Delete an atom from the file's chain. 'deleteTick' broadcasts its own
 --   mapping via 'Storyteller.Core.Storage.at', so there's nothing left to do here.

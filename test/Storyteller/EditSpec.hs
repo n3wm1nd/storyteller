@@ -19,7 +19,6 @@ import Polysemy.State (evalState, State)
 
 import Git.Mock
 import Runix.Git (Git)
-import qualified Data.ByteString.Char8 as BS
 import qualified Data.Text.Encoding as T
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile)
 
@@ -28,9 +27,8 @@ import Storyteller.Core.Storage hiding (get, drop)
 import qualified Storyteller.Core.Storage as S
 import Storyteller.Core.Types
 import Storyteller.Core.Atom (Atom(..))
-import Storyteller.Core.Append (append)
-import Runix.FileSystem (appendFile)
-import Prelude hiding (readFile, appendFile)
+import Storyteller.Core.Append (append, appendAtom)
+import Prelude hiding (readFile)
 import Storyteller.Core.Edit
 
 -- ---------------------------------------------------------------------------
@@ -103,13 +101,6 @@ atomMessages :: Members '[StoryBranch Main, Fail] r => Sem r [T.Text]
 atomMessages = do
   ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
   return [ msg | t <- ticks, Just (Atom _ msg) <- [fromTick @Atom t] ]
-
--- | Append bytes to a file and commit. Convenience for tests.
-appendAtom :: Members '[StoryBranch Main, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main), StoryStorage, Fail] r
-           => FilePath -> BS.ByteString -> Sem r TickId
-appendAtom path content = do
-  appendFile @(BranchTag Main) path content
-  store @Main (T.decodeUtf8 (BS.take 60 content))
 
 -- ---------------------------------------------------------------------------
 -- Unit tests: popTick / pushTick
@@ -447,9 +438,9 @@ spec = do
       -- Chain: [para1][para2][para3]. Move para3 to front.
       -- Expected file content: para3 para1 para2 (each appended in new order).
       let result = runEdit $ do
-            t1 <- appendAtom "scene.md" "para1\n"
-            t2 <- appendAtom "scene.md" "para2\n"
-            t3 <- appendAtom "scene.md" "para3\n"
+            t1 <- appendAtom @Main "scene.md" "para1\n"
+            t2 <- appendAtom @Main "scene.md" "para2\n"
+            t3 <- appendAtom @Main "scene.md" "para3\n"
             _ <- moveTick @Main t3 Nothing
             readFile @(BranchTag Main) "scene.md"
       case result of
@@ -460,9 +451,9 @@ spec = do
       -- Chain: [para1][para2][para3]. Move para1 to after para3.
       -- Expected: para2 para3 para1.
       let result = runEdit $ do
-            t1 <- appendAtom "scene.md" "para1\n"
-            t2 <- appendAtom "scene.md" "para2\n"
-            t3 <- appendAtom "scene.md" "para3\n"
+            t1 <- appendAtom @Main "scene.md" "para1\n"
+            t2 <- appendAtom @Main "scene.md" "para2\n"
+            t3 <- appendAtom @Main "scene.md" "para3\n"
             _ <- moveTick @Main t1 (Just t3)
             readFile @(BranchTag Main) "scene.md"
       case result of
@@ -472,10 +463,10 @@ spec = do
     it "move to middle preserves correct file content order" $ do
       -- Chain: [A][B][C][D]. Move D to after B. Expected: A B D C.
       let result = runEdit $ do
-            ta <- appendAtom "scene.md" "A\n"
-            tb <- appendAtom "scene.md" "B\n"
-            tc <- appendAtom "scene.md" "C\n"
-            td <- appendAtom "scene.md" "D\n"
+            ta <- appendAtom @Main "scene.md" "A\n"
+            tb <- appendAtom @Main "scene.md" "B\n"
+            tc <- appendAtom @Main "scene.md" "C\n"
+            td <- appendAtom @Main "scene.md" "D\n"
             _ <- moveTick @Main td (Just tb)
             readFile @(BranchTag Main) "scene.md"
       case result of
@@ -489,7 +480,7 @@ spec = do
             to'   = to   `mod` (n' + 1)
         in
         let result = runEdit $ do
-              ids <- mapM (\i -> appendAtom "f.md" (T.encodeUtf8 (T.pack ("p" <> show i <> "\n")))) [1..n']
+              ids <- mapM (\i -> appendAtom @Main "f.md" (T.pack ("p" <> show i <> "\n"))) [1..n']
               let tid    = ids !! from'
                   mAfter = if to' == 0 then Nothing else Just (ids !! (to' - 1))
               _ <- moveTick @Main tid mAfter

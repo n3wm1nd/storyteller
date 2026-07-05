@@ -44,7 +44,6 @@ import Autodocodec (HasCodec(..), dimapCodec, object, requiredField, parseJSONVi
 import Data.Aeson.Types (parseEither)
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
@@ -174,7 +173,7 @@ reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do
-              (newTid, _mapping) <- editAtom @branch (TickId tid) path (TE.encodeUtf8 newText)
+              (newTid, _mapping) <- editAtom @branch (TickId tid) path newText
               _ <- storeAs @branch (Fixup [newTid] reason)
               return (Just newTid)
         _ -> return Nothing

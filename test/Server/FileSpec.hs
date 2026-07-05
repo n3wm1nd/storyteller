@@ -9,16 +9,13 @@
 
 module Server.FileSpec (spec) where
 
-import qualified Data.Text as T
-import qualified Data.ByteString.Char8 as BS
 import Test.Hspec
 
 import Polysemy
-import Polysemy.Fail (Fail)
 
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, writeFile, readFile)
-import Prelude hiding (writeFile, readFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
+import Storyteller.Core.Append (appendAtom)
 import Storyteller.Core.Git
 import Storyteller.Core.Storage hiding (get, drop)
 import Storyteller.Core.Runtime (Main)
@@ -38,6 +35,11 @@ import Server.TestStack
 -- 'runner' (a 'TestRunner', see 'Server.TestStack') is threaded through so
 -- every test below runs under both the eager and the 'withStorage'-
 -- buffered interpreter (see 'test/Main.hs') without being written twice.
+--
+-- Atoms are stored via 'Storyteller.Core.Append.appendAtom' — the real
+-- library primitive, not a hand-rolled write+store pair — since 'appendFile'
+-- already handles a file's first write the same as any later one, a single
+-- helper covers both 'storeAtom' and 'appendAtom''s old roles here.
 -- ---------------------------------------------------------------------------
 
 withFile_
@@ -56,35 +58,6 @@ withFile_ runner name action = run $ runner $ do
 
 headIsIn :: Update -> Bool
 headIsIn upd = null (updateTicks upd) || updateHead upd `elem` map wtTickId (updateTicks upd)
-
--- | Write a file into the working tree and store it as an atom tick.
---   Only valid for a file's first atom — later atoms must be appended
---   (see 'appendAtom'), since 'writeFile' overwrites the whole blob.
---   Runs against the ambient, already-open branch scope — same as any real
---   command dispatch — rather than opening its own: 'StoryBranch's head is
---   a point-in-time snapshot from whenever a scope was opened, so a nested
---   'runBranchAndFS' here would be invisible to the outer scope's later
---   reads (see 'Storyteller.Core.Git.runStoryBranchGit').
-storeAtom :: Members '[ StoryBranch Main
-                      , FileSystemWrite (BranchTag Main)
-                      , FileSystemRead  (BranchTag Main)
-                      , Fail ] r
-          => FilePath -> BS.ByteString -> Sem r TickId
-storeAtom path content = do
-  writeFile @(BranchTag Main) path content
-  storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
-
--- | Append content to an existing file and store it as a new atom tick.
---   Same ambient-scope note as 'storeAtom'.
-appendAtom :: Members '[ StoryBranch Main
-                       , FileSystemWrite (BranchTag Main)
-                       , FileSystemRead  (BranchTag Main)
-                       , Fail ] r
-           => FilePath -> BS.ByteString -> Sem r TickId
-appendAtom path content = do
-  existing <- readFile @(BranchTag Main) path
-  writeFile @(BranchTag Main) path (existing <> content)
-  storeData @Main (draft (T.pack ("type:atom\n" <> BS.unpack content)))
 
 -- ---------------------------------------------------------------------------
 -- Specs
@@ -119,9 +92,9 @@ spec runner = do
     -- depending on Storyteller.Writer, which Server.Core must not import.
     it "an unrelated tick with no refs and no file field does not break the parent chain" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            t1 <- storeAtom "story.md" "first"
+            t1 <- appendAtom @Main "story.md" "first"
             _  <- storeData @Main (draft "type:presence\nunrelated standalone tick")
-            t2 <- appendAtom "story.md" " second"
+            t2 <- appendAtom @Main "story.md" " second"
             fileState "story.md" >>= \upd -> return (t1, t2, upd)
       case result of
         Left err -> expectationFailure err
@@ -138,7 +111,7 @@ spec runner = do
 
     it "deleted atom no longer appears in fileState" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            tid <- storeAtom "f.md" "hello"
+            tid <- appendAtom @Main "f.md" "hello"
             deleteFileAtom tid
             fileState "f.md"
       case result of
@@ -149,7 +122,7 @@ spec runner = do
 
     it "moving a single atom to front is a no-op on chain length" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            t1 <- storeAtom "f.md" "atom1"
+            t1 <- appendAtom @Main "f.md" "atom1"
             before <- length . updateTicks <$> fileState "f.md"
             moveFileAtom t1 Nothing
             after <- length . updateTicks <$> fileState "f.md"
@@ -162,7 +135,7 @@ spec runner = do
 
     it "edit changes the content of the atom" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            tid <- storeAtom "f.md" "original"
+            tid <- appendAtom @Main "f.md" "original"
             editFileAtom "f.md" tid "edited"
             fileState "f.md"
       case result of
@@ -180,8 +153,8 @@ spec runner = do
     -- after the preceding atoms' content.
     it "edit succeeds for any existing atom regardless of new content length" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            t1 <- storeAtom "f.md" "first atom text\n"
-            _  <- appendAtom "f.md" "second\n"
+            t1 <- appendAtom @Main "f.md" "first atom text\n"
+            _  <- appendAtom @Main "f.md" "second\n"
             editFileAtom "f.md" t1 "x\n"
             fileState "f.md"
       case result of

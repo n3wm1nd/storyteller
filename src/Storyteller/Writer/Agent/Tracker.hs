@@ -17,18 +17,18 @@ module Storyteller.Writer.Agent.Tracker
   , dropUntilAfterLastSynced
   ) where
 
-import qualified Data.ByteString as BS
+import qualified Data.Text.Encoding as TE
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem ( FileSystem, FileSystemRead, FileSystemWrite
-                        , appendFile, readFile, fileExists )
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile)
+import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchTag(..))
-import Storyteller.Core.Storage ( StoryBranch, StoryStorage, follow, storeData, readAtWithFS )
-import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), tickId, tickParent )
+import Storyteller.Core.Storage ( StoryBranch, StoryStorage, follow, storeData )
+import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), TickType(..), tickId, tickParent )
 
-import Prelude hiding (appendFile, readFile)
+import Prelude hiding (appendFile)
 
 -- | Copy atoms from @trackeeBranch@ to @trackerBranch@ for a single file pair.
 --   Each new trackee atom produces exactly one tracker atom referencing it.
@@ -36,8 +36,6 @@ import Prelude hiding (appendFile, readFile)
 trackBranch
   :: forall trackeeBranch trackerBranch r
   .  Members '[ StoryBranch trackeeBranch
-              , FileSystem     (BranchTag trackeeBranch)
-              , FileSystemRead (BranchTag trackeeBranch)
               , FileSystem     (BranchTag trackerBranch)
               , FileSystemRead (BranchTag trackerBranch)
               , FileSystemWrite (BranchTag trackerBranch)
@@ -57,7 +55,7 @@ trackBranch (fromFile, toFile) = do
   let contentTicks = filter ((/= Nothing) . tickParent) trackeeTicks
       newTicks     = dropUntilAfterLastSynced syncedRefs contentTicks
 
-  mapM (copyAtom @trackeeBranch @trackerBranch fromFile toFile) newTicks
+  mapM (copyAtom @trackerBranch fromFile toFile) newTicks
 
 -- | Drop everything up to and including the last synced tick; return the rest.
 dropUntilAfterLastSynced :: Set.Set TickId -> [Tick] -> [Tick]
@@ -68,16 +66,16 @@ dropUntilAfterLastSynced synced ticks =
     Just idx -> drop (idx + 1) ticks
 
 -- | Copy one trackee atom into the tracker branch.
---   Reads the file content at the trackee tick and at its parent to compute
---   the delta, appends it to the tracker branch, and commits with a ref
---   back to the source atom.
+--   The trackee tick's own contribution lives verbatim in its commit
+--   message (see 'Storyteller.Core.Atom.contentFor'), so no filesystem
+--   access to the trackee branch is needed to recover it. The tracker's own
+--   copy is committed as a real 'Atom' too (same invariant applies on this
+--   side of the copy), with the cross-branch ref folded onto that draft
+--   rather than dropped in favor of a plain, untagged message.
 copyAtom
-  :: forall trackeeBranch trackerBranch r
-  .  Members '[ StoryBranch trackeeBranch
-              , FileSystem     (BranchTag trackeeBranch)
-              , FileSystemRead (BranchTag trackeeBranch)
-              , FileSystem     (BranchTag trackerBranch)
-              , FileSystemRead (BranchTag trackerBranch)
+  :: forall trackerBranch r
+  .  Members '[ FileSystem      (BranchTag trackerBranch)
+              , FileSystemRead  (BranchTag trackerBranch)
               , FileSystemWrite (BranchTag trackerBranch)
               , StoryBranch trackerBranch
               , StoryStorage
@@ -85,27 +83,6 @@ copyAtom
               ] r
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
-  thisContent <- readAtWithFS @trackeeBranch (tickId tick) $
-    readFileOrEmpty @(BranchTag trackeeBranch) fromFile
-  parentContent <- case tickParent tick of
-    Nothing  -> return BS.empty
-    Just pid -> readAtWithFS @trackeeBranch pid
-      (readFileOrEmpty @(BranchTag trackeeBranch) fromFile)
-
-  let delta = BS.drop (BS.length parentContent) thisContent
-
-  appendFile @(BranchTag trackerBranch) toFile delta
-  storeData @trackerBranch TickData
-    { tickRefs    = [tickId tick]
-    , tickFields  = []
-    , tickMessage = "track"
-    }
-
-readFileOrEmpty
-  :: forall project r
-  .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => FilePath -> Sem r BS.ByteString
-readFileOrEmpty path =
-  fileExists @project path >>= \case
-    False -> return BS.empty
-    True  -> readFile @project path
+  let content = contentFor fromFile tick
+  appendFile @(BranchTag trackerBranch) toFile (TE.encodeUtf8 content)
+  storeData @trackerBranch (toDraft (Atom toFile content)) { tickRefs = [tickId tick] }
