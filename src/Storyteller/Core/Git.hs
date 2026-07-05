@@ -56,6 +56,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import System.FilePath (splitDirectories, joinPath)
 import Polysemy
 import Polysemy.Fail
@@ -462,7 +463,7 @@ runStoryBranchGit branch action = do
       headHash' <- raise $ get @ObjectHash
       wt'      <- raise $ get @WorkingTree
       parentWt <- raise $ loadWorkingTree headHash'
-      eCheck   <- raise $ checkAppendOnly parentWt wt'
+      eCheck   <- raise $ checkAppendOnly d parentWt wt'
       case eCheck of
         Left err -> pureT (Left err)
         Right () -> do
@@ -518,7 +519,7 @@ runStoryBranchGit branch action = do
       wt'      <- raise $ get @WorkingTree
       parentWt <- raise $ loadWorkingTree
                     (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
-      eCheck   <- raise $ checkAppendOnly parentWt wt'
+      eCheck   <- raise $ checkAppendOnly d parentWt wt'
       case eCheck of
         Left err -> pureT (Left err)
         Right () -> do
@@ -732,28 +733,59 @@ runBranchAndFS name action = do
 --   corresponding file in the parent tree. New files and directories are fine;
 --   deletions and modifications (content not prefixed by the parent's content)
 --   are rejected with a descriptive error.
+--
+--   When @draft@ is itself an 'Atom.Atom' (decoded straight off its message
+--   and @"file"@ field — no 'Tick' needed, since 'decodeTaggedMessage' only
+--   ever looks at those two), that file's growth must match the atom's own
+--   claimed content *exactly*, not merely extend it: the prefix check alone
+--   only catches shrinkage or a mid-file rewrite, and would silently accept
+--   a tree that grew by more than the atom claims (e.g. some other
+--   uncommitted addition already sitting in the working tree ahead of this
+--   write). This is the one place both the true parent content and the
+--   atom's declared diff are available together, so this is where that
+--   mismatch can actually be caught.
 checkAppendOnly
   :: Members '[Git, Fail] r
-  => WorkingTree -> WorkingTree -> Sem r (Either String ())
-checkAppendOnly parent new = go (Map.toList new)
+  => TickData -> WorkingTree -> WorkingTree -> Sem r (Either String ())
+checkAppendOnly draft parent new = go (Map.toList new)
   where
+    atomClaim = do
+      content <- decodeTaggedMessage @Atom.Atom (tickMessage draft)
+      file    <- lookup "file" (tickFields draft)
+      return (T.unpack file, content)
+
     go []             = return (Right ())
     go ((_, FSDir) : rest) = go rest
     go ((path, FSFile newHash) : rest) =
       case Map.lookup path parent of
-        Nothing           -> go rest
+        Nothing -> case atomClaim of
+          Just (atomPath, content) | atomPath == path -> do
+            newContent <- readBlob newHash
+            if newContent == TE.encodeUtf8 content
+              then go rest
+              else atomMismatch path
+          _ -> go rest
         Just FSDir        -> go rest
         Just (FSFile oldHash) -> do
           oldContent <- readBlob oldHash
           newContent <- readBlob newHash
-          if oldContent `BS.isPrefixOf` newContent
-            then go rest
-            else return $ Left $ "Store: non-append modification of " <> path
-                   <> " (old=" <> show (BS.length oldContent)
-                   <> " new=" <> show (BS.length newContent)
-                   <> " oldHash=" <> T.unpack (unObjectHash oldHash)
-                   <> " newHash=" <> T.unpack (unObjectHash newHash)
-                   <> ")"
+          case atomClaim of
+            Just (atomPath, content) | atomPath == path ->
+              if newContent == oldContent <> TE.encodeUtf8 content
+                then go rest
+                else atomMismatch path
+            _ ->
+              if oldContent `BS.isPrefixOf` newContent
+                then go rest
+                else return $ Left $ "Store: non-append modification of " <> path
+                       <> " (old=" <> show (BS.length oldContent)
+                       <> " new=" <> show (BS.length newContent)
+                       <> " oldHash=" <> T.unpack (unObjectHash oldHash)
+                       <> " newHash=" <> T.unpack (unObjectHash newHash)
+                       <> ")"
+
+    atomMismatch path = return $ Left $
+      "Store: atom message for " <> path <> " does not match its actual diff"
 
 -- | Apply the diff between @originalParentWt@ and @commitWt@ onto @newParentWt@.
 --   For each file: compute bytes added beyond the original parent, append to new parent.

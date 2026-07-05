@@ -67,6 +67,7 @@ import Runix.FileSystem
   ( FileSystem, FileSystemRead, FileSystemWrite
   , appendFile, writeFile, fileExists, readFile, listFiles
   )
+import Storyteller.Core.Append (appendAtom, rewriteAtom, unstoreAtom)
 import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Created (Created(..))
 import Storyteller.Core.Git (BranchTag)
@@ -171,16 +172,7 @@ editAtom
   -> T.Text
   -> Sem r (TickId, [(TickId, TickId)])
 editAtom tid path newContent = do
-  (newTid, mapping) <- sneakyAt @branch tid $ do
-    drop @branch
-    withFS @branch $ do
-      -- 'drop' rewinds the branch's (temporary) head to tid's parent; withFS
-      -- loads that head's tree as the working tree, so the file here holds
-      -- every preceding atom's content already. Append the new atom content
-      -- rather than overwrite, so this tick's diff is just the one atom
-      -- being edited — matching the append-only invariant Store checks.
-      appendFile @(BranchTag branch) path (TE.encodeUtf8 newContent)
-      storeAs @branch (Atom path newContent)
+  (newTid, mapping) <- rewriteAtom @(BranchTag branch) @branch tid path newContent
   let fullMapping = (tid, newTid) : mapping
   updateReferences fullMapping
   sync @branch
@@ -562,14 +554,10 @@ commitAtom file (table, anchor) (m, gap, fate, content, outcome) = do
   case outcome of
     Kept -> return (table1, origId)
     Dropped -> do
-      (_, tailMapping) <- sneakyAt @branch origId (drop @branch)
+      tailMapping <- unstoreAtom @branch origId
       return (composeMapping table1 tailMapping, anchor1)
     Changed -> do
-      (newTid, tailMapping) <- sneakyAt @branch origId $ do
-        drop @branch
-        withFS @branch $ do
-          appendFile @project file (TE.encodeUtf8 content)
-          storeAs @branch (Atom file content)
+      (newTid, tailMapping) <- rewriteAtom @project @branch origId file content
       return (composeMapping table1 (tailMapping ++ [(origId, newTid)]), newTid)
 
 -- | A gap that folded onto a neighbor was already absorbed into that atom's
@@ -776,14 +764,19 @@ storeNewFiles files = do
   reset @branch
   mapM_ (uncurry storeNewFile) contents
   where
+    -- 'appendAtom': the whole point of this loop is that each file's commit
+    -- builds on the *ambient* tree as the previous file's commit left it, so
+    -- the final tree accumulates every new file — 'appendAtom's own isolated
+    -- commit (via 'storeAtom') never disturbs that accumulation, since it
+    -- always restores the ambient tree right after, then layers its own
+    -- plain ambient echo back on top.
     storeNewFile f c = do
       writeFile @project f BS.empty
       _ <- storeAs @branch (Created f)
       if T.null c
         then return ()
         else do
-          writeFile @project f (TE.encodeUtf8 c)
-          _ <- storeAs @branch (Atom f c)
+          _ <- appendAtom @branch f c
           return ()
 
 -- | A file's current working-tree content, decoded as text — the one place

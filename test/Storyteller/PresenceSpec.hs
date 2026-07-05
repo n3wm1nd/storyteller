@@ -59,7 +59,7 @@ writeAtom
   => FilePath -> Text -> Sem r TickId
 writeAtom path content = do
   appendFile @(BranchTag Story) path (TE.encodeUtf8 content)
-  storeAs @Story (Atom path "")
+  storeAs @Story (Atom path content)
 
 -- ---------------------------------------------------------------------------
 -- Spec
