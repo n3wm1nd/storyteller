@@ -151,12 +151,11 @@ writeTree = writeObject . TreeObject
 -- Reads ('ReadObject', 'ReadCommit') go through a persistent
 -- @git cat-file --batch@ process ('Runix.Git.Batch') accessed via
 -- @withReader@ -- an access function rather than a reader value, so this
--- interpreter doesn't hardcode the reader's lifetime. Two shapes are
--- provided: 'runGitIOPerCall' opens and closes a fresh reader around one
--- call (what every executable/test uses, and what the server used before
--- being pushed further); 'Runix.Git.Batch.withSharedReader' instead
--- borrows one long-lived reader under a lock, for sharing across many
--- concurrent callers (see 'Storyteller.Core.Runtime.runInfrastructureShared').
+-- interpreter doesn't hardcode the reader's lifetime. 'runGitIOPerCall'
+-- opens and closes a fresh reader around one call, what every
+-- executable/test uses; the server instead supplies its own access
+-- function that borrows the one reader owned by its git-storage worker
+-- thread (see 'Server.Writer.GitWorker' and PLAN-git-storage-worker.md).
 -- See 'Runix.Git.Batch' for the throughput measurement (~30x over
 -- one-shot @cat-file@) and its correctness tests.
 runGitIO
@@ -259,10 +258,9 @@ runGitIO repo withReader =
 
 -- | Convenience: open a fresh batch reader for the duration of this one
 -- call and close it when finished -- what every executable and test
--- uses. The server instead threads one long-lived, lock-shared reader
--- across every connection via
--- 'Storyteller.Core.Runtime.runInfrastructureShared' and
--- 'Runix.Git.Batch.withSharedReader'; see 'runGitIO'.
+-- uses. The server instead has one long-lived reader owned solely by its
+-- git-storage worker thread ('Server.Writer.GitWorker'), fed into
+-- 'runGitIO' the same way this feeds its own; see PLAN-git-storage-worker.md.
 --
 -- Needs 'Polysemy.Resource.bracket' rather than a plain
 -- 'Control.Exception.bracket': @action@ is still an abstract 'Sem'

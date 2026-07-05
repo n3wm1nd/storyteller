@@ -111,12 +111,13 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles }: 
 // structure or file-level operations of their own.
 
 export function FileTree({
-  activeBranch, files, selectedFile, onSelectFile, onUploadFiles,
+  activeBranch, files, selectedFile, onSelectFile, onCreateFile, onUploadFiles,
 }: {
   activeBranch: string | null;
   files: string[];
   selectedFile: string | null;
   onSelectFile: (f: string) => void;
+  onCreateFile: (path: string) => void;
   onUploadFiles: (files: { path: string; content: File }[]) => void;
 }) {
   const [rootDragOver, setRootDragOver] = useState(false);
@@ -128,14 +129,14 @@ export function FileTree({
 
   // No dedicated folder-creation affordance yet — a path typed with "/"s
   // just nests under those segments via 'buildTree', same as a dropped
-  // upload's destination. No rename yet either, so this is purely additive:
-  // selecting a not-yet-existing path opens it "absent" (see WS-PROTOCOL.md)
-  // and it's created for real on first write.
+  // upload's destination. No rename yet either. Creation is now its own
+  // explicit tick (file.create — see WS-PROTOCOL.md) rather than the path
+  // just sitting "absent" until whatever's typed into it first lands.
   function handleCreateFile() {
     const path = newFilePath.trim().replace(/^\/+/, "");
     if (!path) return;
     setNewFilePath("");
-    onSelectFile(path);
+    onCreateFile(path);
   }
 
   return (

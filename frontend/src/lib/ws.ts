@@ -145,6 +145,11 @@ export interface ContextItem {
 }
 
 export type FileCommand =
+  // Create: introduce this path into the tree as its own tick, empty —
+  // distinct from chat.append, which both creates (implicitly, on a
+  // not-yet-tracked path) and appends content in one step. Fails on an
+  // already-present path rather than truncating it.
+  | { type: "file.create"; id?: string }
   | { type: "chat.append"; id?: string; content: string }
   | { type: "delete";      id?: string }
   | { type: "edit.atom";   id?: string; tickId: string; content: string }

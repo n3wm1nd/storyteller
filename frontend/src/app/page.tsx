@@ -123,7 +123,7 @@ export default function Home() {
   const {
     conns, error, branches, characterBranches, activeBranch, files, ticks, branchHead, openFiles,
     openCharacters, openJournals, journalMarkers, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
-    hoverHighlight, connect, createBranch, deleteBranch, selectBranch, openFile, closeFile,
+    hoverHighlight, connect, createBranch, deleteBranch, selectBranch, openFile, createFile, closeFile,
     openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
     editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker, appendJournal,
     setHoverHighlight, clearHoverHighlight, enterScene, leaveScene,
@@ -223,6 +223,14 @@ export default function Home() {
     pushPath(activeBranch, path);
   }
 
+  function handleCreateFile(path: string) {
+    if (selectedFile && selectedFile !== path) closeFile(selectedFile);
+    setSelectedFile(path);
+    createFile(path);
+    setCenterTab("file");
+    pushPath(activeBranch, path);
+  }
+
   function handleCloseFile() {
     if (selectedFile) closeFile(selectedFile);
     setSelectedFile(null);
@@ -302,6 +310,7 @@ export default function Home() {
               files={files} selectedFile={selectedFile}
               onSelectBranch={handleSelectBranch}
               onSelectFile={handleSelectFile}
+              onCreateFile={handleCreateFile}
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
               onHoverCharacter={setHoveredCharacter}

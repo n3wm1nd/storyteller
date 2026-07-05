@@ -56,7 +56,9 @@ library
                   , Storyteller.Writer.Agent.Fix
                   , Storyteller.Writer.Agent.ReplaceTool
                   , Storyteller.Core.Atom
+                  , Storyteller.Core.Created
                   , Storyteller.Core.Append
+                  , Storyteller.Core.Create
                   , Storyteller.Core.Edit
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation
@@ -69,6 +71,7 @@ library
                   , Server.Core.Branch
                   , Server.Core.File
                   , Server.Writer.Env
+                  , Server.Writer.GitWorker
                   , Server.Writer.Notification
                   , Server.Writer.Run
                   , Server.Writer.Session.Protocol
@@ -112,6 +115,7 @@ library
                   , yaml
                   , stm
                   , time
+                  , async
   hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -208,6 +212,8 @@ test-suite storyteller-test
                   , Storyteller.StorageSpec
                   , Storyteller.EditSpec
                   , Storyteller.CommitWorkingTreeSpec
+                  , Storyteller.CommitNewFilesSpec
+                  , Storyteller.CreateSpec
                   , Storyteller.SubdirSpec
                   , Storyteller.SplitterSpec
                   , Storyteller.TrackerSpec
@@ -219,6 +225,7 @@ test-suite storyteller-test
                   , Server.FileSpec
                   , Server.CharacterSpec
                   , Server.NotificationSpec
+                  , Server.Writer.GitWorkerSpec
   autogen-modules:  Paths_storyteller
   build-depends:    base >=4.18 && <5
                   , storyteller
@@ -235,6 +242,8 @@ test-suite storyteller-test
                   , aeson
                   , yaml
                   , stm
+                  , process
+                  , temporary
   hs-source-dirs:   test
   default-language: Haskell2010
   ghc-options:      -Wall

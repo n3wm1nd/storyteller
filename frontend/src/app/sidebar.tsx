@@ -77,7 +77,7 @@ function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart
 export function LeftSidebar({
   tab, setTab,
   branches, characterBranches, activeBranch, files, selectedFile,
-  onSelectBranch, onSelectFile,
+  onSelectBranch, onSelectFile, onCreateFile,
   onCreateBranch, onDeleteBranch,
   onHoverCharacter,
   onUploadFiles,
@@ -96,6 +96,7 @@ export function LeftSidebar({
   selectedFile: string | null;
   onSelectBranch: (b: string) => void;
   onSelectFile: (f: string) => void;
+  onCreateFile: (path: string) => void;
   onCreateBranch: (name: string) => void;
   onDeleteBranch: (name: string) => void;
   onHoverCharacter: (branch: string | null) => void;
@@ -132,7 +133,7 @@ export function LeftSidebar({
       {tab === "explorer" && (
         <FileTree
           activeBranch={activeBranch} files={files} selectedFile={selectedFile}
-          onSelectFile={onSelectFile} onUploadFiles={onUploadFiles}
+          onSelectFile={onSelectFile} onCreateFile={onCreateFile} onUploadFiles={onUploadFiles}
         />
       )}
 

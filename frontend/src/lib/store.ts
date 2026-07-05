@@ -133,6 +133,7 @@ interface StoryState {
   deleteBranch:   (name: string) => void;
   selectBranch:   (name: string) => Promise<void>;
   openFile:       (path: string) => Promise<void>;
+  createFile:     (path: string) => Promise<void>;
   closeFile:      (path: string) => void;
   openCharacter:  (branch: string) => Promise<void>;
   closeCharacter: (branch: string) => void;
@@ -386,6 +387,22 @@ function handleError(set: Setter, evt: ErrorEvent) {
   set(() => ({ error: evt.message }));
 }
 
+// Selection is a temporary "about to act on this" marker, not a durable
+// reference — once an action consumes its targets (merge/split/delete/edit),
+// those ids are done being selected, regardless of what the server's remap
+// eventually resolves them to. Called with the ids the just-sent command
+// itself names, so it doesn't need to wait on (or reason about) the
+// tick.remap round trip at all.
+function dropFromSelection(set: Setter, ids: string[]) {
+  if (ids.length === 0) return;
+  set((s) => {
+    const drop = new Set(ids);
+    const contextAtoms = new Set([...s.contextAtoms].filter((id) => !drop.has(id)));
+    const contextAnnotations = new Set([...s.contextAnnotations].filter((id) => !drop.has(id)));
+    return { contextAtoms, contextAnnotations };
+  });
+}
+
 // Wrap a command in an "at" rebase if a marker is set, otherwise send it
 // as-is. When rebasing, attaches every active character's journal position
 // (see 'journalMarkers' and character-sidebar.tsx's nearestJournalMarker
@@ -599,6 +616,16 @@ export const useStory = create<StoryState>((set, get) => ({
     }));
   },
 
+  // Explicit "new file" creation: opens the connection (same as selecting
+  // an existing file, which starts out absent), then sends file.create —
+  // the server introduces the path as its own empty tick, and the
+  // resulting file.present + update events flip 'absent' to false, same as
+  // any other write to a not-yet-tracked path would.
+  createFile: async (path) => {
+    await get().openFile(path);
+    get().openFiles[path]?.conn.send({ type: "file.create" });
+  },
+
   closeFile: (path) => {
     get().openFiles[path]?.conn.close();
     set((s) => {
@@ -742,10 +769,12 @@ export const useStory = create<StoryState>((set, get) => ({
 
   editJournalAtom: (branch, tickId, content, marker) => {
     get().openJournals[branch]?.conn.send(atRebase(marker, { type: "edit.atom", tickId, content }, {}));
+    dropFromSelection(set, [tickId]);
   },
 
   deleteJournalAtom: (branch, tickId, marker) => {
     get().openJournals[branch]?.conn.send(atRebase(marker, { type: "delete.atom", tickId }, {}));
+    dropFromSelection(set, [tickId]);
   },
 
   // Fix, scoped to the journal itself — this is what "rewrite to exclude
@@ -789,12 +818,14 @@ export const useStory = create<StoryState>((set, get) => ({
     get().openFiles[path]?.conn.send(
       atRebase(get().rebaseMarker, { type: "edit.atom", tickId, content }, get().journalMarkers)
     );
+    dropFromSelection(set, [tickId]);
   },
 
   deleteAtom: (path, tickId) => {
     get().openFiles[path]?.conn.send(
       atRebase(get().rebaseMarker, { type: "delete.atom", tickId }, get().journalMarkers)
     );
+    dropFromSelection(set, [tickId]);
   },
 
   // Both reuse the existing atom context selection ('contextAtoms') rather
@@ -806,6 +837,7 @@ export const useStory = create<StoryState>((set, get) => ({
     get().openFiles[path]?.conn.send(
       atRebase(get().rebaseMarker, { type: "merge.atoms", targets }, get().journalMarkers)
     );
+    dropFromSelection(set, targets);
   },
 
   splitSelected: (path) => {
@@ -814,6 +846,7 @@ export const useStory = create<StoryState>((set, get) => ({
     get().openFiles[path]?.conn.send(
       atRebase(get().rebaseMarker, { type: "split.atoms", targets }, get().journalMarkers)
     );
+    dropFromSelection(set, targets);
   },
 
   // Drag-and-drop upload — one or more dropped files, written directly to
@@ -847,6 +880,7 @@ export const useStory = create<StoryState>((set, get) => ({
 
   deleteTickEntry: (tickId) => {
     get()._branch?.send({ type: "delete.tick", tickId });
+    dropFromSelection(set, [tickId]);
   },
 
   chatWrite: (path, text) => {
