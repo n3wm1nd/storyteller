@@ -63,13 +63,12 @@ import Polysemy.Fail
 import Data.Maybe (fromMaybe, isJust)
 import Data.Tuple (swap)
 import Polysemy.State (State, get, put, modify, evalState, runState)
-import Polysemy.Internal (raiseUnder, raiseUnder3)
 
 import Runix.Git
 import Runix.FileSystem
   ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
 
-import Storyteller.Core.Types
+import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage hiding (get, drop, Get)
 import qualified Storyteller.Core.Storage as S
 import qualified Storyteller.Core.Atom as Atom
@@ -813,36 +812,6 @@ applyDiff originalParentWt commitWt newParentWt =
       return $ Map.insert path (FSFile hash) wt
     keepExisting _ old = old
 
--- | Apply the suffix that commit @cd@ added to its parent onto @parentWt@.
---   For each file: compute bytes added beyond the commit's own parent's version,
---   then append those bytes to the corresponding file in @parentWt@.
-applyCommitSuffix
-  :: Members '[Git, Fail] r
-  => WorkingTree   -- ^ tree of the new parent (what we're rebasing onto)
-  -> CommitData    -- ^ the commit being replayed
-  -> Sem r WorkingTree
-applyCommitSuffix parentWt cd = do
-  commitWt       <- readTreeRecursive "" (commitTree cd)
-  commitParentWt <- case commitParents cd of
-    []    -> return emptyWorkingTree
-    (p:_) -> loadWorkingTree p
-  foldM (applyFile commitParentWt) parentWt (Map.toList commitWt)
-  where
-    applyFile _commitParentWt wt (path, FSDir) =
-      return $ Map.insertWith keepExisting path FSDir wt
-    applyFile commitParentWt wt (path, FSFile newHash) = do
-      newContent <- readBlob newHash
-      oldContent <- case Map.lookup path commitParentWt of
-        Just (FSFile h) -> readBlob h
-        _               -> return BS.empty
-      let suffix   = BS.drop (BS.length oldContent) newContent
-      baseContent <- case Map.lookup path wt of
-        Just (FSFile h) -> readBlob h
-        _               -> return BS.empty
-      let combined = baseContent <> suffix
-      hash <- writeBlob combined
-      return $ Map.insert path (FSFile hash) wt
-    keepExisting _ old = old
 
 -- | Recursive implementation of At, inside the interpretH tactic context.
 --

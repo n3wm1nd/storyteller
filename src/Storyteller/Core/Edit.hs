@@ -77,7 +77,7 @@ import Storyteller.Core.Storage
   )
 import Storyteller.Core.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent, decodeTaggedMessage)
 
-import Prelude hiding (appendFile, drop, get, readFile, writeFile)
+import Prelude hiding (appendFile, drop, readFile, writeFile)
 
 -- ---------------------------------------------------------------------------
 -- Position-free tick representation
@@ -96,10 +96,6 @@ data TDraft = TDraft
 
 toTickData :: TDraft -> TickData
 toTickData d = TickData { tickRefs = tdRefs d, tickFields = tdFields d, tickMessage = tdMessage d }
-
-remapDraftRefs :: [(TickId, TickId)] -> TDraft -> TDraft
-remapDraftRefs mapping d = d { tdRefs = map remap (tdRefs d) }
-  where remap tid = maybe tid id (lookup tid mapping)
 
 -- | Pop the tick currently at HEAD, returning its draft with file diffs.
 --   Must be called as the inner action of @at tid@ — that puts @tid@ at HEAD.
