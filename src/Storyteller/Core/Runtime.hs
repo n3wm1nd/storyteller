@@ -20,6 +20,7 @@ module Storyteller.Core.Runtime
 
     -- * Runners
   , runInfrastructure
+  , runInfrastructureWith
   , runStoryGit
 
     -- * Re-exported for custom stacks
@@ -89,25 +90,46 @@ instance RestEndpoint StoryLlamaCppAuth where
 -- Runners
 -- ---------------------------------------------------------------------------
 
+-- | The 'Git'-independent middle of the infrastructure stack: random,
+--   http, sleep/time. Factored out so a caller can supply its own 'Git'
+--   interpreter underneath (a fresh per-call reader for CLI executables,
+--   or the shared git-storage worker for the server -- see
+--   PLAN-git-storage-worker.md) without duplicating this part.
+--
+--   The supplied interpreter still sees 'Fail' in its row (via the
+--   'Members' constraint) rather than consuming it -- whatever eliminates
+--   'Fail' (e.g. 'failLog') sits further out, wrapped around this whole
+--   call, same as it always has.
+runInfrastructureWith
+  :: Members '[Fail, Embed IO] r
+  => (Sem (Git : r) a -> Sem r a)
+  -> Sem (Random : HTTP : HTTPStreaming : Sleep : Time : Git : r) a
+  -> Sem r a
+runInfrastructureWith runGit =
+    runGit
+  . timeIO
+  . sleepIO
+  . httpIOStreaming (withRequestTimeout 600)
+  . httpIO (withRequestTimeout 600)
+  . randomIO
+
 -- | Shared infrastructure interpreters: git, http, time, logging, error.
---   Every executable uses this as its base; branch/storage/LLM go on top.
+--   Every CLI executable uses this as its base; branch/storage/LLM go on
+--   top. The server uses 'runInfrastructureWith' directly instead, with
+--   'Server.Writer.GitWorker.runGitViaWorker' in place of the
+--   'runGitIOPerCall' below -- see PLAN-git-storage-worker.md.
 --
 --   'runGitIOPerCall' opens a persistent @git cat-file --batch@ process
 --   for reads and closes it when this call finishes ('Resource'/'bracket',
 --   see 'Runix.Git.runGitIOPerCall') -- scoped to one 'runInfrastructure'
---   invocation (one request, for the server), not shared across calls.
+--   invocation, not shared across calls; fine for a short-lived CLI
+--   process, which is all that still uses this function.
 --   'runResource' interprets that here so nothing above this layer
 --   (agents, handlers, executables) needs to know 'Resource' exists.
 --   'runGitIOPerCall' converts every failure from the reader into 'Fail'
 --   rather than a raw IO exception (see its module), which is what lets
 --   'runResource's purely-'Sem'-level bracket -- it has no IO awareness at
 --   all -- still guarantee the reader gets closed on that path.
---
---   This is the "mid" tier of the three-tier server performance
---   assessment (see PLAN-git-storage-worker.md): one reader opened per
---   call, not shared across the server's whole lifetime. Pushing it to
---   "ideal" (one shared git-storage worker thread for the whole server)
---   is deliberately not done here -- see that doc for the design.
 runInfrastructure
   :: Members '[Error String, Embed IO] r
   => FilePath
@@ -120,13 +142,7 @@ runInfrastructure repoPath _endpoint =
   . runResource
   . cmdsIO
   . interpretCmd @"git"
-  . runGitIOPerCall repoPath
-  . withGitCache
-  . timeIO
-  . sleepIO
-  . httpIOStreaming (withRequestTimeout 600)
-  . httpIO (withRequestTimeout 600)
-  . randomIO
+  . runInfrastructureWith (runGitIOPerCall repoPath . withGitCache)
 
 -- | One branch, storage, LLM. Creates the branch if it doesn't exist.
 runStoryGit

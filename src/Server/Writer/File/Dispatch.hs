@@ -29,7 +29,7 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
-import Server.Core.File (FileOpen, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, chatNote)
+import Server.Core.File (FileOpen, createFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, chatNote)
 import Server.Writer.File (chatWriter, chatFixer, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
@@ -41,6 +41,9 @@ import Storyteller.Writer.Types (PresenceEvent(..))
 
 runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r ()
 runCommand path cmd = case cmd of
+
+  CreateFile _mid ->
+    createFile path
 
   ChatAppend _mid content ->
     appendToFile path content

@@ -17,6 +17,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
+import Server.Writer.GitWorker (GitWorkerQueue, startGitWorker)
 import Server.Writer.Notification (BranchNotification)
 
 -- | Mutable shared state across requests. Starts empty; extended as needed.
@@ -33,6 +34,7 @@ data ServerEnv = ServerEnv
   , envPort        :: Int                         -- ^ PORT (default 8090)
   , appState       :: TVar AppState
   , envNotifyChan  :: TChan BranchNotification    -- ^ broadcast channel; connections dupTChan to subscribe
+  , envGitWorker   :: GitWorkerQueue              -- ^ the process's one git-storage worker; see PLAN-git-storage-worker.md
   }
 
 loadServerEnv :: IO ServerEnv
@@ -42,12 +44,14 @@ loadServerEnv = do
   port     <- maybe 8090 read <$> lookupEnv "PORT"
   state    <- newTVarIO emptyAppState
   notify   <- newBroadcastTChanIO
+  worker   <- startGitWorker repo notify
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint
     , envPort        = port
     , appState       = state
     , envNotifyChan  = notify
+    , envGitWorker   = worker
     }
 
 requireEnv :: String -> IO String

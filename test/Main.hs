@@ -5,6 +5,8 @@ import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.StorageSpec
 import qualified Storyteller.EditSpec
 import qualified Storyteller.CommitWorkingTreeSpec
+import qualified Storyteller.CommitNewFilesSpec
+import qualified Storyteller.CreateSpec
 import qualified Storyteller.SubdirSpec
 import qualified Storyteller.SplitterSpec
 import qualified Storyteller.TrackerSpec
@@ -15,6 +17,7 @@ import qualified Server.Writer.BranchSpec
 import qualified Server.FileSpec
 import qualified Server.CharacterSpec
 import qualified Server.NotificationSpec
+import qualified Server.Writer.GitWorkerSpec
 import Server.TestStack (testStack, testStackTransactional)
 
 main :: IO ()
@@ -23,6 +26,8 @@ main = hspec $ do
   describe "Storyteller.Core.Storage"        Storyteller.StorageSpec.spec
   describe "Storyteller.Core.Edit"           Storyteller.EditSpec.spec
   describe "Storyteller.CommitWorkingTree" Storyteller.CommitWorkingTreeSpec.spec
+  describe "Storyteller.CommitNewFiles" Storyteller.CommitNewFilesSpec.spec
+  describe "Storyteller.Create"         Storyteller.CreateSpec.spec
   describe "Storyteller.Subdir"         Storyteller.SubdirSpec.spec
   describe "Storyteller.Splitter"       Storyteller.SplitterSpec.spec
   describe "Storyteller.Tracker"        Storyteller.TrackerSpec.spec
@@ -42,3 +47,4 @@ main = hspec $ do
   describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
   describe "Server.Writer.Character"            Server.CharacterSpec.spec
   describe "Server.Writer.Notification"         Server.NotificationSpec.spec
+  describe "Server.Writer.GitWorker"            Server.Writer.GitWorkerSpec.spec

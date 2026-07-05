@@ -40,6 +40,8 @@ import Control.Concurrent.STM (TChan, atomically, dupTChan)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed, runM)
@@ -83,18 +85,26 @@ runCommands env branch conn = do
 --   scope to notice writes made elsewhere. Tick remaps aren't forwarded
 --   here — nothing at the branch level (unlike a file connection's rebase
 --   marker/context selection) tracks a bare tickId across a push yet.
+--
+--   The accumulator also carries the file set last observed, seeded here
+--   from the same 'branchState' read 'pushInitial' makes (on its own
+--   thread/scope — see the module comment on why these two threads don't
+--   share state directly), so the first 'RefMoved' diffs against the
+--   branch's actual starting file list instead of empty and doesn't
+--   re-announce every already-known file as newly added.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
-    void $ watchBranch chan branch Nothing (onNotify branch conn)
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
+    initialFiles <- withBranch @Main branch (fst <$> branchState)
+    void $ watchBranch chan branch (Nothing, Set.fromList initialFiles) (onNotify branch conn)
   either (reportError conn) return result
 
 onNotify
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
-onNotify branch conn since note = case note of
-  RefMoved _      -> withBranch @Main branch (pushIncremental conn since)
-  TicksRemapped _ -> return since
+  => T.Text -> WS.Connection -> (Maybe T.Text, Set FilePath) -> BranchNotification -> Sem r (Maybe T.Text, Set FilePath)
+onNotify branch conn (since, knownFiles) note = case note of
+  RefMoved _      -> withBranch @Main branch (pushIncremental conn since knownFiles)
+  TicksRemapped _ -> return (since, knownFiles)
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (BranchError (T.pack err)))
@@ -135,13 +145,26 @@ commandLoop conn branch = loop
           >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
 
+-- | Push updated tick state, plus a 'FileAdded' for every path that appeared
+--   in the working tree since the last push we saw. This is what makes a
+--   brand-new path show up live for every other connection already open on
+--   this branch, regardless of which connection introduced it — a
+--   chat.append/file.create on a file connection, an upload, or a
+--   Track/CharGen command (whose own dispatch already returns its own
+--   'FileAdded's directly; this is a second, redundant-but-harmless path for
+--   those, and the *only* path for everything else). Only additions are
+--   tracked — no removal/rename event exists yet, see the FIXME on
+--   'BranchEvent'.
 pushIncremental
   :: (BranchOpen r, Member (Embed IO) r, Member (Error String) r)
-  => WS.Connection -> Maybe T.Text -> Sem r (Maybe T.Text)
-pushIncremental conn since =
+  => WS.Connection -> Maybe T.Text -> Set FilePath -> Sem r (Maybe T.Text, Set FilePath)
+pushIncremental conn since knownFiles =
   catch @String
     (do
-      (_, upd) <- branchStateSince (TickId <$> since)
+      (files, upd) <- branchStateSince (TickId <$> since)
+      let fileSet  = Set.fromList files
+          newFiles = Set.toList (Set.difference fileSet knownFiles)
+      mapM_ (\f -> embed $ WS.sendTextData conn (encode (FileAdded Nothing f))) newFiles
       embed $ WS.sendTextData conn (encode (BranchUpdate upd))
-      return (Just (updateHead upd)))
-    (\err -> embed (reportError conn err) >> return since)
+      return (Just (updateHead upd), fileSet))
+    (\err -> embed (reportError conn err) >> return (since, knownFiles))

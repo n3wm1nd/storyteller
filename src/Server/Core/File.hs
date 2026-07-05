@@ -23,6 +23,7 @@ module Server.Core.File
   ( FileOpen
   , fileState
   , fileStateSince
+  , createFile
   , appendToFile
   , editFileAtom
   , deleteFileAtom
@@ -50,6 +51,7 @@ import Server.Core.Run (SessionEffects)
 import Server.Core.Util (withBranch)
 
 import Storyteller.Core.Append (append)
+import qualified Storyteller.Core.Create as Create
 import Storyteller.Common.Annotation (addNote)
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Atom (Atom(..))
@@ -93,6 +95,18 @@ fileStateSince path since = fileUpdateSince since <$> fileTicks @Main path
 -- ---------------------------------------------------------------------------
 -- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
+
+-- | Introduce @path@ into the tree, empty, as its own tick — distinct from
+-- whatever content 'appendToFile' (or an agent) lands on it afterward.
+-- Fails on a path that already has ticks — this is creation, not truncation.
+createFile :: (FileOpen r, SessionEffects r) => FilePath -> Sem r ()
+createFile path = do
+  existing <- fileTicks @Main path
+  case existing of
+    [] -> do
+      info $ "creating file: " <> T.pack path
+      void $ Create.createFile @Main path
+    _  -> fail ("createFile: already exists: " <> path)
 
 -- | Append content to a file as a single atom — the caller (someone typing
 --   and appending their own text) already chose exactly what they wanted

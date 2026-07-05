@@ -46,8 +46,15 @@ instance FromJSON ContextItem where
 --   whether atoms generated since then are still provisional); 'ChatFixer'
 --   edits specific existing atoms in place; 'ChatNote' is instant and
 --   non-LLM like 'ChatAppend', attaching an annotation instead of content.
+--
+--   'CreateFile' introduces this path into the tree as its own tick, empty —
+--   distinct from 'ChatAppend', which both creates (implicitly, on a
+--   not-yet-tracked path) and appends content in one step. Fails on an
+--   already-present path rather than truncating it — see
+--   'Server.Core.File.createFile'.
 data FileCommand
-  = ChatAppend { fcId :: Maybe T.Text, fcContent :: T.Text }
+  = CreateFile { fcId :: Maybe T.Text }
+  | ChatAppend { fcId :: Maybe T.Text, fcContent :: T.Text }
   | Delete     { fcId :: Maybe T.Text }
   | EditAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   | DeleteAtom { fcId :: Maybe T.Text, fcTickId :: T.Text }
@@ -93,6 +100,7 @@ instance FromJSON FileCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
+      "file.create" -> pure (CreateFile i)
       "chat.append" -> ChatAppend i <$> o .: "content"
       "delete"      -> pure (Delete i)
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
@@ -128,6 +136,7 @@ instance FromJSON FileCommand where
 --   operationally interesting one.
 commandKind :: FileCommand -> T.Text
 commandKind = \case
+  CreateFile {}   -> "file.create"
   ChatAppend {}   -> "chat.append"
   Delete {}       -> "delete"
   EditAtom {}     -> "edit.atom"

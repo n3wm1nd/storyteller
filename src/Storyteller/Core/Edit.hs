@@ -69,10 +69,11 @@ import Runix.FileSystem
   , appendFile, writeFile, fileExists, readFile, listFiles, isDirectory
   )
 import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Created (Created(..))
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Storage
   ( StoryBranch, StoryStorage
-  , at, sneakyAt, sneakyAtWithFS, atWithFS, readAtWithFS, withFS, drop, reset, sync, store, storeAs, storeData, follow, get, updateReferences
+  , at, sneakyAt, sneakyAtWithFS, readAtWithFS, withFS, drop, reset, sync, storeAs, storeData, follow, get, updateReferences
   )
 import Storyteller.Core.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent, decodeTaggedMessage)
 
@@ -802,11 +803,16 @@ longestCommonSubstring a b
       List.foldl' pick (0, 0, 0) [ (dp ! (i, j), i, j) | i <- [1 .. n], j <- [1 .. m] ]
     pick acc@(bl, _, _) cand@(l, _, _) = if l > bl then cand else acc
 
--- | New files present in the working tree but absent from history: no
---   reconciliation needed, just a plain commit. Reads their target content
---   before resetting (which discards the pending buffer for files already
---   reconciled via 'commitFile') so only the new files' bytes get replayed
---   onto the now-current head.
+-- | New files present in the working tree but absent from history: each
+--   gets its own 'Created' tick (the path's introduction, empty content),
+--   immediately followed by an 'Atom' tick carrying its target content if
+--   any — same two-step shape a brand-new file created interactively goes
+--   through (see 'Storyteller.Core.Create.createFile' then
+--   'Storyteller.Core.Append.append'), just batched here for however many
+--   new paths one reconciliation call covers. Reads each file's target
+--   content before resetting (which discards the pending buffer for files
+--   already reconciled via 'commitFile') so only the new files' bytes get
+--   replayed onto the now-current head.
 storeNewFiles
   :: forall project branch r
   .  ( project ~ BranchTag branch
@@ -817,9 +823,17 @@ storeNewFiles [] = return ()
 storeNewFiles files = do
   contents <- mapM (\f -> (f,) <$> readWorking @project f) files
   reset @branch
-  mapM_ (\(f, c) -> writeFile @project f c) contents
-  _ <- store @branch "add new files"
-  return ()
+  mapM_ (uncurry storeNewFile) contents
+  where
+    storeNewFile f c = do
+      writeFile @project f BS.empty
+      _ <- storeAs @branch (Created f)
+      if BS.null c
+        then return ()
+        else do
+          writeFile @project f c
+          _ <- storeAs @branch (Atom f (TE.decodeUtf8With TE.lenientDecode c))
+          return ()
 
 readWorking
   :: forall project r

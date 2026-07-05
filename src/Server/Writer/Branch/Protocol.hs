@@ -88,16 +88,14 @@ commandKind = \case
 --   BranchError:  something went wrong; message is human-readable.
 --
 -- FIXME: file tree changes are only tracked one-directionally — FileAdded
--- covers Track/CharGen creating a path (uploads now go over the HTTP
--- PUT /branch/{name}/{path} endpoint instead of a BranchCommand, so the
--- client updates its own file list optimistically on a successful PUT
--- rather than waiting for an event here), but there's no
--- FileRemoved/FileRenamed (or any push at all) for a file disappearing or
--- being renamed/moved from the tree. Once delete/rename/move-file commands
--- exist (see TODO.md), a connected client's cached file list can silently
--- drift from the real tree with no event to correct it — 'pushIncremental'
--- (Connection.hs) only re-derives tick state on notify, never the file
--- list itself.
+-- now covers any path appearing in the working tree, from any source
+-- (Track/CharGen's own dispatch push it directly; every other connection's
+-- 'pushIncremental' diffs the file list on each notify and pushes one too —
+-- see Connection.hs), but there's still no FileRemoved/FileRenamed (or any
+-- push at all) for a file disappearing or being renamed/moved from the
+-- tree. Once delete/rename/move-file commands exist (see TODO.md), a
+-- connected client's cached file list can silently drift from the real
+-- tree with no event to correct it.
 data BranchEvent
   = BranchReady  { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
   | FileAdded    { beId :: Maybe T.Text, bePath :: FilePath }

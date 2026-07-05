@@ -33,51 +33,26 @@ import Data.Aeson (encode, object, (.=), Value)
 import qualified Network.WebSockets as WS
 import Polysemy
 import Polysemy.Error (Error, runError)
-import Runix.Git (Git(..))
 import Runix.Logging (Logging(..), Level(..))
 import Runix.StreamChunk (StreamChunk(..), ignoreChunks)
 import Runix.Config (runConfig)
 import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent(..), StreamingEnabled(..))
+import Runix.Runner (loggingIO, failLog)
 
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Env (ServerEnv(..))
+import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
-import Storyteller.Core.Runtime (runInfrastructure, StoryModel, storyModel)
+import Storyteller.Core.Runtime (runInfrastructureWith, StoryModel, storyModel)
 import Storyteller.Core.Prompt (interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage(..))
-import Storyteller.Core.Git (runStoryStorageGit, refBranchName)
-import Storyteller.Core.Types (unBranchName, unTickId)
+import Storyteller.Core.Git (runStoryStorageGit)
+import Storyteller.Core.Types (unTickId)
 
 import Runix.LLM.Interpreter (interpretLLM, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..), RestAPI, restapiHTTP, llmRetry)
 import qualified UniversalLLM
-
--- | Intercept 'Git', pass every operation through, and notify whenever a
---   story branch ref moves. A ref update is the point at which a branch's
---   tick chain has actually changed (as opposed to 'WriteCommit'/'WriteObject',
---   which stage objects that may or may not end up referenced) — connections
---   for that branch then refetch and re-push their full state.
-gitNotify
-  :: Members '[Git, Embed IO] r
-  => TChan BranchNotification
-  -> Sem (Git : r) a
-  -> Sem r a
-gitNotify chan = interpret $ \case
-  ResolveRef  ref         -> send (ResolveRef  ref)
-  DeleteRef   ref         -> send (DeleteRef   ref)
-  ListRefs    prefix      -> send (ListRefs    prefix)
-  ReadCommit  hash        -> send (ReadCommit  hash)
-  ReadObject  hash        -> send (ReadObject  hash)
-  WriteObject obj         -> send (WriteObject obj)
-  LookupPath  tree path   -> send (LookupPath  tree path)
-  WriteCommit cd          -> send (WriteCommit cd)
-  CreateRef   ref hash    -> send (CreateRef ref hash) <* notifyRef ref
-  UpdateRef   ref hash    -> send (UpdateRef ref hash) <* notifyRef ref
-  where
-    notifyRef ref = case refBranchName ref of
-      Nothing     -> return ()
-      Just branch -> embed $ atomically $ writeTChan chan (RefMoved (unBranchName branch))
 
 -- | Intercept 'StoryStorage' and notify whenever 'UpdateReferences' rewrites
 -- a non-empty batch of tick ids — the point at which any client tracking one
@@ -152,8 +127,9 @@ streamChunksWS conn = interpret $ \(EmitChunk event) ->
 actionStack env action =
   let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
   in runError @String
-   . runInfrastructure (envRepoPath env) (envLLMEndpoint env)
-   . gitNotify (envNotifyChan env)
+   . loggingIO
+   . failLog
+   . runInfrastructureWith (runGitViaWorker (envGitWorker env))
    . runStoryStorageGit
    . storageNotify (envNotifyChan env)
    . interpretPromptStorageFS
