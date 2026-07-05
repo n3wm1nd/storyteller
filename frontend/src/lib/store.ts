@@ -151,6 +151,8 @@ interface StoryState {
   appendToFile:   (path: string, content: string) => void;
   editAtom:       (path: string, tickId: string, content: string) => void;
   deleteAtom:     (path: string, tickId: string) => void;
+  mergeSelected:  (path: string) => void;
+  splitSelected:  (path: string) => void;
   uploadFiles:    (files: { path: string; content: Blob }[]) => void;
   addNote:        (refTickId: string, text: string) => void;
   moveTick:       (tickId: string, afterTickId?: string) => void;
@@ -792,6 +794,25 @@ export const useStory = create<StoryState>((set, get) => ({
   deleteAtom: (path, tickId) => {
     get().openFiles[path]?.conn.send(
       atRebase(get().rebaseMarker, { type: "delete.atom", tickId }, get().journalMarkers)
+    );
+  },
+
+  // Both reuse the existing atom context selection ('contextAtoms') rather
+  // than introducing a separate selection mode — same targets Fix/Note
+  // already operate on.
+  mergeSelected: (path) => {
+    const targets = buildContextTargets(get(), path);
+    if (targets.length < 2) return;
+    get().openFiles[path]?.conn.send(
+      atRebase(get().rebaseMarker, { type: "merge.atoms", targets }, get().journalMarkers)
+    );
+  },
+
+  splitSelected: (path) => {
+    const targets = buildContextTargets(get(), path);
+    if (targets.length < 1) return;
+    get().openFiles[path]?.conn.send(
+      atRebase(get().rebaseMarker, { type: "split.atoms", targets }, get().journalMarkers)
     );
   },
 

@@ -150,6 +150,10 @@ export type FileCommand =
   | { type: "edit.atom";   id?: string; tickId: string; content: string }
   | { type: "delete.atom"; id?: string; tickId: string }
   | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string }
+  // Merge: combine a contiguous run of one file's atoms (`targets`) into one.
+  | { type: "merge.atoms"; id?: string; targets: string[] }
+  // Split: re-run the splitter over each of `targets`' own content, in place.
+  | { type: "split.atoms"; id?: string; targets: string[] }
   // Writer, or FlowWriter (implicitly) when `flowTid` is set — the tick
   // that was HEAD when the user started typing, so the agent can judge
   // whether atoms generated since then are still provisional.
