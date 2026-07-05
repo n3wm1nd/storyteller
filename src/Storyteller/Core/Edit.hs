@@ -303,12 +303,16 @@ readAllFiles
   => Sem r (Map FilePath BS.ByteString)
 readAllFiles = go "/" Map.empty
   where
+    -- 'listFiles' returns each direct child's *full* path already (see the
+    -- 'ListFiles' interpreter in Storyteller.Core.Git — it filters the working
+    -- tree's full keys by 'isDirectChild', it does not strip the parent). So
+    -- an entry is used as the path verbatim; re-joining it onto 'dir' would
+    -- double the directory component (e.g. chapters/chapters/ch1.md).
     go dir acc = do
       entries <- listFiles @(BranchTag branch) dir
-      foldM (visit dir) acc entries
+      foldM visit acc entries
 
-    visit dir acc name = do
-      let path = if dir == "/" then name else dir <> "/" <> name
+    visit acc path = do
       isDir <- isDirectory @(BranchTag branch) path
       if isDir
         then go path acc
@@ -510,9 +514,12 @@ readSnapshotAt
   => Tick
   -> Sem r (TickId, Map FilePath BS.ByteString)
 readSnapshotAt tick = do
-  fileMap <- readAtWithFS @branch (tickId tick) $ do
-    files <- listFiles @project "/"
-    Map.fromList <$> mapM (\f -> (f,) <$> readFile @project f) files
+  -- Recurse into subdirectories (via 'readAllFiles') rather than a flat
+  -- 'listFiles "/"': that flat listing includes directory entries, and
+  -- 'readFile' on a directory (e.g. @chapters@) fails with "is a directory".
+  -- 'readAllFiles' walks the tree and returns only files, which is what an
+  -- atom-history snapshot needs — anything nested under @chapters/@ included.
+  fileMap <- readAtWithFS @branch (tickId tick) (readAllFiles @branch)
   return (tickId tick, fileMap)
 
 -- ---------------------------------------------------------------------------

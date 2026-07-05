@@ -201,6 +201,7 @@ test-suite storyteller-test
                   , Storyteller.StorageSpec
                   , Storyteller.EditSpec
                   , Storyteller.CommitWorkingTreeSpec
+                  , Storyteller.SubdirSpec
                   , Storyteller.SplitterSpec
                   , Storyteller.TrackerSpec
                   , Storyteller.CharGenSpec

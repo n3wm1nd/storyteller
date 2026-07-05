@@ -46,7 +46,6 @@ import qualified Data.Text as T
 
 import Autodocodec (HasCodec(..), dimapCodec, object, requiredField, parseJSONViaCodec, (.=))
 import Data.Aeson.Types (parseEither)
-import Data.Maybe (catMaybes)
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.LLM (LLM, queryLLM)
@@ -196,19 +195,36 @@ splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
         , ("source",  Prompt doc)
         ]
 
-  response <- queryLLM @StoryModel
-    (SystemPrompt systemPrompt : Tools (map llmToolToDefinition tools) : configs)
-    [UserText userMsg]
-
-  catMaybes <$> mapM (runOne tools) [tc | AssistantTool tc <- response]
+  let allConfigs = SystemPrompt systemPrompt : Tools (map llmToolToDefinition tools) : configs
+  loop tools allConfigs maxTurns [UserText userMsg]
   where
-    runOne tools call = do
-      result <- executeToolCallFromList tools call
-      case toolResultOutput result of
-        Right value -> case parseEither parseJSONViaCodec value of
-          Right cb  -> return (Just cb)
-          Left _    -> return Nothing
-        Left _ -> return Nothing
+    -- The model emits its emit_beat_sheet calls across several turns — one (or
+    -- a few) per turn, then it waits for the tool results before continuing.
+    -- A single queryLLM therefore only ever sees the first turn's calls (this
+    -- was the "only one chapter" bug). So we run the same execute-results-and-
+    -- recurse loop a general agent uses (cf. runixCodeAgentLoop): each turn,
+    -- execute this turn's calls, feed their results back as ToolResultMsg, and
+    -- query again — until a turn makes no calls. emit_beat_sheet's return
+    -- value is the ChapterBeats itself, so we harvest it from each execution
+    -- rather than caring what the model does with the result message.
+    loop _ _ 0 _ = return []
+    loop tools allConfigs budget history = do
+      response <- queryLLM @StoryModel allConfigs history
+      let calls = [tc | AssistantTool tc <- response]
+      if null calls
+        then return []
+        else do
+          executed <- mapM (executeToolCallFromList tools) calls
+          let sheets  = [ cb | r <- executed
+                             , Right value <- [toolResultOutput r]
+                             , Right cb    <- [parseEither parseJSONViaCodec value] ]
+              history' = history <> response <> map ToolResultMsg executed
+          (sheets <>) <$> loop tools allConfigs (budget - 1) history'
+
+    -- Bound on the number of model turns, so a model that keeps calling the
+    -- tool (or never stops) can't loop forever. Far above any realistic
+    -- chapter count.
+    maxTurns = 60 :: Int
 
 -- | The @emit_beat_sheet@ tool body: package the model's two arguments into a
 --   'ChapterBeats'. No effect — reporting only, like 'ReplaceTool's tool.

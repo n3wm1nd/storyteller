@@ -5,6 +5,7 @@ import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.StorageSpec
 import qualified Storyteller.EditSpec
 import qualified Storyteller.CommitWorkingTreeSpec
+import qualified Storyteller.SubdirSpec
 import qualified Storyteller.SplitterSpec
 import qualified Storyteller.TrackerSpec
 import qualified Storyteller.CharGenSpec
@@ -22,6 +23,7 @@ main = hspec $ do
   describe "Storyteller.Core.Storage"        Storyteller.StorageSpec.spec
   describe "Storyteller.Core.Edit"           Storyteller.EditSpec.spec
   describe "Storyteller.CommitWorkingTree" Storyteller.CommitWorkingTreeSpec.spec
+  describe "Storyteller.Subdir"         Storyteller.SubdirSpec.spec
   describe "Storyteller.Splitter"       Storyteller.SplitterSpec.spec
   describe "Storyteller.Tracker"        Storyteller.TrackerSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
