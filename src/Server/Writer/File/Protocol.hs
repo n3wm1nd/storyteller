@@ -12,6 +12,7 @@ module Server.Writer.File.Protocol
   ( FileCommand(..)
   , FileEvent(..)
   , ContextItem(..)
+  , commandKind
   ) where
 
 import Data.Aeson hiding (Error)
@@ -119,6 +120,29 @@ instance FromJSON FileCommand where
       "leave.scene" -> LeaveScene i <$> o .: "character"
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown file command: " <> T.unpack t)
+
+-- | Short label for logging — the same tag 'FromJSON' parses from, so it
+--   matches the wire protocol's own vocabulary (see WS-PROTOCOL.md) rather
+--   than leaking Haskell constructor names into logs. 'At' reports its
+--   inner command's own kind alongside its own, since that's the
+--   operationally interesting one.
+commandKind :: FileCommand -> T.Text
+commandKind = \case
+  ChatAppend {}   -> "chat.append"
+  Delete {}       -> "delete"
+  EditAtom {}     -> "edit.atom"
+  DeleteAtom {}   -> "delete.atom"
+  MoveAtom {}     -> "move.atom"
+  MergeAtoms {}   -> "merge.atoms"
+  SplitAtoms {}   -> "split.atoms"
+  ChatWriter {}   -> "chat.writer"
+  ChatFixer {}    -> "chat.fixer"
+  ChatRegen {}    -> "chat.regen"
+  ChatOutline {}  -> "chat.outline"
+  ChatNote {}     -> "chat.note"
+  EnterScene {}   -> "enter.scene"
+  LeaveScene {}   -> "leave.scene"
+  At _ _ inner    -> "at:" <> commandKind inner
 
 -- | Events the server sends on a file connection.
 --

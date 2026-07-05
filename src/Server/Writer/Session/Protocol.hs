@@ -10,6 +10,7 @@ module Server.Writer.Session.Protocol
   ( SessionCommand(..)
   , SessionEvent(..)
   , CharacterSummary(..)
+  , commandKind
   ) where
 
 import Data.Aeson hiding (Error)
@@ -42,6 +43,14 @@ instance FromJSON SessionCommand where
       "delete-branch"    -> DeleteBranch i <$> o .: "branch"
       "list-characters"  -> pure (ListCharacters i)
       _                  -> fail ("unknown session command: " <> T.unpack t)
+
+-- | Short label for logging — see 'Server.Writer.File.Protocol.commandKind'.
+commandKind :: SessionCommand -> T.Text
+commandKind = \case
+  ListBranches {}   -> "list-branches"
+  CreateBranch {}   -> "create-branch"
+  DeleteBranch {}   -> "delete-branch"
+  ListCharacters {} -> "list-characters"
 
 -- | One character branch's sidebar-facing summary: the branch id (still
 --   carrying the @character\/@ prefix; stripping it is a display concern,

@@ -46,6 +46,7 @@ import Polysemy (Embed, Member, Sem, embed, runM)
 import Polysemy.Error (Error, catch)
 
 import Server.Core.Branch (Main, BranchOpen, branchState, branchStateSince)
+import Server.Core.Logging (logCommand)
 import Server.Writer.Branch.Dispatch (runCommand)
 import Server.Writer.Branch.Protocol
 import Server.Writer.Env (ServerEnv(..))
@@ -129,7 +130,9 @@ commandLoop conn branch = loop
     -- Server.Writer.File.Connection.commandLoop.
     handle cmd =
       catch @String
-        (withStorage (withBranch @Main branch (runCommand branch cmd)) >>= embed . mapM_ (WS.sendTextData conn . encode))
+        (logCommand (commandKind cmd)
+          (withStorage (withBranch @Main branch (runCommand branch cmd)))
+          >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
 
 pushIncremental

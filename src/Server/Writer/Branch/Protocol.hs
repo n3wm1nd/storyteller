@@ -18,6 +18,7 @@ module Server.Writer.Branch.Protocol
   ( BranchCommand(..)
   , BranchEvent(..)
   , TrackFile(..)
+  , commandKind
   ) where
 
 import Data.Aeson hiding (Error)
@@ -67,6 +68,16 @@ instance FromJSON BranchCommand where
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
       _             -> fail ("unknown branch command: " <> T.unpack t)
+
+-- | Short label for logging — see 'Server.Writer.File.Protocol.commandKind'.
+commandKind :: BranchCommand -> T.Text
+commandKind = \case
+  Track {}      -> "track"
+  CharGen {}    -> "chargen"
+  AddNote {}    -> "add.note"
+  MoveTick {}   -> "move.tick"
+  DeleteTick {} -> "delete.tick"
+  At _ _ inner  -> "at:" <> commandKind inner
 
 -- | Events the server sends on a branch connection.
 --

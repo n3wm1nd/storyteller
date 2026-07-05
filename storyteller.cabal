@@ -60,6 +60,7 @@ library
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run
+                  , Server.Core.Logging
                   , Server.Core.Branch
                   , Server.Core.File
                   , Server.Writer.Env
@@ -105,6 +106,7 @@ library
                   , http-types
                   , yaml
                   , stm
+                  , time
   hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall

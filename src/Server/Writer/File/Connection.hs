@@ -47,6 +47,7 @@ import Polysemy.Error (Error, catch)
 
 import Server.Writer.Env (ServerEnv(..))
 import Server.Core.File (FileOpen, fileState, fileStateSince)
+import Server.Core.Logging (logCommand)
 import Server.Writer.File.Dispatch (runCommand)
 import Server.Writer.File.Protocol
 import Server.Writer.Notification (BranchNotification(..), watchBranch)
@@ -139,7 +140,7 @@ commandLoop branch conn path = loop
     -- fires right after this command, not just at connection close.
     handle cmd =
       catch @String
-        (withStorage (withBranch @Main branch (runCommand path cmd)))
+        (logCommand (commandKind cmd) (withStorage (withBranch @Main branch (runCommand path cmd))))
         (\err -> embed (reportError conn err))
 
 -- 'since = Nothing' means we're still in the absent state from connect —

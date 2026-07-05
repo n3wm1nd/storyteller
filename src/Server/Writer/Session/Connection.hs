@@ -36,6 +36,7 @@ import Polysemy.Error (catch)
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Writer.Env (ServerEnv(..))
+import Server.Core.Logging (logCommand)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Notification (BranchNotification(..))
 import Server.Writer.Run (actionStack)
@@ -103,5 +104,5 @@ commandLoop conn = loop
 
     handle cmd =
       catch @String
-        (runCommand conn cmd)
+        (logCommand (commandKind cmd) (runCommand conn cmd))
         (\err -> embed (reportError conn err))
