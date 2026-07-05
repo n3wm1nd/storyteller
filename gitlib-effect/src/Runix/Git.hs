@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
@@ -48,6 +49,7 @@ module Runix.Git
 
     -- * Interpreter
   , runGitIO
+  , runGitIOPerCall
 
     -- * Object cache interceptor
   , withGitCache
@@ -146,21 +148,25 @@ writeTree = writeObject . TreeObject
 
 -- | Interpret 'Git' using @Cmd "git"@ against a repository at @repoPath@.
 --
--- Reads ('ReadObject', 'ReadCommit') go through one persistent
--- @git cat-file --batch@ process ('Runix.Git.Batch'), opened when this
--- interpreter starts and closed when it's done ('bracket', scoped to this
--- one call -- not shared across separate 'runGitIO' invocations, so e.g.
--- the server's per-request interpreter stack never leaks a process across
--- requests). See 'Runix.Git.Batch' for the throughput measurement
--- (~30x over one-shot @cat-file@) and its correctness tests.
+-- Reads ('ReadObject', 'ReadCommit') go through a persistent
+-- @git cat-file --batch@ process ('Runix.Git.Batch') accessed via
+-- @withReader@ -- an access function rather than a reader value, so this
+-- interpreter doesn't hardcode the reader's lifetime. Two shapes are
+-- provided: 'runGitIOPerCall' opens and closes a fresh reader around one
+-- call (what every executable/test uses, and what the server used before
+-- being pushed further); 'Runix.Git.Batch.withSharedReader' instead
+-- borrows one long-lived reader under a lock, for sharing across many
+-- concurrent callers (see 'Storyteller.Core.Runtime.runInfrastructureShared').
+-- See 'Runix.Git.Batch' for the throughput measurement (~30x over
+-- one-shot @cat-file@) and its correctness tests.
 runGitIO
-  :: Members '[Cmd "git", Fail, Resource, Embed IO] r
+  :: Members '[Cmd "git", Fail, Embed IO] r
   => FilePath
+  -> (forall x. (Batch.BatchReader -> IO x) -> IO x)
   -> Sem (Git : r) a
   -> Sem r a
-runGitIO repo action =
-  bracket (embedBatch (Batch.openBatchReader repo)) (embed . Batch.closeBatchReader) $ \br ->
-    (interpret $ \case
+runGitIO repo withReader =
+  interpret $ \case
       ResolveRef (RefName name) -> do
         out <- git repo ["rev-parse", "--verify", "--quiet", T.unpack name]
         case T.lines (stdout out) of
@@ -181,7 +187,7 @@ runGitIO repo action =
         return $ mapMaybe parseLine (T.lines (stdout out))
 
       ReadCommit hash -> do
-        mResult <- embedBatch (Batch.readBatch br (unObjectHash hash))
+        mResult <- embedBatch (withReader (\br -> Batch.readBatch br (unObjectHash hash)))
         case mResult of
           Just (_, raw) -> parseCommit (TE.decodeUtf8 raw)
           Nothing -> fail $ "ReadCommit: object not found: " <> T.unpack (unObjectHash hash)
@@ -206,7 +212,7 @@ runGitIO repo action =
           else fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
 
       ReadObject hash -> do
-        mResult <- embedBatch (Batch.readBatch br (unObjectHash hash))
+        mResult <- embedBatch (withReader (\br -> Batch.readBatch br (unObjectHash hash)))
         case mResult of
           Nothing -> fail $ "ReadObject: object not found: " <> T.unpack (unObjectHash hash)
           Just ("blob", content) -> return (BlobObject content)
@@ -250,7 +256,33 @@ runGitIO repo action =
         case mapMaybe parseTreeLine (T.lines (stdout out)) of
           (e:_) -> return $ Just (entryHash e)
           []    -> return Nothing
-      ) action
+
+-- | Convenience: open a fresh batch reader for the duration of this one
+-- call and close it when finished -- what every executable and test
+-- uses. The server instead threads one long-lived, lock-shared reader
+-- across every connection via
+-- 'Storyteller.Core.Runtime.runInfrastructureShared' and
+-- 'Runix.Git.Batch.withSharedReader'; see 'runGitIO'.
+--
+-- Needs 'Polysemy.Resource.bracket' rather than a plain
+-- 'Control.Exception.bracket': @action@ is still an abstract 'Sem'
+-- computation at this point (it may use any other effect already in @r@
+-- besides 'Git'), not a concrete 'IO' action, so only the 'Sem'-level
+-- bracket can wrap it. 'embedBatch' converts every 'Runix.Git.Batch'
+-- failure into 'Fail' rather than a raw exception, which is what lets a
+-- purely-'Sem'-level bracket interpreter (one with no IO awareness of its
+-- own, like 'Polysemy.Resource.runResource') still guarantee the reader
+-- gets closed on that path -- see 'runInfrastructure's own docs for why
+-- that guarantee doesn't extend to unrelated code deeper in @action@
+-- throwing a genuine synchronous exception.
+runGitIOPerCall
+  :: Members '[Cmd "git", Fail, Resource, Embed IO] r
+  => FilePath
+  -> Sem (Git : r) a
+  -> Sem r a
+runGitIOPerCall repo action =
+  bracket (embedBatch (Batch.openBatchReader repo)) (embed . Batch.closeBatchReader) $ \br ->
+    runGitIO repo (\k -> k br) action
 
 -- ---------------------------------------------------------------------------
 -- Object cache interceptor

@@ -18,10 +18,15 @@
 -- request/response pairs can be interleaved one at a time without
 -- closing or restarting the process.
 --
--- Not yet wired into 'Runix.Git.runGitIO' -- see @GitBatchSpec@
--- (gitlib-effect-test) for the correctness check against the existing
--- write path, and @BatchBench@ (gitlib-effect-batch-bench) for the
--- throughput comparison against one-shot @git cat-file@ calls.
+-- Wired into 'Runix.Git.runGitIO' via a caller-supplied access function
+-- (@forall x. (BatchReader -> IO x) -> IO x@) rather than a hardcoded
+-- lifetime -- see PLAN-git-storage-worker.md for why: a future
+-- git-storage worker thread will be the sole owner and caller of a
+-- 'BatchReader', so no locking/sharing primitive belongs in this module --
+-- it stays exactly "one reader, opened, read from, closed." See
+-- @GitBatchSpec@ (gitlib-effect-test) for the correctness check against
+-- the existing write path, and @BatchBench@ (gitlib-effect-batch-bench)
+-- for the throughput comparison against one-shot @git cat-file@ calls.
 module Runix.Git.Batch
   ( BatchReader
   , openBatchReader

@@ -44,7 +44,7 @@ import Runix.HTTP (HTTP, HTTPStreaming, httpIOStreaming)
 import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
-import Runix.Git (Git, runGitIO, withGitCache)
+import Runix.Git (Git, runGitIOPerCall, withGitCache)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
@@ -91,16 +91,23 @@ instance RestEndpoint StoryLlamaCppAuth where
 
 -- | Shared infrastructure interpreters: git, http, time, logging, error.
 --   Every executable uses this as its base; branch/storage/LLM go on top.
--- | 'runGitIO' opens a persistent @git cat-file --batch@ process for
---   reads and closes it when this call finishes ('Resource'/'bracket',
---   see 'Runix.Git.runGitIO') -- scoped to one 'runInfrastructure'
+--
+--   'runGitIOPerCall' opens a persistent @git cat-file --batch@ process
+--   for reads and closes it when this call finishes ('Resource'/'bracket',
+--   see 'Runix.Git.runGitIOPerCall') -- scoped to one 'runInfrastructure'
 --   invocation (one request, for the server), not shared across calls.
 --   'runResource' interprets that here so nothing above this layer
 --   (agents, handlers, executables) needs to know 'Resource' exists.
---   'runGitIO' converts every failure from the reader into 'Fail' rather
---   than a raw IO exception (see its module), which is what lets
+--   'runGitIOPerCall' converts every failure from the reader into 'Fail'
+--   rather than a raw IO exception (see its module), which is what lets
 --   'runResource's purely-'Sem'-level bracket -- it has no IO awareness at
 --   all -- still guarantee the reader gets closed on that path.
+--
+--   This is the "mid" tier of the three-tier server performance
+--   assessment (see PLAN-git-storage-worker.md): one reader opened per
+--   call, not shared across the server's whole lifetime. Pushing it to
+--   "ideal" (one shared git-storage worker thread for the whole server)
+--   is deliberately not done here -- see that doc for the design.
 runInfrastructure
   :: Members '[Error String, Embed IO] r
   => FilePath
@@ -113,7 +120,7 @@ runInfrastructure repoPath _endpoint =
   . runResource
   . cmdsIO
   . interpretCmd @"git"
-  . runGitIO repoPath
+  . runGitIOPerCall repoPath
   . withGitCache
   . timeIO
   . sleepIO

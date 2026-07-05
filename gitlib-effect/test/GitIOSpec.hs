@@ -32,7 +32,7 @@ import TestTempRepo (withTempRepo)
 -- these specs have nothing to log to.
 runInRepo :: FilePath -> Sem '[Git, Cmd "git", Cmds, Resource, Fail, Embed IO] a -> IO a
 runInRepo repo action = do
-  result <- runM . runFail . runResource . cmdsIO . interpretCmd @"git" . runGitIO repo $ action
+  result <- runM . runFail . runResource . cmdsIO . interpretCmd @"git" . runGitIOPerCall repo $ action
   either (\e -> ioError (userError ("runGitIO: " <> e))) return result
 
 spec :: Spec
