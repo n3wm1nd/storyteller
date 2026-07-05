@@ -36,6 +36,8 @@ module Storyteller.Core.Git
 
     -- * Ref naming
   , refBranchName
+  , isStoryRef
+  , storyRefPrefix
 
     -- * Working tree (in-memory filesystem)
   , FSNode(..)
@@ -200,6 +202,14 @@ storyRef (BranchName n) = RefName (storyRefPrefix <> n)
 --   isn't a story branch ref.
 refBranchName :: RefName -> Maybe BranchName
 refBranchName (RefName r) = BranchName <$> T.stripPrefix storyRefPrefix r
+
+-- | Whether a ref is one of this layer's story branch refs. The one bit of
+--   the naming convention exposed outside this module — e.g. to
+--   'Storyteller.Core.Undo', which needs to know which ref writes are
+--   "real" story mutations worth an undo-log entry, without itself knowing
+--   anything about where story branches live.
+isStoryRef :: RefName -> Bool
+isStoryRef (RefName r) = storyRefPrefix `T.isPrefixOf` r
 
 emptyTree :: ObjectHash
 emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"

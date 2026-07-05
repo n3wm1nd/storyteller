@@ -41,6 +41,7 @@ library
                   , Storyteller.Core.Types
                   , Storyteller.Writer.Agent
                   , Storyteller.Core.Storage
+                  , Storyteller.Core.Undo
                   , Storyteller.Core.Git
                   , Storyteller.Core.Runtime
                   , Storyteller.Core.Prompt
@@ -220,6 +221,7 @@ test-suite storyteller-test
                   , Storyteller.TrackerSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.PresenceSpec
+                  , Storyteller.UndoSpec
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.Writer.BranchSpec
@@ -237,6 +239,7 @@ test-suite storyteller-test
                   , bytestring
                   , text
                   , runix
+                  , time
                   , hspec >=2.11
                   , QuickCheck >=2.14
                   , hashable

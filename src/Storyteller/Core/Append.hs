@@ -106,10 +106,16 @@ storeAtom path content =
 
 -- | The dual of 'storeAtom': drop @tid@ — an atom tick anywhere in the
 -- branch's history, not necessarily HEAD — and replay everything after it
--- back on top, restoring the diff that tick's commit had folded in. Returns
--- the old->new id mapping for the replayed tail, the same shape
--- 'Storyteller.Core.Storage.sneakyAt' returns, for a caller to fold into its
--- own running rebase table before a single broadcast.
+-- back on top, restoring the diff that tick's commit had folded in.
+--
+-- Built on 'Storyteller.Core.Storage.sneakyAt', not 'at': the returned
+-- old->new mapping for the replayed tail is /not/ broadcast via
+-- 'Storyteller.Core.Storage.updateReferences' on the caller's behalf, even
+-- though it looks like a complete result on its own. Every caller must
+-- either call 'updateReferences' on it directly, or fold it into a larger
+-- running table that a later call broadcasts once — skip both and
+-- cross-branch references into the replayed range go stale silently, with
+-- nothing to signal the miss.
 unstoreAtom
   :: forall branch r
   .  Members '[StoryBranch branch, Fail] r
@@ -125,6 +131,12 @@ unstoreAtom tid = snd <$> sneakyAt @branch tid (drop @branch)
 -- for this: 'unstoreAtom's own replay would already have moved head past the
 -- tail by the time the second call ran, landing the new content at the end
 -- of the chain instead of back in @tid@'s slot.
+--
+-- Also built on 'sneakyAt', same as 'unstoreAtom': the returned mapping is
+-- not broadcast automatically, so every caller must call 'updateReferences'
+-- on it (directly, or folded into a larger batch) — see 'unstoreAtom's own
+-- note. 'Storyteller.Core.Edit.editAtom' does the former; @commitAtom@
+-- (used via 'Storyteller.Core.Edit.commitFiles') does the latter.
 rewriteAtom
   :: forall project branch r
   .  ( project ~ BranchTag branch

@@ -49,6 +49,7 @@ import Runix.Git (Git, runGitIOPerCall, withGitCache)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Undo (withUndoLog)
 
 import UniversalLLM (Model(..), ModelConfig, Routing(..))
 import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))
@@ -100,18 +101,27 @@ instance RestEndpoint StoryLlamaCppAuth where
 --   'Members' constraint) rather than consuming it -- whatever eliminates
 --   'Fail' (e.g. 'failLog') sits further out, wrapped around this whole
 --   call, same as it always has.
+--
+--   Wraps @action@ in 'withUndoLog' before anything else runs, so every
+--   story-branch ref write made anywhere inside it -- regardless of
+--   whether the caller is 'runStoryGit', the server, or a CLI executable
+--   -- feeds the undo tree. A single install point here beats repeating it
+--   at each of those call sites; 'Storyteller.Core.Undo' itself stays
+--   completely unaware of the story ref convention ('isStoryRef'/
+--   'storyRefPrefix' are supplied here, from 'Storyteller.Core.Git').
 runInfrastructureWith
   :: Members '[Fail, Embed IO] r
   => (Sem (Git : r) a -> Sem r a)
   -> Sem (Random : HTTP : HTTPStreaming : Sleep : Time : Git : r) a
   -> Sem r a
-runInfrastructureWith runGit =
+runInfrastructureWith runGit action =
     runGit
   . timeIO
   . sleepIO
   . httpIOStreaming (withRequestTimeout 600)
   . httpIO (withRequestTimeout 600)
   . randomIO
+  $ withUndoLog storyRefPrefix isStoryRef action
 
 -- | Shared infrastructure interpreters: git, http, time, logging, error.
 --   Every CLI executable uses this as its base; branch/storage/LLM go on
