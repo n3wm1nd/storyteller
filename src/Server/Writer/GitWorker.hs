@@ -28,9 +28,10 @@ import Control.Concurrent.Async (async, link)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
   (TChan, TQueue, atomically, newTQueueIO, readTQueue, writeTChan, writeTQueue)
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import Polysemy (Embed, Member, Members, Sem, embed, interpret, runM)
-import Polysemy.Fail (Fail, runFail)
+import Polysemy.Error (Error, catch, runError)
+import Polysemy.Fail (Fail, failToError)
 import Runix.Cmd (cmdsIO, interpretCmd)
 import Runix.Git
   ( Git(..)
@@ -44,6 +45,7 @@ import Runix.Git
   , resolveRef
   , runGitIO
   , updateRef
+  , withGitCache
   , writeCommit
   , writeObject
   )
@@ -71,14 +73,42 @@ startGitWorker repo notifyChan = do
   link worker
   return (GitWorkerQueue queue)
 
+-- | The whole worker lifetime is one Polysemy interpretation, not one per
+-- job: 'withGitCache' and 'runGitIO' are applied once, outside 'forever',
+-- so the content-object cache they install is shared and kept warm across
+-- every job from every client for as long as the process runs -- the same
+-- objects/commits get re-requested constantly (tick chains overlap across
+-- branches), and they're immutable by hash, so this is a strict win with
+-- no staleness risk. A per-job cache (the old shape, one fresh
+-- interpreter stack per 'submitGitJob' call) would reset on every single
+-- request and never see a hit.
+--
+-- 'Fail' (what 'runGitIO' itself raises internally, e.g. "object not
+-- found") is bridged to 'Error String' via 'failToError' instead of being
+-- discharged with a fresh 'Polysemy.Fail.runFail' per job -- 'runFail'
+-- fully consumes the effect, which only works once per interpreter
+-- lifetime; 'Polysemy.Error.catch' recovers from it locally, per
+-- iteration, without discharging 'Error' from the row, so the outer
+-- interpreters ('withGitCache' included) never need to be re-applied.
 gitWorkerLoop :: FilePath -> Batch.BatchReader -> TChan BranchNotification -> TQueue GitJob -> IO ()
-gitWorkerLoop repo br notifyChan queue = forever $ do
-  GitJob op replyVar <- atomically (readTQueue queue)
-  result <- runM . runFail . cmdsIO . interpretCmd @"git" . runGitIO repo (\k -> k br) $
-    dispatchGitOp op
-  putMVar replyVar result
-  notifyOnRefMove op result
+gitWorkerLoop repo br notifyChan queue =
+  void
+  . runM
+  . runError @String
+  . failToError id
+  . cmdsIO
+  . interpretCmd @"git"
+  . runGitIO repo (\k -> k br)
+  . withGitCache
+  $ forever handleOneJob
   where
+    handleOneJob :: Members '[Git, Error String, Embed IO] r => Sem r ()
+    handleOneJob = do
+      GitJob op replyVar <- embed (atomically (readTQueue queue))
+      result <- fmap Right (dispatchGitOp op) `catch` (return . Left)
+      embed (putMVar replyVar result)
+      embed (notifyOnRefMove op result)
+
     notifyOnRefMove :: Git IO a -> Either String a -> IO ()
     notifyOnRefMove (CreateRef ref _) (Right _) = notifyRef ref
     notifyOnRefMove (UpdateRef ref _) (Right _) = notifyRef ref
