@@ -611,6 +611,24 @@ spec = do
           msgs `shouldBe` ["a\n", "b\n\n", "c\n"]
           n    `shouldBe` 2
 
+    it "each resulting piece's own file-tree contribution is just that piece, not the whole atom or nothing" $ do
+      -- atomMessages/readFile above check the tick's *message* (independent
+      -- of file bytes) and the *whole file's* final content — both can look
+      -- right even if each piece's own tree diff is wrong, since bytes
+      -- accidentally cancel out across several commits. 'fileTicks' is what
+      -- the frontend actually renders per atom (its 'ftContent' is a real
+      -- tree-to-tree diff, not the stored message) — this is the one check
+      -- that would have caught a splitTick that never wrote each piece's
+      -- bytes into the working tree before committing it.
+      let result = runEdit $ do
+            _t1 <- append @Main "scene.md" "a\n"
+            t2  <- append @Main "scene.md" "b\n\nc\n"
+            (newIds, _) <- splitTick @Main t2 ["b\n\n", "c\n"]
+            ticks <- fileTicks @Main "scene.md"
+            return (mapMaybe (\tid -> ftContent =<< find ((== tid) . ftTickId) ticks)
+                              (map unTickId newIds))
+      result `shouldBe` Right ["b\n\n", "c\n"]
+
     it "a ref pointing at the original tick remaps to the first piece" $ do
       -- n1's own chain parent is t2 (not t1) so its ref to t1 stays a
       -- genuinely distinct, non-parent reference — same reasoning as the

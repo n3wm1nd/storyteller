@@ -378,7 +378,22 @@ splitTick tid pieces = do
     d <- popTick @branch
     case lookup "file" (tdFields d) of
       Nothing -> fail ("splitTick: not an atom: " <> T.unpack (unTickId tid))
-      Just f  -> mapM (\p -> storeAs @branch (Atom (T.unpack f) p)) pieces
+      Just f  ->
+        -- 'popTick's own 'drop' only rewinds the tracked HEAD position, not
+        -- the ambient working tree (its two 'withFS' snapshots, used to
+        -- compute the diff, are scoped and self-restoring) — so without
+        -- this 'withFS', every 'storeAs' below would read the *unchanged*,
+        -- still-at-the-original-atom's-full-content tree: the first piece
+        -- would over-eagerly commit the whole original content, and every
+        -- later piece would then diff to zero bytes against that. 'withFS'
+        -- loads the just-dropped-to parent's snapshot once so each
+        -- 'appendFile' actually grows the tree piece by piece, exactly as
+        -- 'editAtom'/'pushTick' do.
+        withFS @branch $
+          mapM (\p -> do
+                  appendFile @(BranchTag branch) (T.unpack f) (TE.encodeUtf8 p)
+                  storeAs @branch (Atom (T.unpack f) p))
+               pieces
   case newIds of
     [] -> fail "splitTick: internal error: no pieces stored"
     (inheritor : _) -> do
