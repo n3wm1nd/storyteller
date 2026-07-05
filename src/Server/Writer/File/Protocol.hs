@@ -51,6 +51,12 @@ data FileCommand
   | EditAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   | DeleteAtom { fcId :: Maybe T.Text, fcTickId :: T.Text }
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
+  -- | Merge a contiguous run of one file's atoms (@fcTargets@) into one. See
+  --   'Storyteller.Core.Edit.mergeAtoms'.
+  | MergeAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
+  -- | Re-run the splitter over each of @fcTargets@'s own content, in place.
+  --   See 'Storyteller.Core.Edit.splitTick'.
+  | SplitAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
   -- | Regenerate the chapter (this file) to fit its beat sheet
@@ -91,6 +97,8 @@ instance FromJSON FileCommand where
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
       "delete.atom" -> DeleteAtom i <$> o .: "tickId"
       "move.atom"   -> MoveAtom   i <$> o .: "tickId" <*> o .:? "afterTickId"
+      "merge.atoms" -> MergeAtoms i . fromMaybe [] <$> o .:? "targets"
+      "split.atoms" -> SplitAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
         context <- fromMaybe [] <$> o .:? "context"
         flowTid <- o .:? "flowTid"

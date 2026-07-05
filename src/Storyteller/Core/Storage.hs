@@ -18,6 +18,7 @@ module Storyteller.Core.Storage
   , drop
   , get
   , reset
+  , sync
   , at
   , sneakyAt
   , readAt
@@ -84,6 +85,24 @@ data StoryBranch (branch :: k) m a where
   -- | Discard pending working-tree changes, restoring the head tick's state.
   Reset  :: StoryBranch branch m ()
 
+  -- | Re-read this branch's real ref and reset the scope's cached position
+  --   (and working tree) to match it.
+  --
+  --   Needed after an 'updateReferences' cascade rewrites *this* branch's
+  --   head a second time, beyond whatever the 'at'/'sneakyAt' call already
+  --   folded into its own returned mapping and cached position. That second
+  --   generation only arises when one cascade call's mapping sends two (or
+  --   more) distinct old ids to the *same* new id within a single branch —
+  --   'Storyteller.Core.Edit.mergeAtoms' is the one caller that does this: a
+  --   tick between the merged run and the branch's original head can carry
+  --   a ref into the merged range, which the tail-replay step leaves
+  --   pointing at a now-superseded id, and only the 'updateReferences' call
+  --   after that replay fixes it — writing yet another commit that this
+  --   scope's own position, cached at the top of 'runStoryBranchGit', has no
+  --   way to observe on its own. 'sync' is the explicit "go read what
+  --   'updateReferences' just published" step for exactly that case.
+  Sync   :: StoryBranch branch m ()
+
   -- | Replace the given tick with the current working tree state, recording
   --   the supersession so that all branches referencing the old id are updated.
   --   The old tick's parent becomes the new tick's parent — the new tick takes
@@ -144,6 +163,9 @@ get = send @(StoryBranch branch) Get
 
 reset :: forall branch r. Member (StoryBranch branch) r => Sem r ()
 reset = send @(StoryBranch branch) Reset
+
+sync :: forall branch r. Member (StoryBranch branch) r => Sem r ()
+sync = send @(StoryBranch branch) Sync
 
 -- | Run branch operations at the given position, save/restore working tree,
 --   then replay the tail — without broadcasting the resulting id mapping via

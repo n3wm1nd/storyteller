@@ -22,6 +22,7 @@ module Storyteller.Core.Types
   , TickType(..)
   , encodeDraft
   , decodePayload
+  , decodeTaggedMessage
 
     -- * Built-in tick kinds
   , Root(..)
@@ -119,11 +120,26 @@ encodeDraft refs fields payload = TickData
 
 -- | Extract the payload from a tick whose tag matches @a@'s 'tickTypeName'.
 --   Returns 'Nothing' if the tag does not match.
+--
+--   Splits off only the first line (the tag) via 'T.breakOn', not
+--   'T.lines'/'T.intercalate' — the latter treats every @"\n"@ as a
+--   delimiter and so silently collapses any blank line or trailing newline
+--   in the payload itself when rejoining. 'T.breakOn' touches nothing past
+--   the first @"\n"@, so this is the exact inverse of 'encodeDraft' for any
+--   payload, including ones with embedded blank lines or a trailing newline.
 decodePayload :: forall a. TickType a => Tick -> Maybe Text
-decodePayload t = case T.lines (tickMessage (tickData t)) of
-  (tag : rest) | tag == "type:" <> tickTypeName @a
-               -> Just (T.intercalate "\n" rest)
-  _            -> Nothing
+decodePayload = decodeTaggedMessage @a . tickMessage . tickData
+
+-- | The 'decodePayload' logic, taking the raw tagged message text directly
+--   rather than a full 'Tick' — for callers that already have a tick's
+--   message in hand without a 'Tick' to wrap it in (e.g. a popped, not-yet
+--   re-stored draft).
+decodeTaggedMessage :: forall a. TickType a => Text -> Maybe Text
+decodeTaggedMessage msg =
+  let (tag, afterTag) = T.breakOn "\n" msg
+  in if tag == "type:" <> tickTypeName @a
+       then Just (T.drop 1 afterTag)
+       else Nothing
 
 -- | Extract the type tag from any tick, without knowing the type.
 --   Returns 'Nothing' for untagged ticks.

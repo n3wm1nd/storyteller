@@ -225,25 +225,31 @@ encodeTickData td =
        else T.intercalate "\n" fieldLines <> "\n\n" <> body
 
 -- | Decode a git commit message back into refs, fields, and message body.
+--
+--   The body is recovered as a verbatim slice of @raw@ (via 'T.drop'), not
+--   by rejoining 'T.lines'-split lines with @T.intercalate "\n"@ — that
+--   round trip silently collapses any blank line or trailing newline that
+--   was actually part of the body's own content, which for an atom's
+--   message means a paragraph break or the trailing newline
+--   'Storyteller.Core.Append.append' always adds. Only the header lines
+--   (short, single-line @key:value@ fields) are ever inspected line by line;
+--   the body past them is never re-split.
 decodeTickData :: Text -> TickData
 decodeTickData raw =
-  let ls              = T.lines raw
-      (headers, body) = splitHeaders ls
-      fields          = [ (k, v)
-                        | l <- headers
-                        , let (k, rest) = T.breakOn ":" l
-                        , not (T.null rest)
-                        , let v = T.drop 1 rest ]
-  in TickData { tickRefs = [], tickFields = fields, tickMessage = T.intercalate "\n" body }
-
--- | Split commit message lines into header lines and body lines.
---   Headers end at the first blank line; body is everything after.
---   If there is no blank line, the whole message is treated as body.
-splitHeaders :: [Text] -> ([Text], [Text])
-splitHeaders ls =
-  case break T.null ls of
-    (_, []        ) -> ([], ls)           -- no blank line → all body
-    (headers, _ : body) -> (headers, body)
+  let (headers, remainder) = break T.null (T.lines raw)
+      fields = [ (k, v)
+               | l <- headers
+               , let (k, rest) = T.breakOn ":" l
+               , not (T.null rest)
+               , let v = T.drop 1 rest ]
+      msg = case remainder of
+        []      -> raw                             -- no blank line → the whole thing is the message
+        (_ : _) -> T.drop (headerByteLen headers) raw
+  in TickData { tickRefs = [], tickFields = fields, tickMessage = msg }
+  where
+    -- Each header line plus its own "\n", plus one more "\n" for the blank
+    -- line separating headers from the body.
+    headerByteLen hs = sum (map ((+ 1) . T.length) hs) + 1
 
 -- ---------------------------------------------------------------------------
 -- Conversion between git and tick vocabulary
@@ -492,6 +498,17 @@ runStoryBranchGit branch action = do
       wt'       <- raise $ loadWorkingTree headHash'
       raise $ put wt'
       pureT ()
+
+    S.Sync -> do
+      mBranch <- raise $ getBranch branch
+      case mBranch of
+        Nothing -> raise $ fail ("sync: branch not found: " <> T.unpack (unBranchName branch))
+        Just b  -> do
+          let newHash = ObjectHash (unTickId (branchHead b))
+          raise $ put @ObjectHash newHash
+          wt' <- raise $ loadWorkingTree newHash
+          raise $ put wt'
+          pureT ()
 
     Follow seed step -> do
       headHash' <- raise $ get @ObjectHash

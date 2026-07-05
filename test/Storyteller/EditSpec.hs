@@ -6,7 +6,7 @@
 
 module Storyteller.EditSpec (spec) where
 
-import Data.List (nub, sort, sortBy, permutations)
+import Data.List (nub, sort, sortBy, permutations, find)
 import Data.Ord (comparing)
 import qualified Data.Text as T
 import Data.Maybe (fromJust, mapMaybe)
@@ -27,6 +27,8 @@ import Storyteller.Core.Git
 import Storyteller.Core.Storage hiding (get, drop)
 import qualified Storyteller.Core.Storage as S
 import Storyteller.Core.Types
+import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Append (append)
 import Runix.FileSystem (appendFile)
 import Prelude hiding (readFile, appendFile)
 import Storyteller.Core.Edit
@@ -92,6 +94,15 @@ chainPairs = do
 -- | Apply a mapping to a list of ids.
 applyMapping :: [(TickId, TickId)] -> [TickId] -> [TickId]
 applyMapping m = map (\i -> maybe i id (lookup i m))
+
+-- | Collect the decoded payload of every atom tick, oldest-first, skipping
+--   non-atom ticks (root, notes). Unlike 'chainMessages', this strips the
+--   @"type:atom\n"@ tag 'Atom''s 'toDraft' adds, so it reflects the same
+--   text 'append'/'mergeAtoms'/'splitTick' actually operate on.
+atomMessages :: Members '[StoryBranch Main, Fail] r => Sem r [T.Text]
+atomMessages = do
+  ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
+  return [ msg | t <- ticks, Just (Atom _ msg) <- [fromTick @Atom t] ]
 
 -- | Append bytes to a file and commit. Convenience for tests.
 appendAtom :: Members '[StoryBranch Main, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main), StoryStorage, Fail] r
@@ -490,3 +501,148 @@ spec = do
                    paras   = filter (not . T.null) (T.splitOn "\n" content)
                    expected = sort [ T.pack ("p" <> show i) | i <- [1..n'] ]
                in sort paras === expected
+
+  -- ---------------------------------------------------------------------------
+  -- Unit tests: mergeAtoms
+  -- ---------------------------------------------------------------------------
+
+  describe "mergeAtoms" $ do
+    it "merges a contiguous run into one atom with concatenated content" $ do
+      let result = runEdit $ do
+            t1 <- append @Main "scene.md" "para1\n"
+            t2 <- append @Main "scene.md" "para2\n"
+            t3 <- append @Main "scene.md" "para3\n"
+            (_, mapping) <- mergeAtoms @Main [t1, t2, t3]
+            bs   <- readFile @(BranchTag Main) "scene.md"
+            msgs <- atomMessages
+            return (bs, msgs, length mapping)
+      case result of
+        Left err -> fail err
+        Right (bs, msgs, nMapped) -> do
+          bs      `shouldBe` "para1\npara2\npara3\n"
+          msgs    `shouldBe` ["para1\npara2\npara3\n"]
+          nMapped `shouldBe` 3   -- t1, t2, t3 all map onto the merged tick
+
+    it "merges regardless of input order" $ do
+      let result = runEdit $ do
+            t1 <- append @Main "scene.md" "a\n"
+            t2 <- append @Main "scene.md" "b\n"
+            _ <- mergeAtoms @Main [t2, t1]
+            readFile @(BranchTag Main) "scene.md"
+      result `shouldBe` Right "a\nb\n"
+
+    it "merges a run that isn't the whole chain, leaving the tail intact" $ do
+      let result = runEdit $ do
+            t1 <- append @Main "scene.md" "a\n"
+            t2 <- append @Main "scene.md" "b\n"
+            _t3 <- append @Main "scene.md" "c\n"
+            _ <- mergeAtoms @Main [t1, t2]
+            atomMessages
+      result `shouldBe` Right ["a\nb\n", "c\n"]
+
+    it "fails with fewer than two ids" $ do
+      let result = runEdit $ do
+            t1 <- append @Main "scene.md" "a\n"
+            mergeAtoms @Main [t1]
+      case result of
+        Left err -> err `shouldContain` "at least two"
+        Right _  -> fail "expected failure"
+
+    it "fails on a non-contiguous selection" $ do
+      let result = runEdit $ do
+            t1  <- append @Main "scene.md" "a\n"
+            _t2 <- append @Main "scene.md" "b\n"
+            t3  <- append @Main "scene.md" "c\n"
+            mergeAtoms @Main [t1, t3]
+      case result of
+        Left err -> err `shouldContain` "contiguous"
+        Right _  -> fail "expected failure"
+
+    it "fails when the atoms belong to different files" $ do
+      let result = runEdit $ do
+            t1 <- append @Main "a.md" "a\n"
+            t2 <- append @Main "b.md" "b\n"
+            mergeAtoms @Main [t1, t2]
+      case result of
+        Left err -> err `shouldContain` "same file"
+        Right _  -> fail "expected failure"
+
+    it "a ref pointing at any merged atom remaps to the merged id" $ do
+      -- n1's own chain parent is t3 (not t2) so its ref to t2 stays a
+      -- genuinely distinct, non-parent reference — same shape as the
+      -- passing "moveTick note ref" test below. Unlike that test, n1's
+      -- *target* (t2) is itself being rewritten here, which can trigger a
+      -- second-generation cascade on n1 beyond the id 'mergeAtoms' itself
+      -- reports (the tail-replay step gives n1 a first-pass id before
+      -- 'updateReferences' rewrites its ref, producing yet another id) — so
+      -- the note has to be found by walking the post-merge chain, not by
+      -- looking its id up in the returned mapping.
+      let result = runEdit $ do
+            t1 <- append @Main "scene.md" "a\n"
+            t2 <- append @Main "scene.md" "b\n"
+            _t3 <- append @Main "scene.md" "c\n"
+            _n1 <- storeData @Main (TickData { tickRefs = [t2], tickFields = [], tickMessage = "note" })
+            (newTid, _) <- mergeAtoms @Main [t1, t2]
+            ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
+            let noteRefs = fmap (tickRefs . tickData) (find (\t -> tickMessage (tickData t) == "note") ticks)
+            return (noteRefs, newTid)
+      case result of
+        Left err -> fail err
+        Right (Nothing, _)             -> fail "note tick not found after merge"
+        Right (Just refs, newTid) -> refs `shouldBe` [newTid]
+
+  -- ---------------------------------------------------------------------------
+  -- Unit tests: splitTick
+  -- ---------------------------------------------------------------------------
+
+  describe "splitTick" $ do
+    it "splits one atom into two in place, preserving file content" $ do
+      let result = runEdit $ do
+            _t1 <- append @Main "scene.md" "a\n"
+            t2  <- append @Main "scene.md" "b\n\nc\n"
+            (newIds, _) <- splitTick @Main t2 ["b\n\n", "c\n"]
+            bs   <- readFile @(BranchTag Main) "scene.md"
+            msgs <- atomMessages
+            return (bs, msgs, length newIds)
+      case result of
+        Left err -> fail err
+        Right (bs, msgs, n) -> do
+          bs   `shouldBe` "a\nb\n\nc\n"
+          msgs `shouldBe` ["a\n", "b\n\n", "c\n"]
+          n    `shouldBe` 2
+
+    it "a ref pointing at the original tick remaps to the first piece" $ do
+      -- n1's own chain parent is t2 (not t1) so its ref to t1 stays a
+      -- genuinely distinct, non-parent reference — same reasoning as the
+      -- mergeAtoms ref test above, including finding the note by walking
+      -- the post-split chain rather than through the returned mapping (its
+      -- ref target t1 is itself rewritten, which can cascade a second time
+      -- beyond the id the tail-replay step alone reports).
+      let result = runEdit $ do
+            t1  <- append @Main "scene.md" "a\n\nb\n"
+            _t2 <- append @Main "scene.md" "c\n"
+            _n1 <- storeData @Main (TickData { tickRefs = [t1], tickFields = [], tickMessage = "note" })
+            (newIds, _) <- splitTick @Main t1 ["a\n\n", "b\n"]
+            ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
+            let noteRefs = fmap (tickRefs . tickData) (find (\t -> tickMessage (tickData t) == "note") ticks)
+            return (noteRefs, take 1 newIds)
+      case result of
+        Left err -> fail err
+        Right (Nothing, _)            -> fail "note tick not found after split"
+        Right (Just refs, inheritor) -> refs `shouldBe` inheritor
+
+    it "fails on a single piece" $ do
+      let result = runEdit $ do
+            t1 <- append @Main "scene.md" "a\n"
+            splitTick @Main t1 ["a\n"]
+      case result of
+        Left err -> err `shouldContain` "at least two"
+        Right _  -> fail "expected failure"
+
+    it "fails on a non-atom tick" $ do
+      let result = runEdit $ do
+            n1 <- storeData @Main (TickData { tickRefs = [], tickFields = [], tickMessage = "note" })
+            splitTick @Main n1 ["x", "y"]
+      case result of
+        Left err -> err `shouldContain` "not an atom"
+        Right _  -> fail "expected failure"

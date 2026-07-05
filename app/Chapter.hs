@@ -49,7 +49,7 @@ import Storyteller.Writer.Agent
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), chapterProse, chapterProseByBeat)
-import Storyteller.Common.Splitter (Splitter, splitAtoms, splitByParagraph)
+import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
@@ -77,7 +77,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS $ splitByParagraph
+    (interpretPromptStorageFS $ splitMarkdownAware
       $ chapterAction mode sheetPath outFile (envActiveChars env))
 
   case result of

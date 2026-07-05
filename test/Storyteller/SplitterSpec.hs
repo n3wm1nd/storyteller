@@ -6,7 +6,7 @@ import qualified Data.Text as T
 import Test.Hspec
 import Test.QuickCheck
 
-import Storyteller.Common.Splitter (byParagraph)
+import Storyteller.Common.Splitter (byParagraph, splitMarkdown)
 
 spec :: Spec
 spec = do
@@ -45,3 +45,47 @@ spec = do
         let t = T.pack s
         in T.concat (byParagraph t) === t
 
+  describe "splitMarkdown True (paragraph + heading aware)" $ do
+    it "matches byParagraph when there are no headings" $
+      splitMarkdown True "first\n\nsecond" `shouldBe` byParagraph "first\n\nsecond"
+
+    it "splits at a heading with no surrounding blank lines" $
+      splitMarkdown True "intro\n# Heading\nbody"
+        `shouldBe` ["intro\n", "# Heading\nbody"]
+
+    it "heading followed by a blank line still separates from its body" $
+      splitMarkdown True "# Heading\n\nbody"
+        `shouldBe` ["# Heading\n\n", "body"]
+
+    it "multiple heading levels each start a new section" $
+      splitMarkdown True "# H1\nbody1\n## H2\nbody2"
+        `shouldBe` ["# H1\nbody1\n", "## H2\nbody2"]
+
+    it "does not split on a '#' that isn't at the start of a line" $
+      splitMarkdown True "a #b c" `shouldBe` ["a #b c"]
+
+    it "still splits paragraphs within a heading's own section" $
+      splitMarkdown True "# H1\npara1\n\npara2"
+        `shouldBe` ["# H1\npara1\n\n", "para2"]
+
+  describe "splitMarkdown False (heading only)" $ do
+    it "keeps the whole text as one atom when there are no headings" $
+      splitMarkdown False "para1\n\npara2" `shouldBe` ["para1\n\npara2"]
+
+    it "splits only at headings, keeping paragraphs within a section together" $
+      splitMarkdown False "# H1\npara1\n\npara2\n# H2\npara3"
+        `shouldBe` ["# H1\npara1\n\npara2\n", "# H2\npara3"]
+
+    it "empty string gives no atoms" $
+      splitMarkdown False "" `shouldBe` []
+
+  describe "splitMarkdown / QuickCheck" $ do
+    it "is lossless for atParagraph = True" $
+      property $ \s ->
+        let t = T.pack s
+        in T.concat (splitMarkdown True t) === t
+
+    it "is lossless for atParagraph = False" $
+      property $ \s ->
+        let t = T.pack s
+        in T.concat (splitMarkdown False t) === t

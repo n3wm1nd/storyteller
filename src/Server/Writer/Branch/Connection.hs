@@ -56,7 +56,7 @@ import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction)
 import Server.Core.Util (withBranch)
-import Storyteller.Common.Splitter (splitByParagraph)
+import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (withStorage)
 import Storyteller.Core.Types (TickId(..))
 
@@ -72,7 +72,7 @@ runCommands :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCommands env branch conn = do
   result <- runM $ wsAction env conn $
     withBranch @Main branch (pushInitial conn branch)
-      >> splitByParagraph (commandLoop conn branch)
+      >> splitMarkdownAware (commandLoop conn branch)
   either (reportError conn) return result
 
 -- | The notify-listener thread's persistent stack: react to ref-move

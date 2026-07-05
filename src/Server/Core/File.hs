@@ -27,15 +27,19 @@ module Server.Core.File
   , editFileAtom
   , deleteFileAtom
   , moveFileAtom
+  , mergeFileAtoms
+  , splitFileAtoms
   , chatNote
   , readFileContent
   ) where
 
 import Control.Monad (void)
+import Data.List (sortOn)
+import Data.Ord (Down(..))
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Members, Sem)
+import Polysemy (Member, Members, Sem)
 import Polysemy.Error (Error)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
@@ -47,11 +51,13 @@ import Server.Core.Util (withBranch)
 
 import Storyteller.Core.Append (append)
 import Storyteller.Common.Annotation (addNote)
+import Storyteller.Common.Splitter (Splitter, splitAtoms)
+import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
-import Storyteller.Core.Storage (FileTick, StoryBranch, StoryStorage, fileTicks)
-import Storyteller.Core.Edit (deleteTick, editAtom, moveTick)
-import Storyteller.Core.Types (TickId(..))
+import Storyteller.Core.Storage (FileTick, StoryBranch, StoryStorage, fileTicks, readAt, get)
+import Storyteller.Core.Edit (deleteTick, editAtom, moveTick, mergeAtoms, splitTick, chainPositions)
+import Storyteller.Core.Types (TickId(..), fromTick)
 import Storyteller.Core.Git (BranchTag)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import qualified Runix.FileSystem as FS
@@ -111,6 +117,32 @@ deleteFileAtom tid = void $ deleteTick @Main tid
 -- | Move an atom to a new position in the file's chain.
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
 moveFileAtom tid mAfter = void $ moveTick @Main tid mAfter
+
+-- | Merge a contiguous run of one file's atoms into a single atom.
+--   'mergeAtoms' broadcasts its own mapping via 'Storyteller.Core.Storage.at',
+--   so there's nothing left to do here.
+mergeFileAtoms :: FileOpen r => [TickId] -> Sem r ()
+mergeFileAtoms tids = void $ mergeAtoms @Main tids
+
+-- | Re-run the splitter over each of the given atoms' own content, in place.
+--   Processed latest-in-chain-first: splitting an earlier atom rebases (and
+--   so renumbers) everything after it, including any other target still
+--   pending in this same batch, so working backward guarantees every
+--   not-yet-processed id is still valid when its turn comes.
+splitFileAtoms :: (FileOpen r, Member Splitter r) => [TickId] -> Sem r ()
+splitFileAtoms tids = do
+  positioned <- chainPositions @Main tids
+  mapM_ splitOne (map fst (sortOn (Down . snd) positioned))
+  where
+    splitOne tid = do
+      tick <- readAt @Main tid (get @Main)
+      case fromTick @Atom tick of
+        Nothing -> fail ("splitFileAtoms: not an atom: " <> T.unpack (unTickId tid))
+        Just (Atom _path msg) -> do
+          pieces <- splitAtoms msg
+          case pieces of
+            (_ : _ : _) -> void $ splitTick @Main tid pieces
+            _           -> return ()
 
 -- | Attach a note referencing @targets@ — zero or more atoms; empty is a
 --   free-floating remark rather than a comment on any specific one.

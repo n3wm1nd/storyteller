@@ -37,6 +37,8 @@ module Storyteller.Core.Edit
   , deleteTick
   , editAtom
   , moveTick
+  , mergeAtoms
+  , splitTick
 
     -- * Working-tree commit
   , commitWorkingTree
@@ -44,6 +46,9 @@ module Storyteller.Core.Edit
 
     -- * Ordering invariant check (exported for use in Dispatch)
   , checkMoveOrder
+
+    -- * Chain position lookup (exported for reuse — e.g. ordering a batch)
+  , chainPositions
   ) where
 
 import qualified Data.ByteString as BS
@@ -67,9 +72,9 @@ import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Storage
   ( StoryBranch, StoryStorage
-  , at, sneakyAt, sneakyAtWithFS, atWithFS, readAtWithFS, withFS, drop, reset, store, storeAs, storeData, follow, get, updateReferences
+  , at, sneakyAt, sneakyAtWithFS, atWithFS, readAtWithFS, withFS, drop, reset, sync, store, storeAs, storeData, follow, get, updateReferences
   )
-import Storyteller.Core.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent)
+import Storyteller.Core.Types (TickId(..), Tick(..), TickData(..), TickType(..), tickId, tickParent, decodeTaggedMessage)
 
 import Prelude hiding (appendFile, drop, get, readFile, writeFile)
 
@@ -161,7 +166,7 @@ deleteTick
   -> Sem r [(TickId, TickId)]
 deleteTick tid = do
   (_unit, mapping) <- at @branch tid $ drop @branch
-  reset @branch
+  sync @branch
   return mapping
 
 -- | Replace an atom's content in-place, preserving its chain position.
@@ -189,9 +194,9 @@ editAtom tid path newBytes = do
       -- being edited — matching the append-only invariant Store checks.
       appendFile @(BranchTag branch) path newBytes
       storeAs @branch (Atom path (TE.decodeUtf8With TE.lenientDecode newBytes))
-  reset @branch
   let fullMapping = (tid, newTid) : mapping
   updateReferences fullMapping
+  sync @branch
   return (newTid, fullMapping)
 
 -- ---------------------------------------------------------------------------
@@ -249,10 +254,138 @@ moveTick tid mAfter = do
           newTid        <- pushTick @branch d
           return (newTid, innerMap)
 
-  reset @branch
   let fullMapping = outerMapping <> innerMapping <> [(tid, newTid)]
   updateReferences fullMapping
+  sync @branch
   return fullMapping
+
+-- ---------------------------------------------------------------------------
+-- Merge
+-- ---------------------------------------------------------------------------
+
+-- | Merge a contiguous run of one file's atoms into a single atom, in the
+--   position of the earliest one. All ids in the group remap to the one
+--   result id — the several-old-ids-to-one-new-id generalization of
+--   'editAtom''s single-id mapping.
+--
+--   Requires at least two ids, all on the same file, occupying consecutive
+--   chain positions. A gapped selection (another tick, atom or not, sitting
+--   between two of the chosen atoms) is rejected rather than silently
+--   collapsed — collapsing across an unrelated tick would reorder it
+--   relative to content it didn't originally follow.
+mergeAtoms
+  :: forall branch r
+  .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , FileSystemWrite (BranchTag branch)
+                , StoryStorage
+                , Fail ] r )
+  => [TickId]
+  -> Sem r (TickId, [(TickId, TickId)])
+mergeAtoms []  = fail "mergeAtoms: need at least two atoms"
+mergeAtoms [_] = fail "mergeAtoms: need at least two atoms"
+mergeAtoms tids = do
+  chain <- follow @branch [] (\acc t -> (t : acc, tickParent t))
+  contentOrdered <- case chain of
+    (_ : rest) -> return rest
+    []         -> fail "mergeAtoms: branch has no root tick"
+
+  positioned <- mapM (\tid -> (tid,) <$> findPos "atom to merge" tid contentOrdered) tids
+  let ordered    = map fst (List.sortOn snd positioned)
+      positions  = List.sort (map snd positioned)
+
+  checkContiguous positions
+  path <- sameFile contentOrdered ordered
+
+  let lastTid = last ordered
+
+  (newTid, tailMapping) <- sneakyAt @branch lastTid $ do
+    drafts <- popN (length ordered)
+    pushTick @branch (mergeDrafts path (reverse drafts))
+
+  let fullMapping = tailMapping ++ [(tid, newTid) | tid <- ordered]
+  updateReferences fullMapping
+  sync @branch
+  return (newTid, fullMapping)
+  where
+    checkContiguous ps
+      | and (zipWith (\a b -> b == a + 1) ps (List.drop 1 ps)) = return ()
+      | otherwise = fail "mergeAtoms: selected atoms must be contiguous"
+
+    sameFile ordered' groupTids = do
+      paths <- mapM (fileOfTick ordered') groupTids
+      case List.nub paths of
+        [p] -> return p
+        _   -> fail "mergeAtoms: selected atoms must all belong to the same file"
+
+    fileOfTick ordered' tid =
+      case List.find (\t -> tickId t == tid) ordered' of
+        Just t | Just f <- lookup "file" (tickFields (tickData t)) -> return (T.unpack f)
+        _ -> fail ("mergeAtoms: not an atom: " <> T.unpack (unTickId tid))
+
+    -- Popping n times off the current HEAD (set to the last atom of the
+    -- group by the enclosing 'sneakyAt') walks backward through each
+    -- member of the group in turn, landing HEAD on the anchor right before
+    -- the first one once all n are popped — 'moveTick''s single-pop idiom,
+    -- generalized to n. Returned newest-first (last atom's draft first).
+    popN :: Int -> Sem r [TDraft]
+    popN 0 = return []
+    popN k = (:) <$> popTick @branch <*> popN (k - 1)
+
+    -- 'tdMessage' carries the tick's full raw, tagged message (e.g.
+    -- @"type:atom\npara1"@) — concatenating those directly would splice the
+    -- tag in mid-string. Each draft's own content is decoded out first, the
+    -- pieces concatenated, then the result is re-tagged once as a single
+    -- atom.
+    mergeDrafts path ds = TDraft
+      { tdRefs      = filter (`notElem` tids) (concatMap tdRefs ds)
+      , tdFields    = [("file", T.pack path)]
+      , tdMessage   = tickMessage (toDraft (Atom path (T.concat (map contentOf ds))))
+      , tdFileDiffs = Map.unionsWith (<>) (map tdFileDiffs ds)
+      }
+      where
+        contentOf d = case decodeTaggedMessage @Atom (tdMessage d) of
+          Just c  -> c
+          Nothing -> tdMessage d  -- unreachable: 'sameFile' already required these to be atoms
+
+-- ---------------------------------------------------------------------------
+-- Split
+-- ---------------------------------------------------------------------------
+
+-- | Explode one atom into several caller-supplied pieces, replacing it in
+--   place. This module stays free of any splitting policy (per its own
+--   module doc) — the caller decides the pieces (see
+--   'Storyteller.Common.Splitter') and hands them over already split. The
+--   first piece inherits @tid@'s incoming references (DATA-MODEL's
+--   "which inherits the original ID" — the reverse of 'mergeAtoms'); the
+--   rest are fresh ticks with no refs of their own.
+splitTick
+  :: forall branch r
+  .  ( Members '[ StoryBranch branch
+                , FileSystem      (BranchTag branch)
+                , FileSystemRead  (BranchTag branch)
+                , FileSystemWrite (BranchTag branch)
+                , StoryStorage
+                , Fail ] r )
+  => TickId
+  -> [T.Text]
+  -> Sem r ([TickId], [(TickId, TickId)])
+splitTick _ pieces | length pieces < 2 =
+  fail "splitTick: need at least two pieces"
+splitTick tid pieces = do
+  (newIds, tailMapping) <- sneakyAt @branch tid $ do
+    d <- popTick @branch
+    case lookup "file" (tdFields d) of
+      Nothing -> fail ("splitTick: not an atom: " <> T.unpack (unTickId tid))
+      Just f  -> mapM (\p -> storeAs @branch (Atom (T.unpack f) p)) pieces
+  case newIds of
+    [] -> fail "splitTick: internal error: no pieces stored"
+    (inheritor : _) -> do
+      let fullMapping = tailMapping ++ [(tid, inheritor)]
+      updateReferences fullMapping
+      sync @branch
+      return (newIds, fullMapping)
 
 -- ---------------------------------------------------------------------------
 -- Ordering invariant
@@ -294,6 +427,23 @@ findPos :: Members '[Fail] r => String -> TickId -> [Tick] -> Sem r Int
 findPos label tid ordered =
   maybe (fail $ label <> " not found: " <> T.unpack (unTickId tid)) return
     (findIndex (\t -> tickId t == tid) ordered)
+
+-- | Resolve each id's position among content ticks (root excluded),
+--   oldest-first — for a caller that needs to process a batch of ids in
+--   chain order without walking the chain once per id (e.g. so splitting a
+--   batch of atoms can go latest-first, since splitting an earlier one
+--   rebases — and so renumbers — everything after it, including any other
+--   id still pending in the same batch).
+chainPositions
+  :: forall branch r
+  .  Members '[StoryBranch branch, Fail] r
+  => [TickId] -> Sem r [(TickId, Int)]
+chainPositions tids = do
+  chain <- follow @branch [] (\acc t -> (t : acc, tickParent t))
+  contentOrdered <- case chain of
+    (_ : rest) -> return rest
+    []         -> fail "chainPositions: branch has no root tick"
+  mapM (\tid -> (tid,) <$> findPos "tick" tid contentOrdered) tids
 
 -- | Read all file paths and their contents from the current WorkingTree snapshot.
 --   Recursively lists directories. Only returns files (not directory entries).

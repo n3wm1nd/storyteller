@@ -42,7 +42,7 @@ import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..))
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
-import Storyteller.Common.Splitter (Splitter, splitAtoms, splitByParagraph)
+import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
@@ -63,7 +63,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS $ splitByParagraph $ writeAction outFile (Instruction instruction) (envActiveChars env))
+    (interpretPromptStorageFS $ splitMarkdownAware $ writeAction outFile (Instruction instruction) (envActiveChars env))
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
