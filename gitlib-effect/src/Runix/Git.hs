@@ -66,6 +66,7 @@ import Polysemy.Fail
 import Polysemy.State (State, get, modify, evalState)
 
 import Runix.Cmd (Cmd, callIn, callStdinIn, CmdOutput(..))
+import qualified Runix.Git.Hash as Hash
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -170,6 +171,11 @@ runGitIO repo = interpret $ \case
     out <- git repo ["cat-file", "-p", T.unpack (unObjectHash hash)]
     parseCommit (stdout out)
 
+  -- The hash is computed locally (matches @git hash-object@ exactly --
+  -- see 'Runix.Git.Hash' and its property tests against the real CLI)
+  -- rather than parsed from git's stdout; git is still called to persist
+  -- the object, but we no longer depend on, or wait on, its answer for
+  -- the hash itself.
   WriteCommit cd -> do
     let parentLines = T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
         raw = "tree " <> unObjectHash (commitTree cd) <> "\n"
@@ -178,10 +184,11 @@ runGitIO repo = interpret $ \case
            <> "committer . <.> 0 +0000\n"
            <> "\n"
            <> commitMessage cd <> "\n"
-    out <- gitStdin repo ["hash-object", "-t", "commit", "-w", "--stdin"] (TE.encodeUtf8 raw)
-    case T.lines (stdout out) of
-      (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
-      _ -> fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
+        rawBytes = TE.encodeUtf8 raw
+    out <- gitStdin repo ["hash-object", "-t", "commit", "-w", "--stdin"] rawBytes
+    if exitCode out == 0
+      then return $ ObjectHash (Hash.hashObject Hash.Commit rawBytes)
+      else fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
 
   ReadObject hash -> do
     out <- gitStdin repo ["cat-file", "--batch-check=%(objecttype)"] (TE.encodeUtf8 (unObjectHash hash))
@@ -197,10 +204,18 @@ runGitIO repo = interpret $ \case
 
   WriteObject (BlobObject content) -> do
     out <- gitStdin repo ["hash-object", "-w", "--stdin"] content
-    case T.lines (stdout out) of
-      (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
-      _ -> fail $ "git hash-object failed: " <> T.unpack (stderr out)
+    if exitCode out == 0
+      then return $ ObjectHash (Hash.hashObject Hash.Blob content)
+      else fail $ "git hash-object failed: " <> T.unpack (stderr out)
 
+  -- Not self-hashed: unlike the commit/blob cases above, what we send
+  -- 'mktree' (ls-tree text) is not the tree object's actual binary
+  -- preimage -- 'mktree' itself re-encodes each entry into git's
+  -- <mode> <name>\0<20 raw hash bytes> format and re-sorts entries with
+  -- its own directory-aware comparator ("foo" sorts as "foo/") before
+  -- hashing. Self-hashing this case would need that serialisation and
+  -- sort replicated and tested first; still parsing 'mktree's answer here
+  -- until that exists, rather than assume an equivalence never checked.
   WriteObject (TreeObject entries) -> do
     let entryLine e = case e of
           BlobEntry name h -> "100644 blob " <> unObjectHash h <> "\t" <> T.pack name
