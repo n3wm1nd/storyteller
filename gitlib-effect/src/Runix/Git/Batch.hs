@@ -39,8 +39,6 @@ import qualified Data.Text.Encoding as TE
 import System.IO
 import System.Process
 
-import Runix.Git (ObjectHash(..))
-
 data BatchReader = BatchReader
   { brStdin  :: !Handle
   , brStdout :: !Handle
@@ -69,8 +67,12 @@ withBatchReader repo = bracket (openBatchReader repo) closeBatchReader
 -- | Read one object's type and raw content, or 'Nothing' if @hash@ is
 -- missing or ambiguous. Must be called from a single thread at a time --
 -- the protocol is strictly one request in flight per response.
-readBatch :: BatchReader -> ObjectHash -> IO (Maybe (Text, ByteString))
-readBatch br (ObjectHash h) = do
+--
+-- Takes the hash as raw hex 'Text' rather than 'Runix.Git.ObjectHash' so
+-- this module has no dependency on 'Runix.Git' (which depends on this
+-- module to wire the reader into its interpreter) -- callers unwrap.
+readBatch :: BatchReader -> Text -> IO (Maybe (Text, ByteString))
+readBatch br h = do
   BS8.hPutStrLn (brStdin br) (TE.encodeUtf8 h)
   hFlush (brStdin br)
   headerLine <- BS8.hGetLine (brStdout br)

@@ -53,6 +53,7 @@ module Runix.Git
   , withGitCache
   ) where
 
+import qualified Control.Exception as Exception
 import Data.ByteString (ByteString)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -63,9 +64,11 @@ import qualified Data.Map.Strict as Map
 
 import Polysemy
 import Polysemy.Fail
+import Polysemy.Resource (Resource, bracket)
 import Polysemy.State (State, get, modify, evalState)
 
 import Runix.Cmd (Cmd, callIn, callStdinIn, CmdOutput(..))
+import qualified Runix.Git.Batch as Batch
 import qualified Runix.Git.Hash as Hash
 
 -- ---------------------------------------------------------------------------
@@ -142,95 +145,112 @@ writeTree = writeObject . TreeObject
 -- ---------------------------------------------------------------------------
 
 -- | Interpret 'Git' using @Cmd "git"@ against a repository at @repoPath@.
+--
+-- Reads ('ReadObject', 'ReadCommit') go through one persistent
+-- @git cat-file --batch@ process ('Runix.Git.Batch'), opened when this
+-- interpreter starts and closed when it's done ('bracket', scoped to this
+-- one call -- not shared across separate 'runGitIO' invocations, so e.g.
+-- the server's per-request interpreter stack never leaks a process across
+-- requests). See 'Runix.Git.Batch' for the throughput measurement
+-- (~30x over one-shot @cat-file@) and its correctness tests.
 runGitIO
-  :: Members '[Cmd "git", Fail] r
+  :: Members '[Cmd "git", Fail, Resource, Embed IO] r
   => FilePath
   -> Sem (Git : r) a
   -> Sem r a
-runGitIO repo = interpret $ \case
-  ResolveRef (RefName name) -> do
-    out <- git repo ["rev-parse", "--verify", "--quiet", T.unpack name]
-    case T.lines (stdout out) of
-      (h:_) | exitCode out == 0 -> return $ Just (ObjectHash (T.strip h))
-      _                         -> return Nothing
+runGitIO repo action =
+  bracket (embedBatch (Batch.openBatchReader repo)) (embed . Batch.closeBatchReader) $ \br ->
+    (interpret $ \case
+      ResolveRef (RefName name) -> do
+        out <- git repo ["rev-parse", "--verify", "--quiet", T.unpack name]
+        case T.lines (stdout out) of
+          (h:_) | exitCode out == 0 -> return $ Just (ObjectHash (T.strip h))
+          _                         -> return Nothing
 
-  CreateRef (RefName name) hash ->
-    git_ repo ["update-ref", T.unpack name, T.unpack (unObjectHash hash)]
+      CreateRef (RefName name) hash ->
+        git_ repo ["update-ref", T.unpack name, T.unpack (unObjectHash hash)]
 
-  UpdateRef (RefName name) hash ->
-    git_ repo ["update-ref", T.unpack name, T.unpack (unObjectHash hash)]
+      UpdateRef (RefName name) hash ->
+        git_ repo ["update-ref", T.unpack name, T.unpack (unObjectHash hash)]
 
-  DeleteRef (RefName name) ->
-    git_ repo ["update-ref", "-d", T.unpack name]
+      DeleteRef (RefName name) ->
+        git_ repo ["update-ref", "-d", T.unpack name]
 
-  ListRefs prefix -> do
-    out <- git repo ["for-each-ref", "--format=%(refname) %(objectname)", T.unpack prefix]
-    return $ mapMaybe parseLine (T.lines (stdout out))
+      ListRefs prefix -> do
+        out <- git repo ["for-each-ref", "--format=%(refname) %(objectname)", T.unpack prefix]
+        return $ mapMaybe parseLine (T.lines (stdout out))
 
-  ReadCommit hash -> do
-    out <- git repo ["cat-file", "-p", T.unpack (unObjectHash hash)]
-    parseCommit (stdout out)
+      ReadCommit hash -> do
+        mResult <- embedBatch (Batch.readBatch br (unObjectHash hash))
+        case mResult of
+          Just (_, raw) -> parseCommit (TE.decodeUtf8 raw)
+          Nothing -> fail $ "ReadCommit: object not found: " <> T.unpack (unObjectHash hash)
 
-  -- The hash is computed locally (matches @git hash-object@ exactly --
-  -- see 'Runix.Git.Hash' and its property tests against the real CLI)
-  -- rather than parsed from git's stdout; git is still called to persist
-  -- the object, but we no longer depend on, or wait on, its answer for
-  -- the hash itself.
-  WriteCommit cd -> do
-    let parentLines = T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
-        raw = "tree " <> unObjectHash (commitTree cd) <> "\n"
-           <> parentLines
-           <> "author . <.> 0 +0000\n"
-           <> "committer . <.> 0 +0000\n"
-           <> "\n"
-           <> commitMessage cd <> "\n"
-        rawBytes = TE.encodeUtf8 raw
-    out <- gitStdin repo ["hash-object", "-t", "commit", "-w", "--stdin"] rawBytes
-    if exitCode out == 0
-      then return $ ObjectHash (Hash.hashObject Hash.Commit rawBytes)
-      else fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
+      -- The hash is computed locally (matches @git hash-object@ exactly --
+      -- see 'Runix.Git.Hash' and its property tests against the real CLI)
+      -- rather than parsed from git's stdout; git is still called to persist
+      -- the object, but we no longer depend on, or wait on, its answer for
+      -- the hash itself.
+      WriteCommit cd -> do
+        let parentLines = T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
+            raw = "tree " <> unObjectHash (commitTree cd) <> "\n"
+               <> parentLines
+               <> "author . <.> 0 +0000\n"
+               <> "committer . <.> 0 +0000\n"
+               <> "\n"
+               <> commitMessage cd <> "\n"
+            rawBytes = TE.encodeUtf8 raw
+        out <- gitStdin repo ["hash-object", "-t", "commit", "-w", "--stdin"] rawBytes
+        if exitCode out == 0
+          then return $ ObjectHash (Hash.hashObject Hash.Commit rawBytes)
+          else fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
 
-  ReadObject hash -> do
-    out <- gitStdin repo ["cat-file", "--batch-check=%(objecttype)"] (TE.encodeUtf8 (unObjectHash hash))
-    case T.strip (stdout out) of
-      "blob" -> do
-        raw <- git repo ["cat-file", "blob", T.unpack (unObjectHash hash)]
-        return $ BlobObject (TE.encodeUtf8 (stdout raw))
-      "tree" -> do
-        raw <- git repo ["ls-tree", T.unpack (unObjectHash hash)]
-        return $ TreeObject (mapMaybe parseTreeLine (T.lines (stdout raw)))
-      typ -> fail $ "ReadObject: unsupported object type '" <> T.unpack typ
-                 <> "' for " <> T.unpack (unObjectHash hash)
+      ReadObject hash -> do
+        mResult <- embedBatch (Batch.readBatch br (unObjectHash hash))
+        case mResult of
+          Nothing -> fail $ "ReadObject: object not found: " <> T.unpack (unObjectHash hash)
+          Just ("blob", content) -> return (BlobObject content)
+          -- Batch's raw content for a tree is git's internal binary tree
+          -- format, not the ls-tree-parsed entries 'TreeObject' needs --
+          -- same reason 'WriteObject (TreeObject ...)' below isn't
+          -- self-hashed either. Fall back to a second, one-shot 'ls-tree'
+          -- call rather than assume a parsing equivalence never checked.
+          Just ("tree", _rawTreeBytes) -> do
+            raw <- git repo ["ls-tree", T.unpack (unObjectHash hash)]
+            return $ TreeObject (mapMaybe parseTreeLine (T.lines (stdout raw)))
+          Just (typ, _) -> fail $ "ReadObject: unsupported object type '" <> T.unpack typ
+                     <> "' for " <> T.unpack (unObjectHash hash)
 
-  WriteObject (BlobObject content) -> do
-    out <- gitStdin repo ["hash-object", "-w", "--stdin"] content
-    if exitCode out == 0
-      then return $ ObjectHash (Hash.hashObject Hash.Blob content)
-      else fail $ "git hash-object failed: " <> T.unpack (stderr out)
+      WriteObject (BlobObject content) -> do
+        out <- gitStdin repo ["hash-object", "-w", "--stdin"] content
+        if exitCode out == 0
+          then return $ ObjectHash (Hash.hashObject Hash.Blob content)
+          else fail $ "git hash-object failed: " <> T.unpack (stderr out)
 
-  -- Not self-hashed: unlike the commit/blob cases above, what we send
-  -- 'mktree' (ls-tree text) is not the tree object's actual binary
-  -- preimage -- 'mktree' itself re-encodes each entry into git's
-  -- <mode> <name>\0<20 raw hash bytes> format and re-sorts entries with
-  -- its own directory-aware comparator ("foo" sorts as "foo/") before
-  -- hashing. Self-hashing this case would need that serialisation and
-  -- sort replicated and tested first; still parsing 'mktree's answer here
-  -- until that exists, rather than assume an equivalence never checked.
-  WriteObject (TreeObject entries) -> do
-    let entryLine e = case e of
-          BlobEntry name h -> "100644 blob " <> unObjectHash h <> "\t" <> T.pack name
-          SubTree   name h -> "040000 tree " <> unObjectHash h <> "\t" <> T.pack name
-        input = T.unlines (map entryLine entries)
-    out <- gitStdin repo ["mktree"] (TE.encodeUtf8 input)
-    case T.lines (stdout out) of
-      (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
-      _ -> fail $ "git mktree failed: " <> T.unpack (stderr out)
+      -- Not self-hashed: unlike the commit/blob cases above, what we send
+      -- 'mktree' (ls-tree text) is not the tree object's actual binary
+      -- preimage -- 'mktree' itself re-encodes each entry into git's
+      -- <mode> <name>\0<20 raw hash bytes> format and re-sorts entries with
+      -- its own directory-aware comparator ("foo" sorts as "foo/") before
+      -- hashing. Self-hashing this case would need that serialisation and
+      -- sort replicated and tested first; still parsing 'mktree's answer here
+      -- until that exists, rather than assume an equivalence never checked.
+      WriteObject (TreeObject entries) -> do
+        let entryLine e = case e of
+              BlobEntry name h -> "100644 blob " <> unObjectHash h <> "\t" <> T.pack name
+              SubTree   name h -> "040000 tree " <> unObjectHash h <> "\t" <> T.pack name
+            input = T.unlines (map entryLine entries)
+        out <- gitStdin repo ["mktree"] (TE.encodeUtf8 input)
+        case T.lines (stdout out) of
+          (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
+          _ -> fail $ "git mktree failed: " <> T.unpack (stderr out)
 
-  LookupPath hash path -> do
-    out <- git repo ["ls-tree", "-r", T.unpack (unObjectHash hash), "--", path]
-    case mapMaybe parseTreeLine (T.lines (stdout out)) of
-      (e:_) -> return $ Just (entryHash e)
-      []    -> return Nothing
+      LookupPath hash path -> do
+        out <- git repo ["ls-tree", "-r", T.unpack (unObjectHash hash), "--", path]
+        case mapMaybe parseTreeLine (T.lines (stdout out)) of
+          (e:_) -> return $ Just (entryHash e)
+          []    -> return Nothing
+      ) action
 
 -- ---------------------------------------------------------------------------
 -- Object cache interceptor
@@ -303,6 +323,20 @@ gitStdin repo args stdin = callStdinIn @"git" repo args stdin
 
 git_ :: Member (Cmd "git") r => FilePath -> [String] -> Sem r ()
 git_ repo args = git repo args >> return ()
+
+-- | Run a 'Runix.Git.Batch' IO action, converting any exception it throws
+-- (process launch failure, a malformed @cat-file --batch@ response, ...)
+-- into 'Fail' instead of letting it propagate as a raw synchronous
+-- exception. 'Polysemy.Resource.runResource's bracket only guarantees
+-- cleanup runs across other short-circuiting 'Sem' effects (per its own
+-- docs) -- it has no IO awareness at all, so anything that reaches it as
+-- a genuine Haskell exception would skip that guarantee and leak the
+-- open batch reader. Routing every 'Runix.Git.Batch' failure through this
+-- is what makes that guarantee actually cover them.
+embedBatch :: Members '[Fail, Embed IO] r => IO a -> Sem r a
+embedBatch io = do
+  result <- embed (Exception.try io)
+  either (\e -> fail (Exception.displayException (e :: Exception.SomeException))) return result
 
 parseLine :: Text -> Maybe (RefName, ObjectHash)
 parseLine line = case T.words line of

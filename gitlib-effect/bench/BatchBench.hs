@@ -26,13 +26,14 @@ import Text.Printf (printf)
 
 import Polysemy
 import Polysemy.Fail (Fail, runFail)
+import Polysemy.Resource (Resource, runResource)
 import Runix.Cmd (Cmd, Cmds, cmdsIO, interpretCmd)
 import Runix.Git
 import Runix.Git.Batch
 
-runInRepo :: FilePath -> Sem '[Git, Cmd "git", Cmds, Fail, Embed IO] a -> IO a
+runInRepo :: FilePath -> Sem '[Git, Cmd "git", Cmds, Resource, Fail, Embed IO] a -> IO a
 runInRepo repo action = do
-  result <- runM . runFail . cmdsIO . interpretCmd @"git" . runGitIO repo $ action
+  result <- runM . runFail . runResource . cmdsIO . interpretCmd @"git" . runGitIO repo $ action
   either (\e -> ioError (userError ("runGitIO: " <> e))) return result
 
 objectCount :: Int
@@ -47,7 +48,7 @@ main = withSystemTempDirectory "gitlib-effect-batch-bench" $ \repo -> do
   putStrLn (replicate 78 '=')
 
   batchRate <- withBatchReader repo $ \br -> rate objectCount $
-    forM_ hashes (readBatch br)
+    forM_ hashes (readBatch br . unObjectHash)
 
   cliRate <- rate objectCount $
     forM_ hashes $ \h ->
