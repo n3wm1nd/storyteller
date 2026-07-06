@@ -20,6 +20,16 @@
 -- (@../runix/apps/runix-code/lib/Agent.hs@): query, and if the model called
 -- a tool, execute it and loop; otherwise return the text.
 --
+-- 'chatAgent' itself has no notion of "chat turn," "instruction," or
+-- "reply" — it's just @context in, whatever this call contributed on top
+-- of it out@, so continuing on top of it (elsewhere, later, with a
+-- different caller entirely) is just calling it again with a longer
+-- context. That's also what lets it self-recurse on tool calls directly
+-- instead of needing a separate accumulator-shaped loop: every recursive
+-- call has the exact same shape as the original one. Turning that into
+-- "the user asked X, the agent said Y" (or a persisted atom, or a rendered
+-- transcript) is the caller's job — see 'Server.Writer.File.chatConverse'.
+--
 -- All three tools are @Runix.Tools@'s own 'Tools.glob'/'Tools.readFile'/
 -- 'Tools.sedPrint' — reused as-is, same behaviour as every other Runix
 -- agent gets, not a reimplementation. @glob@'s pattern (e.g. @\"**\/*\"@ for
@@ -52,11 +62,12 @@
 --   * Deliberately NOT persisted: the tool-call exploration within a single
 --     turn (any 'glob'/'read_file' round trips) isn't written back as
 --     ticks — only the final reply is (see 'Server.Writer.File.chatConverse'
---     appending exactly one atom). So a later turn's history won't include
---     an earlier turn's tool calls; if the model needs that file again, it
---     asks again. This keeps the persisted history small and stable rather
---     than growing every turn by however much exploration happened, which
---     matters for the same cache-prefix-stability reason.
+--     picking the 'AssistantText' pieces back out of what this returns).
+--     So a later turn's history won't include an earlier turn's tool calls;
+--     if the model needs that file again, it asks again. This keeps the
+--     persisted history small and stable rather than growing every turn by
+--     however much exploration happened, which matters for the same
+--     cache-prefix-stability reason.
 module Storyteller.Writer.Agent.Chat
   ( chatAgent
   , historyFromFileTicks
@@ -71,35 +82,38 @@ import qualified Runix.Tools as Tools
 import UniversalLLM (HasTools, Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
 import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFromList)
 
-import Storyteller.Writer.Agent (Instruction(..), ChatReply(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
 import Storyteller.Core.StorageMonad (FileTick(..))
 
--- | Ask the LLM to continue a conversation, given prior turns and the new
---   message. No context is gathered up front — the model reaches for other
---   files itself, via 'chatTools', only if it decides it needs to.
+-- | Continue a conversation: given everything the model should see so far
+--   (prior history plus, at minimum, the new message the caller wants
+--   answered), return whatever this call contributed on top of that —
+--   any tool calls and their results, and the concluding reply. Re-fetches
+--   the system prompt and rebuilds 'chatTools' on every recursive step
+--   rather than hoisting them out of a separate non-recursive setup phase;
+--   that's a deliberate simplicity-over-micro-optimisation call — an LLM
+--   round trip dominates the cost of either by orders of magnitude, so
+--   there's nothing worth the extra shape (and the loss of "the recursive
+--   call looks exactly like the original one") to save it.
 chatAgent
   :: forall branch model r
   .  ( SupportsSystemPrompt (ProviderOf model), HasTools model
      , Members '[LLM model, PromptStorage, FileSystem branch, FileSystemRead branch, Fail] r )
   => [ModelConfig model]
-  -> [Message model]  -- ^ prior turns, oldest first
-  -> Instruction       -- ^ the new message
-  -> Sem r ChatReply
-chatAgent configs history (Instruction instruction) = do
+  -> [Message model]        -- ^ context to send: history plus this turn's new message(s) so far
+  -> Sem r [Message model]  -- ^ everything this call added on top of the given context
+chatAgent configs context = do
   Prompt sys <- getPrompt "agent.chat.system" defaultChatSystemPrompt
   let tools = chatTools @branch @r
       configsWithTools = SystemPrompt sys : Tools (map llmToolToDefinition tools) : configs
-  loop tools configsWithTools (history ++ [UserText instruction])
-  where
-    loop :: [LLMTool (Sem r)] -> [ModelConfig model] -> [Message model] -> Sem r ChatReply
-    loop tools configs' msgs = do
-      response <- queryLLM @model configs' msgs
-      case [tc | AssistantTool tc <- response] of
-        [] -> return $ ChatReply $ mconcat [t | AssistantText t <- response]
-        calls -> do
-          results <- mapM (executeToolCallFromList tools) calls
-          loop tools configs' (msgs ++ response ++ map ToolResultMsg results)
+  response <- queryLLM @model configsWithTools context
+  case [tc | AssistantTool tc <- response] of
+    [] -> return response
+    calls -> do
+      results <- mapM (executeToolCallFromList tools) calls
+      let added = response ++ map ToolResultMsg results
+      rest <- chatAgent @branch configs (context ++ added)
+      return (added ++ rest)
 
 -- | Fallback for @agent.chat.system@, used until an override is committed
 --   to the 'Storyteller.Core.Runtime.Prompts' branch. Deliberately static —

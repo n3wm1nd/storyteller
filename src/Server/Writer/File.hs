@@ -34,7 +34,9 @@ import Server.Core.File (FileOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.File.Protocol (ContextItem(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), ChatReply(..), CharContextBlock, WordCount(..))
+import UniversalLLM (Message(..))
+
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
@@ -103,6 +105,13 @@ chatFixer path prompt _context targets = do
 --   and reaches for other branch files itself, via tool calls, if it needs
 --   to (see 'Storyteller.Writer.Agent.Chat').
 --
+--   'chatAgent' itself doesn't know about "chat turns" or replies — it just
+--   hands back every message it produced servicing this call, tool calls
+--   and results included (see its own Haddock). This is where that gets
+--   turned into what a chat file actually is: only the 'AssistantText'
+--   pieces get concatenated into the atom, same as before — the tool
+--   exploration stays out of the persisted chain.
+--
 --   History is read before the new prompt tick is stored, so it never
 --   includes the message currently being answered.
 chatConverse :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
@@ -110,7 +119,8 @@ chatConverse path prompt = do
   history <- historyFromFileTicks <$> runStorage @Main (SM.fileTicksOf path)
   _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
   info $ "chat agent starting: " <> T.pack path
-  ChatReply reply <- chatAgent @(BranchTag Main) modelConfigs history (Instruction prompt)
+  added <- chatAgent @(BranchTag Main) modelConfigs (history ++ [UserText prompt])
+  let reply = mconcat [t | AssistantText t <- added]
   _ <- runStorage @Main (SM.append path reply)
   info $ "chat agent done: " <> T.pack path
 

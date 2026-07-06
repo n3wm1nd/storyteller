@@ -13,7 +13,6 @@ module Storyteller.Writer.Agent
   , Instruction(..)
   , Prompt(..)
   , Prose(..)
-  , ChatReply(..)
   , CharContextBlock(..)
   , CharLabel(..)
   , ContextBlock(..)
@@ -57,10 +56,6 @@ instance TickType Prompt where
 
 -- | A chunk of prose — story content to be appended to a file.
 newtype Prose = Prose Text
-  deriving (Show, Eq)
-
--- | The chat agent's reply — conversational text, not story prose to append.
-newtype ChatReply = ChatReply Text
   deriving (Show, Eq)
 
 -- | A formatted block of character information, ready for inclusion in an
