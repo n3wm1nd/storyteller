@@ -53,6 +53,10 @@ module Storyteller.Core.Git
     -- * Generic rebase (for inner actions that interleave other effects)
   , atGeneric
   , readAtGeneric
+
+    -- * Cross-branch reference cascade (exported for its own unit tests --
+    -- see 'Storyteller.GitCascadeSpec')
+  , cascadeReplace
   ) where
 
 import Prelude
@@ -304,32 +308,19 @@ withStorageDiscard = fmap fst . withStorageWithCallback (\_ _ -> pure ())
 --   same region -- is resolved once, not once per path. See
 --   bench/PerfCascade.hs for the regression probe this fixes.
 --
---   TODO(unfiltered branch walk): every branch in @pairs@ is still walked
---   in full at least once, even one whose entire history shares nothing
---   with @mapping@ at all (e.g. an unrelated story branch, or a character
---   branch that never tracked the edited one) -- the shared memo table
---   above only avoids *re*-walking ancestry two branches have in common,
---   it can't skip a branch's walk before starting it, since there's no
---   way from inside this function to know in advance that a given
---   branch's history is disjoint from @mapping@'s keys without reading
---   it. See [[project_git_write_batching]] / PLAN-storage-monad.md's
---   real-repo bench (@bench/RealGitPerf.hs@): after batching writes
---   (@Runix.Git.Store@), this is the next-largest remaining contributor
---   to a deep edit's op count -- smaller than the write-batching win, not
---   zero.
---
---   Not fixed here because it isn't a small change: the correct fix needs
---   a cheap *reachability* pre-check (e.g. "is any of these N hashes an
---   ancestor of this branch's head?", answerable in one shot the way
---   @git merge-base --is-ancestor@ or a @git rev-list@ intersection
---   would, or the equivalent for 'Git.Mock') -- a genuinely new 'Git'
---   effect primitive, needed in both interpreters
---   ('Storyteller.Core.Git'\/'Runix.Git.runGitIO' and
---   @test/Git/Mock.hs@) with its own correctness tests, wired in as a
---   filter before 'rewriteRef' runs per branch. That's a real, scoped
---   addition to a place where a subtle bug would silently corrupt
---   cross-branch references -- worth doing carefully, with a fresh
---   context, rather than bolted on here.
+--   Every branch in @pairs@ is first asked a cheap reachability question
+--   -- 'isAncestorOfAny': is any of @mapping@'s keys even an ancestor of
+--   this branch's head? -- before 'rewriteChain' walks and re-reads its
+--   ancestry at all. A branch whose entire history shares nothing with
+--   @mapping@ (e.g. an unrelated story branch, or a character branch that
+--   never tracked the edited one) is skipped outright on a "no" answer,
+--   rather than discovering the same thing the hard way by walking and
+--   reading every commit in it. See 'Runix.Git.IsAncestorOfAny' for how
+--   both interpreters answer this in one shot (one native @git rev-list@
+--   call, or one in-memory BFS for 'Git.Mock') rather than by doing the
+--   walk 'rewriteChain' was trying to avoid in the first place. See
+--   [[project_git_write_batching]] / PLAN-storage-monad.md's real-repo
+--   bench (@bench/RealGitPerf.hs@) for the measurement this addresses.
 cascadeReplace
   :: Members '[Git, Fail] r
   => [(RefName, ObjectHash)]      -- ^ each branch's current head
@@ -347,11 +338,13 @@ rewriteRef
   -> (RefName, ObjectHash)
   -> Sem r ()
 rewriteRef applyRef mapping (ref, headHash) = do
-  newHead <- rewriteChain mapping headHash
-  when (newHead /= headHash) $
-    case refBranchName ref of
-      Just name -> applyRef name (Just (TickId (unObjectHash newHead)))
-      Nothing   -> return ()
+  relevant <- isAncestorOfAny (Map.keys mapping) headHash
+  when relevant $ do
+    newHead <- rewriteChain mapping headHash
+    when (newHead /= headHash) $
+      case refBranchName ref of
+        Just name -> applyRef name (Just (TickId (unObjectHash newHead)))
+        Nothing   -> return ()
 
 -- | Walk a commit chain rewriting any commit that appears as a key in
 --   @mapping@, memoizing every hash it resolves along the way (see

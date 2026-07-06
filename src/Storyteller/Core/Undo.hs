@@ -138,6 +138,7 @@ interceptGitUndoLog isTracked = intercept $ \case
   ReadObject hash      -> send (ReadObject hash)
   WriteObject obj      -> send (WriteObject obj)
   LookupPath tree path -> send (LookupPath tree path)
+  IsAncestorOfAny targets hash -> send (IsAncestorOfAny targets hash)
 
 -- | Self-contained: introduces 'Undo' and discharges it again around
 --   @action@, so a caller never needs 'Undo' in its own effect row just to

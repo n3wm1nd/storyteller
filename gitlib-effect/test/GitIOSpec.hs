@@ -85,3 +85,27 @@ spec = describe "runGitIO (real git subprocess interpreter)" $ do
         cd <- readCommit child
         return (commitParents cd, root)
       fst parents `shouldBe` [snd parents]
+
+  it "isAncestorOfAny finds a target several generations back, including the head itself" $
+    withTempRepo $ \repo -> do
+      (root, mid, tip, unrelated) <- runInRepo repo $ do
+        h1   <- writeBlob "root"
+        tree <- writeTree [BlobEntry "f" h1]
+        root <- writeCommit CommitData
+                  { commitParents = [], commitTree = tree, commitMessage = "root" }
+        mid  <- writeCommit CommitData
+                  { commitParents = [root], commitTree = tree, commitMessage = "mid" }
+        tip  <- writeCommit CommitData
+                  { commitParents = [mid], commitTree = tree, commitMessage = "tip" }
+        h2       <- writeBlob "other root"
+        tree2    <- writeTree [BlobEntry "g" h2]
+        unrelated <- writeCommit CommitData
+                  { commitParents = [], commitTree = tree2, commitMessage = "unrelated" }
+        return (root, mid, tip, unrelated)
+      results <- runInRepo repo $ do
+        hitsRoot      <- isAncestorOfAny [root] tip
+        hitsMid       <- isAncestorOfAny [mid] tip
+        hitsSelf      <- isAncestorOfAny [tip] tip
+        missesUnrelated <- isAncestorOfAny [unrelated] tip
+        return (hitsRoot, hitsMid, hitsSelf, missesUnrelated)
+      results `shouldBe` (True, True, True, False)

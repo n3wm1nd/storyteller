@@ -19,6 +19,7 @@ module Git.Mock
 import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Hashable (hash, Hashable)
 import Data.Word (Word64)
@@ -115,6 +116,17 @@ runGitMock = interpret $ \case
         | otherwise -> fail $ "LookupPath: unknown tree hash " <> T.unpack (unObjectHash h)
       Just (TreeObject entries) -> return $ entryHash <$> find (\e -> entryName e == path) entries
       Just (BlobObject _)       -> fail $ "LookupPath: hash is a blob: " <> T.unpack (unObjectHash h)
+
+  IsAncestorOfAny targets headHash -> do
+    s <- get
+    let targetSet = Set.fromList targets
+        walk visited [] = visited
+        walk visited (h : queue)
+          | h `Set.member` visited = walk visited queue
+          | otherwise = walk (Set.insert h visited)
+                             (maybe [] commitParents (Map.lookup h (gsCommits s)) ++ queue)
+        ancestors = walk Set.empty [headHash]
+    return $ not (Set.disjoint targetSet ancestors)
 
 -- ---------------------------------------------------------------------------
 -- Content hashing

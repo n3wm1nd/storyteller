@@ -38,6 +38,7 @@ import Runix.Git
   , RefName
   , createRef
   , deleteRef
+  , isAncestorOfAny
   , listRefs
   , lookupPath
   , readCommit
@@ -134,6 +135,7 @@ dispatchGitOp = \case
   ReadObject  hash         -> readObject hash
   WriteObject obj          -> writeObject obj
   LookupPath  tree path    -> lookupPath tree path
+  IsAncestorOfAny targets hash -> isAncestorOfAny targets hash
 
 -- | Same trick in reverse: a 'Git' request captured from a client's own
 -- 'Sem' stack (@m ~ Sem r0@) is inert data regardless of @m@, so it can be
@@ -151,6 +153,7 @@ toIOGitOp = \case
   ReadObject  hash         -> ReadObject  hash
   WriteObject obj          -> WriteObject obj
   LookupPath  tree path    -> LookupPath  tree path
+  IsAncestorOfAny targets hash -> IsAncestorOfAny targets hash
 
 submitGitJob :: GitWorkerQueue -> Git IO a -> IO (Either String a)
 submitGitJob (GitWorkerQueue queue) op = do

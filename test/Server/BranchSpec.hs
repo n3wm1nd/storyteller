@@ -109,6 +109,7 @@ countRefWrites = interpret $ \case
   ReadObject  h         -> send (ReadObject h)
   WriteObject obj       -> send (WriteObject obj)
   LookupPath  tree path -> send (LookupPath tree path)
+  IsAncestorOfAny targets h -> send (IsAncestorOfAny targets h)
   WriteCommit cd        -> send (WriteCommit cd)
   CreateRef   ref h     -> send (CreateRef ref h) <* modify (+ (1 :: Int))
   UpdateRef   ref h     -> send (UpdateRef ref h) <* modify (+ (1 :: Int))

@@ -5,6 +5,7 @@ import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.StorageSpec
 import qualified Storyteller.StorageMonadSpec
 import qualified Storyteller.EditSpec
+import qualified Storyteller.GitCascadeSpec
 import qualified Storyteller.AppendSpec
 import qualified Storyteller.CommitWorkingTreeSpec
 import qualified Storyteller.CommitNewFilesSpec
@@ -29,6 +30,7 @@ main = hspec $ do
   describe "Storyteller.Core.Storage"        Storyteller.StorageSpec.spec
   describe "Storyteller.Core.StorageMonad"   Storyteller.StorageMonadSpec.spec
   describe "Storyteller.Core.Edit"           Storyteller.EditSpec.spec
+  describe "Storyteller.Core.Git (cascadeReplace)" Storyteller.GitCascadeSpec.spec
   describe "Storyteller.Core.Append"         Storyteller.AppendSpec.spec
   describe "Storyteller.CommitWorkingTree" Storyteller.CommitWorkingTreeSpec.spec
   describe "Storyteller.CommitNewFiles" Storyteller.CommitNewFilesSpec.spec

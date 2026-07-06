@@ -40,6 +40,7 @@ module Runix.Git
   , readObject
   , writeObject
   , lookupPath
+  , isAncestorOfAny
 
     -- * Typed smart constructors (encode/decode around readObject/writeObject)
   , readBlob
@@ -68,6 +69,7 @@ import Data.Text (Text)
 import Data.Maybe (mapMaybe)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 
 import Polysemy
 import Polysemy.Fail
@@ -125,6 +127,15 @@ data Git m a where
   ReadObject  :: ObjectHash                 -> Git m GitObject
   WriteObject :: GitObject                  -> Git m ObjectHash
   LookupPath  :: ObjectHash -> FilePath     -> Git m (Maybe ObjectHash)
+
+  -- | Is any of the given hashes an ancestor of (or equal to) the given
+  -- commit? A single reachability query answerable in one shot -- see
+  -- 'Storyteller.Core.Git.cascadeReplace's TODO for why this exists: it
+  -- lets a caller skip rewriting a branch's ancestry entirely once it
+  -- learns none of a mapping's keys are even reachable from that branch's
+  -- head, rather than discovering the same thing the hard way by walking
+  -- and reading every commit in it.
+  IsAncestorOfAny :: [ObjectHash] -> ObjectHash -> Git m Bool
 
 makeSem ''Git
 
@@ -254,6 +265,21 @@ runGitIOWith repo gitDir withReader =
           Just (typ, _) -> fail $ "ReadObject: unsupported object type '" <> T.unpack typ
                      <> "' for " <> T.unpack (unObjectHash hash)
 
+      -- One native @git rev-list@ walk of @head@'s ancestry, listing
+      -- nothing but hashes -- no tree/blob content, no per-commit
+      -- round trip through the batch reader -- then a plain in-memory
+      -- intersection against @targets@. Cheaper than ruling the same
+      -- thing out by reading and parsing every commit ourselves, which
+      -- is what a caller not knowing this in advance would otherwise
+      -- have to do.
+      IsAncestorOfAny targets headHash
+        | null targets -> return False
+        | otherwise -> do
+            out <- git repo ["rev-list", T.unpack (unObjectHash headHash)]
+            let ancestors = Set.fromList
+                  [ ObjectHash (T.strip line) | line <- T.lines (stdout out) ]
+            return $ any (`Set.member` ancestors) targets
+
       WriteObject (BlobObject content) -> do
         hash <- embedBatch (Store.writeLooseObject gitDir Hash.Blob content)
         return (ObjectHash hash)
@@ -359,6 +385,8 @@ withGitCache action = evalState emptyGitCache $ intercept (\case
         return hash
 
       LookupPath tree path -> raise $ send (LookupPath tree path)
+
+      IsAncestorOfAny targets headHash -> raise $ send (IsAncestorOfAny targets headHash)
     ) (raise action)
 
 -- ---------------------------------------------------------------------------

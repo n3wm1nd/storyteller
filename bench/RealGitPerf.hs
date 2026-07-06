@@ -53,6 +53,7 @@ countGitOps = interpret $ \case
   ReadObject  h       -> send (ReadObject h)     <* bump "ReadObject"
   WriteObject o       -> send (WriteObject o)    <* bump "WriteObject"
   LookupPath  h p     -> send (LookupPath h p)   <* bump "LookupPath"
+  IsAncestorOfAny ts h -> send (IsAncestorOfAny ts h) <* bump "IsAncestorOfAny"
   where
     bump :: Member (State OpCounts) r' => String -> Sem r' ()
     bump k = modify (Map.insertWith (+) k (1 :: Int))

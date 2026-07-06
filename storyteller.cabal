@@ -216,6 +216,7 @@ test-suite storyteller-test
                   , Storyteller.StorageSpec
                   , Storyteller.StorageMonadSpec
                   , Storyteller.EditSpec
+                  , Storyteller.GitCascadeSpec
                   , Storyteller.AppendSpec
                   , Storyteller.CommitWorkingTreeSpec
                   , Storyteller.CommitNewFilesSpec
