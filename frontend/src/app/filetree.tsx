@@ -35,7 +35,7 @@ function buildTree(paths: string[]): TreeNode[] {
 
 // Hands the caller (path, content) pairs resolved against the drop target
 // folder — 'content' is each dropped 'File' itself (a 'Blob'), uploaded as
-// raw bytes over HTTP PUT (see 'uploadBranchFile'/store.ts's 'uploadFiles'),
+// raw bytes over HTTP PUT (see 'uploadBranchFile'/sidebar.actions.ts's 'uploadFiles'),
 // so unlike the old WS-JSON upload this isn't limited to text/markdown.
 function resolveDroppedFiles(folderPath: string, fileList: FileList): { path: string; content: File }[] {
   return Array.from(fileList).map((file) => ({

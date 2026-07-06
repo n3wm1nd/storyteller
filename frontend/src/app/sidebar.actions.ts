@@ -1,0 +1,147 @@
+"use client";
+
+// WS handling for the left sidebar (sidebar.tsx: branch list, create/delete,
+// file-tree drag-drop upload) plus the top-level "which branch is active"
+// switch it triggers. Colocated with sidebar.tsx rather than living in a
+// shared store file — see lib/serverCacheStore.ts's header for why that's
+// safe (writes go through the loudly-named 'mirrorServerEvent', importable
+// from anywhere).
+
+import { sessionConn, branchConn, uploadBranchFile } from "@/lib/ws";
+import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
+import { useUI, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
+import { applyUpdate, isChatPreviewEvent } from "@/lib/wsHelpers";
+import { handleChatPreview, clearPreviewDelayTimer } from "@/lib/chatPreview";
+
+export async function connect(): Promise<void> {
+  setConnStatus("session", "connecting");
+  useUI.setState({ error: null });
+
+  const session = sessionConn();
+
+  session.onStatus((s) => {
+    if (s !== "connected") setConnStatus("session", "connecting");
+  });
+
+  session.subscribe((evt) => {
+    bumpActivity("session");
+    if (evt.type === "session.ready") {
+      setConnStatus("session", "connected");
+    } else if (evt.type === "branch.list") {
+      mirrorServerEvent({ branches: evt.branches });
+    } else if (evt.type === "branch.created") {
+      mirrorServerEvent((s) => ({ branches: [...s.branches, evt.branch].sort() }));
+    } else if (evt.type === "branch.deleted") {
+      mirrorServerEvent((s) => ({
+        branches: s.branches.filter((b) => b !== evt.branch),
+        activeBranch: s.activeBranch === evt.branch ? null : s.activeBranch,
+      }));
+    } else if (evt.type === "character.list") {
+      mirrorServerEvent({ characterBranches: evt.characters });
+    } else if (evt.type === "error") {
+      setError(evt.message);
+    }
+  });
+
+  try {
+    await session.connect();
+    mirrorServerEvent({ _session: session });
+  } catch (err) {
+    setConnStatus("session", "error");
+    setError(String(err));
+  }
+}
+
+export function createBranch(name: string) {
+  getServerCache()._session?.send({ type: "create-branch", branch: name });
+}
+
+export function deleteBranch(name: string) {
+  getServerCache()._session?.send({ type: "delete-branch", branch: name });
+}
+
+export async function selectBranch(name: string): Promise<void> {
+  const prev = getServerCache()._branch;
+  const prevName = getServerCache().activeBranch;
+  if (prev) {
+    prev.close();
+    if (prevName) removeConn(`branch:${prevName}`);
+  }
+
+  for (const fc of Object.values(getServerCache().openFiles)) fc.conn.close();
+  for (const cc of Object.values(getServerCache().openCharacters)) cc.conn.close();
+  for (const jc of Object.values(getServerCache().openJournals)) jc.conn.close();
+
+  const label = `branch:${name}`;
+  mirrorServerEvent({
+    activeBranch: name,
+    files: [],
+    ticks: {},
+    branchHead: null,
+    openFiles: {},
+    openCharacters: {},
+    openJournals: {},
+  });
+  useUI.setState({
+    journalMarkers: {},
+    contextAtoms: new Set(),
+    contextAnnotations: new Set(),
+    rebaseMarker: null,
+    pendingSubmit: null,
+    hoverHighlight: null,
+  });
+  setConnStatus(label, "connecting");
+
+  const branch = branchConn(name);
+
+  branch.onStatus((s) => {
+    if (s !== "connected") setConnStatus(label, "connecting");
+  });
+
+  branch.subscribe((evt) => {
+    bumpActivity(label);
+    if (evt.type === "branch.ready") {
+      mirrorServerEvent({ files: [...evt.files].sort() });
+      setConnStatus(label, "connected");
+    } else if (evt.type === "file.added") {
+      mirrorServerEvent((s) => ({
+        files: s.files.includes(evt.path) ? s.files : [...s.files, evt.path].sort(),
+      }));
+    } else if (evt.type === "update") {
+      clearPreviewDelayTimer();
+      mirrorServerEvent((s) => ({ ticks: applyUpdate(s.ticks, evt), branchHead: evt.head, preview: null }));
+    } else if (evt.type === "agent.log") {
+      useUI.getState().addAgentLog(evt.level, evt.message);
+    } else if (isChatPreviewEvent(evt)) {
+      handleChatPreview(evt);
+    } else if (evt.type === "error") {
+      clearPreviewDelayTimer();
+      mirrorServerEvent({ preview: null });
+      setError(evt.message);
+    }
+  });
+
+  await branch.connect();
+  mirrorServerEvent({ _branch: branch });
+}
+
+// Drag-and-drop upload — one or more dropped files, written directly to
+// their paths via HTTP PUT (see 'uploadBranchFile'), no chat-agent round
+// trip and no WS/JSON text detour for the bytes. 'files' are already
+// path-resolved (destination folder + dropped filename) by the caller.
+// Each PUT is independent, so one file's fetch failing (surfaced via
+// 'error', same as a WS command's) doesn't block the others; the branch
+// connection's own ref-move notification isn't relied on here — the file
+// list is updated optimistically on that upload's own success instead
+// (see the FIXME in Server.Writer.Branch.Protocol).
+export function uploadFiles(files: { path: string; content: Blob }[]) {
+  const branch = getServerCache().activeBranch;
+  if (!branch) return;
+  files.forEach(({ path, content }) => {
+    uploadBranchFile(branch, path, content)
+      .then(() => mirrorServerEvent((s) => ({
+        files: s.files.includes(path) ? s.files : [...s.files, path].sort(),
+      })))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  });
+}

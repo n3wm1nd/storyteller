@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
+import { useUI } from "@/lib/uiStore";
+import { connect, createBranch, deleteBranch, selectBranch, uploadFiles } from "./sidebar.actions";
 import {
-  connect, createBranch, deleteBranch, selectBranch, openFile, createFile, closeFile,
+  openFile, createFile, closeFile, enterScene, leaveScene,
+  appendToFile, editAtom, deleteAtom, mergeSelected, splitSelected,
+  chatWrite, chatFix, chatNote, chatRegen, chatOutline,
+} from "./fileview.actions";
+import {
   openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
   editJournalAtom, deleteJournalAtom, journalFix, appendJournal,
-  enterScene, leaveScene,
-  appendToFile, editAtom, deleteAtom, mergeSelected, splitSelected, addNote, moveTick, deleteTickEntry, uploadFiles,
-  chatWrite, chatFix, chatNote, chatRegen, chatOutline,
-} from "@/lib/serverCacheStore";
-import { useUI } from "@/lib/uiStore";
+} from "./character-sidebar.actions";
+import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceBar } from "./fileview";
