@@ -5,6 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# OPTIONS_GHC -Wno-duplicate-exports #-}
 
 -- | Character generation agent.
 --
@@ -23,7 +24,7 @@ module Storyteller.Writer.Agent.CharGen
   , unSheet
   ) where
 
-import           Control.Monad (replicateM, void, when)
+import           Control.Monad (replicateM, when)
 import           Control.Monad.State.Strict
 import           Data.Aeson (Value(..))
 import qualified Data.Aeson.Key    as K
@@ -35,7 +36,6 @@ import           Data.Maybe (fromMaybe)
 import           Data.Scientific (Scientific, toBoundedInteger)
 import           Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as V
 import           System.Random (StdGen, mkStdGen, uniformR)
 import           Text.Read (readMaybe)

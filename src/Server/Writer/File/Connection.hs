@@ -95,7 +95,7 @@ reportError conn err = WS.sendTextData conn (encode (FileError (T.pack err)))
 --   and diff since the last push; a tick remap carries its own payload
 --   straight through — see 'FileEvent.TickRemap'.
 onNotify
-  :: (SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> FilePath -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
 onNotify branch conn path since note = case note of
   RefMoved _ ->
@@ -122,7 +122,7 @@ pushInitial conn path = do
 --   whichever 'StoryStorage' was ambient when *it* was opened, not to one
 --   introduced later around an individual command.
 commandLoop
-  :: (Member Splitter r, SessionEffects r, Member (Embed IO) r, Member (Error String) r)
+  :: (Member Splitter r, SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> FilePath -> Sem r ()
 commandLoop branch conn path = loop
   where

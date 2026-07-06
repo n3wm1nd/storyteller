@@ -331,7 +331,7 @@ instance MonadFail m => MonadFail (StorageT m) where
 
 -- | Run a 'StorageT' computation seeded at the given head and working tree,
 --   returning the result together with the (possibly advanced) final state.
-runStorageT :: Monad m => ObjectHash -> WorkingTree -> StorageT m a -> m (a, ScopeState)
+runStorageT :: ObjectHash -> WorkingTree -> StorageT m a -> m (a, ScopeState)
 runStorageT h wt (StorageT s) = runStateT s (h, wt)
 
 -- | Like 'runStorageT', discarding the final state.

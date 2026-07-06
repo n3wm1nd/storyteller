@@ -13,6 +13,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 -- | Git-backed interpreter for 'StoryStorage', and the Polysemy embedding
 --   of 'Storyteller.Core.StorageMonad' for per-branch tick-chain operations.
@@ -76,7 +77,7 @@ import Runix.FileSystem
   ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
 
 import Storyteller.Core.Types hiding (draft)
-import Storyteller.Core.Storage hiding (get, drop, Get)
+import Storyteller.Core.Storage 
 import qualified Storyteller.Core.StorageMonad as SM
 
 -- ---------------------------------------------------------------------------

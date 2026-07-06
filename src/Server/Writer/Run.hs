@@ -6,6 +6,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE GADTs #-}
 
 -- | Polysemy interpreter stacks for the Writer server's connection levels.
 --
@@ -35,7 +36,7 @@ import Polysemy
 import Polysemy.Error (Error, runError)
 import Runix.Logging (Logging(..), Level(..))
 import Runix.StreamChunk (StreamChunk(..), ignoreChunks)
-import Runix.Config (runConfig)
+import Runix.Config (runConfig, Config)
 import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent(..), StreamingEnabled(..))
 import Runix.Runner (loggingIO, failLog)
 
@@ -45,7 +46,7 @@ import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Runtime (runInfrastructureWith, StoryModel, storyModel)
-import Storyteller.Core.Prompt (interpretPromptStorageFS)
+import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Storage (StoryStorage(..))
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Types (unTickId)
@@ -53,6 +54,12 @@ import Storyteller.Core.Types (unTickId)
 import Runix.LLM.Interpreter (interpretLLM, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..), RestAPI, restapiHTTP, llmRetry)
 import qualified UniversalLLM
+import qualified Runix.LLM
+import qualified Runix.Random
+import qualified Runix.HTTP
+import qualified Runix.Time
+import qualified Runix.Git
+import qualified Polysemy.Fail.Type
 
 -- | Intercept 'StoryStorage' and notify whenever 'UpdateReferences' rewrites
 -- a non-empty batch of tick ids — the point at which any client tracking one
@@ -124,6 +131,8 @@ streamChunksWS :: Member (Embed IO) r => WS.Connection -> Sem (StreamChunk Strea
 streamChunksWS conn = interpret $ \(EmitChunk event) ->
   maybe (return ()) (embed . WS.sendTextData conn . encode) (previewEvent event)
 
+actionStack :: (Member (Embed IO) r,
+ Member (StreamChunk StreamEvent) r) => ServerEnv -> Sem      (Runix.LLM.LLM StoryModel         : Runix.Config.Config StreamingEnabled         : Storyteller.Core.Prompt.PromptStorage : StoryStorage         : Runix.Random.Random : Runix.HTTP.HTTP : Runix.HTTP.HTTPStreaming         : Runix.Time.Sleep : Runix.Time.Time : Runix.Git.Git         : Polysemy.Fail.Type.Fail : Logging : Error String : r)      a -> Sem r (Either String a)
 actionStack env action =
   let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
   in runError @String

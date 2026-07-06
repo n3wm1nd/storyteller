@@ -29,4 +29,14 @@ import Storyteller.Core.Prompt (PromptStorage)
 --   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
 --   network through the 'LLM' effect, never directly.
 type SessionEffects r =
-  Members '[Random, Sleep, Time, Git, Fail, Logging, Error String, StoryStorage, LLM StoryModel, PromptStorage] r
+  Members '[ Random
+           , Sleep
+           , Time
+           , Git
+           , Fail
+           , Logging
+           , Error String
+           , StoryStorage
+           , LLM StoryModel
+           , PromptStorage
+           ] r
