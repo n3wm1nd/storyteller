@@ -22,6 +22,7 @@ import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceB
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
+import { ContextPreviewPanel } from "./contextpreview";
 
 // The whole-story outline is `outline.md` (optionally in a subdir). Chapter
 // beat sheets are `ch{N}.outline.md` — those are outputs of the split, not
@@ -90,8 +91,8 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
   onToggleRight: () => void;
   selectedFile: string | null;
   onCloseFile: () => void;
-  centerTab: "file" | "ticks" | "chat";
-  onCenterTab: (t: "file" | "ticks" | "chat") => void;
+  centerTab: "file" | "ticks" | "chat" | "context";
+  onCenterTab: (t: "file" | "ticks" | "chat" | "context") => void;
 }) {
   return (
     <div style={{
@@ -139,6 +140,17 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
         }}>Chat</button>
       )}
 
+      {selectedFile && (
+        <button onClick={() => onCenterTab("context")} title="Preview what a command's context slots would resolve to for this file"
+          style={{
+          padding: "0 10px", fontSize: 11, fontWeight: 500,
+          border: "none", borderBottom: centerTab === "context" ? "2px solid var(--amber)" : "2px solid transparent",
+          borderTop: "2px solid transparent", background: "transparent",
+          color: centerTab === "context" ? "var(--amber)" : "var(--text-disabled)",
+          cursor: "pointer", transition: "color 0.15s, border-color 0.15s",
+        }}>Context</button>
+      )}
+
       <span style={{ flex: 1 }} />
       <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
       <button onClick={onToggleRight} style={{ ...iconBtnStyle, alignSelf: "center" }}>
@@ -172,7 +184,7 @@ export default function Home() {
   const [isResizingRight, setIsResizingRight] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters">("branches");
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
-  const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat">("file");
+  const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "context">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
@@ -498,6 +510,10 @@ export default function Home() {
               onSend={(text) => chatConverse(selectedFile, text)}
               onRegen={(promptTickId, atomTickId, text) => chatConverseRegen(selectedFile, promptTickId, atomTickId, text)}
             />
+          )}
+
+          {centerTab === "context" && selectedFile && (
+            <ContextPreviewPanel activeBranch={activeBranch} path={selectedFile} />
           )}
         </div>
 

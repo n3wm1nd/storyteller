@@ -66,10 +66,15 @@ export async function openFile(path: string): Promise<void> {
     }
   });
 
-  await fc.connect();
-  mirrorServerEvent((s) => ({
-    openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: false, conn: fc } },
-  }));
+  try {
+    await fc.connect();
+    mirrorServerEvent((s) => ({
+      openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: false, conn: fc } },
+    }));
+  } catch (err) {
+    setConnStatus(label, "error");
+    setError(String(err));
+  }
 }
 
 // Explicit "new file" creation: opens the connection (same as selecting

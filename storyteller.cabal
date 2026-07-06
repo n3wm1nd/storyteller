@@ -63,6 +63,7 @@ library
                   , Storyteller.Writer.Agent.Outline
                   , Storyteller.Writer.Agent.Fix
                   , Storyteller.Writer.Agent.ReplaceTool
+                  , Storyteller.Writer.Agent.ContextPreview
                   , Storyteller.Core.Atom
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
@@ -93,6 +94,8 @@ library
                   , Server.Writer.File.Dispatch
                   , Server.Writer.Character.Protocol
                   , Server.Writer.Character.Connection
+                  , Server.Writer.ContextView.Protocol
+                  , Server.Writer.ContextView.Connection
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix

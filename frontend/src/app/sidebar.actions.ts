@@ -121,8 +121,13 @@ export async function selectBranch(name: string): Promise<void> {
     }
   });
 
-  await branch.connect();
-  mirrorServerEvent({ _branch: branch });
+  try {
+    await branch.connect();
+    mirrorServerEvent({ _branch: branch });
+  } catch (err) {
+    setConnStatus(label, "error");
+    setError(String(err));
+  }
 }
 
 // Drag-and-drop upload — one or more dropped files, written directly to

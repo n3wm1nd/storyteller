@@ -44,6 +44,7 @@ import Server.Writer.Branch (uploadFile)
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
+import Server.Writer.ContextView.Connection (runContextView)
 import Server.Writer.Character.Connection (runCharacter)
 import Server.Writer.Run (runAction)
 import Server.Writer.Session.Connection (runSession)
@@ -61,15 +62,25 @@ wsRouter env pending =
   case BC.split '/' . BC.dropWhile (== '/') . Network.WebSockets.requestPath $ pendingRequest pending of
     ["session"]              -> accept $ runSession env
     ["branch", name]         -> accept $ runBranch  env (T.pack (BC.unpack (urlDecode False name)))
+    -- Reserved segment ahead of the generic file-path catch-all below —
+    -- "$context" can't collide with a real file path, and this can move
+    -- wholesale once /branch's routing is reworked. See
+    -- Server.Writer.ContextView.Connection.
+    ("branch" : name : "$context" : path) -> accept $ runContextView env
+                                           (T.pack (BC.unpack (urlDecode False name)))
+                                           (joinPath path)
     ("branch" : name : path) -> accept $ runFile env
                                            (T.pack (BC.unpack (urlDecode False name)))
-                                           (foldl1 (\a b -> a <> "/" <> b) (map (BC.unpack . urlDecode False) path))
+                                           (joinPath path)
     ["character", name]      -> accept $ runCharacter env (T.pack (BC.unpack (urlDecode False name)))
     _                        -> rejectRequest pending "not found"
   where
     accept handler = do
       conn <- acceptRequest pending
       withPingThread conn 30 (return ()) (handler conn)
+
+    joinPath []     = ""
+    joinPath (p:ps) = foldl (\a b -> a <> "/" <> b) (BC.unpack (urlDecode False p)) (map (BC.unpack . urlDecode False) ps)
 
 -- | The frontend (a separate origin/port — see WRITER.md/frontend's
 --   NEXT_PUBLIC_WS_URL) calls GET/PUT here with @fetch@, unlike the

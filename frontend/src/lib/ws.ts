@@ -1,10 +1,11 @@
 // WebSocket connection abstractions for the storyteller server.
 //
-// Four connection types mirror the server's four endpoints:
-//   sessionConn    (/session)              — branch management
-//   branchConn     (/branch/{name})        — full branch tick chain + file tree
-//   fileConn       (/branch/{name}/{path}) — file-scoped tick chain
-//   characterConn  (/character/{name})     — sidebar-facing character state (read-only)
+// Five connection types mirror the server's five endpoints:
+//   sessionConn    (/session)                        — branch management
+//   branchConn     (/branch/{name})                  — full branch tick chain + file tree
+//   fileConn       (/branch/{name}/{path})            — file-scoped tick chain
+//   characterConn  (/character/{name})                — sidebar-facing character state (read-only)
+//   contextViewConn (/branch/{name}/$context/{path})  — stateless context-filter preview
 //
 // All connections support auto-reconnect. Reconnecting is the only resync
 // mechanism — the server pushes full state on every new connection.
@@ -220,6 +221,52 @@ export type CharacterEvent =
   | { type: "character.update"; name: string; sheet?: string }
   | ErrorEvent;
 
+// ── Context-view protocol ─────────────────────────────────────────────────────
+
+// How a slot is delivered to whichever agent/subagent consumes it — fixed by
+// the command that declares the slot (e.g. Write always injects character
+// context ambiently; Chat always exposes branch files as on-demand tool
+// reads). Not something the client picks per file.
+export type ContextMode = "ambient" | "on-demand";
+
+// Which files populate a slot. Glob syntax, same as the server's own file
+// glob op. Empty `include` means "everything".
+export interface PathFilter {
+  include?: string[];
+  exclude?: string[];
+}
+
+// One named context slot: a label the command chose (e.g.
+// "character:alice-chen", "branch-files"), its fixed mode, and the filter
+// selecting its files — the one part the client configures.
+export interface ContextSlot {
+  label: string;
+  mode: ContextMode;
+  filter?: PathFilter;
+}
+
+export interface ContextEntry {
+  path: string;
+  content?: string;   // full text, only present for Ambient entries
+  blurb?: string;      // short teaser, only present for OnDemand entries
+}
+
+export interface ContextSlotPreview {
+  label: string;
+  mode: ContextMode;
+  entries: ContextEntry[];
+}
+
+// Every request is self-contained — the full slot list, resolved fresh each
+// time, same discipline an LLM call's full history follows. Nothing about a
+// submitted filter persists across requests server-side.
+export type ContextViewCommand =
+  | { type: "context.preview"; id?: string; slots: ContextSlot[] };
+
+export type ContextViewEvent =
+  | { type: "context.preview"; id?: string; slots: ContextSlotPreview[] }
+  | ErrorEvent;
+
 // ── Connection ────────────────────────────────────────────────────────────────
 
 type Listener<E> = (event: E) => void;
@@ -334,4 +381,15 @@ export function fileConn(branch: string, path: string) {
 // No commands, so 'Cmd' is 'never' — nothing can be sent on this connection.
 export function characterConn(branch: string) {
   return new StoryWS<never, CharacterEvent>(`${wsBase()}/character/${encodeURIComponent(branch)}`);
+}
+
+// Stateless: send a full slot list whenever the filter changes, get a full
+// preview back. No presence/absence handshake — just request/response, plus
+// unsolicited re-pushes if the branch's files change under an already-sent
+// filter.
+export function contextViewConn(branch: string, path: string) {
+  const encodedPath = path.split("/").map((p) => encodeURIComponent(decodeURIComponent(p))).join("/");
+  return new StoryWS<ContextViewCommand, ContextViewEvent>(
+    `${wsBase()}/branch/${encodeURIComponent(branch)}/$context/${encodedPath}`
+  );
 }

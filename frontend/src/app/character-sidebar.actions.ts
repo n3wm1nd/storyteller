@@ -37,10 +37,15 @@ export async function openCharacter(branch: string): Promise<void> {
     }
   });
 
-  await cc.connect();
-  mirrorServerEvent((s) => ({
-    openCharacters: { ...s.openCharacters, [branch]: { branch, name: branch, sheet: null, conn: cc } },
-  }));
+  try {
+    await cc.connect();
+    mirrorServerEvent((s) => ({
+      openCharacters: { ...s.openCharacters, [branch]: { branch, name: branch, sheet: null, conn: cc } },
+    }));
+  } catch (err) {
+    setConnStatus(label, "error");
+    setError(String(err));
+  }
 }
 
 export function closeCharacter(branch: string) {
@@ -109,10 +114,15 @@ export async function openJournal(branch: string): Promise<void> {
     }
   });
 
-  await jc.connect();
-  mirrorServerEvent((s) => ({
-    openJournals: { ...s.openJournals, [branch]: { path: JOURNAL_PATH, ticks: {}, head: null, absent: false, conn: jc } },
-  }));
+  try {
+    await jc.connect();
+    mirrorServerEvent((s) => ({
+      openJournals: { ...s.openJournals, [branch]: { path: JOURNAL_PATH, ticks: {}, head: null, absent: false, conn: jc } },
+    }));
+  } catch (err) {
+    setConnStatus(label, "error");
+    setError(String(err));
+  }
 }
 
 export function closeJournal(branch: string) {
