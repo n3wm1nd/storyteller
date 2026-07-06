@@ -13,7 +13,6 @@ module Storyteller.Writer.Agent.Tracker
   , dropUntilAfterLastSynced
   ) where
 
-import qualified Data.Text.Encoding as TE
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Polysemy
@@ -58,13 +57,14 @@ dropUntilAfterLastSynced synced ticks =
 --   access to the trackee branch is needed to recover it. The tracker's own
 --   copy is committed as a real 'Atom' too (same invariant applies on this
 --   side of the copy), with the cross-branch ref folded onto that draft
---   rather than dropped in favor of a plain, untagged message.
+--   rather than dropped in favor of a plain, untagged message -- via
+--   'SM.addAtom' rather than the raw working-tree primitives, since
+--   'SM.storeAtom' has no way to attach a ref.
 copyAtom
   :: forall trackerBranch r
   .  Member (BranchOp trackerBranch) r
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
   let content = contentFor fromFile tick
-  runStorage @trackerBranch $ do
-    SM.appendFileS toFile (TE.encodeUtf8 content)
-    SM.store (toDraft (Atom toFile content)) { tickRefs = [tickId tick] }
+  runStorage @trackerBranch $
+    SM.addAtom toFile content (toDraft (Atom toFile content)) { tickRefs = [tickId tick] }

@@ -118,6 +118,7 @@ module Storyteller.Core.StorageMonad
   , chainPositions
   , append
   , appendAtom
+  , addAtom
   , storeAtom
   , unstoreAtom
   , rewriteAtom
@@ -1172,17 +1173,34 @@ chainPositions tids = do
 append :: StorageM m => FilePath -> Text -> StorageT m TickId
 append path content = appendAtom path (ensureTrailingNewline content)
 
--- | Commit @content@ as a new atom tick appended to @path@'s own
---   head-committed value — entirely independent of whatever the live
---   ambient tree currently holds, for @path@ or any other file. Built
---   under 'withFS', which loads a throwaway copy of head's own committed
---   snapshot to append onto and commit, then restores the ambient tree
---   exactly as it was.
+-- | Append @content@ to @path@ and commit it with the given,
+--   already-built 'TickData' against whatever the ambient tree currently
+--   holds -- the generalization 'storeAtom' is built on, for callers that
+--   need to attach extra data to the commit before it's made (most
+--   commonly cross-branch refs -- a plain record update on the 'TickData'
+--   handed in, e.g. @(toDraft (Atom.Atom path content)) { tickRefs = refs
+--   }@, is all that takes; see 'Storyteller.Writer.Agent.Tracker.copyAtom',
+--   the one caller outside this module that needs it, since a tracker
+--   atom's ref back to the trackee atom it copies isn't known until the
+--   caller supplies it and so can't be baked into 'Atom''s own 'toDraft'
+--   the way 'storeAtom' uses it), without dropping to the raw
+--   working-tree primitives ('appendFileS'\/'store') directly.
+--   Unlike 'storeAtom', does *not* isolate from the live ambient tree
+--   first -- appropriate for a caller (like 'trackBranch') that's making
+--   this the one thing happening in its own dispatch, with no unrelated
+--   ambient edit to protect; wrap with 'withFS' explicitly for that, as
+--   'storeAtom' does.
+addAtom :: StorageM m => FilePath -> Text -> TickData -> StorageT m TickId
+addAtom path content td = do
+  appendFileS path (TE.encodeUtf8 content)
+  store td
+
+-- | 'addAtom', deriving its 'TickData' via 'toDraft', and isolated from
+--   whatever the live ambient tree currently holds for @path@ or any
+--   other file (via 'withFS') — the common, refs-free case, safe to call
+--   as an aside amid unrelated ambient-tree edits in flight.
 storeAtom :: StorageM m => FilePath -> Text -> StorageT m TickId
-storeAtom path content =
-  withFS $ do
-    appendFileS path (TE.encodeUtf8 content)
-    storeAs (Atom.Atom path content)
+storeAtom path content = withFS (addAtom path content (toDraft (Atom.Atom path content)))
 
 -- | The dual of 'storeAtom': drop @tid@ — an atom tick anywhere in the
 --   branch's history, not necessarily head — and replay everything after
