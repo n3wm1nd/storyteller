@@ -67,6 +67,13 @@ data FileCommand
   | SplitAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
+  -- | Discuss, don't write: send a message to the chat agent, which sees
+  --   this file's own prior 'ChatConverse' exchanges as conversation
+  --   history (see 'Server.Writer.File.chatConverse') plus every other
+  --   branch file as background. The reply lands as a single atom, no
+  --   splitter — chat turns aren't paragraph-split prose. No @context@/
+  --   @targets@: a chat file has no atom-selection concept of its own.
+  | ChatConverse { fcId :: Maybe T.Text, fcPromptText :: T.Text }
   -- | Regenerate the chapter (this file) to fit its beat sheet
   --   (@ch{N}.outline.md@ by convention), respecting 'fcPromptText' as the
   --   user's steer. 'fcByBeat' selects the beat-by-beat driver over the
@@ -120,6 +127,7 @@ instance FromJSON FileCommand where
         context <- fromMaybe [] <$> o .:? "context"
         byBeat  <- fromMaybe False <$> o .:? "byBeat"
         ChatRegen i <$> o .: "text" <*> pure context <*> pure byBeat
+      "chat.converse" -> ChatConverse i <$> o .: "text"
       "chat.outline" -> pure (ChatOutline i)
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
@@ -147,6 +155,7 @@ commandKind = \case
   ChatWriter {}   -> "chat.writer"
   ChatFixer {}    -> "chat.fixer"
   ChatRegen {}    -> "chat.regen"
+  ChatConverse {} -> "chat.converse"
   ChatOutline {}  -> "chat.outline"
   ChatNote {}     -> "chat.note"
   EnterScene {}   -> "enter.scene"

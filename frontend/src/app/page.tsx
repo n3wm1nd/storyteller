@@ -9,6 +9,7 @@ import {
   openFile, createFile, closeFile, enterScene, leaveScene,
   appendToFile, editAtom, deleteAtom, mergeSelected, splitSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
+  chatConverse, chatConverseRegen,
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
@@ -18,6 +19,7 @@ import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceBar } from "./fileview";
+import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
 
@@ -28,6 +30,13 @@ import { CharacterSidebar } from "./character-sidebar";
 function isOutlineFile(path: string): boolean {
   const name = decodeURIComponent(path.split("/").pop() ?? "");
   return name === "outline.md";
+}
+
+// A chat file is any path under a top-level chat/ folder (see WRITER.md) —
+// gets the chatbot view (chatview.tsx) as an alternative to the ordinary
+// prose/atom file view, not a replacement for it.
+function isChatFile(path: string): boolean {
+  return decodeURIComponent(path).split("/")[0] === "chat";
 }
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
@@ -81,8 +90,8 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
   onToggleRight: () => void;
   selectedFile: string | null;
   onCloseFile: () => void;
-  centerTab: "file" | "ticks";
-  onCenterTab: (t: "file" | "ticks") => void;
+  centerTab: "file" | "ticks" | "chat";
+  onCenterTab: (t: "file" | "ticks" | "chat") => void;
 }) {
   return (
     <div style={{
@@ -120,6 +129,16 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
         cursor: "pointer", transition: "color 0.15s, border-color 0.15s",
       }}>Ticks</button>
 
+      {selectedFile && isChatFile(selectedFile) && (
+        <button onClick={() => onCenterTab("chat")} style={{
+          padding: "0 10px", fontSize: 11, fontWeight: 500,
+          border: "none", borderBottom: centerTab === "chat" ? "2px solid var(--amber)" : "2px solid transparent",
+          borderTop: "2px solid transparent", background: "transparent",
+          color: centerTab === "chat" ? "var(--amber)" : "var(--text-disabled)",
+          cursor: "pointer", transition: "color 0.15s, border-color 0.15s",
+        }}>Chat</button>
+      )}
+
       <span style={{ flex: 1 }} />
       <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
       <button onClick={onToggleRight} style={{ ...iconBtnStyle, alignSelf: "center" }}>
@@ -153,7 +172,7 @@ export default function Home() {
   const [isResizingRight, setIsResizingRight] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters">("branches");
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
-  const [centerTab, setCenterTab] = useState<"file" | "ticks">("file");
+  const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
@@ -179,7 +198,7 @@ export default function Home() {
     connect().then(() => {
       if (branch) {
         selectBranch(branch).then(() => {
-          if (file) { setSelectedFile(file); openFile(file); setCenterTab("file"); }
+          if (file) { setSelectedFile(file); openFile(file); setCenterTab(isChatFile(file) ? "chat" : "file"); }
           else setCenterTab("ticks");
         });
         setSidebarTab("explorer");
@@ -190,7 +209,7 @@ export default function Home() {
       const { branch: b, file: f } = parsePath(window.location.pathname);
       if (b) { selectBranch(b); setSidebarTab("explorer"); }
       setSelectedFile(f);
-      if (f) { openFile(f); setCenterTab("file"); }
+      if (f) { openFile(f); setCenterTab(isChatFile(f) ? "chat" : "file"); }
       else setCenterTab("ticks");
     };
     window.addEventListener("popstate", onPopState);
@@ -230,7 +249,7 @@ export default function Home() {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
     setSelectedFile(path);
     openFile(path);
-    setCenterTab("file");
+    setCenterTab(isChatFile(path) ? "chat" : "file");
     pushPath(activeBranch, path);
   }
 
@@ -238,7 +257,7 @@ export default function Home() {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
     setSelectedFile(path);
     createFile(path);
-    setCenterTab("file");
+    setCenterTab(isChatFile(path) ? "chat" : "file");
     pushPath(activeBranch, path);
   }
 
@@ -469,6 +488,15 @@ export default function Home() {
               activeBranch={activeBranch}
               ticks={tickChain(ticks, branchHead).reverse()}
               onAddNote={addNote} onMoveTick={moveTick} onDeleteTick={deleteTickEntry}
+            />
+          )}
+
+          {centerTab === "chat" && selectedFile && (
+            <ChatView
+              ticks={fileChainTicks} head={fileChainHead}
+              preview={preview} agentLogs={agentLogs} onClearAgentLogs={clearAgentLogs}
+              onSend={(text) => chatConverse(selectedFile, text)}
+              onRegen={(promptTickId, atomTickId, text) => chatConverseRegen(selectedFile, promptTickId, atomTickId, text)}
             />
           )}
         </div>

@@ -141,6 +141,53 @@ client trigger uses it yet, but it'd be the mechanism behind a possible
 future Ticks-view rebase marker, the branch-level equivalent of the file
 view's drag handle.
 
+## Chat files
+
+- `chat/*.md` — a file whose purpose is conversation, not prose (e.g.
+  `chat/conceptart.md` for brainstorming with the LLM about the story rather
+  than adding to it). Structurally this is nothing new: the same
+  `Prompt`/`Atom` tick pair every other file already produces when a message
+  is sent (`Prompt` for the user's message, `Atom` for the response) — a
+  chat file is just a file where that's the *whole* content, read back as a
+  transcript instead of prose. `historyFromFileTicks`
+  (`Storyteller.Writer.Agent.Chat`) is what turns that tick chain into an
+  LLM message history; `chatConverse`/`chat.converse` is the command that
+  drives it, distinct from `chatWriter`/`chat.writer` only in agent persona
+  (discuss vs. continue prose) and in appending exactly one atom per turn
+  rather than splitting into paragraphs.
+
+  No context is gathered up front — by default the chat agent sees only the
+  conversation itself. It can find and read files on the current branch via
+  tool calls (`glob`/`read_file`, both reused directly from `Runix.Tools`
+  rather than reimplemented), the same bind-a-real-effect-behind-a-tool
+  pattern `ReplaceTool` uses, and the same query-then-loop-on-tool-calls
+  shape as `runix-code`'s agent loop. This is also why the system prompt is
+  fully static (no per-call content spliced in) and history only ever grows
+  by appending whole turns — both matter for prompt-cache hit rate, not
+  just correctness (see the module header on `Storyteller.Writer.Agent.Chat`
+  for the full reasoning). Tool-call exploration within one turn isn't
+  persisted as ticks — only the final reply is — so a later turn doesn't
+  inherit an earlier turn's file reads; the model just asks again.
+
+  Making `glob` actually work against a branch required filling in a real
+  gap: `Storyteller.Core.Git`'s git-branch `FileSystem` interpreter had
+  `Glob` stubbed as "not yet implemented" (nothing before this needed it —
+  `gatherFileContext` always used the recursive `listAllFiles`/
+  `listAllFilesS` instead). It's now backed by
+  `Storyteller.Core.StorageMonad.listAllFilesS` plus `System.FilePath.Glob`
+  for in-memory pattern matching, since there's no real directory to shell
+  out to the way the on-disk `FileSystem` interpreter does.
+
+  On the frontend, a `chat/` path gets an additional "Chat" tab next to
+  "File"/"Ticks" (`page.tsx`'s `centerTab`, `chatview.tsx`) rendering the
+  same tick chain as bubbles — an alternative view, not a replacement; the
+  "File" tab still shows the same exchange as ordinary prompt/atom ticks.
+  Like every other convention here, this is a prefix check
+  (`isChatFile`), not something the storage layer enforces — a `chat/` file
+  that doesn't get treated this way for some reason is still a perfectly
+  valid file, and any other file could be made to render this way later by
+  the same mechanism.
+
 ## File extensions
 
 Default is `.md` unless a file is explicitly created with another extension.
@@ -170,3 +217,8 @@ Not yet decided whether the UI hides/auto-adds the extension.
   colored lines next to the selection bar; toolbar toggle for "show all
   characters" vs. hover-only), all reading/writing the open file's own
   chain, not the branch-wide one.
+- Chat files (`chat/*.md`, see "Chat files" above): `chatAgent` +
+  `historyFromFileTicks` (`Storyteller.Writer.Agent.Chat`), the
+  `chat.converse` command (`Server.Writer.File.chatConverse`), and the
+  frontend's "Chat" tab (`chatview.tsx`) with per-turn regenerate (only on
+  the latest exchange, since regenerate deletes and re-appends).

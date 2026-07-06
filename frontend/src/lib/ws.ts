@@ -169,6 +169,10 @@ export type FileCommand =
   // a wipe — unchanged prose keeps its atoms. `byBeat` selects the
   // beat-by-beat driver over the whole-chapter one.
   | { type: "chat.regen";  id?: string; text: string; context?: ContextItem[]; byBeat?: boolean }
+  // Converse: discuss, don't write. Send a message to the chat agent — see
+  // WRITER.md's chat/ convention. No context/targets: a chat file has no
+  // atom-selection concept of its own.
+  | { type: "chat.converse"; id?: string; text: string }
   // Outline: split this file (a whole-story outline, outline.md by convention)
   // into per-chapter beat sheets. No prompt — the outline text is the whole
   // input; the model decides the chapter breakdown and writes each sheet.

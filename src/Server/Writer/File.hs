@@ -15,6 +15,7 @@
 module Server.Writer.File
   ( chatWriter
   , chatFixer
+  , chatConverse
   , chatChapterRegen
   , chatSplitOutline
   , RegenMode(..)
@@ -33,9 +34,10 @@ import Server.Core.File (FileOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.File.Protocol (ContextItem(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, WordCount(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), ChatReply(..), CharContextBlock, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
+import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
@@ -90,6 +92,27 @@ chatFixer path prompt _context targets = do
   info $ "fixer agent starting: " <> T.pack path
   _ <- fixAgent @Main path targets (Instruction prompt)
   info $ "fixer agent done: " <> T.pack path
+
+-- | Discuss, don't write: run the chat agent against this file's own
+--   conversation history (its 'Prompt'/'Atom' ticks, oldest first — see
+--   'historyFromFileTicks'), then store the new message and append the
+--   reply as a single atom. No splitter — a chat turn is one atom, unlike
+--   generated prose.
+--
+--   No context is gathered up front — the agent sees only the conversation
+--   and reaches for other branch files itself, via tool calls, if it needs
+--   to (see 'Storyteller.Writer.Agent.Chat').
+--
+--   History is read before the new prompt tick is stored, so it never
+--   includes the message currently being answered.
+chatConverse :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
+chatConverse path prompt = do
+  history <- historyFromFileTicks <$> runStorage @Main (SM.fileTicksOf path)
+  _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
+  info $ "chat agent starting: " <> T.pack path
+  ChatReply reply <- chatAgent @(BranchTag Main) modelConfigs history (Instruction prompt)
+  _ <- runStorage @Main (SM.append path reply)
+  info $ "chat agent done: " <> T.pack path
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
 --   single call or the beat-by-beat loop (see

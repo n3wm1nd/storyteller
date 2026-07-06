@@ -29,7 +29,7 @@ import Polysemy.State
 
 import Runix.Git (Git)
 import Runix.FileSystem
-  (FileSystem, FileSystemRead, FileSystemWrite, writeFile, readFile, listFiles, fileExists, createDirectory, remove)
+  (FileSystem, FileSystemRead, FileSystemWrite, writeFile, readFile, listFiles, fileExists, createDirectory, remove, glob)
 import Prelude hiding (readFile, writeFile)
 
 import Git.Mock
@@ -191,3 +191,27 @@ spec = do
             createDirectory @(BranchTag Main) False "subdir"
             fileExists @(BranchTag Main) "subdir"
       result `shouldBe` Right True
+
+    -- 'Glob' was a stub ("not yet implemented") until it was backed by
+    -- 'Storyteller.Core.StorageMonad.listAllFilesS' + 'System.FilePath.Glob'.
+    it "glob matches files under the whole tree, not just the top level" $ do
+      let result = runTestFS $ do
+            writeFile @(BranchTag Main) "outline.md" "o"
+            writeFile @(BranchTag Main) "chapters/ch1.md" "c1"
+            writeFile @(BranchTag Main) "chapters/ch2.md" "c2"
+            writeFile @(BranchTag Main) "chapters/ch1.outline.md" "beats"
+            fmap sort $ glob @(BranchTag Main) "." "chapters/*.md"
+      result `shouldBe` Right (sort ["chapters/ch1.md", "chapters/ch2.md", "chapters/ch1.outline.md"])
+
+    it "glob's ** matches recursively across directories" $ do
+      let result = runTestFS $ do
+            writeFile @(BranchTag Main) "outline.md" "o"
+            writeFile @(BranchTag Main) "chapters/ch1.md" "c1"
+            fmap sort $ glob @(BranchTag Main) "." "**/*.md"
+      result `shouldBe` Right (sort ["outline.md", "chapters/ch1.md"])
+
+    it "glob returns nothing for a pattern that matches no file" $ do
+      let result = runTestFS $ do
+            writeFile @(BranchTag Main) "outline.md" "o"
+            glob @(BranchTag Main) "." "*.txt"
+      result `shouldBe` Right []

@@ -272,3 +272,18 @@ export function chatRegen(path: string, text: string, byBeat: boolean) {
 export function chatOutline(path: string) {
   sendChatCommand(path, () => ({ type: "chat.outline" }));
 }
+
+// Discuss, don't write — see WRITER.md's chat/ convention and ChatView.
+export function chatConverse(path: string, text: string) {
+  sendChatCommand(path, () => ({ type: "chat.converse", text }));
+}
+
+// Regenerate a chat exchange: drop the old prompt/reply tick pair and
+// resend the same text. Only ever called on the *last* exchange in a chat
+// file — delete+re-append always lands at the new HEAD, so redoing a
+// non-final turn would reorder it.
+export function chatConverseRegen(path: string, promptTickId: string, atomTickId: string, text: string) {
+  deleteAtom(path, atomTickId);
+  deleteAtom(path, promptTickId);
+  chatConverse(path, text);
+}

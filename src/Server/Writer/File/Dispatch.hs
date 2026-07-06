@@ -30,7 +30,7 @@ import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
 import Server.Core.File (FileOpen, createFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, chatNote)
-import Server.Writer.File (chatWriter, chatFixer, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
+import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -76,6 +76,9 @@ runCommand path cmd = case cmd of
 
   ChatRegen _mid prompt context byBeat ->
     chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt context
+
+  ChatConverse _mid prompt ->
+    chatConverse path prompt
 
   ChatOutline _mid ->
     chatSplitOutline path

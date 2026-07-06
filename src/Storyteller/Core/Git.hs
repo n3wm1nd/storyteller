@@ -84,6 +84,7 @@ import Polysemy.State (State, get, put, modify, evalState, runState)
 import Runix.Git
 import Runix.FileSystem
   ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
+import qualified System.FilePath.Glob as Glob
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
@@ -544,8 +545,18 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
         Right <$> runStorage @branch (SM.fileExistsS path)
       IsDirectory path ->
         Right <$> runStorage @branch (SM.isDirectoryS path)
-      Glob _base _pat ->
-        return $ Left "Branch FS: Glob not yet implemented"
+      -- 'SM.listAllFilesS' already recurses the whole working tree (same
+      -- primitive 'ListFiles'/'IsDirectory' above are backed by, one level
+      -- further); glob is just that plus pattern filtering, done in-memory
+      -- rather than shelling out (there's no real directory to shell out
+      -- to). Working-tree paths carry a leading @/@, but glob patterns are
+      -- written relative (@\"chapters/*.md\"@), so that leading slash is
+      -- stripped before matching — only for the match, not for what's
+      -- returned, so callers keep seeing the same path shape 'ListFiles'
+      -- and friends already give them.
+      Glob base pat ->
+        Right . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
+          <$> runStorage @branch (SM.listAllFilesS base)
 
     interpretFSRead
       :: Members '[BranchOp branch] r'

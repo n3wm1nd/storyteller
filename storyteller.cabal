@@ -53,6 +53,7 @@ library
                   , Storyteller.Core.Prompt
                   , Storyteller.Core.CLI.Env
                   , Storyteller.Writer.Agent.Continuation
+                  , Storyteller.Writer.Agent.Chat
                   , Storyteller.Writer.Agent.CharContext
                   , Storyteller.Common.Splitter
                   , Storyteller.Writer.Agent.Tracker
@@ -95,12 +96,14 @@ library
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
+                  , runix-tools
                   , universal-llm
                   , text
                   , bytestring
                   , containers
                   , array
                   , filepath
+                  , Glob
                   , polysemy
                   , template-haskell
                   , storyteller:gitlib-effect
@@ -227,6 +230,7 @@ test-suite storyteller-test
                   , Storyteller.CharGenSpec
                   , Storyteller.PresenceSpec
                   , Storyteller.UndoSpec
+                  , Storyteller.ChatSpec
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.Writer.BranchSpec
@@ -244,6 +248,7 @@ test-suite storyteller-test
                   , bytestring
                   , text
                   , runix
+                  , universal-llm
                   , time
                   , hspec >=2.11
                   , QuickCheck >=2.14
