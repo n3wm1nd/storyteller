@@ -63,7 +63,6 @@ library
                   , Storyteller.Writer.Agent.Fix
                   , Storyteller.Writer.Agent.ReplaceTool
                   , Storyteller.Core.Atom
-                  , Storyteller.Core.Created
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation

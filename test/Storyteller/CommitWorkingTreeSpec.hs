@@ -49,7 +49,6 @@ import Polysemy.Fail
 import Polysemy.State (evalState, State)
 
 import Git.Mock
-import Runix.Git (Git, ObjectHash(..))
 import qualified Data.List as List
 import Prelude hiding (readFile, writeFile, drop)
 

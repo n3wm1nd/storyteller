@@ -12,7 +12,6 @@ import Test.Hspec
 import Polysemy
 import Polysemy.Fail
 import Polysemy.State
-import Runix.Git (Git, ObjectHash(..))
 
 import Git.Mock
 

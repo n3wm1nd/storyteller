@@ -3,12 +3,13 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | 'Storyteller.Core.Create.createFile' introduces a path into the tree as
--- its own tick, with empty content — distinct from the first 'Atom' a
+-- its own tick, with empty content — distinct from the first real 'Atom' a
 -- 'Storyteller.Core.StorageMonad.append' would otherwise land implicitly. Pins:
 --
---   * the tick this produces is its own kind ("created"), not an atom;
---   * it carries no content;
---   * content appended afterward lands as an ordinary, separate atom tick.
+--   * the tick this produces is an ordinary, empty atom (not a distinct
+--     "created" kind — see 'Storyteller.Core.Create's own doc for why);
+--   * its content is empty, not absent;
+--   * content appended afterward lands as its own, separate atom tick.
 module Storyteller.CreateSpec (spec) where
 
 import Test.Hspec
@@ -18,7 +19,6 @@ import Polysemy.Fail
 import Polysemy.State (evalState)
 
 import Git.Mock
-import Runix.Git (ObjectHash(..))
 
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Storage (createBranch)
@@ -44,21 +44,21 @@ runTestFS action =
 spec :: Spec
 spec = describe "createFile" $ do
 
-  it "produces exactly one tick, of kind \"created\"" $ do
+  it "produces exactly one tick, an ordinary atom" $ do
     let result = runTestFS $ do
           _ <- createFile "scene.md"
           SM.fileTicksOf "scene.md"
     case result of
       Left err     -> expectationFailure err
-      Right ticks  -> map SM.ftKind ticks `shouldBe` ["created"]
+      Right ticks  -> map SM.ftKind ticks `shouldBe` ["atom"]
 
-  it "the created tick carries no content" $ do
+  it "the introduction tick carries empty (not absent) content" $ do
     let result = runTestFS $ do
           _ <- createFile "scene.md"
           SM.fileTicksOf "scene.md"
     case result of
       Left err    -> expectationFailure err
-      Right [t]   -> SM.ftContent t `shouldBe` Nothing
+      Right [t]   -> SM.ftContent t `shouldBe` Just ""
       Right ticks -> expectationFailure ("expected 1 tick, got " <> show (length ticks))
 
   it "content appended after creation lands as a separate atom tick" $ do
@@ -67,9 +67,10 @@ spec = describe "createFile" $ do
           _ <- SM.append "scene.md" "hello\n"
           SM.fileTicksOf "scene.md"
     case result of
-      Left err            -> expectationFailure err
+      Left err              -> expectationFailure err
       Right [created, atom] -> do
-        SM.ftKind created `shouldBe` "created"
+        SM.ftKind created `shouldBe` "atom"
+        SM.ftContent created `shouldBe` Just ""
         SM.ftKind atom    `shouldBe` "atom"
         SM.ftContent atom `shouldBe` Just "hello\n"
       Right ticks -> expectationFailure ("expected 2 ticks, got " <> show (length ticks))

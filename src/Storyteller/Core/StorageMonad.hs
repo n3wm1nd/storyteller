@@ -143,7 +143,6 @@ import System.FilePath (splitDirectories, joinPath)
 
 import Storyteller.Core.Types hiding (draft)
 import qualified Storyteller.Core.Atom as Atom
-import Storyteller.Core.Created (Created(..))
 
 -- ---------------------------------------------------------------------------
 -- Generic content-addressed object vocabulary
@@ -1493,10 +1492,14 @@ longestCommonSubstring a b
     pick acc@(bl, _, _) cand@(l, _, _) = if l > bl then cand else acc
 
 -- | New files present in the working tree but absent from history: each
---   gets its own 'Created' tick (the path's introduction, empty content),
---   immediately followed by an atom tick carrying its target content if
---   any. Reads each file's target content before resetting (which
---   discards the pending buffer for files already reconciled via
+--   gets its own empty 'Atom.Atom' tick (the path's introduction --
+--   deliberately just an atom with no content, not a distinct tick kind:
+--   its diff is recovered by 'popTick's existing 'Atom' handling for
+--   free, with no separate case needed for "introduced this path", and an
+--   introduction is itself a real tree change, same as any other atom),
+--   immediately followed by a second atom tick carrying its target
+--   content if any. Reads each file's target content before resetting
+--   (which discards the pending buffer for files already reconciled via
 --   'commitFile') so only the new files' bytes get replayed onto the now-
 --   current head.
 storeNewFiles :: StorageM m => [FilePath] -> StorageT m ()
@@ -1508,7 +1511,13 @@ storeNewFiles files = do
   where
     storeNewFile f c = do
       writeFileS f BS.empty
-      _ <- storeAs (Created f)
+      -- 'addAtom', not 'storeAtom': the empty write just above already
+      -- landed on the ambient tree, which is exactly what this should
+      -- commit -- 'storeAtom's 'withFS' isolation would just reconstruct
+      -- the same state redundantly here (single 'StorageT' computation,
+      -- no cross-dispatch boundary to protect against, unlike
+      -- 'Storyteller.Writer.Agent.Tracker.copyAtom').
+      _ <- addAtom f "" (toDraft (Atom.Atom f ""))
       if T.null c
         then return ()
         else () <$ appendAtom f c

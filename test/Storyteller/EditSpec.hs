@@ -18,7 +18,7 @@ import Polysemy.Fail
 import Polysemy.State (evalState, State)
 
 import Git.Mock
-import Runix.Git (Git, ObjectHash(..))
+import Runix.Git (Git)
 import qualified Data.Text.Encoding as T
 
 import Storyteller.Core.Git (BranchOp, runStoryStorageGit, runBranchOpGit, runStorage, runStorageEdit)

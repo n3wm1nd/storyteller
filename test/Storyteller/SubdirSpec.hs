@@ -24,7 +24,6 @@ import Polysemy.Fail
 import Polysemy.State (evalState)
 
 import Git.Mock
-import Runix.Git (ObjectHash(..))
 
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Storage (createBranch)
