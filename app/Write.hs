@@ -34,7 +34,7 @@ import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
 import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
-                           , BranchTag(..), Git, GitBranchOp, runBranchAndFS, runStorage )
+                           , BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage )
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Core.StorageMonad as SM
@@ -75,7 +75,7 @@ writeAction
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
-              , GitBranchOp Main
+              , BranchOp Main
               , StoryStorage
               , Splitter
               , Git

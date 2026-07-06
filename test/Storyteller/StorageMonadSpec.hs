@@ -11,7 +11,7 @@
 --
 --   Deliberately mirrors 'Storyteller.StorageSpec's @StoryBranch@ cases
 --   one-for-one: same scenarios, same expected results, run through
---   'Storyteller.Core.Git.runGitBranchOp' instead of
+--   'Storyteller.Core.Git.runBranchOpGit' instead of
 --   'Storyteller.Core.Git.runStoryBranchGit'. Matching contracts is the
 --   evidence that the new engine is a behavior-preserving replacement, not
 --   just a differently-shaped one.
@@ -33,7 +33,7 @@ import Git.Mock
 
 import Storyteller.Core.Types
 import Storyteller.Core.Storage (StoryStorage, createBranch)
-import Storyteller.Core.Git (GitBranchOp, runStorage, runGitBranchOp, runStoryStorageGit)
+import Storyteller.Core.Git (BranchOp, runStorage, runBranchOpGit, runStoryStorageGit)
 import qualified Storyteller.Core.StorageMonad as SM
 
 -- ---------------------------------------------------------------------------
@@ -57,14 +57,14 @@ runSM comp =
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "main")
-      runGitBranchOpMain (runStorage @Main comp)
+      runBranchOpGitMain (runStorage @Main comp)
 
--- | Type-pin 'runGitBranchOp' to the fixed test stack — avoids repeating
+-- | Type-pin 'runBranchOpGit' to the fixed test stack — avoids repeating
 --   the full effect row's type at every call site.
-runGitBranchOpMain
-  :: Sem '[GitBranchOp Main, StoryStorage, Git, State GitState, Fail] a
+runBranchOpGitMain
+  :: Sem '[BranchOp Main, StoryStorage, Git, State GitState, Fail] a
   -> Sem '[StoryStorage, Git, State GitState, Fail] a
-runGitBranchOpMain = runGitBranchOp (BranchName "main")
+runBranchOpGitMain = runBranchOpGit (BranchName "main")
 
 -- ---------------------------------------------------------------------------
 -- Helpers

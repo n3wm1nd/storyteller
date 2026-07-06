@@ -13,7 +13,7 @@ import Test.Hspec
 
 import Polysemy (Sem, run)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listFiles, listAllFiles, readFile)
-import Storyteller.Core.Git (BranchTag, GitBranchOp, runBranchAndFS)
+import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
@@ -38,7 +38,7 @@ withBranch_
   -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
-         : GitBranchOp Main
+         : BranchOp Main
          : StoryStorage
          : TestEffects '[] ) a
   -> Either String a

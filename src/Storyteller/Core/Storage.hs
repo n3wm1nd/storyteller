@@ -8,7 +8,7 @@
 --   too (@StoryBranch@), but that whole family — including the higher-order
 --   @At@\/@WithFS@ constructors that made it expensive to interpret — has
 --   been replaced by 'Storyteller.Core.StorageMonad.StorageT' plus
---   'Storyteller.Core.Git.GitBranchOp' (see PLAN-storage-monad.md).
+--   'Storyteller.Core.Branch.BranchOp' (see PLAN-storage-monad.md).
 --   'StoryStorage' itself was always first-order and untouched by that
 --   migration.
 module Storyteller.Core.Storage

@@ -60,15 +60,15 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.StorageMonad (FileTick)
 import Storyteller.Core.Types (TickId(..), fromTick)
-import Storyteller.Core.Git (BranchTag, GitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchTag, BranchOp, runStorage, runStorageEdit)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import qualified Runix.FileSystem as FS
 
 -- | The effects live once a file connection has entered its branch's scope —
---   one 'GitBranchOp'/filesystem instance for the connection's whole
+--   one 'BranchOp'/filesystem instance for the connection's whole
 --   lifetime, not reopened per command.
 type FileOpen r =
-  Members '[ GitBranchOp Main
+  Members '[ BranchOp Main
            , StoryStorage
            , FileSystemWrite (BranchTag Main)
            , FileSystemRead  (BranchTag Main)

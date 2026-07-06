@@ -15,8 +15,13 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
--- | Git-backed interpreter for 'StoryStorage', and the Polysemy embedding
---   of 'Storyteller.Core.StorageMonad' for per-branch tick-chain operations.
+-- | Git-backed interpreter for 'StoryStorage' and for 'Storyteller.Core.Branch's
+--   'BranchOp' — the one place a concrete backend (real git, via
+--   "Runix.Git") is wired into the otherwise backend-agnostic storage
+--   layer. Everything above this module (agents, handlers, the branch/file
+--   effects) only ever touches 'StoryStorage'\/'BranchOp'\/'MonadGit', never
+--   "Runix.Git" directly — a different backend would need its own module
+--   exactly like this one, and nothing above would need to change.
 --
 -- Conventions owned by this layer (invisible to everything above):
 --
@@ -26,9 +31,10 @@
 --
 -- Per-branch tick-chain operations (the old @StoryBranch@ effect, with its
 -- higher-order @At@\/@WithFS@ constructors) have been replaced by
--- 'Storyteller.Core.StorageMonad.StorageT' plus 'GitBranchOp' — see
--- PLAN-storage-monad.md for why. 'StoryStorage' (branch create\/delete\/list,
--- cross-branch reference cascade) was always first-order and is unchanged.
+-- 'Storyteller.Core.StorageMonad.StorageT' plus 'Storyteller.Core.Branch.BranchOp'
+-- -- see PLAN-storage-monad.md for why. 'StoryStorage' (branch
+-- create\/delete\/list, cross-branch reference cascade) was always
+-- first-order and is unchanged.
 module Storyteller.Core.Git
   ( -- * Interpreters
     runStoryStorageGit
@@ -43,10 +49,13 @@ module Storyteller.Core.Git
     -- * Branch tag for filesystem effects
   , BranchTag(..)
 
-    -- * Storage monad embedding (see 'Storyteller.Core.StorageMonad')
-  , GitBranchOp(..)
+    -- * Storage monad embedding -- 'BranchOp' itself is declared,
+    -- backend-agnostically, in 'Storyteller.Core.Branch'; re-exported here
+    -- alongside its one git interpreter so callers don't need to import
+    -- both modules just to run one against real git.
+  , BranchOp(..)
   , runStorage
-  , runGitBranchOp
+  , runBranchOpGit
   , runStorageEdit
   , runStoryFSGit
   , runBranchAndFS
@@ -77,7 +86,8 @@ import Runix.FileSystem
   ( FileSystem(..), FileSystemRead(..), FileSystemWrite(..) )
 
 import Storyteller.Core.Types hiding (draft)
-import Storyteller.Core.Storage 
+import Storyteller.Core.Storage
+import Storyteller.Core.Branch (BranchOp(..), runStorage, runStorageEdit)
 import qualified Storyteller.Core.StorageMonad as SM
 
 -- ---------------------------------------------------------------------------
@@ -376,67 +386,65 @@ rewriteChain mapping hash = case Map.lookup hash mapping of
 -- Storage monad embedding — see PLAN-storage-monad.md
 -- ---------------------------------------------------------------------------
 
+-- | Both sides are newtype-wrapped 'Text' with the same payload — this
+--   pair (and 'toSMCommit'\/'fromSMCommit'\/'toSMObject'\/'fromSMObject'\/
+--   'toSMEntry'\/'fromSMEntry' below) only exists because
+--   'Storyteller.Core.StorageMonad' deliberately defines its own generic
+--   vocabulary rather than importing "Runix.Git"'s identically-shaped
+--   types, so nothing above 'SM.MonadGit' ever needs to know real git
+--   hashes/commits/trees are what's actually flowing through — this
+--   module is the one seam that converts between the two.
+toSMHash :: ObjectHash -> SM.ObjectHash
+toSMHash = SM.ObjectHash . unObjectHash
+
+fromSMHash :: SM.ObjectHash -> ObjectHash
+fromSMHash = ObjectHash . SM.unObjectHash
+
+toSMCommit :: CommitData -> SM.CommitData
+toSMCommit cd = SM.CommitData
+  { SM.commitParents = map toSMHash (commitParents cd)
+  , SM.commitTree    = toSMHash (commitTree cd)
+  , SM.commitMessage = commitMessage cd
+  }
+
+fromSMCommit :: SM.CommitData -> CommitData
+fromSMCommit cd = CommitData
+  { commitParents = map fromSMHash (SM.commitParents cd)
+  , commitTree    = fromSMHash (SM.commitTree cd)
+  , commitMessage = SM.commitMessage cd
+  }
+
+toSMObject :: GitObject -> SM.GitObject
+toSMObject (BlobObject bs) = SM.BlobObject bs
+toSMObject (TreeObject es) = SM.TreeObject (map toSMEntry es)
+
+fromSMObject :: SM.GitObject -> GitObject
+fromSMObject (SM.BlobObject bs) = BlobObject bs
+fromSMObject (SM.TreeObject es) = TreeObject (map fromSMEntry es)
+
+toSMEntry :: TreeEntry -> SM.TreeEntry
+toSMEntry (BlobEntry n h) = SM.BlobEntry n (toSMHash h)
+toSMEntry (SubTree n h)   = SM.SubTree n (toSMHash h)
+
+fromSMEntry :: SM.TreeEntry -> TreeEntry
+fromSMEntry (SM.BlobEntry n h) = BlobEntry n (fromSMHash h)
+fromSMEntry (SM.SubTree n h)   = SubTree n (fromSMHash h)
+
 -- | Any 'Sem' stack able to read/write git objects and fail is a
 --   'SM.MonadGit' for free — this is the one instance
 --   'Storyteller.Core.StorageMonad' needs to reuse every tick\/tree
 --   operation it defines against real git, with the same 'Git' effect
---   (and so the same mock/real interpreter swap) everything else here uses.
+--   (and so the same mock/real interpreter swap) everything else here
+--   uses. Converts between git's own types and 'SM's generic vocabulary
+--   at exactly this one seam.
 instance Members '[Git, Fail] r => SM.MonadGit (Sem r) where
-  gitReadCommit  = readCommit
-  gitWriteCommit = writeCommit
-  gitReadObject  = readObject
-  gitWriteObject = writeObject
+  gitReadCommit  h  = toSMCommit <$> readCommit (fromSMHash h)
+  gitWriteCommit cd = toSMHash <$> writeCommit (fromSMCommit cd)
+  gitReadObject  h  = toSMObject <$> readObject (fromSMHash h)
+  gitWriteObject o  = toSMHash <$> writeObject (fromSMObject o)
 
--- | A single first-order effect boundary per branch scope: both
---   constructors' arguments are rank-2-polymorphic in an independent monad
---   @n@ (never @m@, the ambient effect monad — the argument never mentions
---   the surrounding 'Sem' stack), so Polysemy interprets this with plain
---   'interpret' — no 'interpretH', no reification of a continuation. A
---   whole rebase, however many ticks deep, is one dispatch; everything
---   inside it is ordinary 'Storyteller.Core.StorageMonad.StorageT'
---   recursion, which costs one plain monadic bind per level rather than
---   one Polysemy effect interpretation per level.
---
---   'RunStorageEdit' is 'RunStorage' plus broadcasting the returned
---   mapping — kept as its own constructor (rather than a Polysemy-level
---   wrapper function around 'RunStorage') specifically so its handler can
---   call 'updateReferences'\/'getBranch' using the concrete 'BranchName'
---   already captured in 'runGitBranchOp's closure, instead of requiring
---   every call site to know and pass that name down just for this.
-data GitBranchOp (branch :: k) m a where
-  RunStorage     :: (forall n. SM.StorageM n => SM.StorageT n a) -> GitBranchOp branch m a
-  RunStorageEdit :: (forall n. SM.StorageM n => SM.StorageT n (a, [(TickId, TickId)])) -> GitBranchOp branch m (a, [(TickId, TickId)])
-
--- | Run a 'Storyteller.Core.StorageMonad.StorageT' computation against the
---   named branch. The whole computation — however many nested 'SM.at'
---   calls it makes — is dispatched as a single 'GitBranchOp' effect.
---   Doesn't broadcast any returned mapping — see 'runStorageEdit' for
---   editing operations that need to.
-runStorage
-  :: forall branch r a
-  .  Member (GitBranchOp branch) r
-  => (forall n. SM.StorageM n => SM.StorageT n a) -> Sem r a
-runStorage comp = send @(GitBranchOp branch) (RunStorage comp)
-
--- | Like 'runStorage', but for the chain-editing operations in
---   'Storyteller.Core.StorageMonad' (@moveTick@, @mergeAtoms@,
---   @splitTick@, @deleteTick@, @editAtom@, @commitFiles@\/
---   @commitWorkingTree@, ...) that return an old->new id mapping needing
---   to be broadcast across branches: runs the computation, broadcasts its
---   mapping via 'updateReferences', then re-syncs this scope's own (head,
---   tree) state from the branch's current ref — the cascade that
---   broadcast triggers can rewrite *this* branch a second time (e.g.
---   'Storyteller.Core.StorageMonad.mergeAtoms': a tick between the merged
---   run and the original head can carry a ref into the merged range,
---   fixed up only by this cascade), which this scope's own cached state
---   has no way to observe on its own.
-runStorageEdit
-  :: forall branch r a
-  .  Member (GitBranchOp branch) r
-  => (forall n. SM.StorageM n => SM.StorageT n (a, [(TickId, TickId)])) -> Sem r (a, [(TickId, TickId)])
-runStorageEdit comp = send @(GitBranchOp branch) (RunStorageEdit comp)
-
--- | Interpret 'GitBranchOp branch' against real git. Seeds the scope's
+-- | Interpret 'BranchOp branch' (declared, backend-agnostically, in
+--   'Storyteller.Core.Branch') against real git. Seeds the scope's
 --   (head, working tree) state from 'StoryStorage' once, at entry — a
 --   snapshot, same as the old @StoryBranch@ interpreter's was — and
 --   publishes the final head via 'setRef' after every dispatch whose
@@ -444,36 +452,36 @@ runStorageEdit comp = send @(GitBranchOp branch) (RunStorageEdit comp)
 --   dispatch no matter how many ticks were rewritten inside it. A
 --   dispatch that only read (no write) leaves the head where it started
 --   and publishes nothing.
-runGitBranchOp
+runBranchOpGit
   :: forall branch r a
   .  Members '[Git, StoryStorage, Fail] r
   => BranchName
-  -> Sem (GitBranchOp branch : r) a
+  -> Sem (BranchOp branch : r) a
   -> Sem r a
-runGitBranchOp branch action = do
+runBranchOpGit branch action = do
   b <- getBranch branch >>= \case
     Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName branch)
     Just b' -> pure b'
-  let headHash0 = ObjectHash (unTickId (branchHead b))
+  let headHash0 = SM.ObjectHash (unTickId (branchHead b))
   wt0 <- SM.loadWorkingTree headHash0
   evalState wt0 . evalState headHash0 $ interpret
     (\case
         RunStorage comp -> do
-          h  <- get @ObjectHash
+          h  <- get @SM.ObjectHash
           wt <- get @SM.WorkingTree
           (a, (h', wt')) <- SM.runStorageT h wt comp
-          put @ObjectHash h'
+          put @SM.ObjectHash h'
           put @SM.WorkingTree wt'
-          when (h' /= h) $ setRef branch (Just (TickId (unObjectHash h')))
+          when (h' /= h) $ setRef branch (Just (TickId (SM.unObjectHash h')))
           return a
 
         RunStorageEdit comp -> do
-          h  <- get @ObjectHash
+          h  <- get @SM.ObjectHash
           wt <- get @SM.WorkingTree
           (result@(_, mapping), (h', wt')) <- SM.runStorageT h wt comp
-          put @ObjectHash h'
+          put @SM.ObjectHash h'
           put @SM.WorkingTree wt'
-          when (h' /= h) $ setRef branch (Just (TickId (unObjectHash h')))
+          when (h' /= h) $ setRef branch (Just (TickId (SM.unObjectHash h')))
           updateReferences mapping
           -- The cascade 'updateReferences' just ran may have rewritten
           -- *this* branch's ref a second time (see this function's own
@@ -482,14 +490,14 @@ runGitBranchOp branch action = do
           mB <- getBranch branch
           case mB of
             Just b' -> do
-              let newHash = ObjectHash (unTickId (branchHead b'))
+              let newHash = SM.ObjectHash (unTickId (branchHead b'))
               newWt <- SM.loadWorkingTree newHash
-              put @ObjectHash newHash
+              put @SM.ObjectHash newHash
               put @SM.WorkingTree newWt
             Nothing -> return ()
           return result
     )
-    (raiseUnder @(State ObjectHash) (raiseUnder @(State SM.WorkingTree) action))
+    (raiseUnder @(State SM.ObjectHash) (raiseUnder @(State SM.WorkingTree) action))
 
 -- ---------------------------------------------------------------------------
 -- FileSystem effects for a branch — kept as the ambient-file-access
@@ -502,17 +510,17 @@ runGitBranchOp branch action = do
 newtype BranchTag (branch :: k) = BranchTag BranchName
 
 -- | Interpret the three ambient 'FileSystem' effects for a branch against
---   'GitBranchOp branch' — every operation is a single 'runStorage'
+--   'BranchOp branch' — every operation is a single 'runStorage'
 --   dispatch against the same persistent (head, working tree) state a
 --   branch's other 'runStorage'\/'runStorageEdit' calls already share, so
 --   a plain file read/write interleaves freely with a chain edit on the
 --   same scope. These effects were always first-order (no continuation in
 --   any constructor), so this was never the expensive part being replaced
 --   — this interpreter just retargets them from the old shared-'State
---   WorkingTree' plumbing onto 'GitBranchOp'.
+--   WorkingTree' plumbing onto 'BranchOp'.
 runStoryFSGit
   :: forall branch r a
-  .  Member (GitBranchOp branch) r
+  .  Member (BranchOp branch) r
   => BranchName
   -> Sem ( FileSystemWrite (BranchTag branch)
          : FileSystemRead  (BranchTag branch)
@@ -522,7 +530,7 @@ runStoryFSGit
 runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
   where
     interpretFS
-      :: Members '[GitBranchOp branch] r'
+      :: Members '[BranchOp branch] r'
       => Sem (FileSystem (BranchTag branch) : r') a'
       -> Sem r' a'
     interpretFS = interpret $ \case
@@ -540,7 +548,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
         return $ Left "Branch FS: Glob not yet implemented"
 
     interpretFSRead
-      :: Members '[GitBranchOp branch] r'
+      :: Members '[BranchOp branch] r'
       => Sem (FileSystemRead (BranchTag branch) : r') a'
       -> Sem r' a'
     interpretFSRead = interpret $ \case
@@ -553,7 +561,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
           else Right <$> SM.readFileS path
 
     interpretFSWrite
-      :: Members '[GitBranchOp branch] r'
+      :: Members '[BranchOp branch] r'
       => Sem (FileSystemWrite (BranchTag branch) : r') a'
       -> Sem r' a'
     interpretFSWrite = interpret $ \case
@@ -564,7 +572,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       Remove recursive path ->
         Right <$> runStorage @branch (SM.removeS recursive path)
 
--- | Interpret 'GitBranchOp branch' and all three filesystem effects for a
+-- | Interpret 'BranchOp branch' and all three filesystem effects for a
 --   branch together — takes a 'Branch' obtained from 'StoryStorage' — the
 --   storage layer is the authority on which branches exist and are
 --   accessible. Callers must go through 'getBranch' or 'createBranch'
@@ -576,10 +584,10 @@ runBranchAndFS
   -> Sem ( FileSystemWrite (BranchTag branch)
          : FileSystemRead  (BranchTag branch)
          : FileSystem      (BranchTag branch)
-         : GitBranchOp branch
+         : BranchOp branch
          : r ) a
   -> Sem r a
-runBranchAndFS name = runGitBranchOp @branch name . runStoryFSGit @branch name
+runBranchAndFS name = runBranchOpGit @branch name . runStoryFSGit @branch name
 
 -- ---------------------------------------------------------------------------
 -- Generic rebase — for callers whose inner action interleaves other
@@ -596,8 +604,8 @@ runBranchAndFS name = runGitBranchOp @branch name . runStoryFSGit @branch name
 -- The rebase-marker feature ("run this arbitrary command as if an earlier
 -- tick were HEAD") is different: its inner action is a recursive dispatch
 -- call that can invoke agents, LLM calls, anything. It still doesn't need
--- 'interpretH', though — 'GitBranchOp's own (head, working tree) state is
--- ordinary Polysemy 'State' internal to 'runGitBranchOp', so plain,
+-- 'interpretH', though — 'BranchOp's own (head, working tree) state is
+-- ordinary Polysemy 'State' internal to 'runBranchOpGit', so plain,
 -- ordinary 'Sem' recursion can move it down one tick at a time, let
 -- arbitrary code run at the bottom, and walk back up replaying each
 -- level's diff by hand — exactly 'Storyteller.Core.StorageMonad.at's
@@ -613,7 +621,7 @@ runBranchAndFS name = runGitBranchOp @branch name . runStoryFSGit @branch name
 --   'Storyteller.Core.StorageMonad.at'-family operations already does.
 atGeneric
   :: forall branch r a
-  .  Members '[GitBranchOp branch, Git, Fail] r
+  .  Members '[BranchOp branch, Git, Fail] r
   => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
 atGeneric tid inner = do
   outerHead <- runStorage @branch SM.headTickId
@@ -621,15 +629,19 @@ atGeneric tid inner = do
   runStorage @branch (SM.syncTo finalHead)
   return (a, mapping)
   where
-    goDown :: ObjectHash -> Sem r (a, [(TickId, TickId)], ObjectHash)
+    -- Entirely in 'SM.ObjectHash' space throughout -- every hash here
+    -- comes from or feeds into 'SM.gitReadCommit'\/'SM.gitWriteCommit'\/
+    -- 'SM.loadWorkingTree', never a raw git effect call, so there is
+    -- nothing here for 'Runix.Git's own 'ObjectHash' to do.
+    goDown :: SM.ObjectHash -> Sem r (a, [(TickId, TickId)], SM.ObjectHash)
     goDown current
-      | TickId (unObjectHash current) == tid = do
+      | TickId (SM.unObjectHash current) == tid = do
           a <- inner
           h <- runStorage @branch SM.headTickId
           return (a, [], h)
       | otherwise = do
           cd <- SM.gitReadCommit current
-          case commitParents cd of
+          case SM.commitParents cd of
             [] -> fail $ "At: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
             (parent : _) -> do
               parentWt <- SM.loadWorkingTree parent
@@ -640,11 +652,11 @@ atGeneric tid inner = do
               newWt       <- SM.applyDiff parentWt commitWt newParentWt
               treeHash    <- SM.flushWorkingTree newWt
               newHash     <- SM.gitWriteCommit cd
-                { commitParents = newParent : drop 1 (commitParents cd)
-                , commitTree    = treeHash
+                { SM.commitParents = newParent : drop 1 (SM.commitParents cd)
+                , SM.commitTree    = treeHash
                 }
-              let oldId = TickId (unObjectHash current)
-                  newId = TickId (unObjectHash newHash)
+              let oldId = TickId (SM.unObjectHash current)
+                  newId = TickId (SM.unObjectHash newHash)
               return (a, innerMapping <> [(oldId, newId)], newHash)
 
 -- | Read-only counterpart of 'atGeneric': checks out @tid@'s snapshot, runs
@@ -653,20 +665,20 @@ atGeneric tid inner = do
 --   precedes the current head before moving anything.
 readAtGeneric
   :: forall branch r a
-  .  Members '[GitBranchOp branch, Git, Fail] r
+  .  Members '[BranchOp branch, Git, Fail] r
   => TickId -> Sem r a -> Sem r a
 readAtGeneric tid inner = do
   outerHead <- runStorage @branch SM.headTickId
   validateAncestry outerHead
-  runStorage @branch (SM.syncTo (ObjectHash (unTickId tid)))
+  runStorage @branch (SM.syncTo (SM.ObjectHash (unTickId tid)))
   a <- inner
   runStorage @branch (SM.syncTo outerHead)
   return a
   where
     validateAncestry current
-      | TickId (unObjectHash current) == tid = return ()
+      | TickId (SM.unObjectHash current) == tid = return ()
       | otherwise = do
           cd <- SM.gitReadCommit current
-          case commitParents cd of
+          case SM.commitParents cd of
             []      -> fail $ "At: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
             (p : _) -> validateAncestry p

@@ -33,7 +33,7 @@ import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharL
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Git (GitBranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (ticksSince)
 import Storyteller.Core.StorageMonad (fileTicksOf)
@@ -43,7 +43,7 @@ import Storyteller.Core.Types (TickId(..))
 --   blocks)@ shape 'writeAgent' takes.
 flowWriteAgent
   :: forall branch r
-  .  Members '[LLM StoryModel, PromptStorage, GitBranchOp branch, Fail] r
+  .  Members '[LLM StoryModel, PromptStorage, BranchOp branch, Fail] r
   => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
   -> ExistingContent

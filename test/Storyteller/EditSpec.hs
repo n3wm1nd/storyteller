@@ -21,7 +21,7 @@ import Git.Mock
 import Runix.Git (Git, ObjectHash(..))
 import qualified Data.Text.Encoding as T
 
-import Storyteller.Core.Git (GitBranchOp, runStoryStorageGit, runGitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchOp, runStoryStorageGit, runBranchOpGit, runStorage, runStorageEdit)
 import Storyteller.Core.Storage (StoryStorage, createBranch, updateReferences)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types
@@ -45,7 +45,7 @@ runEdit action =
   . runStoryStorageGit
   $ do
       b <- createBranch (BranchName "main")
-      let headHash0 = ObjectHash (unTickId (branchHead b))
+      let headHash0 = SM.ObjectHash (unTickId (branchHead b))
       wt0 <- SM.loadWorkingTree headHash0
       fst <$> SM.runStorageT headHash0 wt0 action
 
@@ -55,10 +55,10 @@ data Main
 --   reference cascade (a 'StoryStorage'-level concern layered on by
 --   'Storyteller.Core.Git.runStorageEdit', not part of 'SM.StorageT'
 --   itself) — see e.g. "a ref pointing at any merged atom remaps to the
---   merged id" below. Runs the full 'GitBranchOp'/'StoryStorage' stack
+--   merged id" below. Runs the full 'BranchOp'/'StoryStorage' stack
 --   instead of a bare 'SM.StorageT' computation.
 runEditBroadcast
-  :: Sem '[GitBranchOp Main, StoryStorage, Git, State GitState, Fail] a
+  :: Sem '[BranchOp Main, StoryStorage, Git, State GitState, Fail] a
   -> Either String a
 runEditBroadcast action =
   run
@@ -68,7 +68,7 @@ runEditBroadcast action =
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "main")
-      runGitBranchOp @Main (BranchName "main") action
+      runBranchOpGit @Main (BranchName "main") action
 
 -- ---------------------------------------------------------------------------
 -- Helpers

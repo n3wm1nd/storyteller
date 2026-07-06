@@ -48,7 +48,7 @@ withFile_
   -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
-         : GitBranchOp Main
+         : BranchOp Main
          : StoryStorage
          : TestEffects '[] ) a
   -> Either String a

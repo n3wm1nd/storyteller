@@ -163,7 +163,7 @@ runStoryGit
                            , FileSystem      (BranchTag Main)
                            , FileSystemRead  (BranchTag Main)
                            , FileSystemWrite (BranchTag Main)
-                           , GitBranchOp Main
+                           , BranchOp Main
                            , StoryStorage
                            , Git
                            , Logging, Fail ] r

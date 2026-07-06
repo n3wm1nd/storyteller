@@ -46,6 +46,7 @@ library
                   , Storyteller.Writer.Agent
                   , Storyteller.Core.Storage
                   , Storyteller.Core.StorageMonad
+                  , Storyteller.Core.Branch
                   , Storyteller.Core.Undo
                   , Storyteller.Core.Git
                   , Storyteller.Core.Runtime

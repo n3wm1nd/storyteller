@@ -41,7 +41,7 @@ import           Runix.Logging (Logging)
 import           Storyteller.Writer.Agent.CharGen
   (charGenAgent, ScenarioTemplate(..), RngSeed(..), unSheet)
 import           Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
-import           Storyteller.Core.Git (BranchTag(..), GitBranchOp, runStorageEdit)
+import           Storyteller.Core.Git (BranchTag(..), BranchOp, runStorageEdit)
 import qualified Storyteller.Core.StorageMonad as SM
 import           Storyteller.Core.Runtime (runInfrastructure, runBranchAndFS, runStoryStorageGit)
 import           Storyteller.Core.Storage (StoryStorage)
@@ -85,7 +85,7 @@ charGenAction
   .  Members '[ FileSystem      (BranchTag branch)
               , FileSystemRead  (BranchTag branch)
               , FileSystemWrite (BranchTag branch)
-              , GitBranchOp branch
+              , BranchOp branch
               , StoryStorage
               , Logging, Fail
               ] r

@@ -23,7 +23,7 @@ import Runix.Git (Git(..))
 import Runix.Logging (loggingNull)
 
 import Git.Mock (GitState, emptyGitState, runGitMock)
-import Storyteller.Core.Git (BranchTag, GitBranchOp, runBranchAndFS, runStorage, withStorage, runStoryStorageGit)
+import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage, withStorage, runStoryStorageGit)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types
@@ -64,7 +64,7 @@ withBranch_
   -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
-         : GitBranchOp Main
+         : BranchOp Main
          : StoryStorage
          : TestEffects '[] ) a
   -> Either String a

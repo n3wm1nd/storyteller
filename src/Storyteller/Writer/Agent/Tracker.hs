@@ -19,7 +19,7 @@ import qualified Data.Set as Set
 import Polysemy
 
 import Storyteller.Core.Atom (Atom(..), contentFor)
-import Storyteller.Core.Git (GitBranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), TickType(..), tickId, tickParent )
 
@@ -28,7 +28,7 @@ import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), TickType(..)
 --   Returns the list of created tracker tick ids.
 trackBranch
   :: forall trackeeBranch trackerBranch r
-  .  Members '[GitBranchOp trackeeBranch, GitBranchOp trackerBranch] r
+  .  Members '[BranchOp trackeeBranch, BranchOp trackerBranch] r
   => (FilePath, FilePath)   -- ^ (source file on trackee, dest file on tracker)
   -> Sem r [TickId]
 trackBranch (fromFile, toFile) = do
@@ -61,7 +61,7 @@ dropUntilAfterLastSynced synced ticks =
 --   rather than dropped in favor of a plain, untagged message.
 copyAtom
   :: forall trackerBranch r
-  .  Member (GitBranchOp trackerBranch) r
+  .  Member (BranchOp trackerBranch) r
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
   let content = contentFor fromFile tick

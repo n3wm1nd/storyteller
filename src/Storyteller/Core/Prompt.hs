@@ -53,7 +53,7 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 
-import Storyteller.Core.Git (runGitBranchOp, runStorage)
+import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.Runtime (Prompts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.StorageMonad (fileExistsS, readFileS)
@@ -100,7 +100,7 @@ interpretPromptStorageFS action = do
     Just _  -> return ()
     Nothing -> void (createBranch promptsBranchName)
   interpret (\case
-    GetPrompt (PromptKey key) def -> runGitBranchOp @Prompts promptsBranchName $ do
+    GetPrompt (PromptKey key) def -> runBranchOpGit @Prompts promptsBranchName $ do
       let path = "/" <> T.unpack (T.replace "." "/" key) <> ".md"
       runStorage @Prompts $ do
         exists <- fileExistsS path

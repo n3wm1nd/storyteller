@@ -57,7 +57,7 @@ import UniversalLLM.Tools
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
-import Storyteller.Core.Git (GitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchOp, runStorage, runStorageEdit)
 import Storyteller.Core.Runtime (StoryModel)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.StorageMonad (FileTick(..))
@@ -157,7 +157,7 @@ defaultFixerTemplate =
 --   gathered upfront and handed to a pure core.
 reworkAtomsAt
   :: forall branch r
-  .  Members '[LLM StoryModel, PromptStorage, GitBranchOp branch, Fail] r
+  .  Members '[LLM StoryModel, PromptStorage, BranchOp branch, Fail] r
   => FilePath -> Instruction -> [Int] -> Sem r [TickId]
 reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
   where

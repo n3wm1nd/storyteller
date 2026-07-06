@@ -35,7 +35,7 @@ runCommit action =
   . runStoryStorageGit
   $ do
       b <- createBranch (BranchName "main")
-      let headHash0 = ObjectHash (unTickId (branchHead b))
+      let headHash0 = SM.ObjectHash (unTickId (branchHead b))
       wt0 <- SM.loadWorkingTree headHash0
       fst <$> SM.runStorageT headHash0 wt0 action
 

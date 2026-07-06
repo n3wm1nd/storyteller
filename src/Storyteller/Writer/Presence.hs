@@ -18,7 +18,7 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
-import Storyteller.Core.Git (GitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchOp, runStorage, runStorageEdit)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.StorageMonad (FileTick(..))
@@ -43,7 +43,7 @@ import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
 --   rather than left in the chain; see 'trailingPresenceFor'.
 recordPresence
   :: forall branch r
-  .  Members '[GitBranchOp branch, StoryStorage, Fail] r
+  .  Members '[BranchOp branch, StoryStorage, Fail] r
   => FilePath -> BranchName -> PresenceEvent -> Sem r (Maybe TickId)
 recordPresence file character event =
   getBranch character >>= \case

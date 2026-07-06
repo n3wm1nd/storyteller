@@ -6,6 +6,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE GADTs #-}
 
 -- | A single git-storage worker thread for the whole server process,
 -- replacing one interpreter stack (and one @git cat-file --batch@ reader)

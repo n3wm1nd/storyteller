@@ -40,7 +40,7 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFil
 import Server.Core.Protocol (Update(..), tickToWireTick)
 
 import qualified Storyteller.Common.Annotation as Annotation
-import Storyteller.Core.Git (BranchTag, GitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchTag, BranchOp, runStorage, runStorageEdit)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (TickId(..), tickId, tickParent, unTickId)
@@ -51,7 +51,7 @@ data Main
 --   scope — reopened fresh per command by the connection handler, not held
 --   for the connection's whole lifetime (see the module comment).
 type BranchOpen r =
-  Members '[ GitBranchOp Main
+  Members '[ BranchOp Main
            , StoryStorage
            , FileSystemWrite (BranchTag Main)
            , FileSystemRead  (BranchTag Main)

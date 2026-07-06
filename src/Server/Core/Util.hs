@@ -16,7 +16,7 @@ import Polysemy.Error (Error, throw)
 import Runix.Git (Git)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
-import Storyteller.Core.Git (BranchTag(..), GitBranchOp, runBranchAndFS)
+import Storyteller.Core.Git (BranchTag(..), BranchOp, runBranchAndFS)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Polysemy.Fail (Fail)
@@ -35,7 +35,7 @@ withBranch
   -> Sem ( FileSystemWrite (BranchTag branch)
          : FileSystemRead  (BranchTag branch)
          : FileSystem      (BranchTag branch)
-         : GitBranchOp branch
+         : BranchOp branch
          : r ) a
   -> Sem r a
 withBranch b action = do

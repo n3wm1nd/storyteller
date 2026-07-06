@@ -54,7 +54,7 @@ runStory withCharacter action =
 -- | Append @content@ to @path@ and store it as an atom tick — the one thing
 --   that marks "an atom happened" for 'trailingPresenceFor's purposes.
 writeAtom
-  :: Members '[ GitBranchOp Story, FileSystem (BranchTag Story)
+  :: Members '[ BranchOp Story, FileSystem (BranchTag Story)
               , FileSystemRead (BranchTag Story), FileSystemWrite (BranchTag Story)
               , Fail ] r
   => FilePath -> Text -> Sem r TickId

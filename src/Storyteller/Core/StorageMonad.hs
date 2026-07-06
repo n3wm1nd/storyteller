@@ -23,9 +23,9 @@
 --
 -- 'StorageT' is deliberately not coupled to Polysemy or to git specifically:
 -- it is a plain monad transformer over any base monad @m@ that can read and
--- write content-addressed git objects ('MonadGit'). A caller wires it into
+-- write content-addressed objects ('MonadGit'). A caller wires it into
 -- Polysemy with a single first-order effect boundary (see
--- @Storyteller.Core.Git@'s @GitBranchOp@) that hands the whole computation
+-- @Storyteller.Core.Branch@'s @BranchOp@) that hands the whole computation
 -- to 'runStorageT' in one dispatch, however deep the rebase it performs.
 --
 -- The vocabulary here is tick\/tree level (ticks, the working tree, the
@@ -35,8 +35,14 @@
 -- the same way git does can supply an instance and reuse everything above
 -- it unchanged.
 module Storyteller.Core.StorageMonad
-  ( -- * The pluggable object-store primitive
-    MonadGit(..)
+  ( -- * Generic content-addressed object vocabulary
+    ObjectHash(..)
+  , CommitData(..)
+  , TreeEntry(..)
+  , GitObject(..)
+
+    -- * The pluggable object-store primitive
+  , MonadGit(..)
   , StorageM
 
     -- * Working tree
@@ -134,30 +140,70 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import System.FilePath (splitDirectories, joinPath)
 
-import Runix.Git
-  ( ObjectHash(..), CommitData(..), TreeEntry(..), GitObject(..) )
-
 import Storyteller.Core.Types hiding (draft)
 import qualified Storyteller.Core.Atom as Atom
 import Storyteller.Core.Created (Created(..))
+
+-- ---------------------------------------------------------------------------
+-- Generic content-addressed object vocabulary
+-- ---------------------------------------------------------------------------
+--
+-- Deliberately *not* imported from "Runix.Git", even though a git backend's
+-- own types happen to have exactly this shape: this module's whole point is
+-- that nothing above 'MonadGit' should need to know or care that git is
+-- what's actually storing anything. 'Storyteller.Core.Git' -- one particular
+-- 'MonadGit' instance, over the real 'Runix.Git' effect -- is the one place
+-- that converts between this vocabulary and git's own identically-shaped
+-- types; a different backend implementing 'MonadGit' would convert between
+-- this vocabulary and whatever its own storage model looks like instead.
+
+-- | An opaque content hash. Happens to be a git object hash's hex text
+--   under the one backend this codebase has today, but nothing here
+--   depends on that -- any content-addressed store's hash can fill this
+--   in, as long as it round-trips through 'Text'.
+newtype ObjectHash = ObjectHash { unObjectHash :: Text }
+  deriving (Show, Eq, Ord)
+
+-- | The data needed to describe or write one node of the tick chain: its
+--   parent(s) -- the chain parent first, any cross-branch tick refs after
+--   -- the tree snapshot it commits, and its encoded message.
+data CommitData = CommitData
+  { commitParents :: [ObjectHash]
+  , commitTree    :: ObjectHash
+  , commitMessage :: Text
+  } deriving (Show, Eq)
+
+-- | A single entry in a tree snapshot.
+data TreeEntry
+  = BlobEntry { entryName :: FilePath, entryHash :: ObjectHash }
+  | SubTree   { entryName :: FilePath, entryHash :: ObjectHash }
+  deriving (Show, Eq)
+
+-- | A single content-addressed object: either a raw blob, or a tree
+--   (directory) of further entries.
+data GitObject
+  = BlobObject BS.ByteString
+  | TreeObject [TreeEntry]
+  deriving (Show, Eq)
 
 -- ---------------------------------------------------------------------------
 -- MonadGit: the pluggable object-store primitive
 -- ---------------------------------------------------------------------------
 
 -- | Everything the tick\/tree layer needs from a content-addressed object
---   store — the read\/write half of "Runix.Git", with no notion of refs or
+--   store — read and write commits and objects, with no notion of refs or
 --   branches (ref resolution and publication are the caller's job: they
 --   happen before 'StorageT' is entered and after it returns, never inside
---   it — see @Storyteller.Core.Git@'s @GitBranchOp@).
+--   it — see @Storyteller.Core.Branch@'s @BranchOp@).
 --
---   Any monad able to read and write commits and objects the way git does
---   can instantiate this and reuse every tick\/tree operation below for
---   free; the one instance this codebase needs
+--   Any monad able to read and write commits and objects this way can
+--   instantiate this and reuse every tick\/tree operation below for free;
+--   the one instance this codebase needs
 --   (@Members '[Runix.Git.Git, Polysemy.Fail.Fail] r => MonadGit (Sem r)@)
---   lives in @Storyteller.Core.Git@, alongside git-specific concerns (ref
---   naming, the Polysemy effect boundary) that don't belong in a
---   storage-agnostic module.
+--   lives in @Storyteller.Core.Git@, converting between this module's
+--   generic vocabulary and git's own identically-shaped types, alongside
+--   other git-specific concerns (ref naming, the Polysemy effect boundary)
+--   that don't belong in a storage-agnostic module.
 class Monad m => MonadGit m where
   gitReadCommit  :: ObjectHash -> m CommitData
   gitWriteCommit :: CommitData -> m ObjectHash
@@ -545,7 +591,7 @@ withFS action = do
 --   @at@\/@sneakyAt@ split any more: whether a caller's cross-branch
 --   references get updated is entirely the concern of whichever Polysemy
 --   runner it uses to enter 'StorageT' in the first place (see
---   @Storyteller.Core.Git@'s @runStorageEdit@) — 'StorageT' itself always
+--   @Storyteller.Core.Branch@'s @runStorageEdit@) — 'StorageT' itself always
 --   just returns the mapping and lets the caller decide.
 atChecked :: StorageM m => Bool -> TickId -> StorageT m a -> StorageT m (a, [(TickId, TickId)])
 atChecked replay tid action = at replay tid action >>= either fail return
@@ -829,9 +875,9 @@ walkFileTicks path headHash = do
 -- None of these broadcast their returned old->new id mapping via
 -- 'Storyteller.Core.Storage.updateReferences' any more — that was a
 -- 'StoryStorage' (cross-branch, Polysemy) concern before, and stays one:
--- see 'Storyteller.Core.Git.runStorageEdit', the Polysemy runner that
--- dispatches one of these as a single 'GitBranchOp' and then broadcasts its
--- mapping.
+-- see 'Storyteller.Core.Branch.runStorageEdit', the Polysemy runner that
+-- dispatches one of these as a single 'BranchOp' and then broadcasts its
+-- mapping (via a git-specific interpreter, 'Storyteller.Core.Git.runBranchOpGit').
 
 -- | A tick extracted from the chain, ready to be re-inserted elsewhere.
 --   Carries the metadata (message, refs) and the concrete file diffs the
@@ -883,7 +929,7 @@ pushTick d = withFS $ do
 --   'resetTree' before returning so the ambient tree actually reflects
 --   the rebased chain, not whatever it was before the rebase (the same
 --   role the old Polysemy @StoryBranch@ effect's @sync@ played, minus the
---   git-ref re-resolution half, which is a 'Storyteller.Core.Git.runStorageEdit'
+--   git-ref re-resolution half, which is a 'Storyteller.Core.Branch.runStorageEdit'
 --   concern — see its own doc).
 deleteTick :: StorageM m => TickId -> StorageT m [(TickId, TickId)]
 deleteTick tid = do

@@ -33,7 +33,7 @@ runAppend
   :: Sem '[ FileSystemWrite (BranchTag Main)
           , FileSystemRead  (BranchTag Main)
           , FileSystem      (BranchTag Main)
-          , GitBranchOp Main
+          , BranchOp Main
           , StoryStorage
           , Git
           , State GitState

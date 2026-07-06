@@ -30,14 +30,14 @@ import Runix.LLM (LLM)
 import Storyteller.Writer.Agent (Instruction)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Git (GitBranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.StorageMonad (FileTick(..), fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 fixAgent
   :: forall branch r
-  .  Members '[LLM StoryModel, PromptStorage, GitBranchOp branch, Fail] r
+  .  Members '[LLM StoryModel, PromptStorage, BranchOp branch, Fail] r
   => FilePath
   -> [TickId]                -- ^ targets: atoms flagged for fixing (non-empty)
   -> Instruction

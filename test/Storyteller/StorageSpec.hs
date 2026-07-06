@@ -16,7 +16,7 @@
 --   @StoryBranch@ effect. What's left here is the ambient 'FileSystem'
 --   interpreter ('Storyteller.Core.Git.runStoryFSGit'/'runBranchAndFS'),
 --   which is a genuinely new interpreter (retargeted from the old shared-
---   'State WorkingTree' plumbing onto 'GitBranchOp') not covered by
+--   'State WorkingTree' plumbing onto 'BranchOp') not covered by
 --   'Storyteller.StorageMonadSpec' at all.
 module Storyteller.StorageSpec (spec) where
 
@@ -65,12 +65,12 @@ runTest action =
   $ action
 
 -- | Runner for tests that use the ambient FileSystem effects, backed by
---   'GitBranchOp'.
+--   'BranchOp'.
 runTestFS
   :: Sem '[ FileSystemWrite (BranchTag Main)
           , FileSystemRead  (BranchTag Main)
           , FileSystem      (BranchTag Main)
-          , GitBranchOp Main
+          , BranchOp Main
           , StoryStorage
           , Git
           , State GitState
@@ -154,7 +154,7 @@ spec = do
         Left err -> expectationFailure err
         Right (before, after) -> after `shouldBe` before
 
-  describe "FileSystem (via GitBranchOp)" $ do
+  describe "FileSystem (via BranchOp)" $ do
     it "written file can be read back" $ do
       let result = runTestFS $ do
             writeFile @(BranchTag Main) "hello.txt" "hello world"
