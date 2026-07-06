@@ -15,7 +15,7 @@
 -- separate entity/tracker branches (each tracker atom carrying a real
 -- commit-parent ref back to its source atom, exactly as
 -- 'Storyteller.Writer.Agent.Tracker' produces in production -- see
--- 'copyAtom'), then does one edit via 'atWithFS' at a chosen depth along
+-- 'copyAtom'), then does one edit via 'Storyteller.Core.StorageMonad.at'/'withFS' at a chosen depth along
 -- Source's chain: an Append while time-travelled, the scenario reported
 -- to spike the server to ~200% CPU for a few seconds with as few as ~10
 -- tracked atoms.
@@ -72,12 +72,13 @@ import Polysemy.Fail (runFail)
 import Polysemy.State (State, evalState, get, modify, runState)
 
 import Runix.Git (Git(..))
-import Runix.FileSystem (writeFile, readFile)
+import Runix.FileSystem (writeFile)
 
 import Git.Mock (GitState, emptyGitState, runGitMock)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStoryStorageGit)
-import Storyteller.Core.Storage (createBranch, store, follow, atWithFS)
-import Storyteller.Core.Types (BranchName(..), TickId, tickId, tickParent)
+import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage, runStorageEdit, runStoryStorageGit)
+import Storyteller.Core.Storage (createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.Types (BranchName(..), TickId, draft, tickId, tickParent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 
 import Prelude hiding (writeFile, readFile)
@@ -142,7 +143,7 @@ buildScenario n k depthFrac =
         foldM_ (\prevContent i -> do
                   let !content = prevContent <> atomDelta i
                   writeFile @(BranchTag Source) "story.md" content
-                  _ <- store @Source (T.pack ("atom " <> show i))
+                  _ <- runStorage @Source (SM.store (draft (T.pack ("atom " <> show i))))
                   return content
                ) BS.empty [1 .. n]
 
@@ -153,7 +154,7 @@ buildScenario n k depthFrac =
           $ trackBranch @Source @Tracker ("story.md", "story.md")
 
       runBranchAndFS @Source (BranchName "source") $ do
-        sourceTicks <- follow @Source [] (\acc t -> (tickId t : acc, tickParent t))
+        sourceTicks <- runStorage @Source (SM.followChain [] (\acc t -> (tickId t : acc, tickParent t)))
         let len = length sourceTicks
             idx = max 1 (min (len - 1) (round (depthFrac * fromIntegral (len - 1))))
         return (sourceTicks !! idx)
@@ -172,15 +173,15 @@ timedEdit gs mid =
   . runStoryStorageGit
   $ do
       _ <- runBranchAndFS @Source (BranchName "source") $
-        atWithFS @Source mid $ do
-          existing <- readFile @(BranchTag Source) "story.md"
-          writeFile @(BranchTag Source) "story.md" (existing <> "\nEDIT\n")
-          store @Source "edit while at"
+        runStorageEdit @Source $ SM.atChecked True mid $ SM.withFS $ do
+          existing <- SM.readFileS "story.md"
+          SM.writeFileS "story.md" (existing <> "\nEDIT\n")
+          SM.store (draft "edit while at")
       get
 
 -- | Build N atoms on Source, track all of them into K tracker branches (N
 --   real commit-parent edges into Source per tracker), then edit Source at
---   the given depth (0 = near root, 1 = near head) via 'atWithFS'. Returns
+--   the given depth (0 = near root, 1 = near head) via 'Storyteller.Core.StorageMonad.at'/'withFS'. Returns
 --   the git op counts for that single edit only -- setup's own git ops are
 --   excluded, since it's built and timed separately (see 'buildScenario'/
 --   'timedEdit').

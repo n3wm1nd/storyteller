@@ -27,26 +27,23 @@ module Storyteller.Writer.Agent.FlowWrite
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Git (GitBranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, fileTicks, ticksSince)
+import Storyteller.Core.Storage (ticksSince)
+import Storyteller.Core.StorageMonad (fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. @charBlocks@ is the same @(label, resolved summary
 --   blocks)@ shape 'writeAgent' takes.
 flowWriteAgent
-  :: forall project branch r
-  .  ( project ~ BranchTag branch
-     , Members '[ LLM StoryModel, PromptStorage
-                , FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Fail ] r )
+  :: forall branch r
+  .  Members '[LLM StoryModel, PromptStorage, GitBranchOp branch, Fail] r
   => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
   -> ExistingContent
@@ -55,12 +52,12 @@ flowWriteAgent
   -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
   -> Sem r ([TickId], Prose)
 flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
-  allTicks <- fileTicks @branch path
+  allTicks <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0
     then return []
-    else reworkAtomsAt @branch @project path (flowInstruction instruction) inFlightIdxs
+    else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
 
   generated <- writeAgent existing extraContext instruction charBlocks
   return (reworkedTids, generated)

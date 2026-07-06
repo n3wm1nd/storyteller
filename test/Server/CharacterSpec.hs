@@ -14,8 +14,8 @@ import Polysemy (Sem, run)
 import Runix.FileSystem (writeFile)
 
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch)
+import Storyteller.Core.Git (BranchTag, GitBranchOp, runBranchAndFS)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
@@ -34,10 +34,10 @@ import Prelude hiding (writeFile)
 --   that never calls 'StoryStorage' itself.
 withCharacterBranch
   :: T.Text
-  -> Sem ( StoryBranch Main
-         : FileSystemWrite (BranchTag Main)
+  -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
+         : GitBranchOp Main
          : StoryStorage
          : TestEffects '[] ) a
   -> Either String a

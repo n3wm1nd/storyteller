@@ -1,9 +1,6 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
 
 -- | Files living under a subdirectory (e.g. @chapters/ch1.md@) must behave
 -- exactly like root-level files across the storage/edit layer. Two bugs this
@@ -11,8 +8,7 @@
 --
 --   * 'commitFiles' walked historical snapshots with a flat @listFiles "/"@
 --     that included directory entries, then 'readFile'd each — which fails
---     with "is a directory" the moment any subdirectory exists. Fixed by
---     recursing (see 'Storyteller.Core.Edit.readSnapshotAt').
+--     with "is a directory" the moment any subdirectory exists.
 --
 --   * A plain append + read-back at a subdirectory path must round-trip at
 --     that exact path, with no directory component doubled — this is the
@@ -25,47 +21,30 @@ import Test.Hspec
 
 import Polysemy
 import Polysemy.Fail
-import Polysemy.State (evalState, State)
+import Polysemy.State (evalState)
 
 import Git.Mock
-import Runix.Git (Git)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile, writeFile, listAllFiles)
-import Prelude hiding (readFile, writeFile)
+import Runix.Git (ObjectHash(..))
 
-import Storyteller.Core.Git
-import Storyteller.Core.Storage hiding (get, drop)
-import qualified Storyteller.Core.Storage as S
+import Storyteller.Core.Git (runStoryStorageGit)
+import Storyteller.Core.Storage (createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types
-import Storyteller.Core.Append (append)
-import Storyteller.Core.Edit (commitFiles)
-
-data Main
 
 runSub
-  :: Sem '[ StoryBranch Main
-          , FileSystemWrite (BranchTag Main)
-          , FileSystemRead  (BranchTag Main)
-          , FileSystem      (BranchTag Main)
-          , StoryStorage
-          , Git
-          , State WorkingTree
-          , State GitState
-          , Fail
-          ] a
+  :: (forall n. SM.StorageM n => SM.StorageT n a)
   -> Either String a
 runSub action =
   run
   . runFail
   . evalState emptyGitState
   . runGitMock
-  . evalState emptyWorkingTree
   . runStoryStorageGit
   $ do
-      _ <- createBranch (BranchName "main")
-      runStoryFSGit @Main (BranchName "main")
-        . runStoryBranchGit @Main (BranchName "main")
-        . subsume_
-        $ action
+      b <- createBranch (BranchName "main")
+      let headHash0 = ObjectHash (unTickId (branchHead b))
+      wt0 <- SM.loadWorkingTree headHash0
+      fst <$> SM.runStorageT headHash0 wt0 action
 
 spec :: Spec
 spec = do
@@ -73,17 +52,17 @@ spec = do
 
     it "append + read-back at a subdir path round-trips at that exact path" $
       runSub (do
-        _ <- append @Main "chapters/ch1.outline.md" "beat one\n"
-        _ <- append @Main "chapters/ch1.outline.md" "beat two\n"
-        S.reset @Main
-        readFile @(BranchTag Main) "chapters/ch1.outline.md")
+        _ <- SM.append "chapters/ch1.outline.md" "beat one\n"
+        _ <- SM.append "chapters/ch1.outline.md" "beat two\n"
+        SM.resetTree
+        SM.readFileS "chapters/ch1.outline.md")
       `shouldBe` Right "beat one\nbeat two\n"
 
     it "the subdir file appears under its own path in a full file listing (not doubled)" $
       runSub (do
-        _ <- append @Main "chapters/ch1.outline.md" "content\n"
-        S.reset @Main
-        listAllFiles @(BranchTag Main) "/")
+        _ <- SM.append "chapters/ch1.outline.md" "content\n"
+        SM.resetTree
+        SM.listAllFilesS "/")
       `shouldBe` Right ["chapters/ch1.outline.md"]
 
     it "commitFiles reconciles a file under a subdirectory (no 'is a directory')" $
@@ -91,20 +70,20 @@ spec = do
         -- Establish a committed atom under chapters/, so the branch has a
         -- 'chapters' directory in its tree (this is what tripped the flat
         -- listFiles walk in readSnapshotAt).
-        _ <- append @Main "chapters/ch1.md" "hello world\n"
+        _ <- SM.append "chapters/ch1.md" "hello world\n"
         -- Edit the working tree freely, then reconcile just this file.
-        writeFile @(BranchTag Main) "chapters/ch1.md" "hello world\nmore\n"
-        _ <- commitFiles @(BranchTag Main) @Main ["chapters/ch1.md"]
-        S.reset @Main
-        readFile @(BranchTag Main) "chapters/ch1.md")
+        SM.writeFileS "chapters/ch1.md" "hello world\nmore\n"
+        _ <- SM.commitFiles ["chapters/ch1.md"]
+        SM.resetTree
+        SM.readFileS "chapters/ch1.md")
       `shouldBe` Right "hello world\nmore\n"
 
     it "commitFiles still works with sibling subdirectories present" $
       runSub (do
-        _ <- append @Main "chapters/ch1.md" "one\n"
-        _ <- append @Main "world/place.md" "somewhere\n"
-        writeFile @(BranchTag Main) "chapters/ch1.md" "one\ntwo\n"
-        _ <- commitFiles @(BranchTag Main) @Main ["chapters/ch1.md"]
-        S.reset @Main
-        readFile @(BranchTag Main) "chapters/ch1.md")
+        _ <- SM.append "chapters/ch1.md" "one\n"
+        _ <- SM.append "world/place.md" "somewhere\n"
+        SM.writeFileS "chapters/ch1.md" "one\ntwo\n"
+        _ <- SM.commitFiles ["chapters/ch1.md"]
+        SM.resetTree
+        SM.readFileS "chapters/ch1.md")
       `shouldBe` Right "one\ntwo\n"

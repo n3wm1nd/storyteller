@@ -1,65 +1,66 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
--- | Git-backed interpreters for StoryStorage and StoryBranch.
+-- | Git-backed interpreter for 'StoryStorage', and the Polysemy embedding
+--   of 'Storyteller.Core.StorageMonad' for per-branch tick-chain operations.
 --
 -- Conventions owned by this layer (invisible to everything above):
 --
 --   * Branch refs live at  @refs/heads/story/<name>@
---   * Tick messages are encoded as:
---       @refs: <hash1> <hash2> ...\n<message>@   when refs are present
---       @<message>@                               otherwise
+--   * Tick messages are encoded per 'Storyteller.Core.StorageMonad.encodeTickData'.
 --   * Each tick (commit) carries the full working-tree snapshot as its tree object.
---   * 'WorkingTree' is a complete in-memory filesystem: files carry their content,
---     directories are explicit empty entries.  On 'Store' it is serialised to a git
---     tree object; on branch checkout it is reconstructed from the commit's tree.
+--
+-- Per-branch tick-chain operations (the old @StoryBranch@ effect, with its
+-- higher-order @At@\/@WithFS@ constructors) have been replaced by
+-- 'Storyteller.Core.StorageMonad.StorageT' plus 'GitBranchOp' — see
+-- PLAN-storage-monad.md for why. 'StoryStorage' (branch create\/delete\/list,
+-- cross-branch reference cascade) was always first-order and is unchanged.
 module Storyteller.Core.Git
-  ( -- * Branch tag for filesystem effects
-    BranchTag(..)
-
-    -- * Interpreters
-  , runStoryStorageGit
+  ( -- * Interpreters
+    runStoryStorageGit
   , withStorage
   , withStorageDiscard
-  , runStoryBranchGit
-  , runStoryFSGit
 
     -- * Ref naming
   , refBranchName
   , isStoryRef
   , storyRefPrefix
 
-    -- * Working tree (in-memory filesystem)
-  , FSNode(..)
-  , WorkingTree
-  , emptyWorkingTree
-  , loadWorkingTree
-  , loadTree
+    -- * Branch tag for filesystem effects
+  , BranchTag(..)
 
-    -- * Combined branch + filesystem interpreter (storage-agnostic interface)
+    -- * Storage monad embedding (see 'Storyteller.Core.StorageMonad')
+  , GitBranchOp(..)
+  , runStorage
+  , runGitBranchOp
+  , runStorageEdit
+  , runStoryFSGit
   , runBranchAndFS
+
+    -- * Generic rebase (for inner actions that interleave other effects)
+  , atGeneric
+  , readAtGeneric
   ) where
 
 import Prelude
-import Control.Monad (foldM, when)
-import qualified Data.ByteString as BS
+import Control.Monad (when)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import System.FilePath (splitDirectories, joinPath)
 import Polysemy
 import Polysemy.Fail
 import Data.Maybe (fromMaybe, isJust)
@@ -72,121 +73,7 @@ import Runix.FileSystem
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage hiding (get, drop, Get)
-import qualified Storyteller.Core.Storage as S
-import qualified Storyteller.Core.Atom as Atom
-
--- ---------------------------------------------------------------------------
--- In-memory filesystem
--- ---------------------------------------------------------------------------
-
--- | Kind-* wrapper carrying the branch type-level tag.
---   Used as the @project@ parameter for filesystem effects, so that
---   @FileSystem (BranchTag branch)@ is unambiguous on the effect stack.
-newtype BranchTag (branch :: k) = BranchTag BranchName
-
--- | A node in the in-memory working tree.
---
---   'FSFile' carries only the git blob hash; content is written to git eagerly
---   on every 'WriteFile' (mandatory, not a side-effect) and fetched via
---   'ReadBlob' on demand.  This mirrors git's index/staging-area semantics:
---   the working tree is a pure hash-addressed index, no content in RAM.
---   'FSDir' represents an explicit, possibly-empty directory.
-data FSNode
-  = FSFile !ObjectHash
-  | FSDir
-  deriving (Show, Eq)
-
--- | The complete in-memory filesystem, keyed by path.
---   Directories are stored explicitly so empty dirs round-trip.
---   Path separator convention: forward slash, no trailing slash, relative.
-type WorkingTree = Map FilePath FSNode
-
-emptyWorkingTree :: WorkingTree
-emptyWorkingTree = Map.empty
-
--- ---------------------------------------------------------------------------
--- WorkingTree ↔ git tree serialisation
--- ---------------------------------------------------------------------------
-
--- | Reconstruct a 'WorkingTree' from a git commit's tree object.
---   Reads the flat tree at the commit; subtrees are read recursively.
-loadWorkingTree :: Members '[Git, Fail] r => ObjectHash -> Sem r WorkingTree
-loadWorkingTree commitHash = do
-  cd <- readCommit commitHash
-  readTreeRecursive "" (commitTree cd)
-
--- | Reconstruct a 'WorkingTree' directly from a git tree hash (not a commit).
-loadTree :: Members '[Git, Fail] r => ObjectHash -> Sem r WorkingTree
-loadTree = readTreeRecursive ""
-
-readTreeRecursive
-  :: Members '[Git, Fail] r
-  => FilePath    -- ^ path prefix (empty at root)
-  -> ObjectHash
-  -> Sem r WorkingTree
-readTreeRecursive prefix treeHash = do
-  entries <- readTree treeHash
-  fmap (Map.unions) $ mapM (readEntry prefix) entries
-  where
-    readEntry pfx (BlobEntry name hash) = do
-      let path = if null pfx then name else pfx <> "/" <> name
-      return $ Map.singleton path (FSFile hash)
-    readEntry pfx (SubTree name hash) = do
-      let path = if null pfx then name else pfx <> "/" <> name
-      sub <- readTreeRecursive path hash
-      -- insert an explicit FSDir entry for the directory itself
-      return $ Map.insert path FSDir sub
-
--- | Write the 'WorkingTree' to git, returning the root tree hash.
---   Builds the tree hierarchy bottom-up from the flat path map.
-flushWorkingTree :: Members '[Git, Fail] r => WorkingTree -> Sem r ObjectHash
-flushWorkingTree wt
-  | Map.null wt = return emptyTree
-  | otherwise   = buildTree "" wt
-
--- | Build git tree objects for a subtree rooted at @prefix@.
-buildTree
-  :: Members '[Git, Fail] r
-  => FilePath    -- ^ directory prefix (empty for root)
-  -> WorkingTree -- ^ the full tree (we select entries belonging to this dir)
-  -> Sem r ObjectHash
-buildTree prefix wt = do
-  let children = directChildren prefix wt
-  entries <- mapM (\name -> toEntry prefix name wt) children
-  writeTree entries
-
--- | List the immediate child names under @prefix@.
-directChildren :: FilePath -> WorkingTree -> [String]
-directChildren prefix wt =
-  let prefixParts = if null prefix then [] else splitDirectories prefix
-      len         = length prefixParts
-      names       = [ c
-                    | p <- Map.keys wt
-                    , let parts = splitDirectories p
-                    , length parts > len
-                    , take len parts == prefixParts
-                    , c : _ <- [drop len parts]
-                    ]
-  in dedupe names
-  where
-    dedupe [] = []
-    dedupe (x:xs) = x : dedupe (filter (/= x) xs)
-
-toEntry
-  :: Members '[Git, Fail] r
-  => FilePath   -- ^ parent prefix
-  -> FilePath   -- ^ child name (single component)
-  -> WorkingTree
-  -> Sem r TreeEntry
-toEntry prefix name wt =
-  let path = if null prefix then name else prefix <> "/" <> name
-  in case Map.lookup path wt of
-    Just (FSFile hash) ->
-      return (BlobEntry name hash)
-    _ -> do
-      -- directory (explicit FSDir or implicit from deeper entries)
-      hash <- buildTree path wt
-      return (SubTree name hash)
+import qualified Storyteller.Core.StorageMonad as SM
 
 -- ---------------------------------------------------------------------------
 -- Naming conventions
@@ -213,69 +100,6 @@ isStoryRef (RefName r) = storyRefPrefix `T.isPrefixOf` r
 
 emptyTree :: ObjectHash
 emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
--- ---------------------------------------------------------------------------
--- Message encoding / decoding
--- ---------------------------------------------------------------------------
-
--- | Encode a 'TickData' into a git commit message.
---   Format:
---     refs: <hash1> <hash2>   (omitted when empty)
---     <key>:<value>           (one line per field, omitted when empty)
---                             (blank line separating headers from body)
---     <message body>
-encodeTickData :: TickData -> Text
-encodeTickData td =
-  let fieldLines = map (\(k, v) -> k <> ":" <> v) (tickFields td)
-      body       = tickMessage td
-  in if null fieldLines
-       then body
-       else T.intercalate "\n" fieldLines <> "\n\n" <> body
-
--- | Decode a git commit message back into refs, fields, and message body.
---
---   The body is recovered as a verbatim slice of @raw@ (via 'T.drop'), not
---   by rejoining 'T.lines'-split lines with @T.intercalate "\n"@ — that
---   round trip silently collapses any blank line or trailing newline that
---   was actually part of the body's own content, which for an atom's
---   message means a paragraph break or the trailing newline
---   'Storyteller.Core.Append.append' always adds. Only the header lines
---   (short, single-line @key:value@ fields) are ever inspected line by line;
---   the body past them is never re-split.
-decodeTickData :: Text -> TickData
-decodeTickData raw =
-  let (headers, remainder) = break T.null (T.lines raw)
-      fields = [ (k, v)
-               | l <- headers
-               , let (k, rest) = T.breakOn ":" l
-               , not (T.null rest)
-               , let v = T.drop 1 rest ]
-      msg = case remainder of
-        []      -> raw                             -- no blank line → the whole thing is the message
-        (_ : _) -> T.drop (headerByteLen headers) raw
-  in TickData { tickRefs = [], tickFields = fields, tickMessage = msg }
-  where
-    -- Each header line plus its own "\n", plus one more "\n" for the blank
-    -- line separating headers from the body.
-    headerByteLen hs = sum (map ((+ 1) . T.length) hs) + 1
-
--- ---------------------------------------------------------------------------
--- Conversion between git and tick vocabulary
--- ---------------------------------------------------------------------------
-
-commitToTick :: ObjectHash -> CommitData -> Tick
-commitToTick hash cd =
-  let td      = decodeTickData (commitMessage cd)
-      parents = commitParents cd
-      pos = TickPos
-              { posId     = TickId (unObjectHash hash)
-              , posParent = TickId . unObjectHash <$> listToMaybe parents
-              , posRefs   = map (TickId . unObjectHash) (drop 1 parents)
-              }
-  in Tick { tickPos = pos, tickData = td { tickRefs = posRefs pos } }
-  where
-    listToMaybe []    = Nothing
-    listToMaybe (x:_) = Just x
 
 -- ---------------------------------------------------------------------------
 -- StoryStorage interpreter
@@ -319,7 +143,7 @@ withStorageWithCallback onRef action =
             rootHash <- raise $ writeCommit CommitData
               { commitParents = []
               , commitTree    = emptyTree
-              , commitMessage = encodeTickData (toDraft (Root name))
+              , commitMessage = SM.encodeTickData (toDraft (Root name))
               }
             let tid = TickId (unObjectHash rootHash)
             applyRef name (Just tid)
@@ -336,15 +160,15 @@ withStorageWithCallback onRef action =
       -- transaction's own pending writes so far (same computation as
       -- 'ListBranches') — rather than raw, possibly-stale git refs. A
       -- caller's own branch is typically already at its correct final
-      -- head by this point (an 'At'-based rewrite publishes via 'SetRef'
-      -- before calling this), so it naturally can't still match any of
+      -- head by this point (a rewrite publishes via 'SetRef' before
+      -- calling this), so it naturally can't still match any of
       -- 'mapping's superseded ids and won't be redundantly reprocessed.
       -- Reading raw git refs instead would see that branch still at its
       -- *pre-rewrite* head under 'withStorage' (nothing lands in real git
       -- until the transaction replays), matching entries it shouldn't and
       -- rebuilding a second, wrong chain from stale ancestry alongside the
-      -- correct one 'At' already built — this is what actually caused a
-      -- moved tick's sibling to be duplicated in the chain.
+      -- correct one already built — this is what actually caused a moved
+      -- tick's sibling to be duplicated in the chain.
       UpdateReferences mapping -> do
         pairs   <- raise $ listRefs storyRefPrefix
         pending <- get
@@ -399,14 +223,14 @@ runStoryStorageGit = fmap fst . withStorageWithCallback applyToGit
 --   Replayed as at most one 'setRef' per branch, keeping only each
 --   branch's last buffered write ('lastPerBranch') — the same last-write-
 --   wins collapse 'overlayRefs' already applies for reads. A single
---   logical mutation (e.g. 'moveTick', which nests two 'At' calls and a
---   multi-entry 'updateReferences' cascade) buffers several intermediate
---   writes to the same branch; replaying every one of them individually
---   into the parent 'StoryStorage' would make each intermediate state
---   real and independently observable — one eager ref write, and one
---   'RefMoved' notification, per intermediate step instead of one for the
---   whole transaction. Collapsing first ensures only the final, coherent
---   state is ever published.
+--   logical mutation (e.g. 'Storyteller.Core.StorageMonad.moveTick', which
+--   nests two 'at' calls and a multi-entry 'updateReferences' cascade)
+--   buffers several intermediate writes to the same branch; replaying
+--   every one of them individually into the parent 'StoryStorage' would
+--   make each intermediate state real and independently observable — one
+--   eager ref write, and one 'RefMoved' notification, per intermediate
+--   step instead of one for the whole transaction. Collapsing first
+--   ensures only the final, coherent state is ever published.
 withStorage
   :: Members '[StoryStorage, Git, Fail] r
   => Sem (StoryStorage : r) a
@@ -436,553 +260,8 @@ withStorageDiscard
 withStorageDiscard = fmap fst . withStorageWithCallback (\_ _ -> pure ())
 
 -- ---------------------------------------------------------------------------
--- StoryBranch interpreter
+-- Cross-branch reference cascade
 -- ---------------------------------------------------------------------------
-
--- | Interpret 'StoryBranch branch' against git.
---   'Store' flushes the shared 'WorkingTree' into a real git tree object.
---   'Drop' and 'At' restore the working tree from the target commit's tree.
---
---   The branch's head is tracked as local 'State ObjectHash', seeded once
---   from 'StoryStorage' here at entry and never re-read afterwards — this
---   scope is a snapshot, same as 'WorkingTree' already was. Every write
---   still publishes via 'setRef' immediately (so a caller not wrapped in
---   'withStorage' keeps today's eager, git-visible-immediately behaviour),
---   but nothing in here reaches back out to 'StoryStorage' to notice
---   writes made by another, concurrently-open scope. A caller that needs a
---   fresh view of a branch after some other write reopens the scope (see
---   'runBranchAndFS'/'Server.Core.Util.withBranch') rather than relying on this
---   interpreter to notice mid-flight — that's what makes the 'withStorage'
---   transaction boundary and this scope's snapshot semantics agree: both
---   sync exactly once, at open.
-runStoryBranchGit
-  :: forall branch r a
-  .  Members '[Git, StoryStorage, Fail, State WorkingTree] r
-  => BranchName
-  -> Sem (StoryBranch branch : r) a
-  -> Sem r a
-runStoryBranchGit branch action = do
-  headTid0 <- getBranch branch >>= \case
-    Just b  -> pure (branchHead b)
-    Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName branch)
-  let headHash0 = ObjectHash (unTickId headTid0)
-  loadWorkingTree headHash0 >>= put
-  evalState headHash0 $ interpretH (\case
-    Store d -> do
-      headHash' <- raise $ get @ObjectHash
-      wt'      <- raise $ get @WorkingTree
-      parentWt <- raise $ loadWorkingTree headHash'
-      eCheck   <- raise $ checkAppendOnly d parentWt wt'
-      case eCheck of
-        Left err -> pureT (Left err)
-        Right () -> do
-          treeHash <- raise $ flushWorkingTree wt'
-          newHash  <- raise $ writeCommit CommitData
-            { commitParents = headHash' : map (ObjectHash . unTickId) (tickRefs d)
-            , commitTree    = treeHash
-            , commitMessage = encodeTickData d
-            }
-          raise $ put @ObjectHash newHash
-          raise $ setRef branch (Just (TickId (unObjectHash newHash)))
-          pureT $ Right (TickId (unObjectHash newHash))
-
-    Drop -> do
-      headHash' <- raise $ get @ObjectHash
-      cd        <- raise $ readCommit headHash'
-      case commitParents cd of
-        []      -> pureT ()
-        (p : _) -> do
-          raise $ put @ObjectHash p
-          raise $ setRef branch (Just (TickId (unObjectHash p)))
-          pureT ()
-
-    S.Get -> do
-      headHash' <- raise $ get @ObjectHash
-      cd        <- raise $ readCommit headHash'
-      pureT $ commitToTick headHash' cd
-
-    S.Reset -> do
-      headHash' <- raise $ get @ObjectHash
-      wt'       <- raise $ loadWorkingTree headHash'
-      raise $ put wt'
-      pureT ()
-
-    S.Sync -> do
-      mBranch <- raise $ getBranch branch
-      case mBranch of
-        Nothing -> raise $ fail ("sync: branch not found: " <> T.unpack (unBranchName branch))
-        Just b  -> do
-          let newHash = ObjectHash (unTickId (branchHead b))
-          raise $ put @ObjectHash newHash
-          wt' <- raise $ loadWorkingTree newHash
-          raise $ put wt'
-          pureT ()
-
-    Follow seed step -> do
-      headHash' <- raise $ get @ObjectHash
-      result    <- raise $ walkFrom seed step headHash'
-      pureT result
-
-    Replace oldId d -> do
-      oldCd    <- raise $ readCommit (ObjectHash (unTickId oldId))
-      wt'      <- raise $ get @WorkingTree
-      parentWt <- raise $ loadWorkingTree
-                    (case commitParents oldCd of { (p:_) -> p; [] -> ObjectHash (unTickId oldId) })
-      eCheck   <- raise $ checkAppendOnly d parentWt wt'
-      case eCheck of
-        Left err -> pureT (Left err)
-        Right () -> do
-          treeHash <- raise $ flushWorkingTree wt'
-          newHash  <- raise $ writeCommit CommitData
-            { commitParents = commitParents oldCd
-            , commitTree    = treeHash
-            , commitMessage = encodeTickData d
-            }
-          let newId = TickId (unObjectHash newHash)
-          -- Cascade to other branches only — the current branch is being
-          -- rebuilt by At's rewind and must not be touched here. Reads
-          -- current heads via 'listBranches' (StoryStorage, overlay-aware)
-          -- rather than raw git, so a branch already rewritten earlier in
-          -- the same transaction is matched against its up-to-date head —
-          -- see 'cascadeReplace's own comment for why that matters.
-          current <- raise $ map (\b -> (storyRef (branchName b), ObjectHash (unTickId (branchHead b))))
-                       <$> listBranches
-          raise $ cascadeReplaceOtherBranches current setRef branch
-                    (Map.singleton (ObjectHash (unTickId oldId)) newHash)
-          raise $ put @ObjectHash newHash
-          raise $ setRef branch (Just newId)
-          pureT $ Right newId
-
-    -- 'moveTick' nests one 'At' inside another (rewind to the tick being
-    -- moved, then — still inside that walk — rewind again to where it's
-    -- going). Both share this one head slot, so the inner call must
-    -- save/restore whatever the outer call left there when it's done,
-    -- rather than assuming its own start position — otherwise the inner
-    -- 'At's cleanup would wipe out the outer walk's still-in-progress
-    -- position.
-    At replay tid innerAction -> do
-      outerHead <- raise $ get @ObjectHash
-      eResult   <- runAtH replay tid outerHead (runTSimple innerAction)
-      case eResult of
-        Left err            -> pureT (Left err)
-        Right (fa, mapping) -> do
-          -- A replaying walk leaves local state at the rebuilt head —
-          -- publish it once, here, rather than once per rewritten tick.
-          -- A read-only walk never advances anything: restore local state
-          -- to wherever it started and publish nothing.
-          if replay
-            then do
-              finalHead <- raise $ get @ObjectHash
-              raise $ setRef branch (Just (TickId (unObjectHash finalHead)))
-            else raise $ put @ObjectHash outerHead
-          return $ fmap (\a -> Right (a, mapping)) fa
-
-    WithFS innerAction -> do
-      headHash' <- raise $ get @ObjectHash
-      outerWt   <- raise $ get @WorkingTree
-      headWt    <- raise $ loadWorkingTree headHash'
-      raise $ put headWt
-      fa        <- runTSimple innerAction
-      raise $ put outerWt
-      return fa
-
-    S.FileTicks path -> do
-      headHash' <- raise $ get @ObjectHash
-      ticks     <- raise $ walkFileTicks path headHash'
-      pureT ticks
-    ) (raiseUnder action)
-
--- ---------------------------------------------------------------------------
--- FileSystem interpreter (git-backed, shares WorkingTree state)
--- ---------------------------------------------------------------------------
-
--- | Interpret filesystem effects for a branch against the in-memory 'WorkingTree'.
---
---   The project type for all three effects is @BranchTag branch@, making each
---   branch's filesystem unambiguous on the effect stack.  The 'BranchTag branch'
---   runtime value is what 'GetFileSystem' returns; all actual IO goes through
---   'Git' and 'State WorkingTree', which are shared with 'runStoryBranchGit'.
-runStoryFSGit
-  :: forall branch r a
-  .  Members '[Git, Fail, State WorkingTree] r
-  => BranchName
-  -> Sem ( FileSystemWrite (BranchTag branch)
-         : FileSystemRead  (BranchTag branch)
-         : FileSystem      (BranchTag branch)
-         : r ) a
-  -> Sem r a
-runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
-  where
-    interpretFS
-      :: Members '[State WorkingTree] r'
-      => Sem (FileSystem (BranchTag branch) : r') a'
-      -> Sem r' a'
-    interpretFS = interpret $ \case
-      GetFileSystem ->
-        return (BranchTag name)
-      GetCwd ->
-        return $ Right "/"
-      ListFiles dir -> do
-        wt <- get @WorkingTree
-        return $ Right [ p | p <- Map.keys wt, isDirectChild dir p ]
-      FileExists path -> do
-        wt <- get @WorkingTree
-        return $ Right (Map.member path wt)
-      IsDirectory path -> do
-        wt <- get @WorkingTree
-        return $ Right $ case Map.lookup path wt of
-          Just FSDir -> True
-          _          -> False
-      Glob _base _pat ->
-        return $ Left "Branch FS: Glob not yet implemented"
-
-    interpretFSRead
-      :: Members '[Git, Fail, State WorkingTree] r'
-      => Sem (FileSystemRead (BranchTag branch) : r') a'
-      -> Sem r' a'
-    interpretFSRead = interpret $ \case
-      ReadFile path -> do
-        wt <- get @WorkingTree
-        case Map.lookup path wt of
-          Just (FSFile hash) -> fmap Right (readBlob hash)
-          Just FSDir         -> return $ Left (path <> ": is a directory")
-          Nothing            -> return $ Left (path <> ": not found")
-
-    interpretFSWrite
-      :: Members '[Git, Fail, State WorkingTree] r'
-      => Sem (FileSystemWrite (BranchTag branch) : r') a'
-      -> Sem r' a'
-    interpretFSWrite = interpret $ \case
-      WriteFile path content -> do
-        hash <- writeBlob content
-        let parents = ancestorDirs path
-        modify @WorkingTree $ \wt ->
-          foldr (\d m -> Map.insertWith keepExisting d FSDir m) wt parents
-        modify @WorkingTree (Map.insert path (FSFile hash))
-        return $ Right ()
-      CreateDirectory _recursive path -> do
-        modify @WorkingTree (Map.insertWith keepExisting path FSDir)
-        return $ Right ()
-      Remove recursive path -> do
-        if recursive
-          then modify @WorkingTree $ Map.filterWithKey
-                 (\k _ -> k /= path && not (isUnderDir path k))
-          else modify @WorkingTree (Map.delete path)
-        return $ Right ()
-
-    -- Keep the existing entry rather than overwriting (so a file is not
-    -- silently replaced by FSDir when a parent dir is ensured).
-    keepExisting :: FSNode -> FSNode -> FSNode
-    keepExisting _ old = old
-
-    -- True when @child@ is directly inside @dir@:
-    --   "a/b" is a direct child of "a", but "a/b/c" is not.
-    isDirectChild :: FilePath -> FilePath -> Bool
-    isDirectChild "/"  p = length (splitDirectories p) == 1
-    isDirectChild "."  p = length (splitDirectories p) == 1
-    isDirectChild ""   p = length (splitDirectories p) == 1
-    isDirectChild dir  p =
-      let dirParts  = splitDirectories dir
-          pathParts = splitDirectories p
-      in take (length dirParts) pathParts == dirParts
-         && length pathParts == length dirParts + 1
-
-    isUnderDir :: FilePath -> FilePath -> Bool
-    isUnderDir dir path =
-      let dirParts  = splitDirectories dir
-          pathParts = splitDirectories path
-      in take (length dirParts) pathParts == dirParts
-         && length pathParts > length dirParts
-
-    ancestorDirs :: FilePath -> [FilePath]
-    ancestorDirs path =
-      let parts = splitDirectories path
-          -- all prefixes except the full path itself
-      in [ joinPath (take n parts) | n <- [1 .. length parts - 1] ]
-
--- ---------------------------------------------------------------------------
--- Combined interpreter
--- ---------------------------------------------------------------------------
-
--- | Interpret 'StoryBranch branch' and all three filesystem effects for a branch.
---
--- Takes a 'Branch' obtained from 'StoryStorage' — the storage layer is the
--- authority on which branches exist and are accessible.  Callers must go
--- through 'getBranch' or 'createBranch' before opening a branch here.
---
--- Introduces and eliminates 'State WorkingTree' internally — each branch gets
--- its own isolated working tree state, invisible to callers and to other branch
--- interpreters on the stack.
-runBranchAndFS
-  :: forall branch r a
-  .  Members '[Git, StoryStorage, Fail] r
-  => BranchName
-  -> Sem ( StoryBranch branch
-         : FileSystemWrite (BranchTag branch)
-         : FileSystemRead  (BranchTag branch)
-         : FileSystem      (BranchTag branch)
-         : r ) a
-  -> Sem r a
-runBranchAndFS name action = do
-  getBranch name >>= \case
-    Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName name)
-    Just _  -> pure ()
-  evalState emptyWorkingTree
-    . runStoryFSGit @branch name
-    . runStoryBranchGit @branch name
-    . subsume_
-    $ action
-
-
--- ---------------------------------------------------------------------------
--- Helpers
--- ---------------------------------------------------------------------------
-
--- | Check that every file in the new working tree is a pure append of the
---   corresponding file in the parent tree. New files and directories are fine;
---   deletions and modifications (content not prefixed by the parent's content)
---   are rejected with a descriptive error.
---
---   When @draft@ is itself an 'Atom.Atom' (decoded straight off its message
---   and @"file"@ field — no 'Tick' needed, since 'decodeTaggedMessage' only
---   ever looks at those two), that file's growth must match the atom's own
---   claimed content *exactly*, not merely extend it: the prefix check alone
---   only catches shrinkage or a mid-file rewrite, and would silently accept
---   a tree that grew by more than the atom claims (e.g. some other
---   uncommitted addition already sitting in the working tree ahead of this
---   write). This is the one place both the true parent content and the
---   atom's declared diff are available together, so this is where that
---   mismatch can actually be caught.
-checkAppendOnly
-  :: Members '[Git, Fail] r
-  => TickData -> WorkingTree -> WorkingTree -> Sem r (Either String ())
-checkAppendOnly draft parent new = go (Map.toList new)
-  where
-    atomClaim = do
-      content <- decodeTaggedMessage @Atom.Atom (tickMessage draft)
-      file    <- lookup "file" (tickFields draft)
-      return (T.unpack file, content)
-
-    go []             = return (Right ())
-    go ((_, FSDir) : rest) = go rest
-    go ((path, FSFile newHash) : rest) =
-      case Map.lookup path parent of
-        Nothing -> case atomClaim of
-          Just (atomPath, content) | atomPath == path -> do
-            newContent <- readBlob newHash
-            if newContent == TE.encodeUtf8 content
-              then go rest
-              else atomMismatch path
-          _ -> go rest
-        Just FSDir        -> go rest
-        Just (FSFile oldHash) -> do
-          oldContent <- readBlob oldHash
-          newContent <- readBlob newHash
-          case atomClaim of
-            Just (atomPath, content) | atomPath == path ->
-              if newContent == oldContent <> TE.encodeUtf8 content
-                then go rest
-                else atomMismatch path
-            _ ->
-              if oldContent `BS.isPrefixOf` newContent
-                then go rest
-                else return $ Left $ "Store: non-append modification of " <> path
-                       <> " (old=" <> show (BS.length oldContent)
-                       <> " new=" <> show (BS.length newContent)
-                       <> " oldHash=" <> T.unpack (unObjectHash oldHash)
-                       <> " newHash=" <> T.unpack (unObjectHash newHash)
-                       <> ")"
-
-    atomMismatch path = return $ Left $
-      "Store: atom message for " <> path <> " does not match its actual diff"
-
--- | Apply the diff between @originalParentWt@ and @commitWt@ onto @newParentWt@.
---   For each file: compute bytes added beyond the original parent, append to new parent.
-applyDiff
-  :: Members '[Git, Fail] r
-  => WorkingTree   -- ^ original parent tree (what the commit was based on)
-  -> WorkingTree   -- ^ commit tree (what the commit produced)
-  -> WorkingTree   -- ^ new parent tree (what we're rebasing onto)
-  -> Sem r WorkingTree
-applyDiff originalParentWt commitWt newParentWt =
-  foldM applyFile newParentWt (Map.toList commitWt)
-  where
-    applyFile wt (path, FSDir) =
-      return $ Map.insertWith keepExisting path FSDir wt
-    applyFile wt (path, FSFile newHash) = do
-      commitContent <- readBlob newHash
-      originalContent <- case Map.lookup path originalParentWt of
-        Just (FSFile h) -> readBlob h
-        _               -> return BS.empty
-      let suffix      = BS.drop (BS.length originalContent) commitContent
-      baseContent <- case Map.lookup path wt of
-        Just (FSFile h) -> readBlob h
-        _               -> return BS.empty
-      hash <- writeBlob (baseContent <> suffix)
-      return $ Map.insert path (FSFile hash) wt
-    keepExisting _ old = old
-
-
--- | Recursive implementation of At, inside the interpretH tactic context.
---
--- Base case: @current == tid@ — load the target working tree, run the action,
--- return the result and an empty mapping.
---
--- Recursive case: walk back to @parent@ (validating @tid@ is actually in the
--- branch's history, and moving the local head there so 'WithFS' resolves to
--- the right historical snapshot), recurse, then either (@replay = True@)
--- reapply this tick's diff onto whatever the inner action left and write a
--- new commit, or (@replay = False@) just pass the result through untouched
--- — no write, no mapping entry, local head stays at @parent@ until the
--- top-level caller (the 'At' case in 'runStoryBranchGit') restores it once
--- the whole walk unwinds. Only ever touches the private local 'State
--- ObjectHash' — no ref, git or 'StoryStorage', is written until that
--- top-level caller publishes the final result once, after the whole walk
--- completes.
-runAtH
-  :: forall branch f a rInitial r
-  .  Members '[Git, Fail, State ObjectHash] r
-  => Bool
-  -> TickId
-  -> ObjectHash
-  -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r) (f a)
-  -> Sem (WithTactics (StoryBranch branch) f (Sem rInitial) r)
-         (Either String (f a, [(TickId, TickId)]))
-runAtH replay tid current action
-  | TickId (unObjectHash current) == tid = do
-      fa <- action
-      return $ Right (fa, [])
-  | otherwise = do
-      mResult <- raise $ do
-        cd <- readCommit current
-        case commitParents cd of
-          [] -> return $ Left $
-            "At: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
-          (parent : _) -> do
-            parentWt <- loadWorkingTree parent
-            commitWt <- loadWorkingTree current
-            put parent
-            return $ Right (parent, parentWt, commitWt, cd)
-      case mResult of
-        Left err -> return (Left err)
-        Right (parent, parentWt, commitWt, cd) -> do
-          eInner <- runAtH replay tid parent action
-          case eInner of
-            Left err -> return (Left err)
-            Right (fa, innerMapping)
-              | not replay -> return $ Right (fa, innerMapping)
-              | otherwise  -> do
-                  newHash <- raise $ do
-                    newParent   <- get
-                    newParentWt <- loadWorkingTree newParent
-                    newWt       <- applyDiff parentWt commitWt newParentWt
-                    treeHash    <- flushWorkingTree newWt
-                    newHash     <- writeCommit cd
-                      { commitParents = newParent : drop 1 (commitParents cd)
-                      , commitTree    = treeHash
-                      }
-                    put newHash
-                    return newHash
-                  let oldId = TickId (unObjectHash current)
-                      newId = TickId (unObjectHash newHash)
-                  return $ Right (fa, innerMapping <> [(oldId, newId)])
-
--- | Walk the branch from HEAD and collect all ticks belonging to @path@.
---
--- An atom's own content lives verbatim in its commit message (see
--- 'Storyteller.Core.Atom.contentFor'), so membership and content are both
--- read straight off each commit's message — no tree/blob lookups needed.
--- First builds the atom set from the chain, then expands it: any tick whose
--- extra-parent refs intersect the current member set is included, repeated
--- until stable (two passes suffices for current tick types).
--- Returns oldest-first.
-walkFileTicks
-  :: Members '[Git, Fail] r
-  => FilePath
-  -> ObjectHash
-  -> Sem r [FileTick]
-walkFileTicks path headHash = do
-  raw <- collectChain headHash []  -- oldest-first (prepend walks root to front)
-  let allTicks  = map (uncurry toFileTick) raw
-      fileHint  = T.pack path
-      atomIds   = [ ftTickId ft | ft <- allTicks, ftContent ft /= Nothing ]
-      memberIds = expandRefs atomIds allTicks
-      -- Also include ticks with a matching file field (e.g. prompts that don't ref atoms)
-      fileHinted = [ ftTickId ft | ft <- allTicks
-                                 , ftContent ft == Nothing
-                                 , lookup "file" (ftFields ft) == Just fileHint ]
-      included  = Set.fromList (memberIds ++ fileHinted)
-  -- Each tick's own git-chain parent may not be in this file's projection at
-  -- all (e.g. a 'presence' tick interleaved between two of this file's
-  -- atoms — it references nothing and carries no "file" field, so it's
-  -- excluded above). Left as-is, a client walking '.parent' from HEAD would
-  -- stop dead the moment it hit such a gap, truncating everything older
-  -- than the most recent excluded tick. Rewrite each included tick's
-  -- parent to the nearest *included* ancestor instead, so the projection
-  -- is a self-contained chain no client-side walk can fall out of.
-  return (relinkParents included Nothing allTicks)
-  where
-    relinkParents :: Set.Set Text -> Maybe Text -> [FileTick] -> [FileTick]
-    relinkParents _ _ [] = []
-    relinkParents included lastIncluded (ft : rest)
-      | Set.member (ftTickId ft) included =
-          ft { ftParent = lastIncluded } : relinkParents included (Just (ftTickId ft)) rest
-      | otherwise = relinkParents included lastIncluded rest
-
-    collectChain :: Members '[Git, Fail] r => ObjectHash -> [(ObjectHash, CommitData)] -> Sem r [(ObjectHash, CommitData)]
-    collectChain hash acc = do
-      cd <- readCommit hash
-      case commitParents cd of
-        []      -> return ((hash, cd) : acc)
-        (p : _) -> collectChain p ((hash, cd) : acc)
-
-    expandRefs :: [Text] -> [FileTick] -> [Text]
-    expandRefs members ticks =
-      let step ms = ms ++ [ ftTickId ft
-                           | ft <- ticks
-                           , ftTickId ft `notElem` ms
-                           , any (`elem` ms) (ftRefs ft) ]
-      in step (step members)
-
-    toFileTick :: ObjectHash -> CommitData -> FileTick
-    toFileTick hash cd =
-      let tick    = commitToTick hash cd
-          td      = tickData tick
-          mSuffix = case fromTick tick :: Maybe Atom.Atom of
-                      Just (Atom.Atom f content) | f == path -> Just content
-                      _                                      -> Nothing
-          kind    = case tickTypeOf tick of
-                      Just t  -> t
-                      Nothing -> if mSuffix /= Nothing then "atom" else "unknown"
-          msg     = stripTypeTag kind (tickMessage td)
-      in FileTick
-        { ftTickId  = unObjectHash hash
-        , ftKind    = kind
-        , ftRefs    = map unObjectHash (drop 1 (commitParents cd))
-        , ftFields  = tickFields td
-        , ftMessage = msg
-        , ftContent = mSuffix
-        , ftParent  = case commitParents cd of { [] -> Nothing; (p:_) -> Just (unObjectHash p) }
-        }
-
-    stripTypeTag :: Text -> Text -> Text
-    stripTypeTag kind msg =
-      let prefix = "type:" <> kind <> "\n"
-      in if prefix `T.isPrefixOf` msg then T.drop (T.length prefix) msg else msg
-
-walkFrom
-  :: Members '[Git, Fail] r
-  => b
-  -> (b -> Tick -> (b, Maybe TickId))
-  -> ObjectHash
-  -> Sem r b
-walkFrom acc step hash = do
-  cd <- readCommit hash
-  let tick = commitToTick hash cd
-      (acc', next) = step acc tick
-  case next of
-    Nothing          -> return acc'
-    Just (TickId h)  -> walkFrom acc' step (ObjectHash h)
 
 -- | Rewrite all story branch commits that reference @old@ as a parent,
 --   substituting @new@, then cascade until no more referencing commits remain.
@@ -992,12 +271,12 @@ walkFrom acc step hash = do
 --
 --   Takes each branch's current head as an explicit @pairs@ argument rather
 --   than reading raw git refs itself — a caller running inside a buffered
---   transaction (see 'Storyteller.Core.Git.withStorage') must pass heads
---   overlaid with its own pending writes so far, not raw git, or a branch
---   already correctly rewritten earlier in the same transaction would
---   still read as pointing at its stale, pre-rewrite head here (nothing
---   lands in real git until the transaction replays) and get wrongly
---   matched and rebuilt a second time from that stale ancestry.
+--   transaction (see 'withStorage') must pass heads overlaid with its own
+--   pending writes so far, not raw git, or a branch already correctly
+--   rewritten earlier in the same transaction would still read as
+--   pointing at its stale, pre-rewrite head here (nothing lands in real
+--   git until the transaction replays) and get wrongly matched and
+--   rebuilt a second time from that stale ancestry.
 --
 --   Only commit parent links are rewritten — trees and blobs are not tick
 --   references and are left untouched.
@@ -1024,6 +303,33 @@ walkFrom acc step hash = do
 --   a branch's own chain, or several different ref-parents landing in the
 --   same region -- is resolved once, not once per path. See
 --   bench/PerfCascade.hs for the regression probe this fixes.
+--
+--   TODO(unfiltered branch walk): every branch in @pairs@ is still walked
+--   in full at least once, even one whose entire history shares nothing
+--   with @mapping@ at all (e.g. an unrelated story branch, or a character
+--   branch that never tracked the edited one) -- the shared memo table
+--   above only avoids *re*-walking ancestry two branches have in common,
+--   it can't skip a branch's walk before starting it, since there's no
+--   way from inside this function to know in advance that a given
+--   branch's history is disjoint from @mapping@'s keys without reading
+--   it. See [[project_git_write_batching]] / PLAN-storage-monad.md's
+--   real-repo bench (@bench/RealGitPerf.hs@): after batching writes
+--   (@Runix.Git.Store@), this is the next-largest remaining contributor
+--   to a deep edit's op count -- smaller than the write-batching win, not
+--   zero.
+--
+--   Not fixed here because it isn't a small change: the correct fix needs
+--   a cheap *reachability* pre-check (e.g. "is any of these N hashes an
+--   ancestor of this branch's head?", answerable in one shot the way
+--   @git merge-base --is-ancestor@ or a @git rev-list@ intersection
+--   would, or the equivalent for 'Git.Mock') -- a genuinely new 'Git'
+--   effect primitive, needed in both interpreters
+--   ('Storyteller.Core.Git'\/'Runix.Git.runGitIO' and
+--   @test/Git/Mock.hs@) with its own correctness tests, wired in as a
+--   filter before 'rewriteRef' runs per branch. That's a real, scoped
+--   addition to a place where a subtle bug would silently corrupt
+--   cross-branch references -- worth doing carefully, with a fresh
+--   context, rather than bolted on here.
 cascadeReplace
   :: Members '[Git, Fail] r
   => [(RefName, ObjectHash)]      -- ^ each branch's current head
@@ -1033,20 +339,6 @@ cascadeReplace
 cascadeReplace pairs applyRef mapping =
   evalState (Map.empty :: Map ObjectHash ObjectHash) $
     mapM_ (rewriteRef (\n t -> raise (applyRef n t)) mapping) pairs
-
--- | Like 'cascadeReplace' but skips the given branch — used by 'Replace'
---   inside 'At' where the current branch is being rebuilt by the rewind.
-cascadeReplaceOtherBranches
-  :: Members '[Git, Fail] r
-  => [(RefName, ObjectHash)]      -- ^ each branch's current head
-  -> (BranchName -> Maybe TickId -> Sem r ())
-  -> BranchName
-  -> Map ObjectHash ObjectHash
-  -> Sem r ()
-cascadeReplaceOtherBranches pairs applyRef skipBranch mapping = do
-  let others = filter (\(ref, _) -> ref /= storyRef skipBranch) pairs
-  evalState (Map.empty :: Map ObjectHash ObjectHash) $
-    mapM_ (rewriteRef (\n t -> raise (applyRef n t)) mapping) others
 
 rewriteRef
   :: Members '[Git, Fail, State (Map ObjectHash ObjectHash)] r
@@ -1085,3 +377,302 @@ rewriteChain mapping hash = case Map.lookup hash mapping of
           else writeCommit cd { commitParents = newParents }
         modify (Map.insert hash resolved)
         return resolved
+
+-- ---------------------------------------------------------------------------
+-- Storage monad embedding — see PLAN-storage-monad.md
+-- ---------------------------------------------------------------------------
+
+-- | Any 'Sem' stack able to read/write git objects and fail is a
+--   'SM.MonadGit' for free — this is the one instance
+--   'Storyteller.Core.StorageMonad' needs to reuse every tick\/tree
+--   operation it defines against real git, with the same 'Git' effect
+--   (and so the same mock/real interpreter swap) everything else here uses.
+instance Members '[Git, Fail] r => SM.MonadGit (Sem r) where
+  gitReadCommit  = readCommit
+  gitWriteCommit = writeCommit
+  gitReadObject  = readObject
+  gitWriteObject = writeObject
+
+-- | A single first-order effect boundary per branch scope: both
+--   constructors' arguments are rank-2-polymorphic in an independent monad
+--   @n@ (never @m@, the ambient effect monad — the argument never mentions
+--   the surrounding 'Sem' stack), so Polysemy interprets this with plain
+--   'interpret' — no 'interpretH', no reification of a continuation. A
+--   whole rebase, however many ticks deep, is one dispatch; everything
+--   inside it is ordinary 'Storyteller.Core.StorageMonad.StorageT'
+--   recursion, which costs one plain monadic bind per level rather than
+--   one Polysemy effect interpretation per level.
+--
+--   'RunStorageEdit' is 'RunStorage' plus broadcasting the returned
+--   mapping — kept as its own constructor (rather than a Polysemy-level
+--   wrapper function around 'RunStorage') specifically so its handler can
+--   call 'updateReferences'\/'getBranch' using the concrete 'BranchName'
+--   already captured in 'runGitBranchOp's closure, instead of requiring
+--   every call site to know and pass that name down just for this.
+data GitBranchOp (branch :: k) m a where
+  RunStorage     :: (forall n. SM.StorageM n => SM.StorageT n a) -> GitBranchOp branch m a
+  RunStorageEdit :: (forall n. SM.StorageM n => SM.StorageT n (a, [(TickId, TickId)])) -> GitBranchOp branch m (a, [(TickId, TickId)])
+
+-- | Run a 'Storyteller.Core.StorageMonad.StorageT' computation against the
+--   named branch. The whole computation — however many nested 'SM.at'
+--   calls it makes — is dispatched as a single 'GitBranchOp' effect.
+--   Doesn't broadcast any returned mapping — see 'runStorageEdit' for
+--   editing operations that need to.
+runStorage
+  :: forall branch r a
+  .  Member (GitBranchOp branch) r
+  => (forall n. SM.StorageM n => SM.StorageT n a) -> Sem r a
+runStorage comp = send @(GitBranchOp branch) (RunStorage comp)
+
+-- | Like 'runStorage', but for the chain-editing operations in
+--   'Storyteller.Core.StorageMonad' (@moveTick@, @mergeAtoms@,
+--   @splitTick@, @deleteTick@, @editAtom@, @commitFiles@\/
+--   @commitWorkingTree@, ...) that return an old->new id mapping needing
+--   to be broadcast across branches: runs the computation, broadcasts its
+--   mapping via 'updateReferences', then re-syncs this scope's own (head,
+--   tree) state from the branch's current ref — the cascade that
+--   broadcast triggers can rewrite *this* branch a second time (e.g.
+--   'Storyteller.Core.StorageMonad.mergeAtoms': a tick between the merged
+--   run and the original head can carry a ref into the merged range,
+--   fixed up only by this cascade), which this scope's own cached state
+--   has no way to observe on its own.
+runStorageEdit
+  :: forall branch r a
+  .  Member (GitBranchOp branch) r
+  => (forall n. SM.StorageM n => SM.StorageT n (a, [(TickId, TickId)])) -> Sem r (a, [(TickId, TickId)])
+runStorageEdit comp = send @(GitBranchOp branch) (RunStorageEdit comp)
+
+-- | Interpret 'GitBranchOp branch' against real git. Seeds the scope's
+--   (head, working tree) state from 'StoryStorage' once, at entry — a
+--   snapshot, same as the old @StoryBranch@ interpreter's was — and
+--   publishes the final head via 'setRef' after every dispatch whose
+--   'StorageT' computation actually advanced it, exactly once per
+--   dispatch no matter how many ticks were rewritten inside it. A
+--   dispatch that only read (no write) leaves the head where it started
+--   and publishes nothing.
+runGitBranchOp
+  :: forall branch r a
+  .  Members '[Git, StoryStorage, Fail] r
+  => BranchName
+  -> Sem (GitBranchOp branch : r) a
+  -> Sem r a
+runGitBranchOp branch action = do
+  b <- getBranch branch >>= \case
+    Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName branch)
+    Just b' -> pure b'
+  let headHash0 = ObjectHash (unTickId (branchHead b))
+  wt0 <- SM.loadWorkingTree headHash0
+  evalState wt0 . evalState headHash0 $ interpret
+    (\case
+        RunStorage comp -> do
+          h  <- get @ObjectHash
+          wt <- get @SM.WorkingTree
+          (a, (h', wt')) <- SM.runStorageT h wt comp
+          put @ObjectHash h'
+          put @SM.WorkingTree wt'
+          when (h' /= h) $ setRef branch (Just (TickId (unObjectHash h')))
+          return a
+
+        RunStorageEdit comp -> do
+          h  <- get @ObjectHash
+          wt <- get @SM.WorkingTree
+          (result@(_, mapping), (h', wt')) <- SM.runStorageT h wt comp
+          put @ObjectHash h'
+          put @SM.WorkingTree wt'
+          when (h' /= h) $ setRef branch (Just (TickId (unObjectHash h')))
+          updateReferences mapping
+          -- The cascade 'updateReferences' just ran may have rewritten
+          -- *this* branch's ref a second time (see this function's own
+          -- doc) — re-resolve and reload from git rather than trust the
+          -- state this dispatch itself just wrote.
+          mB <- getBranch branch
+          case mB of
+            Just b' -> do
+              let newHash = ObjectHash (unTickId (branchHead b'))
+              newWt <- SM.loadWorkingTree newHash
+              put @ObjectHash newHash
+              put @SM.WorkingTree newWt
+            Nothing -> return ()
+          return result
+    )
+    (raiseUnder @(State ObjectHash) (raiseUnder @(State SM.WorkingTree) action))
+
+-- ---------------------------------------------------------------------------
+-- FileSystem effects for a branch — kept as the ambient-file-access
+-- interface (unchanged for callers), reinterpreted against the new engine
+-- ---------------------------------------------------------------------------
+
+-- | Kind-* wrapper carrying the branch type-level tag.
+--   Used as the @project@ parameter for filesystem effects, so that
+--   @FileSystem (BranchTag branch)@ is unambiguous on the effect stack.
+newtype BranchTag (branch :: k) = BranchTag BranchName
+
+-- | Interpret the three ambient 'FileSystem' effects for a branch against
+--   'GitBranchOp branch' — every operation is a single 'runStorage'
+--   dispatch against the same persistent (head, working tree) state a
+--   branch's other 'runStorage'\/'runStorageEdit' calls already share, so
+--   a plain file read/write interleaves freely with a chain edit on the
+--   same scope. These effects were always first-order (no continuation in
+--   any constructor), so this was never the expensive part being replaced
+--   — this interpreter just retargets them from the old shared-'State
+--   WorkingTree' plumbing onto 'GitBranchOp'.
+runStoryFSGit
+  :: forall branch r a
+  .  Member (GitBranchOp branch) r
+  => BranchName
+  -> Sem ( FileSystemWrite (BranchTag branch)
+         : FileSystemRead  (BranchTag branch)
+         : FileSystem      (BranchTag branch)
+         : r ) a
+  -> Sem r a
+runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
+  where
+    interpretFS
+      :: Members '[GitBranchOp branch] r'
+      => Sem (FileSystem (BranchTag branch) : r') a'
+      -> Sem r' a'
+    interpretFS = interpret $ \case
+      GetFileSystem ->
+        return (BranchTag name)
+      GetCwd ->
+        return $ Right "/"
+      ListFiles dir ->
+        Right <$> runStorage @branch (SM.listFilesS dir)
+      FileExists path ->
+        Right <$> runStorage @branch (SM.fileExistsS path)
+      IsDirectory path ->
+        Right <$> runStorage @branch (SM.isDirectoryS path)
+      Glob _base _pat ->
+        return $ Left "Branch FS: Glob not yet implemented"
+
+    interpretFSRead
+      :: Members '[GitBranchOp branch] r'
+      => Sem (FileSystemRead (BranchTag branch) : r') a'
+      -> Sem r' a'
+    interpretFSRead = interpret $ \case
+      ReadFile path ->
+        runStorage @branch $ do
+          exists <- SM.fileExistsS path
+          isDir  <- SM.isDirectoryS path
+          if isDir then return (Left (path <> ": is a directory"))
+          else if not exists then return (Left (path <> ": not found"))
+          else Right <$> SM.readFileS path
+
+    interpretFSWrite
+      :: Members '[GitBranchOp branch] r'
+      => Sem (FileSystemWrite (BranchTag branch) : r') a'
+      -> Sem r' a'
+    interpretFSWrite = interpret $ \case
+      WriteFile path content ->
+        Right <$> runStorage @branch (SM.writeFileS path content)
+      CreateDirectory _recursive path ->
+        Right <$> runStorage @branch (SM.createDirectoryS path)
+      Remove recursive path ->
+        Right <$> runStorage @branch (SM.removeS recursive path)
+
+-- | Interpret 'GitBranchOp branch' and all three filesystem effects for a
+--   branch together — takes a 'Branch' obtained from 'StoryStorage' — the
+--   storage layer is the authority on which branches exist and are
+--   accessible. Callers must go through 'getBranch' or 'createBranch'
+--   before opening a branch here.
+runBranchAndFS
+  :: forall branch r a
+  .  Members '[Git, StoryStorage, Fail] r
+  => BranchName
+  -> Sem ( FileSystemWrite (BranchTag branch)
+         : FileSystemRead  (BranchTag branch)
+         : FileSystem      (BranchTag branch)
+         : GitBranchOp branch
+         : r ) a
+  -> Sem r a
+runBranchAndFS name = runGitBranchOp @branch name . runStoryFSGit @branch name
+
+-- ---------------------------------------------------------------------------
+-- Generic rebase — for callers whose inner action interleaves other
+-- effects (LLM, logging, ...), not just storage
+-- ---------------------------------------------------------------------------
+--
+-- 'Storyteller.Core.StorageMonad.at' only accepts a closed-form 'StorageT'
+-- computation — it can't run arbitrary 'Sem' code (an LLM call, another
+-- dispatch), because 'StorageT' isn't a Polysemy effect stack. Every
+-- caller ported so far (moveTick, mergeAtoms, splitTick, ...) only ever
+-- needed closed-form storage, which is what makes the fast, dispatch-once
+-- 'runStorage' path correct for them.
+--
+-- The rebase-marker feature ("run this arbitrary command as if an earlier
+-- tick were HEAD") is different: its inner action is a recursive dispatch
+-- call that can invoke agents, LLM calls, anything. It still doesn't need
+-- 'interpretH', though — 'GitBranchOp's own (head, working tree) state is
+-- ordinary Polysemy 'State' internal to 'runGitBranchOp', so plain,
+-- ordinary 'Sem' recursion can move it down one tick at a time, let
+-- arbitrary code run at the bottom, and walk back up replaying each
+-- level's diff by hand — exactly 'Storyteller.Core.StorageMonad.at's
+-- algorithm, just with the "run the action" step happening via ordinary
+-- effect dispatch instead of inside a single 'StorageT' computation.
+
+-- | Move to @tid@'s position (checking out its snapshot as the ambient
+--   working tree, same as @at@), run an arbitrary inner action there, then
+--   replay everything after it back onto whatever the action produced.
+--   Returns the inner result and the old->new id mapping for every
+--   rewritten tick. Does not broadcast the mapping — pair with
+--   'Storyteller.Core.Storage.updateReferences', as every caller of
+--   'Storyteller.Core.StorageMonad.at'-family operations already does.
+atGeneric
+  :: forall branch r a
+  .  Members '[GitBranchOp branch, Git, Fail] r
+  => TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])
+atGeneric tid inner = do
+  outerHead <- runStorage @branch SM.headTickId
+  (a, mapping, finalHead) <- goDown outerHead
+  runStorage @branch (SM.syncTo finalHead)
+  return (a, mapping)
+  where
+    goDown :: ObjectHash -> Sem r (a, [(TickId, TickId)], ObjectHash)
+    goDown current
+      | TickId (unObjectHash current) == tid = do
+          a <- inner
+          h <- runStorage @branch SM.headTickId
+          return (a, [], h)
+      | otherwise = do
+          cd <- SM.gitReadCommit current
+          case commitParents cd of
+            [] -> fail $ "At: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
+            (parent : _) -> do
+              parentWt <- SM.loadWorkingTree parent
+              commitWt <- SM.loadWorkingTree current
+              runStorage @branch (SM.syncTo parent)
+              (a, innerMapping, newParent) <- goDown parent
+              newParentWt <- SM.loadWorkingTree newParent
+              newWt       <- SM.applyDiff parentWt commitWt newParentWt
+              treeHash    <- SM.flushWorkingTree newWt
+              newHash     <- SM.gitWriteCommit cd
+                { commitParents = newParent : drop 1 (commitParents cd)
+                , commitTree    = treeHash
+                }
+              let oldId = TickId (unObjectHash current)
+                  newId = TickId (unObjectHash newHash)
+              return (a, innerMapping <> [(oldId, newId)], newHash)
+
+-- | Read-only counterpart of 'atGeneric': checks out @tid@'s snapshot, runs
+--   the inner action, then restores the scope to exactly where it started
+--   — no replay, no mapping, no write. Validates that @tid@ actually
+--   precedes the current head before moving anything.
+readAtGeneric
+  :: forall branch r a
+  .  Members '[GitBranchOp branch, Git, Fail] r
+  => TickId -> Sem r a -> Sem r a
+readAtGeneric tid inner = do
+  outerHead <- runStorage @branch SM.headTickId
+  validateAncestry outerHead
+  runStorage @branch (SM.syncTo (ObjectHash (unTickId tid)))
+  a <- inner
+  runStorage @branch (SM.syncTo outerHead)
+  return a
+  where
+    validateAncestry current
+      | TickId (unObjectHash current) == tid = return ()
+      | otherwise = do
+          cd <- SM.gitReadCommit current
+          case commitParents cd of
+            []      -> fail $ "At: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
+            (p : _) -> validateAncestry p

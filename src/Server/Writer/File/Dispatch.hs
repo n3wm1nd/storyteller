@@ -35,7 +35,9 @@ import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Runtime (Main)
-import qualified Storyteller.Core.Storage as Storage
+import Storyteller.Core.Storage (updateReferences)
+import Storyteller.Core.Git (atGeneric, runStorage)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Types (PresenceEvent(..))
 
@@ -89,10 +91,14 @@ runCommand path cmd = case cmd of
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it
-  -- produced. 'reset' reloads the working tree from the (now rebased) head,
-  -- since 'atWithFS' only restores the pre-call tree, not the post-rebase
-  -- one — same pattern 'editAtom'/'moveTick' use after their own 'at' calls.
-  -- 'atWithFS' broadcasts the mapping itself, so nothing left to do here.
+  -- produced. 'atGeneric' is the one operation still built on generic
+  -- recursion rather than the closed-form storage monad, since 'inner' can
+  -- recurse into arbitrary Writer commands (LLM calls, other effects) —
+  -- see 'Storyteller.Core.Git.atGeneric'. Broadcasts the mapping itself via
+  -- 'updateReferences', then resyncs the ambient tree from the rebased
+  -- head — 'atGeneric' only restores the pre-call tree on its own, not the
+  -- post-rebase one.
   At _mid tid inner -> do
-    _ <- Storage.atWithFS @Main (TickId tid) (runCommand path inner)
-    Storage.reset @Main
+    (_, mapping) <- atGeneric @Main (TickId tid) (runCommand path inner)
+    updateReferences mapping
+    runStorage @Main SM.resetTree

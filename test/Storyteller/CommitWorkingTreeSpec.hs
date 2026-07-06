@@ -1,10 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
 
 -- | Target contract for 'commitWorkingTree': given an arbitrary
 -- before/after transformation of a file's atom chain, it must produce a
@@ -52,25 +49,20 @@ import Polysemy.Fail
 import Polysemy.State (evalState, State)
 
 import Git.Mock
-import Runix.Git (Git)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile, writeFile)
+import Runix.Git (Git, ObjectHash(..))
 import qualified Data.List as List
 import Prelude hiding (readFile, writeFile, drop)
 
-import Storyteller.Core.Append (appendAtom)
-import Storyteller.Core.Git
-import Storyteller.Core.Storage hiding (get, drop)
-import qualified Storyteller.Core.Storage as S
+import Storyteller.Core.Storage (createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Types
-import Storyteller.Core.Edit (commitWorkingTree)
 
 -- ---------------------------------------------------------------------------
--- Phantom branch tag + fixed path (single-file focus; multi-file is a
--- separate, later concern — this vocabulary generalizes to it directly by
--- generating a 'Transform' per path).
+-- Fixed path (single-file focus; multi-file is a separate, later concern —
+-- this vocabulary generalizes to it directly by generating a 'Transform'
+-- per path).
 -- ---------------------------------------------------------------------------
-
-data Main
 
 path :: FilePath
 path = "f.md"
@@ -80,50 +72,33 @@ path = "f.md"
 -- ---------------------------------------------------------------------------
 
 runCWT
-  :: Sem '[ StoryBranch Main
-          , FileSystemWrite (BranchTag Main)
-          , FileSystemRead  (BranchTag Main)
-          , FileSystem      (BranchTag Main)
-          , StoryStorage
-          , Git
-          , State WorkingTree
-          , State GitState
-          , Fail
-          ] a
+  :: (forall n. SM.StorageM n => SM.StorageT n a)
   -> Either String a
 runCWT action =
   run
   . runFail
   . evalState emptyGitState
   . runGitMock
-  . evalState emptyWorkingTree
   . runStoryStorageGit
   $ do
-      _ <- createBranch (BranchName "main")
-      runStoryFSGit @Main (BranchName "main")
-        . runStoryBranchGit @Main (BranchName "main")
-        . subsume_
-        $ action
+      b <- createBranch (BranchName "main")
+      let headHash0 = ObjectHash (unTickId (branchHead b))
+      wt0 <- SM.loadWorkingTree headHash0
+      fst <$> SM.runStorageT headHash0 wt0 action
 
 -- | Store a fresh sequence of atoms into 'path', one tick each, oldest
 --   first — mirrors how real appends build up a file's history.
-storeAtoms
-  :: Members '[ StoryBranch Main, FileSystem (BranchTag Main)
-              , FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
-              , StoryStorage, Fail ] r
-  => [BS.ByteString] -> Sem r [TickId]
+storeAtoms :: SM.StorageM m => [BS.ByteString] -> SM.StorageT m [TickId]
 storeAtoms = mapM storeOne
   where
-    storeOne content = appendAtom @Main path (TE.decodeUtf8With TEE.lenientDecode content)
+    storeOne content = SM.appendAtom path (TE.decodeUtf8With TEE.lenientDecode content)
 
 -- | All tick ids currently reachable on the chain, oldest-first, root
 --   excluded — used to check that dropped atoms are truly gone and kept
 --   atoms truly remain.
-chainIds
-  :: Members '[StoryBranch Main, Fail] r
-  => Sem r [TickId]
+chainIds :: SM.StorageM m => SM.StorageT m [TickId]
 chainIds = do
-  ticks <- S.follow @Main [] (\acc t -> (t : acc, tickParent t))
+  ticks <- SM.followChain [] (\acc t -> (t : acc, tickParent t))
   return [ tickId t | t <- ticks, tickParent t /= Nothing ]
 
 -- ---------------------------------------------------------------------------
@@ -284,12 +259,12 @@ data CWTResult = CWTResult
 execTransform :: Transform -> Either String CWTResult
 execTransform t = runCWT $ do
   oldIds  <- storeAtoms (tAtoms t)
-  writeFile @(BranchTag Main) path (buildAfter t)
-  mapping <- commitWorkingTree @(BranchTag Main) @Main
+  SM.writeFileS path (buildAfter t)
+  mapping <- SM.commitWorkingTree
   -- Reload from HEAD rather than trusting the ambient buffer we just wrote —
   -- this is the only way to see what actually landed in the chain.
-  S.reset @Main
-  content <- readFile @(BranchTag Main) path
+  SM.resetTree
+  content <- SM.readFileS path
   ids     <- chainIds
   return $ CWTResult oldIds mapping content ids
 

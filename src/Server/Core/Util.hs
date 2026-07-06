@@ -16,8 +16,8 @@ import Polysemy.Error (Error, throw)
 import Runix.Git (Git)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
-import Storyteller.Core.Git (BranchTag(..), runBranchAndFS)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, getBranch)
+import Storyteller.Core.Git (BranchTag(..), GitBranchOp, runBranchAndFS)
+import Storyteller.Core.Storage (StoryStorage, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Polysemy.Fail (Fail)
 
@@ -32,10 +32,10 @@ withBranch
   :: forall branch r a
   .  Members '[StoryStorage, Error String, Git, Fail] r
   => T.Text
-  -> Sem ( StoryBranch branch
-         : FileSystemWrite (BranchTag branch)
+  -> Sem ( FileSystemWrite (BranchTag branch)
          : FileSystemRead  (BranchTag branch)
          : FileSystem      (BranchTag branch)
+         : GitBranchOp branch
          : r ) a
   -> Sem r a
 withBranch b action = do

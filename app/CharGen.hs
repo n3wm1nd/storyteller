@@ -1,8 +1,10 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -39,10 +41,10 @@ import           Runix.Logging (Logging)
 import           Storyteller.Writer.Agent.CharGen
   (charGenAgent, ScenarioTemplate(..), RngSeed(..), unSheet)
 import           Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
-import           Storyteller.Core.Edit (commitFiles)
-import           Storyteller.Core.Git (BranchTag(..))
+import           Storyteller.Core.Git (BranchTag(..), GitBranchOp, runStorageEdit)
+import qualified Storyteller.Core.StorageMonad as SM
 import           Storyteller.Core.Runtime (runInfrastructure, runBranchAndFS, runStoryStorageGit)
-import           Storyteller.Core.Storage (StoryBranch, StoryStorage)
+import           Storyteller.Core.Storage (StoryStorage)
 import           Storyteller.Core.Types (BranchName(..), TickId)
 
 import           Prelude hiding (writeFile)
@@ -83,14 +85,14 @@ charGenAction
   .  Members '[ FileSystem      (BranchTag branch)
               , FileSystemRead  (BranchTag branch)
               , FileSystemWrite (BranchTag branch)
-              , StoryBranch branch
+              , GitBranchOp branch
               , StoryStorage
               , Logging, Fail
               ] r
   => FilePath -> T.Text -> Sem r [(TickId, TickId)]
 charGenAction sheetFile text = do
   writeFile @(BranchTag branch) sheetFile (TE.encodeUtf8 text)
-  commitFiles @(BranchTag branch) @branch [sheetFile]
+  snd <$> runStorageEdit @branch (((),) <$> SM.commitFiles [sheetFile])
 
 parseArgs :: [String] -> IO (FilePath, FilePath, Maybe Int)
 parseArgs args = go args Nothing Nothing Nothing

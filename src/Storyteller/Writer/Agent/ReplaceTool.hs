@@ -46,7 +46,6 @@ import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM, queryLLM)
 import Runix.LLM.ToolInstances ()
 import UniversalLLM (Message(..), ModelConfig(..))
@@ -58,10 +57,10 @@ import UniversalLLM.Tools
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
-import Storyteller.Core.Edit (editAtom)
-import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Git (GitBranchOp, runStorage, runStorageEdit)
 import Storyteller.Core.Runtime (StoryModel)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, FileTick(..), fileTicks, storeAs)
+import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.StorageMonad (FileTick(..))
 import Storyteller.Core.Types (TickId(..))
 import Storyteller.Common.Types (Fixup(..))
 
@@ -157,23 +156,20 @@ defaultFixerTemplate =
 --   started — this is the one place ids and content genuinely can't be
 --   gathered upfront and handed to a pure core.
 reworkAtomsAt
-  :: forall branch project r
-  .  ( project ~ BranchTag branch
-     , Members '[ LLM StoryModel, PromptStorage
-                , FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Fail ] r )
+  :: forall branch r
+  .  Members '[LLM StoryModel, PromptStorage, GitBranchOp branch, Fail] r
   => FilePath -> Instruction -> [Int] -> Sem r [TickId]
 reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
   where
     oneAt idx = do
-      ticks <- fileTicks @branch path
+      ticks <- runStorage @branch (SM.fileTicksOf path)
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
           mProposal <- reworkAtom content instruction
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do
-              (newTid, _mapping) <- editAtom @branch (TickId tid) path newText
-              _ <- storeAs @branch (Fixup [newTid] reason)
+              (newTid, _mapping) <- runStorageEdit @branch (SM.editAtom (TickId tid) path newText)
+              _ <- runStorage @branch (SM.storeAs (Fixup [newTid] reason))
               return (Just newTid)
         _ -> return Nothing

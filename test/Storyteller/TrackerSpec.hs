@@ -19,9 +19,9 @@ import Runix.FileSystem (writeFile, readFile, fileExists)
 
 import Prelude hiding (readFile, writeFile)
 
-import Storyteller.Core.Append (appendAtom)
-import Storyteller.Core.Git hiding (emptyWorkingTree)
-import Storyteller.Core.Storage hiding (drop)
+import Storyteller.Core.Git
+import Storyteller.Core.Storage (createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types
 import Storyteller.Writer.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
 
@@ -101,8 +101,8 @@ spec = do
     it "copies atoms from source to tracker when tracker is empty" $ do
       let result = runTwoTrack $ do
             -- Write two atoms to source.
-            _ <- appendAtom @Source "story.md" "paragraph one"
-            _ <- appendAtom @Source "story.md" "\n\nparagraph two"
+            _ <- runStorage @Source (SM.appendAtom "story.md" "paragraph one")
+            _ <- runStorage @Source (SM.appendAtom "story.md" "\n\nparagraph two")
             -- Track into tracker.
             tids <- trackBranch @Source @Tracker
                       ("story.md", "story.md")
@@ -117,12 +117,12 @@ spec = do
 
     it "does not re-copy already tracked atoms" $ do
       let result = runTwoTrack $ do
-            _ <- appendAtom @Source "story.md" "atom one"
+            _ <- runStorage @Source (SM.appendAtom "story.md" "atom one")
             -- First track.
             tids1 <- trackBranch @Source @Tracker
                        ("story.md", "story.md")
             -- Add another atom to source.
-            _ <- appendAtom @Source "story.md" "\n\natom two"
+            _ <- runStorage @Source (SM.appendAtom "story.md" "\n\natom two")
             -- Second track: should only copy the new atom.
             tids2 <- trackBranch @Source @Tracker
                        ("story.md", "story.md")
@@ -137,15 +137,15 @@ spec = do
 
     it "tracker with own ticks does not confuse sync state" $ do
       let result = runTwoTrack $ do
-            _ <- appendAtom @Source "story.md" "source atom"
+            _ <- runStorage @Source (SM.appendAtom "story.md" "source atom")
             -- First track.
             _ <- trackBranch @Source @Tracker
                    ("story.md", "story.md")
             -- Tracker adds its own tick (no ref to source).
             writeFile @(BranchTag Tracker) "notes.md" "author note"
-            _ <- store @Tracker "own tick"
+            _ <- runStorage @Tracker (SM.store (draft "own tick"))
             -- Add new source atom.
-            _ <- appendAtom @Source "story.md" "\n\nnew atom"
+            _ <- runStorage @Source (SM.appendAtom "story.md" "\n\nnew atom")
             -- Second track: should only copy new source atom.
             tids <- trackBranch @Source @Tracker
                       ("story.md", "story.md")
@@ -161,7 +161,7 @@ spec = do
 
     it "nothing to track when source has no new atoms" $ do
       let result = runTwoTrack $ do
-            _ <- appendAtom @Source "story.md" "atom one"
+            _ <- runStorage @Source (SM.appendAtom "story.md" "atom one")
             _ <- trackBranch @Source @Tracker
                    ("story.md", "story.md")
             -- Track again with no new source atoms.

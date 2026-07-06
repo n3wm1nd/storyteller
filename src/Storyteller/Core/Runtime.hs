@@ -25,7 +25,6 @@ module Storyteller.Core.Runtime
 
     -- * Re-exported for custom stacks
   , module Storyteller.Core.Git
-  , runStoryStorageGit
   , Git
   ) where
 
@@ -48,7 +47,7 @@ import Runix.Logging (Logging)
 import Runix.Git (Git, runGitIOPerCall, withGitCache)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Undo (withUndoLog)
 
 import UniversalLLM (Model(..), ModelConfig, Routing(..))
@@ -164,7 +163,7 @@ runStoryGit
                            , FileSystem      (BranchTag Main)
                            , FileSystemRead  (BranchTag Main)
                            , FileSystemWrite (BranchTag Main)
-                           , StoryBranch Main
+                           , GitBranchOp Main
                            , StoryStorage
                            , Git
                            , Logging, Fail ] r

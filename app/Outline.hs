@@ -36,15 +36,15 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git)
+import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, GitBranchOp, runStorage)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage)
+import Storyteller.Core.Storage (StoryStorage)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (ExistingContent(..))
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.Outline (OutlineDoc(..), ExpandGoal(..), expandAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
-import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 main :: IO ()
@@ -73,7 +73,7 @@ outlineAction
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
-              , StoryBranch Main
+              , GitBranchOp Main
               , StoryStorage
               , Splitter
               , Git
@@ -88,5 +88,5 @@ outlineAction outFile guidance = do
         "" -> outline
         g  -> g <> "\n\n" <> outline
   beatSheet <- expandAgent @StoryModel modelConfigs ToBeatSheet fileCtx source
-  _ <- mapM (append @Main outFile) =<< splitAtoms beatSheet
+  _ <- mapM (\c -> runStorage @Main (SM.append outFile c)) =<< splitAtoms beatSheet
   return beatSheet

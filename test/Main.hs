@@ -3,6 +3,7 @@ module Main where
 import Test.Hspec
 import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.StorageSpec
+import qualified Storyteller.StorageMonadSpec
 import qualified Storyteller.EditSpec
 import qualified Storyteller.AppendSpec
 import qualified Storyteller.CommitWorkingTreeSpec
@@ -26,6 +27,7 @@ main :: IO ()
 main = hspec $ do
   describe "Storyteller.FileAtoms"      Storyteller.FileAtomsSpec.spec
   describe "Storyteller.Core.Storage"        Storyteller.StorageSpec.spec
+  describe "Storyteller.Core.StorageMonad"   Storyteller.StorageMonadSpec.spec
   describe "Storyteller.Core.Edit"           Storyteller.EditSpec.spec
   describe "Storyteller.Core.Append"         Storyteller.AppendSpec.spec
   describe "Storyteller.CommitWorkingTree" Storyteller.CommitWorkingTreeSpec.spec

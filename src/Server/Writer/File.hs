@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | File-level business logic specific to the Writer application: this is
@@ -34,7 +35,6 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
-import Storyteller.Core.Append (append)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
@@ -46,10 +46,9 @@ import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Runtime (Main, StoryModel)
-import Storyteller.Core.Storage (storeAs)
-import Storyteller.Core.Edit (commitFiles)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName, TickId(..))
-import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Git (BranchTag, runStorage, runStorageEdit)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -63,20 +62,20 @@ import Prelude hiding (readFile, writeFile)
 --   for where that's headed.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe TickId -> Sem r ()
 chatWriter path prompt context mFlowTid = do
-  _ <- storeAs @Main (Prompt path prompt)
+  _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) path
   let extraContext = toContextBlocks context <> fileCtx
       instruction  = Instruction prompt
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @(BranchTag Main) @Main path flowTid existing extraContext instruction []
-      _ <- mapM (append @Main path) =<< splitAtoms generated
+      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid existing extraContext instruction []
+      _ <- mapM (\c -> runStorage @Main (SM.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
       Prose generated <- writeAgent existing extraContext instruction []
-      _ <- mapM (append @Main path) =<< splitAtoms generated
+      _ <- mapM (\c -> runStorage @Main (SM.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
@@ -87,9 +86,9 @@ chatWriter path prompt context mFlowTid = do
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
 chatFixer path prompt context [] = chatWriter path prompt context Nothing
 chatFixer path prompt _context targets = do
-  _ <- storeAs @Main (Prompt path prompt)
+  _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
-  _ <- fixAgent @(BranchTag Main) @Main path targets (Instruction prompt)
+  _ <- fixAgent @Main path targets (Instruction prompt)
   info $ "fixer agent done: " <> T.pack path
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
@@ -118,7 +117,7 @@ chatChapterRegen mode path prompt context = do
   if not haveSheet
     then fail ("no beat sheet at " <> sheetPath <> " — generate one before regenerating from outline")
     else do
-      _ <- storeAs @Main (Prompt path prompt)
+      _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       (_, fileCtx) <- gatherFileContext @(BranchTag Main) path
@@ -136,7 +135,7 @@ chatChapterRegen mode path prompt context = do
       -- removed prose drops, new prose appends. commitFiles broadcasts its own
       -- ref mapping, so nothing to push explicitly here.
       writeFile @(BranchTag Main) path (TE.encodeUtf8 regenerated)
-      _ <- commitFiles @(BranchTag Main) @Main [path]
+      _ <- runStorageEdit @Main (((),) <$> SM.commitFiles [path])
       info $ "chapter regen done: " <> T.pack path
   where
     maxBeats = 40 :: Int
@@ -159,7 +158,7 @@ chatSplitOutline path = do
   where
     writeSheet (ChapterBeats sheetPath (BeatSheet body)) = do
       info $ "  beat sheet: " <> T.pack sheetPath
-      mapM_ (append @Main sheetPath) =<< splitAtoms body
+      mapM_ (\c -> runStorage @Main (SM.append sheetPath c)) =<< splitAtoms body
 
 -- | @chapters/ch1.md@ → @chapters/ch1.outline.md@; any @.md@ path → its
 --   @.outline.md@ sibling (see WRITER.md). A path without @.md@ just gets the

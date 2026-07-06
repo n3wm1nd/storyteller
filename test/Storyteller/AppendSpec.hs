@@ -21,22 +21,21 @@ import Runix.FileSystem
 
 import Prelude hiding (appendFile, readFile, writeFile)
 
-import Storyteller.Core.Append (appendAtom)
 import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, get, readAt, readAtWithFS, storeAs)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..), tickParent)
 
 data Main
 
 runAppend
-  :: Sem '[ StoryBranch Main
-          , FileSystemWrite (BranchTag Main)
+  :: Sem '[ FileSystemWrite (BranchTag Main)
           , FileSystemRead  (BranchTag Main)
           , FileSystem      (BranchTag Main)
+          , GitBranchOp Main
           , StoryStorage
           , Git
-          , State WorkingTree
           , State GitState
           , Fail
           ] a
@@ -46,28 +45,24 @@ runAppend action =
   . runFail
   . evalState emptyGitState
   . runGitMock
-  . evalState emptyWorkingTree
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "main")
-      runStoryFSGit @Main (BranchName "main")
-        . runStoryBranchGit @Main (BranchName "main")
-        . subsume_
-        $ action
+      runBranchAndFS @Main (BranchName "main") action
 
 spec :: Spec
 spec = describe "appendAtom" $ do
 
   it "commits the appended content and it's readable back" $ do
     let result = runAppend $ do
-          _ <- appendAtom @Main "a.md" "hello"
+          _ <- runStorage @Main (SM.appendAtom "a.md" "hello")
           readFile @(BranchTag Main) "a.md"
     result `shouldBe` Right "hello"
 
   it "a second append builds on the first, within the same scope" $ do
     let result = runAppend $ do
-          _ <- appendAtom @Main "a.md" "hello"
-          _ <- appendAtom @Main "a.md" " world"
+          _ <- runStorage @Main (SM.appendAtom "a.md" "hello")
+          _ <- runStorage @Main (SM.appendAtom "a.md" " world")
           readFile @(BranchTag Main) "a.md"
     result `shouldBe` Right "hello world"
 
@@ -83,23 +78,23 @@ spec = describe "appendAtom" $ do
     let result = runAppend $ do
           -- Pending, uncommitted edit to an unrelated file.
           writeFile @(BranchTag Main) "b.md" "pending"
-          newTid    <- appendAtom @Main "a.md" "hello"
+          newTid    <- runStorage @Main (SM.appendAtom "a.md" "hello")
           ambientB  <- readFile @(BranchTag Main) "b.md"
-          existsAtNewTick <- readAtWithFS @Main newTid (fileExists @(BranchTag Main) "b.md")
+          existsAtNewTick <- runStorage @Main (SM.readAtS newTid (SM.withFS (SM.fileExistsS "b.md")))
           return (ambientB, existsAtNewTick)
     result `shouldBe` Right ("pending", False)
 
   it "a foreign pending edit to the same file's sibling atom is unaffected by an unrelated append" $ do
     let result = runAppend $ do
-          _        <- appendAtom @Main "a.md" "first"
+          _        <- runStorage @Main (SM.appendAtom "a.md" "first")
           writeFile @(BranchTag Main) "b.md" "pending"
-          newTid   <- appendAtom @Main "a.md" " second"
-          tick     <- readAt @Main newTid (get @Main)
+          newTid   <- runStorage @Main (SM.appendAtom "a.md" " second")
+          tick     <- runStorage @Main (SM.readAtS newTid SM.getTick)
           case tickParent tick of
             Nothing  -> fail "expected a parent"
             Just pid -> do
-              existedBefore <- readAtWithFS @Main pid (fileExists @(BranchTag Main) "b.md")
-              existsNow     <- readAtWithFS @Main newTid (fileExists @(BranchTag Main) "b.md")
+              existedBefore <- runStorage @Main (SM.readAtS pid (SM.withFS (SM.fileExistsS "b.md")))
+              existsNow     <- runStorage @Main (SM.readAtS newTid (SM.withFS (SM.fileExistsS "b.md")))
               ambientB      <- readFile @(BranchTag Main) "b.md"
               return (existedBefore, existsNow, ambientB)
     result `shouldBe` Right (False, False, "pending")
@@ -115,16 +110,16 @@ spec = describe "appendAtom" $ do
   it "still succeeds, unconditionally, when the target file already has a pending edit" $ do
     let result = runAppend $ do
           writeFile @(BranchTag Main) "a.md" "pending edit"
-          _ <- appendAtom @Main "a.md" " plus atom"
+          _ <- runStorage @Main (SM.appendAtom "a.md" " plus atom")
           readFile @(BranchTag Main) "a.md"
     result `shouldBe` Right "pending edit plus atom"
 
   it "isolated atom is correct even with a mid-file deletion of prior committed content sitting in the ambient tree" $ do
     let result = runAppend $ do
-          _        <- appendAtom @Main "a.md" "hello world"
+          _        <- runStorage @Main (SM.appendAtom "a.md" "hello world")
           writeFile @(BranchTag Main) "a.md" "hello"   -- dirty delete of " world"
-          newTid   <- appendAtom @Main "a.md" " again"
-          isolated <- readAtWithFS @Main newTid (readFile @(BranchTag Main) "a.md")
+          newTid   <- runStorage @Main (SM.appendAtom "a.md" " again")
+          isolated <- runStorage @Main (SM.readAtS newTid (SM.withFS (SM.readFileS "a.md")))
           ambient  <- readFile @(BranchTag Main) "a.md"
           return (isolated, ambient)
     result `shouldBe` Right ("hello world again", "hello again")
@@ -143,10 +138,10 @@ spec = describe "appendAtom" $ do
   -- reconciliation, not about what gets committed.
   it "a pending tail-append already in the ambient tree ends up before, not after, the new atom" $ do
     let result = runAppend $ do
-          _        <- appendAtom @Main "a.md" "H1"
+          _        <- runStorage @Main (SM.appendAtom "a.md" "H1")
           writeFile @(BranchTag Main) "a.md" "H1 pending"  -- uncommitted append past HEAD
-          newTid   <- appendAtom @Main "a.md" "H2"
-          isolated <- readAtWithFS @Main newTid (readFile @(BranchTag Main) "a.md")
+          newTid   <- runStorage @Main (SM.appendAtom "a.md" "H2")
+          isolated <- runStorage @Main (SM.readAtS newTid (SM.withFS (SM.readFileS "a.md")))
           ambient  <- readFile @(BranchTag Main) "a.md"
           return (isolated, ambient)
     result `shouldBe` Right ("H1H2", "H1 pendingH2")
@@ -164,8 +159,8 @@ spec = describe "appendAtom" $ do
   -- particular helper function in this module.
   it "an atom commit whose message doesn't match its actual diff is rejected by Store itself" $ do
     let result = runAppend $ do
-          _        <- appendAtom @Main "a.md" "hello"
+          _        <- runStorage @Main (SM.appendAtom "a.md" "hello")
           writeFile @(BranchTag Main) "a.md" "hello WIP"  -- uncommitted, append-compatible dirt
           appendFile @(BranchTag Main) "a.md" (TE.encodeUtf8 " done")
-          storeAs @Main (Atom "a.md" " done")
+          runStorage @Main (SM.storeAs (Atom "a.md" " done"))
     result `shouldBe` Left "Store: atom message for a.md does not match its actual diff"

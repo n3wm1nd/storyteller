@@ -1,12 +1,8 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
 
 -- | Character/entity tracker agent.
 --
@@ -21,36 +17,27 @@ import qualified Data.Text.Encoding as TE
 import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Polysemy
-import Polysemy.Fail
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile)
-import Storyteller.Core.Atom (Atom(..), contentFor)
-import Storyteller.Core.Git (BranchTag(..))
-import Storyteller.Core.Storage ( StoryBranch, StoryStorage, follow, storeData )
-import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), TickType(..), tickId, tickParent )
 
-import Prelude hiding (appendFile)
+import Storyteller.Core.Atom (Atom(..), contentFor)
+import Storyteller.Core.Git (GitBranchOp, runStorage)
+import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), TickType(..), tickId, tickParent )
 
 -- | Copy atoms from @trackeeBranch@ to @trackerBranch@ for a single file pair.
 --   Each new trackee atom produces exactly one tracker atom referencing it.
 --   Returns the list of created tracker tick ids.
 trackBranch
   :: forall trackeeBranch trackerBranch r
-  .  Members '[ StoryBranch trackeeBranch
-              , FileSystem     (BranchTag trackerBranch)
-              , FileSystemRead (BranchTag trackerBranch)
-              , FileSystemWrite (BranchTag trackerBranch)
-              , StoryBranch trackerBranch
-              , StoryStorage
-              , Fail
-              ] r
+  .  Members '[GitBranchOp trackeeBranch, GitBranchOp trackerBranch] r
   => (FilePath, FilePath)   -- ^ (source file on trackee, dest file on tracker)
   -> Sem r [TickId]
 trackBranch (fromFile, toFile) = do
-  trackeeTicks <- follow @trackeeBranch [] $ \acc tick ->
-    (tick : acc, tickParent tick)
+  trackeeTicks <- runStorage @trackeeBranch $
+    SM.followChain [] $ \acc tick -> (tick : acc, tickParent tick)
 
-  syncedRefs <- follow @trackerBranch Set.empty $ \acc tick ->
-    (foldr Set.insert acc (tickRefs (tickData tick)), tickParent tick)
+  syncedRefs <- runStorage @trackerBranch $
+    SM.followChain Set.empty $ \acc tick ->
+      (foldr Set.insert acc (tickRefs (tickData tick)), tickParent tick)
 
   let contentTicks = filter ((/= Nothing) . tickParent) trackeeTicks
       newTicks     = dropUntilAfterLastSynced syncedRefs contentTicks
@@ -74,15 +61,10 @@ dropUntilAfterLastSynced synced ticks =
 --   rather than dropped in favor of a plain, untagged message.
 copyAtom
   :: forall trackerBranch r
-  .  Members '[ FileSystem      (BranchTag trackerBranch)
-              , FileSystemRead  (BranchTag trackerBranch)
-              , FileSystemWrite (BranchTag trackerBranch)
-              , StoryBranch trackerBranch
-              , StoryStorage
-              , Fail
-              ] r
+  .  Member (GitBranchOp trackerBranch) r
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
   let content = contentFor fromFile tick
-  appendFile @(BranchTag trackerBranch) toFile (TE.encodeUtf8 content)
-  storeData @trackerBranch (toDraft (Atom toFile content)) { tickRefs = [tickId tick] }
+  runStorage @trackerBranch $ do
+    SM.appendFileS toFile (TE.encodeUtf8 content)
+    SM.store (toDraft (Atom toFile content)) { tickRefs = [tickId tick] }

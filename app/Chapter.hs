@@ -40,9 +40,10 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, runBranchAndFS)
+import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, GitBranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage)
+import Storyteller.Core.Storage (StoryStorage)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent
   (Prose(..), CharLabel(..), CharContextBlock(..), WordCount(..))
@@ -50,7 +51,6 @@ import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), chapterProse, chapterProseByBeat)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
-import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 import Prelude hiding (readFile)
@@ -90,7 +90,7 @@ chapterAction
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
-              , StoryBranch Main
+              , GitBranchOp Main
               , StoryStorage
               , Splitter
               , Git
@@ -117,7 +117,7 @@ chapterAction mode sheetPath outFile activeChars = do
     ByBeat -> chapterProseByBeat @StoryModel modelConfigs (Just (WordCount 300))
                 charContexts fileCtx existing sheet maxBeats
 
-  _ <- mapM (append @Main outFile) =<< splitAtoms generated
+  _ <- mapM (\c -> runStorage @Main (SM.append outFile c)) =<< splitAtoms generated
   return generated
   where
     maxBeats = 40 :: Int

@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | File-level business logic that isn't specific to any one application:
@@ -49,25 +50,25 @@ import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
 import Server.Core.Util (withBranch)
 
-import Storyteller.Core.Append (append)
 import qualified Storyteller.Core.Create as Create
-import Storyteller.Common.Annotation (addNote)
+import qualified Storyteller.Common.Annotation as Annotation
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
-import Storyteller.Core.Storage (FileTick, StoryBranch, StoryStorage, fileTicks, readAt, get)
-import Storyteller.Core.Edit (deleteTick, editAtom, moveTick, mergeAtoms, splitTick, chainPositions)
+import Storyteller.Core.Storage (StoryStorage)
+import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.StorageMonad (FileTick)
 import Storyteller.Core.Types (TickId(..), fromTick)
-import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Git (BranchTag, GitBranchOp, runStorage, runStorageEdit)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import qualified Runix.FileSystem as FS
 
 -- | The effects live once a file connection has entered its branch's scope —
---   one 'StoryBranch'/filesystem instance for the connection's whole
+--   one 'GitBranchOp'/filesystem instance for the connection's whole
 --   lifetime, not reopened per command.
 type FileOpen r =
-  Members '[ StoryBranch Main
+  Members '[ GitBranchOp Main
            , StoryStorage
            , FileSystemWrite (BranchTag Main)
            , FileSystemRead  (BranchTag Main)
@@ -89,7 +90,7 @@ fileState path = fileStateSince path Nothing
 --   'since' is 'Nothing' or no longer present (rewritten out from under it),
 --   the full chain is returned.
 fileStateSince :: FileOpen r => FilePath -> Maybe T.Text -> Sem r Update
-fileStateSince path since = fileUpdateSince since <$> fileTicks @Main path
+fileStateSince path since = fileUpdateSince since <$> runStorage @Main (SM.fileTicksOf path)
 
 -- ---------------------------------------------------------------------------
 -- Mutations on the already-open branch
@@ -100,11 +101,11 @@ fileStateSince path since = fileUpdateSince since <$> fileTicks @Main path
 -- Fails on a path that already has ticks — this is creation, not truncation.
 createFile :: (FileOpen r, SessionEffects r) => FilePath -> Sem r ()
 createFile path = do
-  existing <- fileTicks @Main path
+  existing <- runStorage @Main (SM.fileTicksOf path)
   case existing of
     [] -> do
       info $ "creating file: " <> T.pack path
-      void $ Create.createFile @Main path
+      void $ runStorage @Main (Create.createFile path)
     _  -> fail ("createFile: already exists: " <> path)
 
 -- | Append content to a file as a single atom — the caller (someone typing
@@ -113,29 +114,33 @@ createFile path = do
 appendToFile :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 appendToFile path content = do
   info $ "appending to: " <> T.pack path
-  void $ append @Main path content
+  void $ runStorage @Main (SM.append path content)
   info $ "append done: " <> T.pack path
 
--- | Replace an atom's content in-place. 'editAtom' broadcasts its own
---   old->new mapping (including the edited tick's own pivot pair) via
---   'Storyteller.Core.Storage.at', so there's nothing left to do here.
+-- | Replace an atom's content in-place. Broadcasts its own old->new mapping
+--   (including the edited tick's own pivot pair) via 'runStorageEdit', so
+--   there's nothing left to do here.
 editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
-editFileAtom path tid content = void $ editAtom @Main tid path content
+editFileAtom path tid content =
+  void $ runStorageEdit @Main (SM.editAtom tid path content)
 
--- | Delete an atom from the file's chain. 'deleteTick' broadcasts its own
---   mapping via 'Storyteller.Core.Storage.at', so there's nothing left to do here.
+-- | Delete an atom from the file's chain. Broadcasts its own mapping via
+--   'runStorageEdit', so there's nothing left to do here.
 deleteFileAtom :: FileOpen r => TickId -> Sem r ()
-deleteFileAtom tid = void $ deleteTick @Main tid
+deleteFileAtom tid =
+  void $ runStorageEdit @Main (((),) <$> SM.deleteTick tid)
 
 -- | Move an atom to a new position in the file's chain.
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
-moveFileAtom tid mAfter = void $ moveTick @Main tid mAfter
+moveFileAtom tid mAfter =
+  void $ runStorageEdit @Main (((),) <$> SM.moveTick tid mAfter)
 
 -- | Merge a contiguous run of one file's atoms into a single atom.
---   'mergeAtoms' broadcasts its own mapping via 'Storyteller.Core.Storage.at',
---   so there's nothing left to do here.
+--   Broadcasts its own mapping via 'runStorageEdit', so there's nothing
+--   left to do here.
 mergeFileAtoms :: FileOpen r => [TickId] -> Sem r ()
-mergeFileAtoms tids = void $ mergeAtoms @Main tids
+mergeFileAtoms tids =
+  void $ runStorageEdit @Main (SM.mergeAtoms tids)
 
 -- | Re-run the splitter over each of the given atoms' own content, in place.
 --   Processed latest-in-chain-first: splitting an earlier atom rebases (and
@@ -144,23 +149,23 @@ mergeFileAtoms tids = void $ mergeAtoms @Main tids
 --   not-yet-processed id is still valid when its turn comes.
 splitFileAtoms :: (FileOpen r, Member Splitter r) => [TickId] -> Sem r ()
 splitFileAtoms tids = do
-  positioned <- chainPositions @Main tids
+  positioned <- runStorage @Main (SM.chainPositions tids)
   mapM_ splitOne (map fst (sortOn (Down . snd) positioned))
   where
     splitOne tid = do
-      tick <- readAt @Main tid (get @Main)
+      tick <- runStorage @Main (SM.readAtS tid SM.getTick)
       case fromTick @Atom tick of
         Nothing -> fail ("splitFileAtoms: not an atom: " <> T.unpack (unTickId tid))
         Just (Atom _path msg) -> do
           pieces <- splitAtoms msg
           case pieces of
-            (_ : _ : _) -> void $ splitTick @Main tid pieces
+            (_ : _ : _) -> void $ runStorageEdit @Main (SM.splitTick tid pieces)
             _           -> return ()
 
 -- | Attach a note referencing @targets@ — zero or more atoms; empty is a
 --   free-floating remark rather than a comment on any specific one.
 chatNote :: FileOpen r => T.Text -> [TickId] -> Sem r ()
-chatNote text targets = addNote @Main targets text
+chatNote text targets = runStorage @Main (Annotation.addNote targets text)
 
 -- | Raw current content of a file, for the HTTP download/embed endpoint —
 --   a one-shot fetch outside any connection's lifetime, so (unlike the
@@ -178,5 +183,5 @@ fileUpdateSince since ticks = Update
   { updateTicks = map toWireTick (Storage.ticksSince since ticks)
   , updateHead  = case reverse ticks of
                     []    -> ""
-                    (t:_) -> Storage.ftTickId t
+                    (t:_) -> SM.ftTickId t
   }

@@ -51,15 +51,13 @@ import qualified Data.Text.Encoding as TE
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (fileExists, readFile)
 import Runix.Git (Git)
 
-import Storyteller.Core.Git (BranchTag, runBranchAndFS)
+import Storyteller.Core.Git (runGitBranchOp, runStorage)
 import Storyteller.Core.Runtime (Prompts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
+import Storyteller.Core.StorageMonad (fileExistsS, readFileS)
 import Storyteller.Core.Types (BranchName(..))
-
-import Prelude hiding (readFile)
 
 -- | A dotted lookup key, e.g. @"agent.writer.system"@. Doubles as a file
 --   path in the 'Prompts' branch: dots become path separators. Detached from
@@ -102,11 +100,13 @@ interpretPromptStorageFS action = do
     Just _  -> return ()
     Nothing -> void (createBranch promptsBranchName)
   interpret (\case
-    GetPrompt (PromptKey key) def -> runBranchAndFS @Prompts promptsBranchName $ do
+    GetPrompt (PromptKey key) def -> runGitBranchOp @Prompts promptsBranchName $ do
       let path = "/" <> T.unpack (T.replace "." "/" key) <> ".md"
-      fileExists @(BranchTag Prompts) path >>= \case
-        True  -> Prompt . TE.decodeUtf8 <$> readFile @(BranchTag Prompts) path
-        False -> return def
+      runStorage @Prompts $ do
+        exists <- fileExistsS path
+        if exists
+          then Prompt . TE.decodeUtf8 <$> readFileS path
+          else return def
     ) action
 
 -- | Test/pure interpreter: resolves from a fixed map, falling back to the

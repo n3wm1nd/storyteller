@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | The operation that creates 'Storyteller.Writer.Types.Presence' ticks —
@@ -17,9 +18,10 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
-import Storyteller.Core.Edit (deleteTick)
-import Storyteller.Core.Storage
-  (FileTick(..), StoryBranch, StoryStorage, fileTicks, getBranch, storeAs)
+import Storyteller.Core.Git (GitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Storage (StoryStorage, getBranch)
+import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.StorageMonad (FileTick(..))
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
 
@@ -41,23 +43,23 @@ import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
 --   rather than left in the chain; see 'trailingPresenceFor'.
 recordPresence
   :: forall branch r
-  .  Members '[StoryBranch branch, StoryStorage, Fail] r
+  .  Members '[GitBranchOp branch, StoryStorage, Fail] r
   => FilePath -> BranchName -> PresenceEvent -> Sem r (Maybe TickId)
 recordPresence file character event =
   getBranch character >>= \case
     Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName character))
     Just _  -> do
-      ticks <- fileTicks @branch file
+      ticks <- runStorage @branch (SM.fileTicksOf file)
       priorActive <- case trailingPresenceFor character ticks of
         Nothing  -> pure (isActive character ticks)
         Just tid -> do
-          _      <- deleteTick @branch tid
-          ticks' <- fileTicks @branch file
+          _      <- runStorageEdit @branch (((),) <$> SM.deleteTick tid)
+          ticks' <- runStorage @branch (SM.fileTicksOf file)
           pure (isActive character ticks')
       let wantsActive = event == Enter
       if wantsActive == priorActive
         then pure Nothing
-        else Just <$> storeAs @branch (Presence file character event)
+        else Just <$> runStorage @branch (SM.storeAs (Presence file character event))
 
 -- | Whether @character@ is active as of the end of @ticks@, folding
 --   presence events oldest-first (as returned by 'fileTicks').

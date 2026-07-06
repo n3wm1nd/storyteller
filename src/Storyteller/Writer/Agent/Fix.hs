@@ -25,28 +25,24 @@ import Data.List (elemIndex)
 import Data.Maybe (mapMaybe)
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 
 import Storyteller.Writer.Agent (Instruction)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Git (GitBranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, FileTick(..), fileTicks)
+import Storyteller.Core.StorageMonad (FileTick(..), fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 fixAgent
-  :: forall project branch r
-  .  ( project ~ BranchTag branch
-     , Members '[ LLM StoryModel, PromptStorage
-                , FileSystem project, FileSystemRead project, FileSystemWrite project
-                , StoryBranch branch, StoryStorage, Fail ] r )
+  :: forall branch r
+  .  Members '[LLM StoryModel, PromptStorage, GitBranchOp branch, Fail] r
   => FilePath
   -> [TickId]                -- ^ targets: atoms flagged for fixing (non-empty)
   -> Instruction
   -> Sem r [TickId]
 fixAgent path targets instruction = do
-  ticks0 <- fileTicks @branch path
+  ticks0 <- runStorage @branch (fileTicksOf path)
   let idxs = mapMaybe (\t -> elemIndex (unTickId t) (map ftTickId ticks0)) targets
-  reworkAtomsAt @branch @project path instruction idxs
+  reworkAtomsAt @branch path instruction idxs

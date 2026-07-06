@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -31,16 +32,17 @@ module Server.Core.Branch
   ) where
 
 import Control.Monad (void)
+import qualified Data.Text as T
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
 
 import Server.Core.Protocol (Update(..), tickToWireTick)
 
-import Storyteller.Common.Annotation (addNote)
-import Storyteller.Core.Edit (deleteTick, moveTick)
-import Storyteller.Core.Git (BranchTag(..))
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, follow, reset)
+import qualified Storyteller.Common.Annotation as Annotation
+import Storyteller.Core.Git (BranchTag, GitBranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Storage (StoryStorage)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (TickId(..), tickId, tickParent, unTickId)
 
 data Main
@@ -49,7 +51,7 @@ data Main
 --   scope — reopened fresh per command by the connection handler, not held
 --   for the connection's whole lifetime (see the module comment).
 type BranchOpen r =
-  Members '[ StoryBranch Main
+  Members '[ GitBranchOp Main
            , StoryStorage
            , FileSystemWrite (BranchTag Main)
            , FileSystemRead  (BranchTag Main)
@@ -73,23 +75,24 @@ branchState = branchStateSince Nothing
 --   and the full chain is returned — the correct, if pricier, fallback.
 --
 --   HEAD is derived from this same walk (its last, most-recent element)
---   rather than a separate 'get' — a second, independent HEAD resolution
---   could race a concurrent rebase and return a different, incompatible
---   position than the one 'ticks' was just walked from, sending a HEAD the
---   client can't fully resolve against the ticks in the very same update.
---   One walk, one resolution: whatever HEAD was at the moment 'follow'
---   resolved it, that's what both 'ticks' and the reported head describe.
+--   rather than a separate resolution — a second, independent HEAD
+--   resolution could race a concurrent rebase and return a different,
+--   incompatible position than the one the walk was just done from, sending
+--   a HEAD the client can't fully resolve against the ticks in the very
+--   same update. One walk, one resolution: whatever HEAD was at the moment
+--   the walk resolved it, that's what both 'ticks' and the reported head
+--   describe.
 --
---   'reset' first: 'listAllFiles' reads the in-memory working tree, which
---   this connection's long-lived stack loaded once at scope-entry and never
---   otherwise refreshes. Ticks/HEAD are read straight from git and are
---   always current regardless — only the file list needs this to see
---   writes made by other connections since we last synced.
+--   Resets the working tree first: 'listAllFiles' reads the in-memory
+--   working tree, which this connection's long-lived stack loaded once at
+--   scope-entry and never otherwise refreshes. Ticks/HEAD are read straight
+--   from git and are always current regardless — only the file list needs
+--   this to see writes made by other connections since we last synced.
 branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
-  reset @Main
+  runStorage @Main SM.resetTree
   files <- listAllFiles @(BranchTag Main) "/"
-  ticks <- follow @Main [] $ \acc t ->
+  ticks <- runStorage @Main $ SM.followChain [] $ \acc t ->
     if Just (tickId t) == since
       then (acc, Nothing)
       else (t : acc, tickParent t)
@@ -107,10 +110,16 @@ branchStateSince since = do
 -- Mutations on the already-open branch
 -- ---------------------------------------------------------------------------
 
+-- | Add an annotation note referencing zero or more existing ticks.
+addNote :: BranchOpen r => [TickId] -> T.Text -> Sem r ()
+addNote refs text = runStorage @Main (Annotation.addNote refs text)
+
 -- | Move a tick to a new position in the chain.
 moveTickInBranch :: BranchOpen r => TickId -> Maybe TickId -> Sem r ()
-moveTickInBranch tid mAfter = void $ moveTick @Main tid mAfter
+moveTickInBranch tid mAfter =
+  void $ runStorageEdit @Main (((),) <$> SM.moveTick tid mAfter)
 
 -- | Delete a tick from the chain.
 deleteTickFromBranch :: BranchOpen r => TickId -> Sem r ()
-deleteTickFromBranch tid = void $ deleteTick @Main tid
+deleteTickFromBranch tid =
+  void $ runStorageEdit @Main (((),) <$> SM.deleteTick tid)

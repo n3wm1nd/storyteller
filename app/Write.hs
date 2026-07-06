@@ -34,16 +34,16 @@ import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
 import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
-                           , BranchTag(..), Git, runBranchAndFS )
+                           , BranchTag(..), Git, GitBranchOp, runBranchAndFS, runStorage )
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage)
+import Storyteller.Core.Storage (StoryStorage)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..))
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
-import Storyteller.Core.Append (append)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 -- | Phantom tag for character branches opened temporarily within the action.
@@ -75,7 +75,7 @@ writeAction
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
-              , StoryBranch Main
+              , GitBranchOp Main
               , StoryStorage
               , Splitter
               , Git
@@ -90,5 +90,5 @@ writeAction outFile instruction activeChars = do
 
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) outFile
   Prose generated <- writeAgent existing fileCtx instruction charBlocks
-  _ <- mapM (append @Main outFile) =<< splitAtoms generated
+  _ <- mapM (\c -> runStorage @Main (SM.append outFile c)) =<< splitAtoms generated
   return generated

@@ -23,8 +23,9 @@ import Runix.Git (Git(..))
 import Runix.Logging (loggingNull)
 
 import Git.Mock (GitState, emptyGitState, runGitMock)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, withStorage, runStoryStorageGit)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, storeAs, store)
+import Storyteller.Core.Git (BranchTag, GitBranchOp, runBranchAndFS, runStorage, withStorage, runStoryStorageGit)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types
 import Storyteller.Common.Types (Note(..))
 
@@ -60,10 +61,10 @@ import Prelude hiding (writeFile)
 withBranch_
   :: TestRunner
   -> BranchName
-  -> Sem ( StoryBranch Main
-         : FileSystemWrite (BranchTag Main)
+  -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
+         : GitBranchOp Main
          : StoryStorage
          : TestEffects '[] ) a
   -> Either String a
@@ -83,7 +84,7 @@ withBranch_ runner name action = run $ runner $ do
 externalWrite :: BranchName -> FilePath -> Sem (StoryStorage : TestEffects '[]) TickId
 externalWrite name path = runBranchAndFS @Main name $ do
   writeFile @(BranchTag Main) path "content"
-  store @Main "external write"
+  runStorage @Main (SM.store (draft "external write"))
 
 tickIds :: Update -> [T.Text]
 tickIds = map wtTickId . updateTicks
@@ -232,7 +233,7 @@ spec runner = do
       let result = withBranch_ runner (BranchName "test") $ do
             (_, upd) <- branchState
             let refId = TickId (updateHead upd)
-            noteId <- storeAs @Main (Note [refId] "to delete")
+            noteId <- runStorage @Main (SM.storeAs (Note [refId] "to delete"))
             deleteTickFromBranch noteId
             tickKinds . snd <$> branchState
       case result of
@@ -245,8 +246,8 @@ spec runner = do
       let result = withBranch_ runner (BranchName "test") $ do
             (_, upd) <- branchState
             let refId = TickId (updateHead upd)
-            n1 <- storeAs @Main (Note [refId] "note1")
-            _  <- storeAs @Main (Note [refId] "note2")
+            n1 <- runStorage @Main (SM.storeAs (Note [refId] "note1"))
+            _  <- runStorage @Main (SM.storeAs (Note [refId] "note2"))
             before <- length . updateTicks . snd <$> branchState
             moveTickInBranch n1 Nothing
             after <- length . updateTicks . snd <$> branchState
@@ -264,7 +265,7 @@ spec runner = do
     it "a fixed sequence of 6 moves over 6 ticks loses nothing" $ do
       let branch = BranchName "seqmove"
           result = withBranch_ runner branch $ do
-            mapM_ (\i -> store @Main (T.pack ("t" <> show i))) [1 .. (6 :: Int)]
+            mapM_ (\i -> runStorage @Main (SM.store (draft (T.pack ("t" <> show i))))) [1 .. (6 :: Int)]
             mapM_ applyOneMove [(5,1), (0,3), (2,0), (4,2), (1,5), (3,3)]
             (_, upd) <- branchState
             let final = [ (TickId (wtTickId t), wtMessage t)
@@ -279,7 +280,7 @@ spec runner = do
         length (moves :: [(Int, Int)]) <= 15 ==>
           let branch = BranchName "seqmove-qc"
               result = withBranch_ runner branch $ do
-                mapM_ (\i -> store @Main (T.pack ("t" <> show i))) [1 .. (6 :: Int)]
+                mapM_ (\i -> runStorage @Main (SM.store (draft (T.pack ("t" <> show i))))) [1 .. (6 :: Int)]
                 mapM_ applyOneMove moves
                 (_, upd) <- branchState
                 let final = [ (TickId (wtTickId t), wtMessage t)
@@ -323,7 +324,7 @@ spec runner = do
           result = run $ testStack $ do
             _ <- createBranch branch
             runBranchAndFS @Main branch $
-              mapM_ (\i -> store @Main (T.pack ("t" <> show i))) [1 .. (6 :: Int)]
+              mapM_ (\i -> runStorage @Main (SM.store (draft (T.pack ("t" <> show i))))) [1 .. (6 :: Int)]
             _ <- withStorage $ runBranchAndFS @Main branch $ applyOneMove (0, 1)
             runBranchAndFS @Main branch $ do
               (_, upd) <- branchState
@@ -363,8 +364,8 @@ spec runner = do
                 n1 <- runBranchAndFS @Main (BranchName "test") $ do
                   (_, upd) <- branchState
                   let refId = TickId (updateHead upd)
-                  n1 <- storeAs @Main (Note [refId] "note1")
-                  _  <- storeAs @Main (Note [refId] "note2")
+                  n1 <- runStorage @Main (SM.storeAs (Note [refId] "note1"))
+                  _  <- runStorage @Main (SM.storeAs (Note [refId] "note2"))
                   return n1
                 put (0 :: Int)
                 -- 'withStorage' outermost, the branch scope opened inside
@@ -411,7 +412,7 @@ spec runner = do
           Right (gs1, ()) = runGitState emptyGitState $ do
             _ <- createBranch branch
             runBranchAndFS @Main branch $
-              mapM_ (\i -> store @Main (T.pack ("t" <> show i))) [1 .. (3 :: Int)]
+              mapM_ (\i -> runStorage @Main (SM.store (draft (T.pack ("t" <> show i))))) [1 .. (3 :: Int)]
 
           Right (_, before) = runGitState gs1 $ runBranchAndFS @Main branch branchState
 

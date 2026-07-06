@@ -15,9 +15,9 @@ import Polysemy
 
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 
-import Storyteller.Core.Append (appendAtom)
 import Storyteller.Core.Git
-import Storyteller.Core.Storage hiding (get, drop)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Types
 
@@ -45,10 +45,10 @@ import Server.TestStack
 withFile_
   :: TestRunner
   -> BranchName
-  -> Sem ( StoryBranch Main
-         : FileSystemWrite (BranchTag Main)
+  -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
+         : GitBranchOp Main
          : StoryStorage
          : TestEffects '[] ) a
   -> Either String a
@@ -92,9 +92,9 @@ spec runner = do
     -- depending on Storyteller.Writer, which Server.Core must not import.
     it "an unrelated tick with no refs and no file field does not break the parent chain" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            t1 <- appendAtom @Main "story.md" "first"
-            _  <- storeData @Main (draft "type:presence\nunrelated standalone tick")
-            t2 <- appendAtom @Main "story.md" " second"
+            t1 <- runStorage @Main (SM.appendAtom "story.md" "first")
+            _  <- runStorage @Main (SM.store (draft "type:presence\nunrelated standalone tick"))
+            t2 <- runStorage @Main (SM.appendAtom "story.md" " second")
             fileState "story.md" >>= \upd -> return (t1, t2, upd)
       case result of
         Left err -> expectationFailure err
@@ -111,7 +111,7 @@ spec runner = do
 
     it "deleted atom no longer appears in fileState" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            tid <- appendAtom @Main "f.md" "hello"
+            tid <- runStorage @Main (SM.appendAtom "f.md" "hello")
             deleteFileAtom tid
             fileState "f.md"
       case result of
@@ -122,7 +122,7 @@ spec runner = do
 
     it "moving a single atom to front is a no-op on chain length" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            t1 <- appendAtom @Main "f.md" "atom1"
+            t1 <- runStorage @Main (SM.appendAtom "f.md" "atom1")
             before <- length . updateTicks <$> fileState "f.md"
             moveFileAtom t1 Nothing
             after <- length . updateTicks <$> fileState "f.md"
@@ -135,7 +135,7 @@ spec runner = do
 
     it "edit changes the content of the atom" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            tid <- appendAtom @Main "f.md" "original"
+            tid <- runStorage @Main (SM.appendAtom "f.md" "original")
             editFileAtom "f.md" tid "edited"
             fileState "f.md"
       case result of
@@ -153,8 +153,8 @@ spec runner = do
     -- after the preceding atoms' content.
     it "edit succeeds for any existing atom regardless of new content length" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            t1 <- appendAtom @Main "f.md" "first atom text\n"
-            _  <- appendAtom @Main "f.md" "second\n"
+            t1 <- runStorage @Main (SM.appendAtom "f.md" "first atom text\n")
+            _  <- runStorage @Main (SM.appendAtom "f.md" "second\n")
             editFileAtom "f.md" t1 "x\n"
             fileState "f.md"
       case result of

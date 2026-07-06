@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -29,11 +30,11 @@ import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Git (BranchTag, runBranchAndFS)
+import Storyteller.Core.Git (BranchTag, GitBranchOp, runBranchAndFS, runStorageEdit)
 import Storyteller.Core.Runtime (Main, runInfrastructure, runStoryStorageGit)
-import Storyteller.Core.Storage (StoryBranch, StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..), TickId(..))
-import Storyteller.Core.Edit (commitWorkingTree)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 
 main :: IO ()
@@ -61,8 +62,8 @@ rebaseAction
   :: Members '[ FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
-              , StoryBranch Main
+              , GitBranchOp Main
               , StoryStorage
               , Logging, Fail ] r
   => Sem r [(TickId, TickId)]
-rebaseAction = commitWorkingTree @(BranchTag Main) @Main
+rebaseAction = snd <$> runStorageEdit @Main (((),) <$> SM.commitWorkingTree)

@@ -22,7 +22,8 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile
 import Git.Mock
 import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git hiding (emptyWorkingTree)
-import Storyteller.Core.Storage
+import Storyteller.Core.Storage (createBranch)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types
 import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
 import Storyteller.Writer.Presence (recordPresence)
@@ -53,13 +54,13 @@ runStory withCharacter action =
 -- | Append @content@ to @path@ and store it as an atom tick — the one thing
 --   that marks "an atom happened" for 'trailingPresenceFor's purposes.
 writeAtom
-  :: Members '[ StoryBranch Story, FileSystem (BranchTag Story)
+  :: Members '[ GitBranchOp Story, FileSystem (BranchTag Story)
               , FileSystemRead (BranchTag Story), FileSystemWrite (BranchTag Story)
               , Fail ] r
   => FilePath -> Text -> Sem r TickId
 writeAtom path content = do
   appendFile @(BranchTag Story) path (TE.encodeUtf8 content)
-  storeAs @Story (Atom path content)
+  runStorage @Story (SM.storeAs (Atom path content))
 
 -- ---------------------------------------------------------------------------
 -- Spec
@@ -76,14 +77,14 @@ spec = do
     it "produces a presence tick, visible in the chain, decodable back to the original event" $ do
       let result = runStory True $ do
             mtid  <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
-            ticks <- follow @Story [] $ \acc t -> (t : acc, tickParent t)
+            ticks <- runStorage @Story (SM.followChain [] (\acc t -> (t : acc, tickParent t)))
             return (mtid >>= \tid -> find ((== tid) . tickId) ticks >>= fromTick @Presence)
       result `shouldBe` Right (Just (Presence "scene.md" (BranchName "character/alice") Enter))
 
     it "records which file the presence event belongs to" $ do
       let result = runStory True $ do
             mtid  <- recordPresence @Story "chapters/ch1.md" (BranchName "character/alice") Enter
-            ticks <- follow @Story [] $ \acc t -> (t : acc, tickParent t)
+            ticks <- runStorage @Story (SM.followChain [] (\acc t -> (t : acc, tickParent t)))
             return (mtid >>= \tid -> presenceFile <$> (find ((== tid) . tickId) ticks >>= fromTick @Presence))
       result `shouldBe` Right (Just "chapters/ch1.md")
 
@@ -92,7 +93,7 @@ spec = do
             _     <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
             _     <- writeAtom "scene.md" "she arrived.\n"
             mtl   <- recordPresence @Story "scene.md" (BranchName "character/alice") Leave
-            ticks <- follow @Story [] $ \acc t -> (t : acc, tickParent t)
+            ticks <- runStorage @Story (SM.followChain [] (\acc t -> (t : acc, tickParent t)))
             return (mtl >>= \tid -> find ((== tid) . tickId) ticks >>= fromTick @Presence)
       result `shouldBe` Right (Just (Presence "scene.md" (BranchName "character/alice") Leave))
 
@@ -102,10 +103,10 @@ spec = do
       -- presence tick, not two, and not zero (the character is genuinely
       -- meant to end up active).
       let result = runStory True $ do
-            ticksBefore <- fileTicks @Story "scene.md"
+            ticksBefore <- runStorage @Story (SM.fileTicksOf "scene.md")
             _           <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
             mtid2       <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
-            ticksAfter  <- fileTicks @Story "scene.md"
+            ticksAfter  <- runStorage @Story (SM.fileTicksOf "scene.md")
             return (mtid2, length ticksAfter - length ticksBefore)
       case result of
         Right (Just _, 1) -> return ()
@@ -120,7 +121,7 @@ spec = do
       let result = runStory True $ do
             _      <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
             mtl    <- recordPresence @Story "scene.md" (BranchName "character/alice") Leave
-            ticks  <- fileTicks @Story "scene.md"
+            ticks  <- runStorage @Story (SM.fileTicksOf "scene.md")
             return (mtl, ticks)
       case result of
         Right (Nothing, ticks) -> ticks `shouldBe` []
@@ -140,12 +141,12 @@ spec = do
             _      <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
             mtl    <- recordPresence @Story "scene.md" (BranchName "character/alice") Leave
             mtid2  <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
-            ticks  <- fileTicks @Story "scene.md"
-            return (mtl, mtid2, [ ft | ft <- ticks, ftKind ft == "presence" ])
+            ticks  <- runStorage @Story (SM.fileTicksOf "scene.md")
+            return (mtl, mtid2, [ ft | ft <- ticks, SM.ftKind ft == "presence" ])
       case result of
         Right (Nothing, Just tid2, [presenceTick]) -> do
-          TickId (ftTickId presenceTick) `shouldBe` tid2
-          lookup "event" (ftFields presenceTick) `shouldBe` Just "enter"
+          TickId (SM.ftTickId presenceTick) `shouldBe` tid2
+          lookup "event" (SM.ftFields presenceTick) `shouldBe` Just "enter"
         other -> expectationFailure ("expected a single fresh Enter tick, got: " <> show other)
 
     it "keeps a redundant Enter after an atom has intervened as still redundant (not chain-adjacent)" $ do
@@ -162,9 +163,9 @@ spec = do
             _     <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
             mtb   <- recordPresence @Story "scene.md" (BranchName "character/bob")   Enter
             mtl   <- recordPresence @Story "scene.md" (BranchName "character/alice") Leave
-            ticks <- fileTicks @Story "scene.md"
-            let presenceTicks = [ ft | ft <- ticks, ftKind ft == "presence" ]
-            return (mtb, mtl, map (lookup "character" . ftFields) presenceTicks)
+            ticks <- runStorage @Story (SM.fileTicksOf "scene.md")
+            let presenceTicks = [ ft | ft <- ticks, SM.ftKind ft == "presence" ]
+            return (mtb, mtl, map (lookup "character" . SM.ftFields) presenceTicks)
       case result of
         Right (Just _tb, Nothing, [Just "character/bob"]) -> return ()
         other -> expectationFailure ("expected only Bob's (rebased) tick to survive, got: " <> show other)

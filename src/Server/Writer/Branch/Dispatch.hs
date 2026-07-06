@@ -36,7 +36,9 @@ import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTi
 import Server.Writer.Branch (trackFiles, charGen)
 import Server.Writer.Branch.Protocol
 import Server.Core.Run (SessionEffects)
-import qualified Storyteller.Core.Storage as Storage
+import Storyteller.Core.Storage (updateReferences)
+import Storyteller.Core.Git (atGeneric, runStorage)
+import qualified Storyteller.Core.StorageMonad as SM
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 
 runCommand
@@ -54,7 +56,7 @@ runCommand branch cmd =
       return [FileAdded mid path]
 
     AddNote _mid refTickId text -> do
-      addNote @Main [TickId refTickId] text
+      addNote [TickId refTickId] text
       return []
 
     MoveTick _mid tid mAfter -> do
@@ -67,14 +69,16 @@ runCommand branch cmd =
 
     -- Rebase 'inner' at 'tid': wind the chain back, run it against that
     -- tick's filesystem snapshot, then replay the tail on top of whatever it
-    -- produced. 'reset' reloads the working tree from the (now rebased)
-    -- head, since 'atWithFS' only restores the pre-call tree, not the
-    -- post-rebase one — same pattern 'Server.Writer.File.Dispatch's 'At'
-    -- case uses. 'atWithFS' broadcasts its own mapping, so nothing left to
-    -- do with the discarded tuple component here.
+    -- produced. 'atGeneric' is the one operation still built on generic
+    -- recursion (not the closed-form storage monad), since 'inner' can
+    -- recurse into arbitrary Writer commands — see
+    -- 'Storyteller.Core.Git.atGeneric'. Broadcasts the mapping itself via
+    -- 'updateReferences', then resyncs the ambient tree from the rebased
+    -- head, since 'atGeneric' only restores the pre-call tree on its own.
     At _mid tid inner -> do
-      (evts, _mapping) <- Storage.atWithFS @Main (TickId tid) (runCommand branch inner)
-      Storage.reset @Main
+      (evts, mapping) <- atGeneric @Main (TickId tid) (runCommand branch inner)
+      updateReferences mapping
+      runStorage @Main SM.resetTree
       return evts
 
 -- ---------------------------------------------------------------------------

@@ -1,6 +1,163 @@
 # Plan: A dedicated storage monad to replace `At`/`WithFS`'s `interpretH` cost
 
-Status: spec, not yet implemented. Written to be picked up cold in a future session.
+Status: **done**. `Storyteller.Core.StorageMonad` (the reusable engine) plus
+`Storyteller.Core.Git`'s `GitBranchOp`/`runStorage`/`runStorageEdit` (the
+Polysemy embedding) fully replace the old `StoryBranch` effect and its
+higher-order `At`/`WithFS` constructors. `Storyteller.Core.Edit` and
+`Storyteller.Core.Append` are gone — folded into `StorageMonad` as ordinary
+`StorageT` operations (`moveTick`/`mergeAtoms`/`splitTick`/`deleteTick`/
+`editAtom`/`append`/`appendAtom`/`storeAtom`/`unstoreAtom`/`rewriteAtom`/
+`commitWorkingTree`/`commitFiles`). Every real caller (`Server.Core.Branch`,
+`Server.Core.File`, `Server.Writer.*`, `Storyteller.Writer.Agent.*`, the CLI
+executables) has been ported. Whole project (library, all executables, test
+suite, benchmark) builds clean; full test suite (234 examples) passes. See
+"Implementation status" below for exactly what changed and where.
+
+## Implementation status
+
+**Done**, in `src/Storyteller/Core/StorageMonad.hs`:
+
+- `MonadGit m` — the pluggable primitive: `gitReadCommit`/`gitWriteCommit`/
+  `gitReadObject`/`gitWriteObject`. This is deliberately just the read/write
+  half of `Runix.Git` — no refs, no branches. Ref resolution and publication
+  happen outside `StorageT` entirely (see below), which is what keeps this
+  class, and everything built on it, ignorant of git ref-naming conventions
+  or multi-branch concerns.
+- `StorageT m` — `StateT (ObjectHash, WorkingTree) m`, i.e. plain `StateT`
+  over any `MonadGit m`. No Polysemy anywhere in this module.
+- Every tick/tree operation `StoryBranch`'s old `runStoryBranchGit`
+  provided, ported verbatim (same algorithms, just retargeted from
+  `Members '[Git, Fail] r => ... -> Sem r x` to `(MonadGit m, MonadFail m)
+  => ... -> m x`): `storeTick`, `dropTick`, `getTick`, `resetTree`, `syncTo`,
+  `followChain`, `replaceTick`, `at` (the `runAtH` rebase/replay algorithm),
+  `withFS`, `fileTicksOf`. Also provides `WorkingTree`-level file primitives
+  (`readFileS`/`writeFileS`/`listFilesS`/`fileExistsS`/`isDirectoryS`/
+  `removeS`/`createDirectoryS`) per the plan's point 8 (`WorkingTree` and
+  tick-chain movement are interleaved, so they live in the same execution
+  context rather than two systems dereferencing the same hashes) — these
+  back the *ambient* `FileSystem`/`FileSystemRead`/`FileSystemWrite
+  (BranchTag branch)` Polysemy effects (kept exactly as they were, per user
+  direction mid-migration, since they were already first-order and never
+  the expensive part), reinterpreted in `Storyteller.Core.Git` to dispatch
+  through `runStorage` instead of their own `State WorkingTree` plumbing —
+  see below.
+- `at`'s recursive walk is now **plain function recursion in `StorageT`** —
+  nothing is reified, because nothing needing `interpretH` exists any more:
+  a nested `at` call inside another is just an ordinary nested function
+  call, exactly like `bench/GitBranchEffect.hs`'s validated pattern.
+
+**Done**, in `src/Storyteller/Core/Git.hs`:
+
+- `instance Members '[Git, Fail] r => MonadGit (Sem r)` — any existing
+  `Sem` stack with the real (or mock) `Git` effect and `Fail` is a
+  `MonadGit` for free, so `StorageT (Sem r)` reuses the same interpreter
+  swap (`runGitIO` vs `Git.Mock.runGitMock`) everything else in this
+  codebase already uses.
+- `GitBranchOp branch` — the one first-order Polysemy effect boundary per
+  branch scope, mirroring `bench/GitBranchEffect.hs`'s `OnBranch` exactly:
+  its single constructor `RunStorage`'s argument is rank-2-polymorphic in
+  an independent monad `n` (never `Sem`'s own `m`), so it interprets via
+  plain `interpret`, no reification, regardless of how deep a rebase the
+  `StorageT n` computation performs inside.
+- `runGitBranchOp` — the interpreter: seeds `(ObjectHash, WorkingTree)`
+  from the branch's current `StoryStorage` head once at entry (same
+  snapshot discipline `runStoryBranchGit` already used), and publishes the
+  final head via `setRef` after each `RunStorage` dispatch whose
+  computation actually advanced it — so `StoryStorage`'s existing
+  transactional buffering (`withStorage`) keeps working completely
+  unchanged, since publication still goes through the same `setRef` call.
+
+**Also done, in `src/Storyteller/Core/Git.hs`** (added during the full
+migration, beyond the original spec):
+
+- `runStoryFSGit`/`runBranchAndFS` — the three ambient `FileSystem`/
+  `FileSystemRead`/`FileSystemWrite (BranchTag branch)` effects are *kept
+  exactly as they were* (deliberately, per user direction mid-migration —
+  they were never the expensive part, since they're already first-order)
+  but reinterpreted: each operation is now a single `runStorage` dispatch
+  against the shared `GitBranchOp` state, instead of the old interpreter's
+  own `State WorkingTree` plumbing. Every caller that used to read/write
+  branch files via `Runix.FileSystem` continues to do so unchanged.
+- `runStorageEdit`/`RunStorageEdit` — the broadcasting counterpart to
+  `runStorage`, for the chain-editing operations (`moveTick`, `mergeAtoms`,
+  `splitTick`, `deleteTick`, `editAtom`, `commitFiles`) that return an
+  old→new id mapping needing to reach `StoryStorage.updateReferences` and
+  then resync this scope's own state from the branch's current ref
+  (the cascade can rewrite *this* branch a second time — see its doc).
+  Deliberately a second constructor on `GitBranchOp` rather than a
+  Polysemy-level wrapper function taking an explicit `BranchName`: its
+  handler already has the branch's name from `runGitBranchOp`'s own
+  closure, so no caller needs to plumb a `BranchName`/`Text` down to every
+  editing call site just for this.
+- `atGeneric`/`readAtGeneric` — the one genuinely higher-order case the
+  original spec's reasoning point 7 flagged as a possible future need: the
+  rebase-marker UI feature (`Server.Writer.Branch.Dispatch`/
+  `Server.Writer.File.Dispatch`'s `At` command), whose inner action
+  recurses into arbitrary Writer commands (LLM calls, other effects), not
+  just storage. Turns out this still doesn't need `interpretH`: since
+  `GitBranchOp`'s (head, tree) state is ordinary Polysemy `State` internal
+  to `runGitBranchOp`, plain recursive `Sem` code can walk it down one
+  tick at a time, let arbitrary code run at the bottom, and walk back up
+  replaying each level's diff by hand — `Storyteller.Core.StorageMonad.at`'s
+  algorithm, just with "run the action" happening via ordinary effect
+  dispatch instead of inside one `StorageT` computation. No new higher-order
+  effect was needed anywhere in the end.
+
+**Tested**: `test/Storyteller/StorageMonadSpec.hs` covers the base tick/
+tree/file contract (store/drop/get/follow/at/readAt/withFS/replaceTick/
+append-only rejection/file access) against `Git.Mock`. `EditSpec.hs`,
+`AppendSpec.hs`, `FileAtomsSpec.hs`, `CommitWorkingTreeSpec.hs`,
+`CommitNewFilesSpec.hs`, `CreateSpec.hs`, `SubdirSpec.hs`, `TrackerSpec.hs`,
+`PresenceSpec.hs`, and the `Server.*` specs were all ported to the new
+engine (same assertions, retargeted plumbing) and stay green — this is the
+regression coverage that caught two real bugs during the port (see below).
+Full suite: 234 examples, 0 failures.
+
+**Two real bugs the port's tests caught** (fixed in
+`Storyteller/Core/StorageMonad.hs`, not just papered over — per this
+project's own testing philosophy):
+
+1. `moveTick`/`mergeAtoms`/`splitTick`/`deleteTick`/`editAtom` advance the
+   tracked head via their internal `at`/replay but never touched the
+   ambient working tree — old code's `sync` (StoryBranch's `Sync`
+   constructor) covered this implicitly for every caller; splitting
+   broadcast out into `runStorageEdit` dropped that side effect. Fixed by
+   adding an explicit `resetTree` at the end of each of these five
+   operations, so the ambient tree always reflects wherever the operation
+   left the head — a general correctness property that shouldn't depend on
+   whether the caller broadcasts afterward.
+2. `splitTick` stopped including the `(tid, inheritor)` identity pair in
+   its returned mapping (old code added this explicitly before
+   broadcasting via `updateReferences`) — without it, an external reference
+   to the original tick never got redirected to the surviving first piece.
+   Fixed by restoring that pair to the returned mapping.
+
+**Resolved open questions** (the three raised in the original spec, now
+answered by the implementation):
+
+1. **Cross-branch cascade scope**: stays scoped to one branch.
+   `replaceTick`/`at`/every editing operation inside `StorageT` never
+   touch any branch but their own; cross-branch cascade
+   (`cascadeReplace`/`cascadeReplaceOtherBranches`) remains a
+   `StoryStorage`-level concern, unchanged, triggered by `runStorageEdit`
+   via `updateReferences` after a `StorageT` computation returns its
+   mapping.
+2. **`StoryStorage`'s transactional buffering**: stayed a pure Polysemy
+   concern, completely untouched — `withStorage`/`withStorageDiscard`/
+   `runStoryStorageGit` are byte-for-byte the same as before this plan.
+3. **Naming and module home**: `Storyteller.Core.StorageMonad` (new
+   module) holds the storage-agnostic monad, tick/tree logic, and the
+   editing-operation vocabulary (moved here from the now-deleted
+   `Storyteller.Core.Edit`/`Storyteller.Core.Append`, since they're
+   mechanical consequences of the append-only invariant, not story-specific
+   policy). `Storyteller.Core.Git` keeps everything git-specific
+   (`BranchTag`, ref naming, the `MonadGit (Sem r)` instance,
+   `GitBranchOp`/`runStorage`/`runStorageEdit`/`runGitBranchOp`/
+   `runStoryFSGit`/`runBranchAndFS`/`atGeneric`/`readAtGeneric`) — the old
+   `StoryBranch` effect, `runStoryBranchGit`, and `runAtH` were removed
+   entirely rather than kept alongside, once every caller was ported.
+
+---
 
 ## The problem, in one paragraph
 
@@ -245,36 +402,41 @@ no `interpretH`, no reification. The concrete instance (`GitStoryM`-shaped:
 a thin newtype over `Sem r` whose methods `send` into the real `Git` effect)
 lives underneath, same as `GitBranchEffect.hs`'s prototype.
 
-## Migration scope
+## Migration scope — completed
 
-Every current caller of `at`/`sneakyAt`/`atWithFS`/`sneakyAtWithFS`/`readAt`
-(confirmed by grep, see reasoning point 7 — all storage-only inner actions):
+Every caller listed below (found via the same grep the original spec used,
+reasoning point 7) has been ported from `at`/`sneakyAt`/`atWithFS`/
+`sneakyAtWithFS`/`readAt` to the `StorageMonad`/`GitBranchOp` equivalent:
 
-| Module | Operation | Current call |
+| Module | Operation | Now |
 |---|---|---|
-| `Storyteller/Core/Edit.hs` | drop-at-tick | `at @branch tid $ drop @branch` |
-| `Storyteller/Core/Edit.hs` | `moveTick` | 3x `sneakyAt @branch ...` |
-| `Storyteller/Core/Edit.hs` | `splitTick` | `sneakyAt @branch tid $ ...` |
-| `Storyteller/Core/Edit.hs` | `mergeAtoms` | `sneakyAt @branch lastTid $ ...` |
-| `Storyteller/Core/Edit.hs` | `emitStandaloneGap` (file-content variant) | `sneakyAtWithFS @branch anchor $ ...` |
-| `Storyteller/Core/Append.hs` | `unstoreAtom` | `sneakyAt @branch tid (drop @branch)` |
-| `Storyteller/Core/Append.hs` | `rewriteAtom` | `sneakyAt` + nested `withFS` |
-| `Server/Core/File.hs` | historical tick fetch | `readAt @Main tid (get @Main)` |
+| `Storyteller/Core/StorageMonad.hs` (was `Edit.hs`) | drop-at-tick (`deleteTick`) | `atChecked True tid dropTick`, plain `StorageT` |
+| `Storyteller/Core/StorageMonad.hs` (was `Edit.hs`) | `moveTick` | nested `atChecked`, plain `StorageT`, one `runStorageEdit` dispatch at the call site |
+| `Storyteller/Core/StorageMonad.hs` (was `Edit.hs`) | `splitTick` | `atChecked True tid $ withFS $ ...`, plain `StorageT` |
+| `Storyteller/Core/StorageMonad.hs` (was `Edit.hs`) | `mergeAtoms` | `atChecked True lastTid $ ...`, plain `StorageT` |
+| `Storyteller/Core/StorageMonad.hs` (was `Edit.hs`) | `emitStandaloneGap` | `atChecked True anchor $ withFS $ ...`, plain `StorageT` |
+| `Storyteller/Core/StorageMonad.hs` (was `Append.hs`) | `unstoreAtom` | `atChecked True tid dropTick`, plain `StorageT` |
+| `Storyteller/Core/StorageMonad.hs` (was `Append.hs`) | `rewriteAtom` | `atChecked True tid $ withFS $ ...`, plain `StorageT` |
+| `Server/Core/File.hs` | historical tick fetch | `runStorage @Main (readAtS tid getTick)` |
+| `Server/Writer/Branch/Dispatch.hs`, `Server/Writer/File/Dispatch.hs` | rebase-marker `At` command | `atGeneric`/`readAtGeneric` (see above — the one case that stayed generic-recursion-based rather than closed-form `StorageT`, since its inner action isn't storage-only) |
 
-**Not in scope** (plain `withFS` with no enclosing `at`/`sneakyAt` — already
-O(1), current-head only, never pays the `interpretH` tax): `pushTick`'s own
-top-level use, `Append.hs`'s plain-write helpers, `withBranch`/
-`runBranchAndFS` themselves (branch-scope setup, not part of the rebase
-cost).
+`withBranch`/`runBranchAndFS` (branch-scope setup) and the ambient
+`FileSystem` effects were never part of the rebase cost and are unchanged
+in shape (just reinterpreted onto `GitBranchOp` — see above).
 
-Suggested order: port `mergeAtoms` first (we already have a validated shape
-for its core algorithm from `GitBranchEffect.mergeAndRebase`) and benchmark it
-against real production data before porting the rest — confirms the ~14x (or
-better, given the tick-level vocabulary avoids re-deriving diff logic per
-call) holds outside the synthetic harness. The rest should follow an
-identical pattern once `mergeAtoms` is validated.
+## Open questions — resolved by the implementation
 
-## Open questions (not yet resolved, need answers before/while implementing)
+Questions 1–3 below (cross-branch cascade scope, `StoryStorage` buffering,
+module home) are answered in "Implementation status" at the top of this
+document, matching the first option offered for each. Question 4 (exact
+method list) is answered by `Storyteller.Core.StorageMonad`'s actual export
+list, derived from what `runStoryBranchGit`'s `StoryBranch` handler and the
+three `FileSystem*` handlers actually did, not designed from scratch:
+`storeTick`/`dropTick`/`getTick`/`resetTree`/`syncTo`/`followChain`/
+`replaceTick`/`at`/`withFS`/`fileTicksOf` plus `readFileS`/`writeFileS`/
+`listFilesS`/`fileExistsS`/`isDirectoryS`/`removeS`/`createDirectoryS`.
+
+The original four questions, for reference:
 
 1. **Cross-branch cascade scope.** Today, `Replace`/`moveTick` rewrite *other*
    branches' refs when a tick they reference gets superseded

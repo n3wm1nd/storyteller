@@ -18,7 +18,7 @@ import Data.Aeson.Key (fromText)
 import Data.Aeson.Types (Pair)
 import qualified Data.Text as T
 
-import qualified Storyteller.Core.Storage as Storage
+import qualified Storyteller.Core.StorageMonad as Storage
 import Storyteller.Core.Types (Tick(..), TickData(..), TickPos(..), tickId, tickParent, unTickId)
 
 -- | A tick as sent over the wire. Flat representation — the client interprets

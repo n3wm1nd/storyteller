@@ -56,7 +56,12 @@ module Runix.Git
   ) where
 
 import qualified Control.Exception as Exception
+import qualified Data.ByteArray.Encoding as BA
+import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as BS8
+import Data.List (sortBy)
+import Data.Ord (comparing)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Text (Text)
@@ -67,11 +72,12 @@ import qualified Data.Map.Strict as Map
 import Polysemy
 import Polysemy.Fail
 import Polysemy.Resource (Resource, bracket)
-import Polysemy.State (State, get, modify, evalState)
+import Polysemy.State (get, modify, evalState)
 
-import Runix.Cmd (Cmd, callIn, callStdinIn, CmdOutput(..))
+import Runix.Cmd (Cmd, callIn, CmdOutput(..))
 import qualified Runix.Git.Batch as Batch
 import qualified Runix.Git.Hash as Hash
+import qualified Runix.Git.Store as Store
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -164,7 +170,29 @@ runGitIO
   -> (forall x. (Batch.BatchReader -> IO x) -> IO x)
   -> Sem (Git : r) a
   -> Sem r a
-runGitIO repo withReader =
+runGitIO repo withReader action = do
+  -- Resolved once per interpreter run (a single subprocess call), not per
+  -- write: every write below needs the actual @.git@ directory (not the
+  -- worktree root) to write loose objects directly, and this covers bare
+  -- repos and worktrees, not just the common "repo/.git" layout.
+  gitDir <- resolveGitDir repo
+  runGitIOWith repo gitDir withReader action
+
+resolveGitDir :: Members '[Cmd "git", Fail] r => FilePath -> Sem r FilePath
+resolveGitDir repo = do
+  out <- git repo ["rev-parse", "--absolute-git-dir"]
+  case T.lines (stdout out) of
+    (h:_) | exitCode out == 0 -> return (T.unpack (T.strip h))
+    _ -> fail $ "git rev-parse --absolute-git-dir failed: " <> T.unpack (stderr out)
+
+runGitIOWith
+  :: Members '[Cmd "git", Fail, Embed IO] r
+  => FilePath
+  -> FilePath
+  -> (forall x. (Batch.BatchReader -> IO x) -> IO x)
+  -> Sem (Git : r) a
+  -> Sem r a
+runGitIOWith repo gitDir withReader =
   interpret $ \case
       ResolveRef (RefName name) -> do
         out <- git repo ["rev-parse", "--verify", "--quiet", T.unpack name]
@@ -191,11 +219,13 @@ runGitIO repo withReader =
           Just (_, raw) -> parseCommit (TE.decodeUtf8 raw)
           Nothing -> fail $ "ReadCommit: object not found: " <> T.unpack (unObjectHash hash)
 
-      -- The hash is computed locally (matches @git hash-object@ exactly --
-      -- see 'Runix.Git.Hash' and its property tests against the real CLI)
-      -- rather than parsed from git's stdout; git is still called to persist
-      -- the object, but we no longer depend on, or wait on, its answer for
-      -- the hash itself.
+      -- Written directly as a loose object ('Runix.Git.Store'), not by
+      -- shelling out to @git hash-object@: the hash and the exact bytes
+      -- git would store are both fully determined by @rawBytes@ (see
+      -- 'Runix.Git.Hash' and its property tests against the real CLI), so
+      -- there's nothing left for a subprocess round trip to tell us. This
+      -- is the dominant real-world cost a deep tail-replay pays -- see
+      -- 'Runix.Git.Store's own module doc.
       WriteCommit cd -> do
         let parentLines = T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
             raw = "tree " <> unObjectHash (commitTree cd) <> "\n"
@@ -205,10 +235,8 @@ runGitIO repo withReader =
                <> "\n"
                <> commitMessage cd <> "\n"
             rawBytes = TE.encodeUtf8 raw
-        out <- gitStdin repo ["hash-object", "-t", "commit", "-w", "--stdin"] rawBytes
-        if exitCode out == 0
-          then return $ ObjectHash (Hash.hashObject Hash.Commit rawBytes)
-          else fail $ "git hash-object commit failed: " <> T.unpack (stderr out)
+        hash <- embedBatch (Store.writeLooseObject gitDir Hash.Commit rawBytes)
+        return (ObjectHash hash)
 
       ReadObject hash -> do
         mResult <- embedBatch (withReader (\br -> Batch.readBatch br (unObjectHash hash)))
@@ -227,28 +255,20 @@ runGitIO repo withReader =
                      <> "' for " <> T.unpack (unObjectHash hash)
 
       WriteObject (BlobObject content) -> do
-        out <- gitStdin repo ["hash-object", "-w", "--stdin"] content
-        if exitCode out == 0
-          then return $ ObjectHash (Hash.hashObject Hash.Blob content)
-          else fail $ "git hash-object failed: " <> T.unpack (stderr out)
+        hash <- embedBatch (Store.writeLooseObject gitDir Hash.Blob content)
+        return (ObjectHash hash)
 
-      -- Not self-hashed: unlike the commit/blob cases above, what we send
-      -- 'mktree' (ls-tree text) is not the tree object's actual binary
-      -- preimage -- 'mktree' itself re-encodes each entry into git's
-      -- <mode> <name>\0<20 raw hash bytes> format and re-sorts entries with
-      -- its own directory-aware comparator ("foo" sorts as "foo/") before
-      -- hashing. Self-hashing this case would need that serialisation and
-      -- sort replicated and tested first; still parsing 'mktree's answer here
-      -- until that exists, rather than assume an equivalence never checked.
+      -- Now self-hashed too: 'serializeTree' replicates git's actual tree
+      -- binary preimage (each entry as @\<mode\> \<name\>\\0\<20 raw hash
+      -- bytes\>@, sorted with git's own directory-aware comparator --
+      -- "foo" sorts as if "foo/" when it's a subtree) instead of going
+      -- through @git mktree@'s ls-tree-text-in-commit-hash-out round trip.
+      -- See @GitStoreSpec@ for the property test checking this matches
+      -- @git mktree@ byte-for-byte.
       WriteObject (TreeObject entries) -> do
-        let entryLine e = case e of
-              BlobEntry name h -> "100644 blob " <> unObjectHash h <> "\t" <> T.pack name
-              SubTree   name h -> "040000 tree " <> unObjectHash h <> "\t" <> T.pack name
-            input = T.unlines (map entryLine entries)
-        out <- gitStdin repo ["mktree"] (TE.encodeUtf8 input)
-        case T.lines (stdout out) of
-          (h:_) | exitCode out == 0 -> return $ ObjectHash (T.strip h)
-          _ -> fail $ "git mktree failed: " <> T.unpack (stderr out)
+        let raw = serializeTree entries
+        hash <- embedBatch (Store.writeLooseObject gitDir Hash.Tree raw)
+        return (ObjectHash hash)
 
       LookupPath hash path -> do
         out <- git repo ["ls-tree", "-r", T.unpack (unObjectHash hash), "--", path]
@@ -348,9 +368,6 @@ withGitCache action = evalState emptyGitCache $ intercept (\case
 git :: Member (Cmd "git") r => FilePath -> [String] -> Sem r CmdOutput
 git repo args = callIn @"git" repo args
 
-gitStdin :: Member (Cmd "git") r => FilePath -> [String] -> ByteString -> Sem r CmdOutput
-gitStdin repo args stdin = callStdinIn @"git" repo args stdin
-
 git_ :: Member (Cmd "git") r => FilePath -> [String] -> Sem r ()
 git_ repo args = git repo args >> return ()
 
@@ -404,3 +421,34 @@ parseTreeLine line =
         | typ == "tree"   -> Just $ SubTree   (T.unpack name) (ObjectHash hash)
       _ -> Nothing
     _ -> Nothing
+
+-- ---------------------------------------------------------------------------
+-- Tree serialisation (self-hashed writes — see 'Runix.Git.Store')
+-- ---------------------------------------------------------------------------
+
+-- | Serialise tree entries into git's actual binary tree preimage:
+-- entries sorted by git's own directory-aware comparator, each written as
+-- @\<mode\> \<name\>\\0\<20 raw hash bytes\>@ and concatenated. This is
+-- exactly what @git mktree@ computes internally before hashing — see
+-- @GitStoreSpec@ (gitlib-effect-test) for the property test checking this
+-- matches @git mktree@ byte-for-byte for arbitrary entry sets.
+--
+-- The sort key appends a virtual @\"\/\"@ to a subtree's name (never
+-- stored, only used for comparison): git's real comparator treats a
+-- directory as if its name were followed by a separator when ordering
+-- tree entries, which can reorder it relative to a plain byte-wise sort
+-- of the bare names — e.g. @\"foo-bar\"@ sorts before the subtree
+-- @\"foo\"@, because @'-'@ (0x2D) sorts before @'\/'@ (0x2F), even though
+-- @\"foo\"@ alone would sort before @\"foo-bar\"@.
+serializeTree :: [TreeEntry] -> ByteString
+serializeTree entries = BS.concat (map entryBytes (sortBy (comparing sortKey) entries))
+  where
+    sortKey (BlobEntry name _) = BS8.pack name
+    sortKey (SubTree   name _) = BS8.pack name <> "/"
+
+    entryBytes (BlobEntry name h) = "100644 " <> BS8.pack name <> "\0" <> rawHash h
+    entryBytes (SubTree   name h) = "40000 "  <> BS8.pack name <> "\0" <> rawHash h
+
+    rawHash (ObjectHash hex) = case BA.convertFromBase BA.Base16 (TE.encodeUtf8 hex) of
+      Right bytes -> bytes
+      Left err    -> error ("Runix.Git.serializeTree: malformed object hash: " <> err)
