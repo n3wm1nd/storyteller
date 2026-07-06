@@ -74,3 +74,23 @@ spec = describe "createFile" $ do
         SM.ftKind atom    `shouldBe` "atom"
         SM.ftContent atom `shouldBe` Just "hello\n"
       Right ticks -> expectationFailure ("expected 2 ticks, got " <> show (length ticks))
+
+  -- Regression: back when the introduction tick was its own distinct
+  -- "created" tick kind, 'popTick' only special-cased 'Atom' -- popping a
+  -- "created" tick returned an empty file diff, silently losing the
+  -- file's introduction entirely on replay. Moving the introduction tick
+  -- elsewhere in the chain (which pops and re-pushes it) is the most
+  -- direct way to exercise exactly that path.
+  it "the introduction tick's file survives being moved elsewhere in the chain" $ do
+    let result = runTestFS $ do
+          tid0 <- createFile "scene.md"
+          tid1 <- SM.append "other.md" "unrelated\n"
+          _    <- SM.moveTick tid0 (Just tid1)
+          exists  <- SM.fileExistsS "scene.md"
+          content <- if exists then Just <$> SM.readFileS "scene.md" else return Nothing
+          return (exists, content)
+    case result of
+      Left err -> expectationFailure err
+      Right (exists, content) -> do
+        exists `shouldBe` True
+        content `shouldBe` Just ""
