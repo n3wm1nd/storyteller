@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split } from "lucide-react";
-import { useStory } from "@/lib/store";
+import { useServerCache } from "@/lib/serverCacheStore";
+import {
+  connect, createBranch, deleteBranch, selectBranch, openFile, createFile, closeFile,
+  openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
+  editJournalAtom, deleteJournalAtom, journalFix, appendJournal,
+  enterScene, leaveScene,
+  appendToFile, editAtom, deleteAtom, mergeSelected, splitSelected, addNote, moveTick, deleteTickEntry, uploadFiles,
+  chatWrite, chatFix, chatNote, chatRegen, chatOutline,
+} from "@/lib/serverCacheStore";
+import { useUI } from "@/lib/uiStore";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceBar } from "./fileview";
@@ -121,16 +130,15 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
 
 export default function Home() {
   const {
-    conns, error, branches, characterBranches, activeBranch, files, ticks, branchHead, openFiles,
-    openCharacters, openJournals, journalMarkers, agentLogs, preview, contextAtoms, contextAnnotations, rebaseMarker,
-    hoverHighlight, connect, createBranch, deleteBranch, selectBranch, openFile, createFile, closeFile,
-    openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
-    editJournalAtom, deleteJournalAtom, journalFix, setJournalMarker, appendJournal,
-    setHoverHighlight, clearHoverHighlight, enterScene, leaveScene,
-    appendToFile, editAtom, deleteAtom, mergeSelected, splitSelected, addNote, moveTick, deleteTickEntry, uploadFiles,
-    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, chatWrite, chatFix, chatNote, chatRegen, chatOutline,
-    setRebaseMarker,
-  } = useStory();
+    branches, characterBranches, activeBranch, files, ticks, branchHead, openFiles,
+    openCharacters, openJournals, preview,
+  } = useServerCache();
+
+  const {
+    conns, error, journalMarkers, agentLogs, contextAtoms, contextAnnotations, rebaseMarker, hoverHighlight,
+    setJournalMarker, setHoverHighlight, clearHoverHighlight,
+    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, setRebaseMarker,
+  } = useUI();
 
   const [annotationMode, setAnnotationMode] = useState<AnnotationMode>("expanded");
   const [showAllPresence, setShowAllPresence] = useState(false);

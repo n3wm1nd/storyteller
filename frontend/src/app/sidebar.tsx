@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Folder, GitBranch, Plus, Users } from "lucide-react";
-import { type ConnInfo } from "@/lib/store";
+import { type ConnInfo } from "@/lib/uiStore";
 import { type CharacterSummary } from "@/lib/ws";
 import { statusColor, characterDisplayName } from "@/lib/utils";
 import { FileTree } from "./filetree";

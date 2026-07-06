@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Users, UserPlus, X, ChevronDown, ChevronRight, History, RefreshCw } from "lucide-react";
-import { type CharacterConn, type FileConn, type WireTick } from "@/lib/store";
+import { type CharacterConn, type FileConn, type WireTick } from "@/lib/serverCacheStore";
 import { type CharacterSummary } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
 import { WireTickList } from "./fileview";

@@ -1,4 +1,4 @@
-import type { WireTick } from "./store";
+import type { WireTick } from "./ws";
 
 export type AnnotationMode = "hidden" | "dots" | "expanded";
 

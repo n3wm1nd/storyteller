@@ -4,7 +4,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw } from "lucide-react";
 import { StickyNote } from "lucide-react";
-import { type WireTick } from "@/lib/store";
+import { type WireTick } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 

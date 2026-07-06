@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare, LogIn, LogOut } from "lucide-react";
-import { type WireTick } from "@/lib/store";
+import { type WireTick } from "@/lib/serverCacheStore";
 import { tickPayload, tickField, characterDisplayName } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 
