@@ -32,6 +32,7 @@ import Runix.Git (Git)
 import Git.Mock
 
 import Storyteller.Core.Types
+import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Git (BranchOp, runStorage, runBranchOpGit, runStoryStorageGit)
 import qualified Storyteller.Core.StorageMonad as SM
@@ -254,6 +255,27 @@ spec = do
             (content, _) <- either fail return eRead
             return (content, length mapping)
       result `shouldBe` Right ("p1-revised\np2\np3\n", 2)
+
+  describe "StorageT.editAtom" $ do
+    -- Regression: 'editAtom'/'rewriteAtom' used to rebuild the tick from
+    -- scratch via 'dropTick' + 'storeAs', silently dropping any cross-branch
+    -- refs the original tick carried (the one thing
+    -- 'Storyteller.Writer.Agent.Tracker.copyAtom' attaches to an atom, relied
+    -- on by 'dropUntilAfterLastSynced's sync bookkeeping). Editing a tick's
+    -- content shouldn't touch what it's referenced by.
+    it "preserves an atom's existing cross-branch refs across an edit" $ do
+      let result = runSM $ do
+            refTarget <- storeMsg "some source tick"
+            tid <- SM.addAtom "scene.md" "original"
+                     (toDraft (Atom "scene.md" "original")) { tickRefs = [refTarget] }
+            _     <- SM.editAtom tid "scene.md" "revised"
+            ticks <- SM.fileTicksOf "scene.md"
+            return (unTickId refTarget, map SM.ftRefs ticks, map SM.ftContent ticks)
+      case result of
+        Left err -> expectationFailure err
+        Right (refTargetId, refs, contents) -> do
+          refs     `shouldBe` [[refTargetId]]
+          contents `shouldBe` [Just "revised"]
 
   describe "StorageT working-tree file access" $ do
     it "written file can be read back" $ do

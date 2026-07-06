@@ -922,7 +922,8 @@ deleteTick tid = do
   resetTree
   return mapping
 
--- | Replace an atom's content in place, preserving its chain position.
+-- | Replace an atom's content in place, preserving its chain position and
+--   any cross-branch refs it carries (see 'rewriteAtom').
 --   Returns (newTickId, tail-mapping including the edited tick itself).
 editAtom :: StorageM m => TickId -> FilePath -> Text -> StorageT m (TickId, [(TickId, TickId)])
 editAtom tid path newContent = do
@@ -1192,17 +1193,28 @@ storeAtom path content = withFS (addAtom path content (toDraft (Atom.Atom path c
 unstoreAtom :: StorageM m => TickId -> StorageT m [(TickId, TickId)]
 unstoreAtom tid = snd <$> atChecked True tid dropTick
 
--- | Replace tick @tid@ in place with a freshly-appended atom: drop it, then
---   write @content@ onto whatever's left at that position, all under one
---   rewind so the tail replays on top of the edit rather than after it
---   lands somewhere else. Returns the new tick's id and the tail's
---   old->new mapping.
+-- | Replace tick @tid@ in place with a freshly-appended atom, keeping
+--   whatever cross-branch refs it already carried (an edit changes a
+--   tick's content, not its identity or what tracks it -- see
+--   'Storyteller.Writer.Agent.Tracker.copyAtom', the one thing that
+--   attaches refs to an atom, and 'dropUntilAfterLastSynced', which relies
+--   on a tracker atom's ref surviving edits to know what's already
+--   synced). 'popTick' (not 'dropTick') recovers @tid@'s own 'TDraft' --
+--   message, fields, refs, file diff -- so only the file-diff-derived
+--   parts (message, fields, file diff) get rebuilt fresh from @content@;
+--   'tdRefs' is carried over untouched. All under one rewind so the tail
+--   replays on top of the edit rather than after it lands somewhere else.
+--   Returns the new tick's id and the tail's old->new mapping.
 rewriteAtom :: StorageM m => TickId -> FilePath -> Text -> StorageT m (TickId, [(TickId, TickId)])
 rewriteAtom tid path content = atChecked True tid $ do
-  dropTick
-  withFS $ do
-    appendFileS path (TE.encodeUtf8 content)
-    storeAs (Atom.Atom path content)
+  old <- popTick
+  let fresh = toDraft (Atom.Atom path content)
+  pushTick TDraft
+    { tdRefs      = tdRefs old
+    , tdFields    = tickFields fresh
+    , tdMessage   = tickMessage fresh
+    , tdFileDiffs = Map.singleton path content
+    }
 
 -- | Append @content@ to @path@ and commit it as a real atom tick, with no
 --   newline normalization — the primitive 'append' builds on. An isolated
