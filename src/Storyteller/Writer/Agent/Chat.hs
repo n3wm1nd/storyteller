@@ -20,11 +20,15 @@
 -- (@../runix/apps/runix-code/lib/Agent.hs@): query, and if the model called
 -- a tool, execute it and loop; otherwise return the text.
 --
--- Both tools are @Runix.Tools@'s own 'Tools.glob'/'Tools.readFile' —
--- reused as-is, same offset/limit/truncation and match behaviour as every
--- other Runix agent gets, not a reimplementation. @glob@'s pattern (e.g.
--- @\"**\/*\"@ for "everything") subsumes a plain listing, so there's no
--- separate list-files tool.
+-- All three tools are @Runix.Tools@'s own 'Tools.glob'/'Tools.readFile'/
+-- 'Tools.sedPrint' — reused as-is, same behaviour as every other Runix
+-- agent gets, not a reimplementation. @glob@'s pattern (e.g. @\"**\/*\"@ for
+-- "everything") subsumes a plain listing, so there's no separate
+-- list-files tool. @grep@/@diff@ aren't included: both need a real
+-- filesystem path underneath ('Runix.Grep'/@diff@ shell out), which a
+-- git-branch's virtual filesystem doesn't have — a pure, in-memory grep
+-- would need its own effect the way 'Storyteller.Core.Git' gave 'Glob' one
+-- (see below), not yet worth it without a concrete need.
 --
 -- Message order matters here for two reasons: correctness (a real
 -- conversation has to replay in the order it happened) and prompt-cache
@@ -105,15 +109,17 @@ defaultChatSystemPrompt =
   "You are the author's discussion partner for this story. Talk through \
   \ideas, answer questions, and brainstorm — do not write story prose \
   \unless explicitly asked to. You start out seeing only this conversation; \
-  \use glob (e.g. \"**/*\" for everything) and read_file to look at the \
-  \rest of the project whenever you need to, rather than assuming or \
-  \guessing at their contents."
+  \use glob (e.g. \"**/*\" for everything), read_file, and sed_print (for a \
+  \line range out of a long file) to look at the rest of the project \
+  \whenever you need to, rather than assuming or guessing at their \
+  \contents."
 
--- | The model's window into the branch: find paths by pattern, and read one
---   back by exact path. Deliberately just these two — no write access, no
---   grep — this agent discusses, it doesn't edit. Both are 'Runix.Tools'
---   functions already carrying their own name/description via their
---   result types' 'ToolFunction' instances, so no 'mkTool' wrapper needed.
+-- | The model's window into the branch: find paths by pattern, read one
+--   back by exact path, or pull just a line range out of a long one.
+--   Deliberately read-only — no write access, no grep — this agent
+--   discusses, it doesn't edit. All three are 'Runix.Tools' functions
+--   already carrying their own name/description via their result types'
+--   'ToolFunction' instances, so no 'mkTool' wrapper needed.
 chatTools
   :: forall branch r
   .  Members '[FileSystem branch, FileSystemRead branch, Fail] r
@@ -121,6 +127,7 @@ chatTools
 chatTools =
   [ LLMTool (Tools.glob @branch)
   , LLMTool (Tools.readFile @branch)
+  , LLMTool (Tools.sedPrint @branch)
   ]
 
 -- | A file's own tick chain, oldest-first, already interleaves the user's

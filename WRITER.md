@@ -158,8 +158,10 @@ view's drag handle.
 
   No context is gathered up front — by default the chat agent sees only the
   conversation itself. It can find and read files on the current branch via
-  tool calls (`glob`/`read_file`, both reused directly from `Runix.Tools`
-  rather than reimplemented), the same bind-a-real-effect-behind-a-tool
+  tool calls (`glob`/`read_file`/`sed_print` for a line range out of a long
+  file, all reused directly from `Runix.Tools` rather than reimplemented —
+  `grep`/`diff` aren't, both shell out and need a real filesystem path a
+  git branch doesn't have), the same bind-a-real-effect-behind-a-tool
   pattern `ReplaceTool` uses, and the same query-then-loop-on-tool-calls
   shape as `runix-code`'s agent loop. This is also why the system prompt is
   fully static (no per-call content spliced in) and history only ever grows
