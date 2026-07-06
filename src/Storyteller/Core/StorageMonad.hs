@@ -50,25 +50,20 @@ module Storyteller.Core.StorageMonad
   , WorkingTree
   , emptyWorkingTree
   , loadWorkingTree
-  , loadTree
   , flushWorkingTree
 
     -- * The monad
   , StorageT
   , runStorageT
-  , evalStorageT
 
     -- * Tick chain operations
   , headTick
   , headTickId
-  , headTree
   , getTick
-  , storeTick
   , dropTick
   , resetTree
   , syncTo
   , followChain
-  , replaceTick
   , at
   , atChecked
   , readAtS
@@ -76,21 +71,9 @@ module Storyteller.Core.StorageMonad
   , fileTicksOf
   , store
   , storeAs
-  , replace
 
     -- * File tick projection
   , FileTick(..)
-
-    -- * Working-tree file access
-  , readFileS
-  , writeFileS
-  , appendFileS
-  , listFilesS
-  , listAllFilesS
-  , fileExistsS
-  , isDirectoryS
-  , removeS
-  , createDirectoryS
 
     -- * Message encoding (tick vocabulary <-> object content)
   , encodeTickData
@@ -114,16 +97,35 @@ module Storyteller.Core.StorageMonad
   , moveTick
   , mergeAtoms
   , splitTick
-  , checkMoveOrder
   , chainPositions
   , append
   , appendAtom
   , addAtom
   , storeAtom
-  , unstoreAtom
   , rewriteAtom
   , commitWorkingTree
   , commitFiles
+
+    -- * Internal -- exported only for this module's own test suite
+    -- ("Storyteller.*Spec") and 'Storyteller.Core.Git's FileSystem bridge
+    -- ('runStoryFSGit'). NOT a stable interface: application code should
+    -- always go through the named operations above (e.g. 'store'/
+    -- 'storeAtom'/'editAtom'), never these directly -- reaching for
+    -- 'appendFileS' or similar straight from an agent/handler is exactly
+    -- the mistake this section exists to make visible
+    -- ('Storyteller.Writer.Agent.Tracker.copyAtom' used to do this).
+  , storeTick
+  , replaceTick
+  , unstoreAtom
+  , readFileS
+  , writeFileS
+  , appendFileS
+  , listFilesS
+  , listAllFilesS
+  , fileExistsS
+  , isDirectoryS
+  , removeS
+  , createDirectoryS
   ) where
 
 import Control.Monad (foldM, filterM)
@@ -258,10 +260,6 @@ loadWorkingTree commitHash = do
   cd <- gitReadCommit commitHash
   readTreeRecursive "" (commitTree cd)
 
--- | Reconstruct a 'WorkingTree' directly from a git tree hash (not a commit).
-loadTree :: StorageM m => ObjectHash -> m WorkingTree
-loadTree = readTreeRecursive ""
-
 readTreeRecursive :: StorageM m => FilePath -> ObjectHash -> m WorkingTree
 readTreeRecursive prefix treeHash = do
   entries <- readTreeM treeHash
@@ -380,10 +378,6 @@ instance MonadFail m => MonadFail (StorageT m) where
 runStorageT :: ObjectHash -> WorkingTree -> StorageT m a -> m (a, ScopeState)
 runStorageT h wt (StorageT s) = runStateT s (h, wt)
 
--- | Like 'runStorageT', discarding the final state.
-evalStorageT :: Monad m => ObjectHash -> WorkingTree -> StorageT m a -> m a
-evalStorageT h wt = fmap fst . runStorageT h wt
-
 liftG :: Monad m => m a -> StorageT m a
 liftG = lift
 
@@ -406,11 +400,6 @@ putAmbientTree wt = modify (\(h, _) -> (h, wt))
 -- | The tick id currently at head.
 headTick :: Monad m => StorageT m TickId
 headTick = TickId . unObjectHash <$> headTickId
-
--- | The working tree as it currently stands (committed content plus any
---   pending, not-yet-'storeTick'd writes).
-headTree :: Monad m => StorageT m WorkingTree
-headTree = getAmbientTree
 
 -- | Read the tick at head.
 getTick :: StorageM m => StorageT m Tick
@@ -608,10 +597,6 @@ store d = storeTick d >>= either fail return
 -- | Store a typed tick — the draft is derived via 'toDraft'.
 storeAs :: (StorageM m, TickType a) => a -> StorageT m TickId
 storeAs = store . toDraft
-
--- | 'replaceTick', unwrapped.
-replace :: StorageM m => TickId -> TickData -> StorageT m TickId
-replace tid d = replaceTick tid d >>= either fail return
 
 -- ---------------------------------------------------------------------------
 -- Working-tree file access
