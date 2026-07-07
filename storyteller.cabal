@@ -41,7 +41,9 @@ library gitlib-effect
                     -fwarn-tabs
 
 library
-  exposed-modules:  Storyteller
+  exposed-modules:  Storage.Core
+                  , Storage.Ops
+                  , Storyteller
                   , Storyteller.Core.Types
                   , Storyteller.Writer.Agent
                   , Storyteller.Core.Storage
@@ -218,6 +220,9 @@ test-suite storyteller-test
   main-is:          Main.hs
   other-modules:    Git.Mock
                   , Paths_storyteller
+                  , Storage.MockStore
+                  , Storage.CoreSpec
+                  , Storage.OpsSpec
                   , Storyteller.FileAtomsSpec
                   , Storyteller.StorageSpec
                   , Storyteller.StorageMonadSpec
@@ -253,6 +258,7 @@ test-suite storyteller-test
                   , runix
                   , universal-llm
                   , time
+                  , mtl
                   , hspec >=2.11
                   , QuickCheck >=2.14
                   , hashable

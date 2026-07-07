@@ -1,0 +1,115 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | Quick sanity tests for "Storage.Ops" -- addAtom, findAtom, editAtom,
+--   replaceAtom -- against 'Storage.MockStore', the same mock
+--   "Storage.CoreSpec" uses.
+module Storage.OpsSpec (spec) where
+
+import Prelude hiding (drop, readFile, writeFile)
+
+import Control.Monad.State.Strict (lift)
+
+import Test.Hspec
+
+import Storage.Core
+import Storage.Ops
+import Storage.MockStore
+
+spec :: Spec
+spec = do
+  describe "addAtom" $ do
+    it "commits the content as a new atom, readable back from the chain" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            committedContent "scene.md")
+      result `shouldBe` Right "p1\n"
+
+    it "also lands the same content in the ambient tree" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            readFile "scene.md")
+      result `shouldBe` Right "p1\n"
+
+    it "a second addAtom builds on the first, in both the chain and the ambient tree" $ do
+      let result = fst <$> runChain (do
+            _       <- addAtom "scene.md" "p1\n"
+            _       <- addAtom "scene.md" "p2\n"
+            chain   <- committedContent "scene.md"
+            ambient <- readFile "scene.md"
+            return (chain, ambient))
+      result `shouldBe` Right ("p1\np2\n", "p1\np2\n")
+
+    it "doesn't disturb an unrelated pending ambient write" $ do
+      let result = fst <$> runChain (do
+            writeFile "scratch.md" "pending"
+            _       <- addAtom "scene.md" "p1\n"
+            ambient <- readFile "scratch.md"
+            return ambient)
+      result `shouldBe` Right "pending"
+
+  describe "findAtom" $ do
+    it "returns the start itself when it's already an atom" $ do
+      let result = runChain (do
+            t1 <- store (Atom [] "scene.md" "p1\n")
+            found <- findAtom t1
+            return (found == t1))
+      case result of
+        Left err -> expectationFailure err
+        Right (isSelf, _finalState) -> isSelf `shouldBe` True
+
+    it "walks back past NonAtoms to the nearest preceding atom" $ do
+      let result = runChain $ do
+            t1 <- store (Atom [] "scene.md" "p1\n")
+            _  <- store (NonAtom [] "type:note\na note")
+            _  <- store (NonAtom [] "type:note\nanother note")
+            h  <- headHash
+            found <- findAtom h
+            return (found == t1)
+      case result of
+        Left err -> expectationFailure err
+        Right (isT1, _finalState) -> isT1 `shouldBe` True
+
+    it "fails when there's no atom anywhere in history" $ do
+      let result = fst <$> runChain (do
+            _ <- store (NonAtom [] "type:note\njust a note")
+            h <- headHash
+            findAtom h)
+      case result of
+        Left _  -> return ()
+        Right _ -> expectationFailure "expected findAtom to fail with no atom in history"
+
+  describe "editAtom / replaceAtom" $ do
+    it "editAtom applies the mapping function to the nearest atom's content" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- editAtom (<> " (edited)")
+            committedContent "scene.md")
+      result `shouldBe` Right "p1\n (edited)"
+
+    it "editAtom finds the nearest atom through intervening NonAtoms" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- addAtom "scene.md" "p2\n"
+            _ <- store (NonAtom [] "type:note\nabout p2")
+            _ <- editAtom (const "p2-revised\n")
+            committedContent "scene.md")
+      result `shouldBe` Right "p1\np2-revised\n"
+
+    it "replaceAtom is editAtom with a constant function" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- replaceAtom "replaced\n"
+            committedContent "scene.md")
+      result `shouldBe` Right "replaced\n"
+
+    it "editAtom preserves the edited atom's own refs" $ do
+      let result = runChain $ do
+            r  <- store (NonAtom [] "type:note\na referenced tick")
+            t1 <- store (Atom [r] "scene.md" "p1\n")
+            _  <- editAtom (const "p1-revised\n")
+            h  <- headHash
+            tick <- lift (readTick h)
+            return (tickRefs tick, t1)
+      case result of
+        Left err -> expectationFailure err
+        Right ((refs, _t1), _finalState) -> length refs `shouldBe` 1
