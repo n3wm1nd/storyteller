@@ -262,6 +262,26 @@ export function splitSelected(path: string) {
   dropFromSelection(targets);
 }
 
+export function hideSelected(path: string) {
+  const targets = buildContextTargets(path);
+  if (targets.length < 1) return;
+  const ui = useUI.getState();
+  getServerCache().openFiles[path]?.conn.send(
+    atRebase(ui.rebaseMarker, { type: "hide.atoms", targets }, ui.journalMarkers)
+  );
+  dropFromSelection(targets);
+}
+
+export function unhideSelected(path: string) {
+  const targets = buildContextTargets(path);
+  if (targets.length < 1) return;
+  const ui = useUI.getState();
+  getServerCache().openFiles[path]?.conn.send(
+    atRebase(ui.rebaseMarker, { type: "unhide.atoms", targets }, ui.journalMarkers)
+  );
+  dropFromSelection(targets);
+}
+
 export function chatWrite(path: string, text: string) {
   const context = buildContextItems(path);
   sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text, context, flowTid }));

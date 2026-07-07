@@ -8,6 +8,7 @@ import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createC
 import {
   openFile, createFile, closeFile, enterScene, leaveScene,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
+  hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
   chatConverse, chatConverseRegen,
 } from "./fileview.actions";
@@ -406,6 +407,26 @@ export default function Home() {
                   >
                     <Split style={{ width: 10, height: 10 }} />
                     Split {contextAtoms.size}
+                  </button>
+                )}
+                {contextAtoms.size >= 1 && (
+                  <button
+                    onClick={() => hideSelected(selectedFile)}
+                    title={`Hide ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""} from an agent's context (stays in the file)`}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: 6 }}
+                  >
+                    <EyeOff style={{ width: 10, height: 10 }} />
+                    Hide {contextAtoms.size}
+                  </button>
+                )}
+                {contextAtoms.size >= 1 && (
+                  <button
+                    onClick={() => unhideSelected(selectedFile)}
+                    title={`Unhide ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""}`}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: 6 }}
+                  >
+                    <Eye style={{ width: 10, height: 10 }} />
+                    Unhide {contextAtoms.size}
                   </button>
                 )}
                 {selectedFile && isOutlineFile(selectedFile) && (

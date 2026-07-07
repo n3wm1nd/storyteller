@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName } from "@/lib/utils";
@@ -101,6 +101,7 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const content = atom.content ?? "";
+  const hidden  = atom.fields?.hide === "true";
 
   function startEdit() {
     setDraft(content);
@@ -128,7 +129,8 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
         background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : "transparent",
         borderRadius: inContext ? 4 : 0,
         marginBottom: isLast ? 0 : editing ? (compact ? 6 : 16) : (compact ? 2 : undefined),
-        transition: "background 0.15s",
+        opacity: hidden ? 0.45 : 1,
+        transition: "background 0.15s, opacity 0.15s",
       }}
     >
       {!compact && (
@@ -142,6 +144,12 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
         >
           <div style={{ width: 2, height: "100%", background: barColor, transition: "background 0.15s", borderRadius: 1 }} />
         </div>
+      )}
+      {hidden && (
+        <EyeOff
+          title="Hidden from an agent's context"
+          style={{ position: "absolute", top: 2, left: compact ? -2 : 12, width: 11, height: 11, color: "var(--text-ghost)" }}
+        />
       )}
 
       {editing ? (

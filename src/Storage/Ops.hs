@@ -13,9 +13,11 @@ module Storage.Ops
   , editAtom
   , editAtomAt
   , replaceAtom
+  , setAtomHidden
   , commitWorktree
   , commitFile
   , commitFiles
+  , atomHistory
   , exists
 
     -- * Chain-editing operations -- position-aware moves\/merges\/splits
@@ -68,7 +70,7 @@ addAtom = addAtomWithRefs []
 --   to reference other ticks, not just append content.
 addAtomWithRefs :: StoreM m => [ObjectHash] -> FilePath -> Text -> StoreT m ObjectHash
 addAtomWithRefs refs path content = do
-  newHead <- store (Atom refs path content)
+  newHead <- store (Atom refs path [] content)
   appendFile path content
   return newHead
 
@@ -96,8 +98,8 @@ editAtom f = do
   h      <- headHash
   target <- findAtom h
   at target $ editTick $ \old -> case old of
-    Atom refs path content -> return (Atom refs path (f content))
-    NonAtom {}              -> fail "editAtom: findAtom returned a non-atom (unreachable)"
+    Atom refs path tags content -> return (Atom refs path tags (f content))
+    NonAtom {}                   -> fail "editAtom: findAtom returned a non-atom (unreachable)"
 
 -- | Replace the nearest atom's content outright -- 'editAtom' with a
 --   constant function.
@@ -110,8 +112,21 @@ replaceAtom = editAtom . const
 --   and chain position.
 editAtomAt :: StoreM m => ObjectHash -> Text -> StoreT m ObjectHash
 editAtomAt target content = at target $ editTick $ \old -> case old of
-  Atom refs path _ -> return (Atom refs path content)
-  NonAtom {}        -> fail ("editAtomAt: not an atom: " <> T.unpack (unObjectHash target))
+  Atom refs path tags _ -> return (Atom refs path tags content)
+  NonAtom {}             -> fail ("editAtomAt: not an atom: " <> T.unpack (unObjectHash target))
+
+-- | Set or clear a specific atom's own "hide" tag in place -- same
+--   arbitrary-id, preserves-refs-and-position shape as 'editAtomAt'. The
+--   tag stays with the tick permanently (see "Storage.Core"'s 'atomTags'),
+--   not a reference to it from elsewhere in the chain the way a note is.
+setAtomHidden :: StoreM m => ObjectHash -> Bool -> StoreT m ObjectHash
+setAtomHidden target hidden = at target $ editTick $ \old -> case old of
+  Atom refs path tags content -> return (Atom refs path (setTag tags) content)
+  NonAtom {}                   -> fail ("setAtomHidden: not an atom: " <> T.unpack (unObjectHash target))
+  where
+    setTag tags
+      | hidden    = ("hide", "true") : filter ((/= "hide") . fst) tags
+      | otherwise = filter ((/= "hide") . fst) tags
 
 -- | Append @content@ to @path@ as a single atom, ensuring it ends with a
 --   newline first -- an appended atom is one text block on disk, and a
@@ -162,18 +177,54 @@ commitWorktree = do
   ambient   <- list
   committed <- inWorktree list
   mapM_ commitFile (List.nub (ambient ++ committed))
+  syncOpaqueContent
+
+-- | Whatever the per-path loop above left untouched -- any path that was
+--   never atom-tracked and isn't valid UTF-8 (a binary file dropped in by
+--   hand, or a whole pre-existing repo adopted wholesale as a
+--   StoryStorage branch) -- still needs to actually land in a real commit
+--   to persist at all; 'commitFile' deliberately skips such paths rather
+--   than trying to track them individually (see its own Haddock, and the
+--   'Tick' module Haddock's 'Opaque' case: we don't know, and don't need
+--   to know, how many paths that covers). By now every atom-tracked path
+--   already matches what its own reconciliation just committed, so if the
+--   ambient tree's overall content still differs from head's, the
+--   difference can only be exactly that untracked content -- one opaque
+--   commit adopts all of it at once, no per-path enumeration needed.
+syncOpaqueContent :: StoreM m => StoreT m ()
+syncOpaqueContent = do
+  current   <- getAmbientTree
+  committed <- inWorktree getAmbientTree
+  if current == committed then return () else () <$ store (Opaque [])
 
 -- | Reconcile one file's ambient content against its committed atom
 --   history -- see the section Haddock for the classification rule. A
---   path with no atom history at all is introduced fresh.
+--   path with no atom history at all is introduced fresh, *if* its
+--   ambient content is valid UTF-8 -- otherwise (a binary file dropped in
+--   by hand, e.g. via the git CLI, or a whole pre-existing repo adopted
+--   wholesale as a StoryStorage backing branch) it's left entirely
+--   untouched: no tick, no tracking, just an ordinary file sitting in the
+--   tree, same as it would be in any git repo that never heard of atoms.
+--   A path that's *already* atom-tracked ('hasAnyAtom') has no such
+--   escape hatch -- its own invariant (content is the fold of its atoms)
+--   is load-bearing for every other operation here, so tampering with it
+--   externally into something non-UTF8 surfaces as a loud failure
+--   ('readWorking'), not a silent skip; that data needs a human, not a
+--   graceful fallback.
 commitFile :: StoreM m => FilePath -> StoreT m ()
 commitFile path = do
-  history <- atomHistory path
-  present <- exists path
-  target  <- readWorking path
-  if null history
-    then storeNewFile path target
+  tracked <- hasAnyAtom path
+  if not tracked
+    then do
+      present <- exists path
+      bytes   <- if present then readFile path else return BS.empty
+      case TE.decodeUtf8' bytes of
+        Left _     -> return ()
+        Right text -> storeNewFile path text
     else do
+      history <- atomHistory path
+      present <- exists path
+      target  <- readWorking path
       reconcileFile path history target
       remaining <- atomHistory path
       -- A target that reconciles down to nothing collapses every gap to
@@ -188,12 +239,32 @@ commitFile path = do
       -- leaving an empty marker atom behind so presence survives even
       -- when content doesn't.
       case remaining of
-        [] | present -> () <$ store (Atom [] path "")
+        [] | present -> () <$ store (Atom [] path [] "")
         _            -> return ()
+
+-- | Whether @path@ has ever had at least one 'Atom' tick -- a short-
+--   circuiting existence check, not the full 'atomHistory' walk. By the
+--   "once atom, always atom" invariant, finding a single match already
+--   proves @path@ is atom-governed from here on -- there's no need to see
+--   the rest of its history (let alone reach root) just to answer this.
+hasAnyAtom :: StoreM m => FilePath -> StoreT m Bool
+hasAnyAtom path = headHash >>= go
+  where
+    go h = do
+      t <- lift (readTick h)
+      case t of
+        Atom _ p _ _ | p == path -> return True
+        _ -> do
+          cd <- lift (readCommit h)
+          case commitParents cd of
+            []      -> return False
+            (p : _) -> go p
 
 -- | This file's own committed history: each atom tick's own contribution
 --   to @path@, oldest first. Walks the whole chain from head to root --
---   the same cost 'findAtom' or any other history walk here pays.
+--   the same cost 'findAtom' or any other history walk here pays. Only
+--   worth paying once 'hasAnyAtom' has already confirmed there's
+--   something to collect.
 atomHistory :: StoreM m => FilePath -> StoreT m [(ObjectHash, Text)]
 atomHistory path = headHash >>= \h -> go h []
   where
@@ -201,7 +272,7 @@ atomHistory path = headHash >>= \h -> go h []
       t  <- lift (readTick h)
       cd <- lift (readCommit h)
       let acc' = case t of
-            Atom _ p content | p == path -> (h, content) : acc
+            Atom _ p _ content | p == path -> (h, content) : acc
             _                            -> acc
       case commitParents cd of
         []      -> return acc'
@@ -237,8 +308,8 @@ rootHash = headHash >>= go
 --   if any.
 storeNewFile :: StoreM m => FilePath -> Text -> StoreT m ()
 storeNewFile path content = do
-  _ <- store (Atom [] path "")
-  if T.null content then return () else () <$ store (Atom [] path content)
+  _ <- store (Atom [] path [] "")
+  if T.null content then return () else () <$ store (Atom [] path [] content)
 
 -- | The reconciliation proper, once this file is known to have some
 --   existing atom history. Every atom's own current id is re-derived by
@@ -286,8 +357,8 @@ reconcileFile path history target = do
         Dropped -> at origId drop >> return (anchor1, liveIdx1)
         Changed -> do
           newId <- at origId $ editTick $ \old -> case old of
-            Atom refs _ _ -> return (Atom refs p content)
-            NonAtom {}    -> fail "commitFile: matched tick isn't an atom (unreachable)"
+            Atom refs _ tags _ -> return (Atom refs p tags content)
+            NonAtom {}         -> fail "commitFile: matched tick isn't an atom (unreachable)"
           return (newId, liveIdx1 + 1)
 
 -- | The @idx@-th atom (0-indexed, oldest first) currently in @path@'s
@@ -310,7 +381,7 @@ emitStandaloneGap :: StoreM m => FilePath -> ObjectHash -> Text -> GapFate -> St
 emitStandaloneGap _    anchor _       fate | fate /= Standalone = return anchor
 emitStandaloneGap _    anchor content _                         | T.null content = return anchor
 emitStandaloneGap path anchor content _                         =
-  at anchor (store (Atom [] path content))
+  at anchor (store (Atom [] path [] content))
 
 -- ---------------------------------------------------------------------------
 -- Matching: recover each atom's surviving core from the target content
@@ -564,9 +635,9 @@ mergeAtoms tids = do
   merged <- at (last ordered) $ do
     popped <- popN (length ordered)
     let ticks   = reverse popped  -- oldest first, matching 'ordered'
-        content = T.concat [ c | Atom _ _ c <- ticks ]
+        content = T.concat [ c | Atom _ _ _ c <- ticks ]
         refs    = filter (`notElem` tids) (concatMap tickRefs ticks)
-    store (Atom refs path content)
+    store (Atom refs path [] content)
   -- 'at's fallback only ever logs @last ordered -> merged@ (it's the one
   -- 'at' actually navigated to); every *other* merged id also needs to
   -- resolve to the same result -- several-old-ids-to-one-new-id, the
@@ -585,8 +656,8 @@ mergeAtoms tids = do
         _   -> fail "mergeAtoms: selected atoms must all belong to the same file"
 
     fileOfTick chain tid = case lookup tid chain of
-      Just (Atom _ p _) -> return p
-      _                 -> fail ("mergeAtoms: not an atom: " <> T.unpack (unObjectHash tid))
+      Just (Atom _ p _ _) -> return p
+      _                   -> fail ("mergeAtoms: not an atom: " <> T.unpack (unObjectHash tid))
 
     -- Popping n times off head (head is set to the last atom of the group
     -- by the enclosing 'at') walks backward through each member in turn,
@@ -608,8 +679,8 @@ splitTick _ pieces | length pieces < 2 =
 splitTick tid pieces = at tid $ do
   old <- drop
   ids <- case old of
-    Atom refs path _ -> storePieces refs path pieces
-    NonAtom {}        -> fail ("splitTick: not an atom: " <> T.unpack (unObjectHash tid))
+    Atom refs path tags _ -> storePieces refs path tags pieces
+    NonAtom {}             -> fail ("splitTick: not an atom: " <> T.unpack (unObjectHash tid))
   -- 'at' can't guess which of several new ticks a one-to-many action's
   -- @target@ itself becomes -- say so explicitly, so a ref to @tid@
   -- resolves to the piece that's meant to inherit it (see
@@ -619,8 +690,11 @@ splitTick tid pieces = at tid $ do
     []               -> return ()
   return ids
   where
-    storePieces _    _    []       = return []
-    storePieces refs path (p : ps) = do
-      newId <- store (Atom refs path p)
-      rest  <- storePieces [] path ps
+    -- Every piece inherits the original atom's own tags (e.g. a hidden
+    -- atom splits into hidden pieces) -- only the incoming refs are
+    -- one-shot, going to the first piece alone.
+    storePieces _    _    _    []       = return []
+    storePieces refs path tags (p : ps) = do
+      newId <- store (Atom refs path tags p)
+      rest  <- storePieces [] path tags ps
       return (newId : rest)

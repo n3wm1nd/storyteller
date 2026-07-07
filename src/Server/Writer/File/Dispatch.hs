@@ -29,7 +29,7 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
-import Server.Core.File (FileOpen, createFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, chatNote)
+import Server.Core.File (FileOpen, createFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote)
 import Server.Writer.File (chatWriter, chatFixer, chatConverse, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
@@ -68,6 +68,12 @@ runCommand path cmd = case cmd of
 
   SplitAtoms _mid targets ->
     splitFileAtoms (map TickId targets)
+
+  HideAtoms _mid targets ->
+    hideFileAtoms (map TickId targets)
+
+  UnhideAtoms _mid targets ->
+    unhideFileAtoms (map TickId targets)
 
   ChatWriter _mid prompt context flowTid ->
     chatWriter path prompt context (TickId <$> flowTid)

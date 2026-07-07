@@ -19,6 +19,7 @@ module Storage.CommitWorktreeSpec (spec) where
 import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
+import qualified Data.ByteString as BS
 import qualified Data.List as List
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -49,7 +50,7 @@ atomContents p = headHash >>= \h -> go h []
       t  <- lift (readTick h)
       cd <- lift (readCommit h)
       let acc' = case t of
-            Atom _ p' content | p' == p -> content : acc
+            Atom _ p' _ content | p' == p -> content : acc
             _                           -> acc
       case commitParents cd of
         []      -> return acc'
@@ -359,3 +360,72 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right ((stillPresent, _ids), _finalState) -> stillPresent `shouldBe` False
+
+  -- Non-UTF8 ambient content — see the "one small can of worms" design
+  -- conversation: a path that was *never* atom-tracked (dropped in by
+  -- hand, e.g. via the git CLI, or part of a whole pre-existing repo
+  -- adopted wholesale as a StoryStorage backing branch) must not crash
+  -- commitWorktree at all — 'commitFile' leaves it alone, and
+  -- 'syncOpaqueContent' folds it (and anything else untracked) into one
+  -- opaque commit so it actually persists, without needing to know or
+  -- enumerate which specific paths it covers. A path that's *already*
+  -- atom-tracked has no such escape hatch: its own fold-of-atoms
+  -- invariant is load-bearing, so external tampering into non-UTF8
+  -- content must still surface as a loud failure, not a silent skip.
+  describe "commitWorktree: non-UTF8 ambient content" $ do
+    let binaryBytes = BS.pack [0xFF, 0xFE, 0x00, 0x01, 0x02]
+
+    it "a never-atom-tracked binary file survives commitWorktree untouched, with no atom history" $ do
+      let result = runChain (do
+            writeFile "portrait.png" binaryBytes
+            commitWorktree
+            stillPresent <- elem "portrait.png" <$> inWorktree list
+            history      <- atomHistory "portrait.png"
+            content      <- committedContent "portrait.png"
+            return (stillPresent, history, content))
+      case result of
+        Left err -> expectationFailure err
+        Right ((stillPresent, history, content), _finalState) -> do
+          stillPresent `shouldBe` True
+          history `shouldBe` []
+          content `shouldBe` binaryBytes
+
+    it "a never-atom-tracked binary file doesn't disturb a sibling text file's own reconciliation" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            writeFile "portrait.png" binaryBytes
+            writeFile "scene.md" (TE.encodeUtf8 "p1XXX")
+            commitWorktree
+            committedContent "scene.md")
+      result `shouldBe` Right (TE.encodeUtf8 "p1XXX")
+
+    it "an already atom-tracked file clobbered with binary content still crashes commitWorktree" $ do
+      let result = runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            writeFile "scene.md" binaryBytes
+            commitWorktree)
+      case result of
+        Left _  -> return () -- expected: reconcileFile's own readWorking fails loudly
+        Right _ -> expectationFailure "expected commitWorktree to fail on non-UTF8 content over an atom-tracked path, but it succeeded"
+
+    it "multiple untracked binary files in one go all persist after a single commitWorktree" $ do
+      let result = fst <$> runChain (do
+            writeFile "portrait.png" binaryBytes
+            writeFile "cover.jpg" (BS.pack [0x00, 0x11, 0x22])
+            commitWorktree
+            p <- committedContent "portrait.png"
+            c <- committedContent "cover.jpg"
+            return (p, c))
+      result `shouldBe` Right (binaryBytes, BS.pack [0x00, 0x11, 0x22])
+
+    it "re-running commitWorktree with nothing changed doesn't add a redundant opaque commit" $ do
+      let result = runChain (do
+            writeFile "portrait.png" binaryBytes
+            commitWorktree
+            before <- chainIds
+            commitWorktree
+            after <- chainIds
+            return (length before, length after))
+      case result of
+        Left err -> expectationFailure err
+        Right ((before, after), _finalState) -> after `shouldBe` before

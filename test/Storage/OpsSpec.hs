@@ -50,7 +50,7 @@ spec = do
   describe "findAtom" $ do
     it "returns the start itself when it's already an atom" $ do
       let result = runChain (do
-            t1 <- store (Atom [] "scene.md" "p1\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
             found <- findAtom t1
             return (found == t1))
       case result of
@@ -59,7 +59,7 @@ spec = do
 
     it "walks back past NonAtoms to the nearest preceding atom" $ do
       let result = runChain $ do
-            t1 <- store (Atom [] "scene.md" "p1\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
             _  <- store (NonAtom [] "type:note\na note")
             _  <- store (NonAtom [] "type:note\nanother note")
             h  <- headHash
@@ -105,7 +105,7 @@ spec = do
     it "editAtom preserves the edited atom's own refs" $ do
       let result = runChain $ do
             r  <- store (NonAtom [] "type:note\na referenced tick")
-            t1 <- store (Atom [r] "scene.md" "p1\n")
+            t1 <- store (Atom [r] "scene.md" [] "p1\n")
             _  <- editAtom (const "p1-revised\n")
             h  <- headHash
             tick <- lift (readTick h)
@@ -113,3 +113,29 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right ((refs, _t1), _finalState) -> length refs `shouldBe` 1
+
+  describe "setAtomHidden" $ do
+    it "tags the atom hidden without touching its content" $ do
+      let result = fst <$> runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- setAtomHidden t1 True
+            h  <- headHash
+            lift (readTick h))
+      result `shouldBe` Right (Atom [] "scene.md" [("hide", "true")] "p1\n")
+
+    it "unhiding clears the tag again" $ do
+      let result = fst <$> runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- setAtomHidden t1 True
+            _  <- setAtomHidden t1 False
+            h  <- headHash
+            lift (readTick h))
+      result `shouldBe` Right (Atom [] "scene.md" [] "p1\n")
+
+    it "hiding an atom earlier in the chain doesn't disturb a later atom's own content" $ do
+      let result = fst <$> runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- addAtom "scene.md" "p2\n"
+            _  <- setAtomHidden t1 True
+            committedContent "scene.md")
+      result `shouldBe` Right "p1\np2\n"

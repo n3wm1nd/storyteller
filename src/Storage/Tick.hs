@@ -94,8 +94,9 @@ storeAs a = store (NonAtom (map coerceRef (ST.tickRefs td)) (encodeTickData td))
 
 -- | @h@'s own commit, decoded as a typed 'Tick' -- an 'Atom'\'s "type:atom\n"
 --   tag and "file" field are reconstructed ('Storage.Core' strips both off
---   into 'atomPath'\/'atomContent' directly on the way in); anything else
---   is decoded via 'decodeTickData'.
+--   into 'atomPath'\/'atomContent' directly on the way in, and any other
+--   header field into 'atomTags' -- e.g. a "hide" tag); anything else is
+--   decoded via 'decodeTickData'.
 readTypesTick :: StoreM m => ObjectHash -> StoreT m ST.Tick
 readTypesTick h = do
   t  <- lift (readTick h)
@@ -107,9 +108,9 @@ readTypesTick h = do
         , ST.posRefs   = map uncoerceRef (List.drop 1 parents)
         }
       td = case t of
-        Atom _ path content -> ST.TickData
+        Atom _ path tags content -> ST.TickData
           { ST.tickRefs    = ST.posRefs pos
-          , ST.tickFields  = [("file", T.pack path)]
+          , ST.tickFields  = ("file", T.pack path) : tags
           , ST.tickMessage = "type:atom\n" <> content
           }
         NonAtom _ raw -> (decodeTickData raw) { ST.tickRefs = ST.posRefs pos }
@@ -193,8 +194,8 @@ fileTicksOf path = do
       t <- lift (readTick h)
       let refs = List.drop 1 (commitParents cd)
           (fields, msg, mContent) = case t of
-            Atom _ p content ->
-              ( [("file", T.pack p)], "type:atom\n" <> content
+            Atom _ p tags content ->
+              ( ("file", T.pack p) : tags, "type:atom\n" <> content
               , if p == path then Just content else Nothing )
             NonAtom _ raw ->
               let td = decodeTickData raw in (ST.tickFields td, ST.tickMessage td, Nothing)

@@ -273,24 +273,67 @@ toEntry prefix name wt =
 --   Storyteller tick kind (@Root@, @Note@, @Prompt@, ...), each with its
 --   own @"type:<tag>\\n"@ of its own -- passes through as a 'NonAtom'
 --   verbatim, undecoded, for that higher layer to make sense of.
+--
+--   'atomTags' carries whatever else was in the header block besides
+--   @file@ -- e.g. @("hide", "true")@ -- permanently attached to the tick
+--   itself (unlike a 'NonAtom' \"note\", which merely references another
+--   tick from its own place in the chain). Safe to round-trip even
+--   pathological content: content only ever starts after the *first*
+--   @"\\n\\n"@, and every header line is one we generate ourselves as a
+--   single @key:value@ line with no embedded newline, so that boundary
+--   can never be confused with anything inside 'atomContent' itself.
+--
+--   'Binary' and 'Opaque' are two different answers to "content this
+--   module never diffs as prose," for two different origins:
+--
+--   * 'Binary' is for content *we* deliberately introduce at a known
+--     path (a character portrait upload, some future asset API) --
+--     it knows its own 'binaryPath', the same way 'Atom' knows
+--     'atomPath', it just never embeds its bytes as message text; they're
+--     spliced into the tree from whatever's currently ambient at that
+--     path (see "Storage.Ops"), replaced wholesale each time rather than
+--     appended to.
+--   * 'Opaque' is for content *we didn't* introduce at all -- a whole
+--     git commit made some other way (the CLI, a repo adopted wholesale
+--     as a StoryStorage branch), which could touch any number of paths we
+--     have no way of enumerating and no reason to. It carries no path
+--     because there isn't *a* path -- 'store'\'s own handling for it just
+--     adopts whatever's in the ambient tree wholesale, without asking
+--     which parts of it changed.
+--
+--   Neither is read back or verified by this module -- once content is
+--   'Binary' or came in as 'Opaque', it's trusted, not policed: there's
+--   nothing this module could sensibly do about a conflict even if it
+--   noticed one.
 data Tick
-  = Atom    { tickRefs :: [ObjectHash], atomPath :: FilePath, atomContent :: Text }
+  = Atom    { tickRefs :: [ObjectHash], atomPath :: FilePath, atomTags :: [(Text, Text)], atomContent :: Text }
   | NonAtom { tickRefs :: [ObjectHash], nonAtomMessage :: Text }
+  | Binary  { tickRefs :: [ObjectHash], binaryPath :: FilePath }
+  | Opaque  { tickRefs :: [ObjectHash] }
   deriving (Show, Eq)
 
 atomTag :: Text
 atomTag = "type:atom\n"
 
+binaryTag :: Text
+binaryTag = "type:binary\n"
+
+opaqueTag :: Text
+opaqueTag = "type:opaque\n"
+
 encodeTick :: Tick -> Text
-encodeTick (NonAtom _ msg)         = msg
-encodeTick (Atom _ path content) = "file:" <> T.pack path <> "\n\n" <> atomTag <> content
+encodeTick (NonAtom _ msg) = msg
+encodeTick (Atom _ path tags content) =
+  T.concat (map (\(k, v) -> k <> ":" <> v <> "\n") (("file", T.pack path) : tags)) <> "\n" <> atomTag <> content
+encodeTick (Binary _ path) = "file:" <> T.pack path <> "\n\n" <> binaryTag
+encodeTick (Opaque _) = opaqueTag
 
 -- | An atom, if @raw@ has the shape 'encodeTick' gives one: a @file@
 --   field, a blank line, then the @"type:atom\\n"@ tag. Anything else
 --   (no fields at all, a different tag, fields without that one) isn't
 --   an atom this module recognises -- 'decodeTick' falls back to
 --   'NonAtom' for all of it, verbatim.
-decodeAtom :: Text -> Maybe (FilePath, Text)
+decodeAtom :: Text -> Maybe (FilePath, [(Text, Text)], Text)
 decodeAtom raw = do
   let (headerBlock, rest0) = T.breakOn "\n\n" raw
   body <- if T.null rest0 then Nothing else Just (T.drop 2 rest0)
@@ -300,12 +343,36 @@ decodeAtom raw = do
                , let (k, v) = T.breakOn ":" l
                , not (T.null v) ]
   path <- lookup "file" fields
-  return (T.unpack path, payload)
+  let tags = filter ((/= "file") . fst) fields
+  return (T.unpack path, tags, payload)
+
+-- | A binary marker, if @raw@ has the shape 'encodeTick' gives one: a
+--   @file@ field, a blank line, the @"type:binary\\n"@ tag, and *nothing*
+--   after it -- the payload must be empty, since 'Binary' never carries
+--   its content in the message the way 'Atom' does. A message that merely
+--   starts with that tag but goes on to say more isn't this module's own
+--   'Binary' encoding (could be an app-level 'NonAtom' kind that happens
+--   to reuse the word), so it's correctly left to fall through instead.
+decodeBinary :: Text -> Maybe FilePath
+decodeBinary raw = do
+  let (headerBlock, rest0) = T.breakOn "\n\n" raw
+  body <- if T.null rest0 then Nothing else Just (T.drop 2 rest0)
+  payload <- T.stripPrefix binaryTag body
+  if T.null payload then T.unpack <$> lookup "file" fields else Nothing
+  where
+    fields = [ (k, T.drop 1 v)
+             | l <- T.lines (fst (T.breakOn "\n\n" raw))
+             , let (k, v) = T.breakOn ":" l
+             , not (T.null v) ]
 
 decodeTick :: [ObjectHash] -> Text -> Tick
-decodeTick refs raw = case decodeAtom raw of
-  Just (path, content) -> Atom refs path content
-  Nothing               -> NonAtom refs raw
+decodeTick refs raw
+  | raw == opaqueTag = Opaque refs
+  | otherwise = case decodeBinary raw of
+      Just path -> Binary refs path
+      Nothing -> case decodeAtom raw of
+        Just (path, tags, content) -> Atom refs path tags content
+        Nothing                     -> NonAtom refs raw
 
 -- | Read and decode the tick held by the commit at a given hash.
 readTick :: StoreM m => ObjectHash -> m Tick
@@ -452,6 +519,23 @@ store t = do
         _                -> return BS.empty
       newBlob <- liftG (writeBlobM (oldContent <> TE.encodeUtf8 suffix))
       liftG (flushWorkingTree (Map.insert path (FSFile newBlob) parentWt))
+    Binary { binaryPath = path } -> do
+      -- Unlike Atom, a Binary tick carries no content field of its own --
+      -- whatever's currently in the *ambient* tree at this path (already
+      -- written there by the caller, e.g. via 'writeFile') is what gets
+      -- committed, verbatim, replacing whatever was there before.
+      parentWt  <- liftG (loadWorkingTree h)
+      ambientWt <- getAmbientTree
+      case Map.lookup path ambientWt of
+        Just node -> liftG (flushWorkingTree (Map.insert path node parentWt))
+        Nothing   -> liftG (flushWorkingTree parentWt)
+    Opaque {} ->
+      -- No path to splice -- adopt the whole ambient tree as-is. Safe
+      -- for every already-atom-tracked path too: by the time anything
+      -- calls this (see 'Storage.Ops.commitWorktree'), every such path's
+      -- ambient content already matches what its own reconciliation just
+      -- committed, so re-flushing the whole tree changes nothing there.
+      liftG . flushWorkingTree =<< getAmbientTree
   newHash <- liftG $ writeCommit CommitData
     { commitParents = h : refs
     , commitTree    = treeHash

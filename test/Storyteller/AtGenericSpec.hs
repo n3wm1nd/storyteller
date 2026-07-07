@@ -93,9 +93,9 @@ buildChain
   => Sem r (Core.ObjectHash, Core.ObjectHash)
 buildChain = do
   _ <- createBranch mainBranch
-  (a1, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" "A\n")))
-  _ <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" "B\n")))
-  (a3, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" "C\n")))
+  (a1, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "A\n")))
+  _ <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "B\n")))
+  (a3, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "C\n")))
   return (a1, a3)
 
 -- | Descend from head a3 to a1, run @inner@ there, replay a2\/a3 back --
@@ -162,7 +162,7 @@ singleWriteText _        = Nothing
 --   Without this the replay reproduces identical content-addressed commits
 --   and the remap is identity -- no real cross-branch work to verify.
 markerInner :: forall r. Members '[BranchOp Main, Git, Fail] r => Sem r ()
-markerInner = () <$ runStorage @Main (Core.store (Core.Atom [] "m.md" "M\n"))
+markerInner = () <$ runStorage @Main (Core.store (Core.Atom [] "m.md" [] "M\n"))
 
 forkBranch :: BranchName
 forkBranch = BranchName "fork"
@@ -214,7 +214,7 @@ runForkWithOwnCommit inner =
   $ do
     (target, origHead) <- buildChain
     setRef forkBranch (Just (TickId (Core.unObjectHash origHead)))
-    _ <- runBranchOpGit @Main forkBranch (runStorage @Main (Core.store (Core.Atom [] "f.md" "F\n")))
+    _ <- runBranchOpGit @Main forkBranch (runStorage @Main (Core.store (Core.Atom [] "f.md" [] "F\n")))
     txRes <- runFail $ withStorage $ runBranchOpGit @Main mainBranch $
                atGeneric @Main (TickId (Core.unObjectHash target)) inner
     mainHead <- (branchHead <$>) <$> getBranch mainBranch

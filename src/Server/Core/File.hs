@@ -31,6 +31,8 @@ module Server.Core.File
   , moveFileAtom
   , mergeFileAtoms
   , splitFileAtoms
+  , hideFileAtoms
+  , unhideFileAtoms
   , chatNote
   , readFileContent
   ) where
@@ -158,6 +160,25 @@ splitFileAtoms tids = do
           case pieces of
             (_ : _ : _) -> void $ runStorage @Main (Ops.splitTick (toHash tid) pieces)
             _           -> return ()
+
+-- | Hide (or unhide) a batch of atoms in place -- same "furthest-in-chain
+--   first" discipline as 'splitFileAtoms': each rebase renumbers everything
+--   after it, so processing back-to-front keeps every not-yet-processed
+--   target's id valid when its own turn comes.
+setFileAtomsHidden :: FileOpen r => [TickId] -> Bool -> Sem r ()
+setFileAtomsHidden tids hidden = do
+  (positioned, _) <- runStorage @Main (Ops.chainPositions (map toHash tids))
+  mapM_ (\tid -> void $ runStorage @Main (Ops.setAtomHidden (toHash tid) hidden))
+        (map (fromHash . fst) (sortOn (Down . snd) positioned))
+
+-- | Hide a batch of atoms from an agent's ambient context without
+--   deleting them -- see 'Storage.Ops.setAtomHidden'.
+hideFileAtoms :: FileOpen r => [TickId] -> Sem r ()
+hideFileAtoms tids = setFileAtomsHidden tids True
+
+-- | The inverse of 'hideFileAtoms'.
+unhideFileAtoms :: FileOpen r => [TickId] -> Sem r ()
+unhideFileAtoms tids = setFileAtomsHidden tids False
 
 toHash :: TickId -> Core.ObjectHash
 toHash (TickId t) = Core.ObjectHash t

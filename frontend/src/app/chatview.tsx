@@ -7,7 +7,7 @@
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
 import { useRef, useState } from "react";
-import { Send, RotateCcw } from "lucide-react";
+import { Send, RotateCcw, EyeOff } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
@@ -146,8 +146,15 @@ function AssistantReply({ atomTick, disabled, showRegen, onSave, onRegen }: {
   onRegen: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const hidden = atomTick.fields?.hide === "true";
   return (
-    <div style={{ alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 4, maxWidth: editing ? "100%" : "72%", width: editing ? "100%" : undefined }}>
+    <div style={{ alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 4, maxWidth: editing ? "100%" : "72%", width: editing ? "100%" : undefined, opacity: hidden ? 0.45 : 1 }}>
+      {hidden && (
+        <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--text-ghost)" }}>
+          <EyeOff style={{ width: 10, height: 10 }} />
+          hidden from context
+        </span>
+      )}
       <EditableBubble
         align="flex-start"
         content={atomTick.content ?? atomTick.message}

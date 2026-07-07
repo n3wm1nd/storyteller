@@ -63,7 +63,7 @@ type ChapterContentCache = Map FilePath T.Text
 --   to be monadic in 'StoreT' to satisfy 'Core.memoFold's own signature.
 foldChapterContent :: Core.StoreM m => ChapterContentCache -> Core.ObjectHash -> Core.Tick -> Core.StoreT m ChapterContentCache
 foldChapterContent acc _h tick = return $ case tick of
-  Core.Atom _ path content | Chapter _ <- classifyPath path ->
+  Core.Atom _ path _ content | Chapter _ <- classifyPath path ->
     Map.insertWith (flip (<>)) path content acc
   _ -> acc
 

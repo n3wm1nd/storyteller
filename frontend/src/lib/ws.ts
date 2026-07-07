@@ -163,6 +163,12 @@ export type FileCommand =
   | { type: "merge.atoms"; id?: string; targets: string[] }
   // Split: re-run the splitter over each of `targets`' own content, in place.
   | { type: "split.atoms"; id?: string; targets: string[] }
+  // Hide/unhide: tag (or untag) each of `targets` as excluded from an
+  // agent's ambient context, in place — the atoms stay in the file, just
+  // marked (see Storage.Ops.setAtomHidden). Surfaces on the tick as
+  // `fields.hide === "true"`.
+  | { type: "hide.atoms";   id?: string; targets: string[] }
+  | { type: "unhide.atoms"; id?: string; targets: string[] }
   // Writer, or FlowWriter (implicitly) when `flowTid` is set — the tick
   // that was HEAD when the user started typing, so the agent can judge
   // whether atoms generated since then are still provisional.

@@ -71,6 +71,10 @@ data FileCommand
   -- | Re-run the splitter over each of @fcTargets@'s own content, in place.
   --   See 'Storyteller.Core.Edit.splitTick'.
   | SplitAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
+  -- | Hide (or unhide) @fcTargets@ from an agent's ambient context, in
+  --   place -- the atoms stay in the file. See 'Storage.Ops.setAtomHidden'.
+  | HideAtoms   { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
+  | UnhideAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
   -- | Discuss, don't write: send a message to the chat agent, which sees
@@ -122,6 +126,8 @@ instance FromJSON FileCommand where
       "move.atom"   -> MoveAtom   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "merge.atoms" -> MergeAtoms i . fromMaybe [] <$> o .:? "targets"
       "split.atoms" -> SplitAtoms i . fromMaybe [] <$> o .:? "targets"
+      "hide.atoms"   -> HideAtoms   i . fromMaybe [] <$> o .:? "targets"
+      "unhide.atoms" -> UnhideAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
         context <- fromMaybe [] <$> o .:? "context"
         flowTid <- o .:? "flowTid"
@@ -160,6 +166,8 @@ commandKind = \case
   MoveAtom {}     -> "move.atom"
   MergeAtoms {}   -> "merge.atoms"
   SplitAtoms {}   -> "split.atoms"
+  HideAtoms {}    -> "hide.atoms"
+  UnhideAtoms {}  -> "unhide.atoms"
   ChatWriter {}   -> "chat.writer"
   ChatFixer {}    -> "chat.fixer"
   ChatRegen {}    -> "chat.regen"

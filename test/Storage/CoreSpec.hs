@@ -28,7 +28,7 @@ import Storage.MockStore
 --   the ambient tree).
 combineContent :: StoreM m => Text -> ObjectHash -> Tick -> StoreT m Text
 combineContent acc _h = \case
-  Atom _ _ c -> return (acc <> c)
+  Atom _ _ _ c -> return (acc <> c)
   NonAtom {} -> return acc
 
 spec :: Spec
@@ -39,12 +39,26 @@ spec = do
       result `shouldBe` Right (NonAtom [] "type:note\nhello")
 
     it "storing an Atom then dropping it returns its path and content" $ do
-      let result = fst <$> runChain (store (Atom [] "scene.md" "p1\n") >> drop)
-      result `shouldBe` Right (Atom [] "scene.md" "p1\n")
+      let result = fst <$> runChain (store (Atom [] "scene.md" [] "p1\n") >> drop)
+      result `shouldBe` Right (Atom [] "scene.md" [] "p1\n")
+
+    it "an atom's own tags survive a store/drop round trip" $ do
+      let result = fst <$> runChain (store (Atom [] "scene.md" [("hide", "true")] "p1\n") >> drop)
+      result `shouldBe` Right (Atom [] "scene.md" [("hide", "true")] "p1\n")
+
+    it "tags round-trip even when the content itself looks like header syntax" $ do
+      -- The header/body boundary is the *first* "\n\n" in the raw message;
+      -- 'encodeTick' guarantees that's always the real one (every header
+      -- line is one we generate ourselves), so pathological atom content
+      -- containing its own blank lines or a fake "type:atom\n" tag can't
+      -- get misparsed as more header.
+      let pathological = "line one\n\ntype:atom\nsome other content\n"
+          result = fst <$> runChain (store (Atom [] "scene.md" [("hide", "true")] pathological) >> drop)
+      result `shouldBe` Right (Atom [] "scene.md" [("hide", "true")] pathological)
 
     it "store =<< drop rebuilds the same committed content" $ do
       let result = fst <$> runChain (do
-            _ <- store (Atom [] "scene.md" "p1\n")
+            _ <- store (Atom [] "scene.md" [] "p1\n")
             t <- drop
             _ <- store t
             committedContent "scene.md")
@@ -53,38 +67,38 @@ spec = do
   describe "atoms build up file content" $ do
     it "two atoms on the same path both land in the committed tree" $ do
       let result = fst <$> runChain (do
-            _ <- store (Atom [] "scene.md" "p1\n")
-            _ <- store (Atom [] "scene.md" "p2\n")
+            _ <- store (Atom [] "scene.md" [] "p1\n")
+            _ <- store (Atom [] "scene.md" [] "p2\n")
             committedContent "scene.md")
       result `shouldBe` Right "p1\np2\n"
 
     it "a NonAtom in between doesn't disturb the atom chain" $ do
       let result = fst <$> runChain (do
-            _ <- store (Atom [] "scene.md" "p1\n")
+            _ <- store (Atom [] "scene.md" [] "p1\n")
             _ <- store (NonAtom [] "type:note\na note")
-            _ <- store (Atom [] "scene.md" "p2\n")
+            _ <- store (Atom [] "scene.md" [] "p2\n")
             committedContent "scene.md")
       result `shouldBe` Right "p1\np2\n"
 
   describe "at" $ do
     it "at edits a tick and replays the tail on top" $ do
       let result = fst <$> runChain (do
-            t1 <- store (Atom [] "scene.md" "p1\n")
-            _  <- store (Atom [] "scene.md" "p2\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
+            _  <- store (Atom [] "scene.md" [] "p2\n")
             _  <- at t1 $ do
               _ <- drop
-              store (Atom [] "scene.md" "p1-revised\n")
+              store (Atom [] "scene.md" [] "p1-revised\n")
             committedContent "scene.md")
       result `shouldBe` Right "p1-revised\np2\n"
 
     it "at remaps a cross-reference to the target itself" $ do
       let result = runChain $ do
-            t1    <- store (Atom [] "scene.md" "p1\n")
-            _     <- store (Atom [] "other.md" "unrelated\n")
+            t1    <- store (Atom [] "scene.md" [] "p1\n")
+            _     <- store (Atom [] "other.md" [] "unrelated\n")
             _     <- store (NonAtom [t1] "type:note\nabout t1")
             newT1 <- at t1 $ do
               _ <- drop
-              store (Atom [] "scene.md" "p1-revised\n")
+              store (Atom [] "scene.md" [] "p1-revised\n")
             -- the note is the last tick before the rebase, so it's the
             -- new head once 'at' replays it back on top; its own ref
             -- should now point at t1's new id, not the old, stale one.
@@ -97,12 +111,12 @@ spec = do
 
     it "at remaps a cross-reference between two tail ticks (not the target itself)" $ do
       let result = runChain $ do
-            t1 <- store (Atom [] "scene.md" "p1\n")
-            t2 <- store (Atom [] "scene.md" "p2\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
+            t2 <- store (Atom [] "scene.md" [] "p2\n")
             _  <- store (NonAtom [t2] "type:note\nabout t2")
             _  <- at t1 $ do
               _ <- drop
-              store (Atom [] "scene.md" "p1-revised\n")
+              store (Atom [] "scene.md" [] "p1-revised\n")
             newHead     <- headHash
             newHeadTick <- lift (readTick newHead)
             case tickRefs newHeadTick of
@@ -114,11 +128,11 @@ spec = do
         Left err -> expectationFailure err
         Right ((refChanged, refTick), _finalState) -> do
           refChanged `shouldBe` True
-          refTick    `shouldBe` Atom [] "scene.md" "p2\n"
+          refTick    `shouldBe` Atom [] "scene.md" [] "p2\n"
 
     it "readAt leaves the chain untouched" $ do
       let result = runChain $ do
-            t1 <- store (Atom [] "scene.md" "p1\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
             headBefore <- headHash
             readHead   <- readAt t1 headHash
             headAfter  <- headHash
@@ -131,11 +145,11 @@ spec = do
 
     it "readAt discards any store/drop the action performs, however deep" $ do
       let result = runChain $ do
-            t1 <- store (Atom [] "scene.md" "p1\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
             headBefore <- headHash
             _ <- readAt t1 $ do
               _ <- drop
-              _ <- store (Atom [] "scene.md" "should not stick\n")
+              _ <- store (Atom [] "scene.md" [] "should not stick\n")
               store (NonAtom [] "type:note\nalso should not stick")
             headAfter <- headHash
             content   <- committedContent "scene.md"
@@ -155,9 +169,9 @@ spec = do
   describe "editTick / replaceTick / resolveId" $ do
     it "editTick logs its own replacement, resolvable afterward" $ do
       let result = runChain $ do
-            t1  <- store (Atom [] "scene.md" "p1\n")
+            t1  <- store (Atom [] "scene.md" [] "p1\n")
             new <- editTick $ \case
-              Atom refs path content -> return (Atom refs path (content <> "edited\n"))
+              Atom refs path tags content -> return (Atom refs path tags (content <> "edited\n"))
               other                  -> return other
             resolved <- resolveId t1
             return (new, resolved)
@@ -167,7 +181,7 @@ spec = do
 
     it "resolveId is the identity for an id nothing has ever replaced" $ do
       let result = fst <$> runChain (do
-            t1 <- store (Atom [] "scene.md" "p1\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
             resolved <- resolveId t1
             return (resolved == t1))
       result `shouldBe` Right True
@@ -180,17 +194,17 @@ spec = do
       -- exists for, distinct from 'at'\'s own tail-replay (which only
       -- ever sees refs embedded *inside* the ticks it's replaying).
       let result = runChain $ do
-            t1     <- store (Atom [] "scene.md" "p1\n")
-            _      <- store (Atom [] "other.md" "unrelated\n")
+            t1     <- store (Atom [] "scene.md" [] "p1\n")
+            _      <- store (Atom [] "other.md" [] "unrelated\n")
             newT1  <- at t1 $ do
               _ <- drop
-              store (Atom [] "scene.md" "p1-revised\n")
+              store (Atom [] "scene.md" [] "p1-revised\n")
             -- now use the *original*, stale t1 id as an 'at' target --
             -- not newT1, which nothing outside this module would know
             -- to use without consulting 'resolveId' itself.
             newerT1 <- at t1 $ do
               _ <- drop
-              store (Atom [] "scene.md" "p1-revised-again\n")
+              store (Atom [] "scene.md" [] "p1-revised-again\n")
             scene   <- committedContent "scene.md"
             other   <- committedContent "other.md"
             return (newT1 /= newerT1, scene, other)
@@ -204,29 +218,29 @@ spec = do
   describe "follow" $ do
     it "folds over every tick from head back through root, oldest last" $ do
       let result = fst <$> runChain (do
-            _ <- store (Atom [] "scene.md" "p1\n")
+            _ <- store (Atom [] "scene.md" [] "p1\n")
             _ <- store (NonAtom [] "type:note\na note")
-            _ <- store (Atom [] "scene.md" "p2\n")
+            _ <- store (Atom [] "scene.md" [] "p2\n")
             follow [] (\acc _h t -> (t : acc, True)))
       result `shouldBe` Right
         [ NonAtom [] "type:root\n"
-        , Atom [] "scene.md" "p1\n"
+        , Atom [] "scene.md" [] "p1\n"
         , NonAtom [] "type:note\na note"
-        , Atom [] "scene.md" "p2\n"
+        , Atom [] "scene.md" [] "p2\n"
         ]
 
     it "stops early when the step function says so" $ do
       let result = fst <$> runChain (do
-            _ <- store (Atom [] "scene.md" "p1\n")
-            _ <- store (Atom [] "scene.md" "p2\n")
-            _ <- store (Atom [] "scene.md" "p3\n")
+            _ <- store (Atom [] "scene.md" [] "p1\n")
+            _ <- store (Atom [] "scene.md" [] "p2\n")
+            _ <- store (Atom [] "scene.md" [] "p3\n")
             follow (0 :: Int) (\n _h _t -> (n + 1, n < 1)))
       result `shouldBe` Right 2
 
     it "each tick's own hash matches what re-reading it directly gives" $ do
       let result = runChain $ do
-            t1 <- store (Atom [] "scene.md" "p1\n")
-            _  <- store (Atom [] "scene.md" "p2\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
+            _  <- store (Atom [] "scene.md" [] "p2\n")
             follow [] (\acc h _t -> ((h == t1) : acc, True))
       case result of
         Left err -> expectationFailure err
@@ -235,17 +249,17 @@ spec = do
   describe "memoFold" $ do
     it "with an empty cache, folds the same result a plain fold from root would" $ do
       let result = fst <$> runChain (do
-            _        <- store (Atom [] "scene.md" "p1\n")
-            _        <- store (Atom [] "scene.md" "p2\n")
+            _        <- store (Atom [] "scene.md" [] "p1\n")
+            _        <- store (Atom [] "scene.md" [] "p2\n")
             (val, _) <- memoFold combineContent "" []
             return val)
       result `shouldBe` Right "p1\np2\n"
 
     it "reuses a checkpoint from a previous call once head has advanced" $ do
       let result = fst <$> runChain (do
-            _              <- store (Atom [] "scene.md" "p1\n")
+            _              <- store (Atom [] "scene.md" [] "p1\n")
             (val1, cache1) <- memoFold combineContent "" []
-            _              <- store (Atom [] "scene.md" "p2\n")
+            _              <- store (Atom [] "scene.md" [] "p2\n")
             (val2, _)      <- memoFold combineContent "" cache1
             return (val1, val2))
       result `shouldBe` Right ("p1\n", "p1\np2\n")
@@ -257,16 +271,16 @@ spec = do
     -- regardless of the cache, the wrong value could never surface.
     it "trusts a supplied checkpoint instead of recomputing below it" $ do
       let result = fst <$> runChain (do
-            _            <- store (Atom [] "scene.md" "p1\n")
+            _            <- store (Atom [] "scene.md" [] "p1\n")
             afterP1      <- headHash
-            _            <- store (Atom [] "scene.md" "p2\n")
+            _            <- store (Atom [] "scene.md" [] "p2\n")
             (val, _)     <- memoFold combineContent "" [(afterP1, "WRONG")]
             return val)
       result `shouldBe` Right "WRONGp2\n"
 
     it "hands back the same cache unchanged when head was already a checkpoint" $ do
       let result = fst <$> runChain (do
-            _              <- store (Atom [] "scene.md" "p1\n")
+            _              <- store (Atom [] "scene.md" [] "p1\n")
             (_, cache1)    <- memoFold combineContent "" []
             (val2, cache2) <- memoFold combineContent "" cache1
             return (val2, cache1 == cache2))
@@ -274,7 +288,7 @@ spec = do
 
     it "produces O(log k) checkpoints, anchored at exponentially doubling distance from head" $ do
       let result = fst <$> runChain (do
-            mapM_ (\n -> store (Atom [] "scene.md" (T.pack (show (n :: Int))))) [1 .. 8]
+            mapM_ (\n -> store (Atom [] "scene.md" [] (T.pack (show (n :: Int))))) [1 .. 8]
             h        <- headHash
             (val, checkpoints) <- memoFold combineContent "" []
             return (val, h, checkpoints))
@@ -289,8 +303,8 @@ spec = do
   describe "syncTo" $ do
     it "jumps head to the given hash and resets the ambient tree to match it" $ do
       let result = runChain $ do
-            t1 <- store (Atom [] "scene.md" "p1\n")
-            _  <- store (Atom [] "scene.md" "p2\n")
+            t1 <- store (Atom [] "scene.md" [] "p1\n")
+            _  <- store (Atom [] "scene.md" [] "p2\n")
             writeFile "scratch.md" "pending"
             syncTo t1
             h       <- headHash
@@ -306,10 +320,10 @@ spec = do
 
     it "resolves a stale id before jumping, same as at/readAt" $ do
       let result = runChain $ do
-            t1    <- store (Atom [] "scene.md" "p1\n")
+            t1    <- store (Atom [] "scene.md" [] "p1\n")
             newT1 <- at t1 $ do
               _ <- drop
-              store (Atom [] "scene.md" "p1-revised\n")
+              store (Atom [] "scene.md" [] "p1-revised\n")
             syncTo t1  -- stale, pre-edit id
             h <- headHash
             return (h == newT1)
@@ -320,7 +334,7 @@ spec = do
   describe "reset / inWorktree" $ do
     it "reset doesn't move head" $ do
       let result = fst <$> runChain (do
-            _      <- store (Atom [] "scene.md" "p1\n")
+            _      <- store (Atom [] "scene.md" [] "p1\n")
             before <- headHash
             reset
             after  <- headHash
@@ -329,16 +343,16 @@ spec = do
 
     it "inWorktree doesn't shield a store's effect on head -- only the ambient tree is its concern, not the chain" $ do
       let result = fst <$> runChain (do
-            _      <- store (Atom [] "scene.md" "p1\n")
+            _      <- store (Atom [] "scene.md" [] "p1\n")
             before <- headHash
-            _      <- inWorktree (store (Atom [] "scene.md" "p2\n"))
+            _      <- inWorktree (store (Atom [] "scene.md" [] "p2\n"))
             after  <- headHash
             return (before /= after))
       result `shouldBe` Right True
 
     it "inWorktree restores whatever the ambient tree held before, once the action returns" $ do
       let result = fst <$> runChain (do
-            _ <- store (Atom [] "scene.md" "p1\n")
+            _ <- store (Atom [] "scene.md" [] "p1\n")
             writeFile "scratch.md" "pending draft"
             _       <- inWorktree (readFile "scene.md")
             content <- readFile "scratch.md"
