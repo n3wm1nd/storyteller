@@ -12,57 +12,91 @@
 -- knowing about.
 --
 -- Structure and per-file classification are pure (see
--- 'Storyteller.Writer.Library'); this module only adds the one thing that
--- needs the filesystem: each chapter's own first line, read directly off
--- its file. Deliberately just the first line, not the full content — unlike
--- 'Server.Writer.Character.characterState' handing over a whole (small,
--- single) sheet file for the client to pull a heading out of, a library
--- tree may cover many chapters at once, and sending each one's entire prose
--- just to get a display heading would defeat the "stays push-cheap
--- indefinitely" scope test from WS-PROTOCOL.md.
+-- 'Storyteller.Writer.Library'); this module adds the two things that
+-- can't be: the branch's current file list ('listAllFiles'), and each
+-- chapter's own heading. The heading is folded incrementally over the tick
+-- chain via 'Storage.Core.memoFold' ('ChapterContentCache') rather than
+-- re-read off every chapter file on every push — a chapter's whole content
+-- lives directly in its own commit message (see 'Storage.Core.readTick'),
+-- so the fold needs no filesystem access at all, just commit reads, and
+-- 'memoFold' means only the ticks that actually landed since the last push
+-- get looked at, not every chapter, every time. See WS-PROTOCOL.md's
+-- "stays push-cheap indefinitely" test — this is what actually keeps a
+-- library tree covering many chapters cheap to re-push, not just narrowing
+-- the payload to one line per chapter.
 module Server.Writer.Library
-  ( libraryTree
+  ( ChapterContentCache
+  , libraryTree
   , chapterCreate
   ) where
 
 import Control.Monad (void)
+import qualified Data.Map.Strict as Map
+import Data.Map.Strict (Map)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Polysemy (Sem)
-import Runix.FileSystem (listAllFiles, readFile)
+import Runix.FileSystem (listAllFiles)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.Git (BranchTag, runStorage)
+import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Writer.Library
-  (LibraryNode(..), LibraryKind(..), ChapterUnit, buildLibraryTree, chapterUnits)
+  (LibraryNode(..), LibraryKind(..), ChapterUnit, buildLibraryTree, chapterUnits, classifyPath)
 
-import Prelude hiding (readFile)
+-- | Every chapter path's currently-known full content, keyed by path —
+--   the 'memoFold' accumulator. Full content, not just the first line: a
+--   plain sequential fold can't tell in advance whether a later tick will
+--   turn out to be the file's first line (an edit that replaces its very
+--   first atom, however rare), so it tracks the same thing
+--   'Storage.Ops.atomHistory' would reconstruct from scratch — 'firstLine'
+--   is only taken at the point a heading is actually needed.
+type ChapterContentCache = Map FilePath T.Text
+
+-- | The memoFold step: only atoms whose path classifies as a chapter
+--   contribute; everything else (a 'NonAtom', or an atom for some other
+--   kind of path) leaves the cache untouched. No 'Storage.Core.StoreT'
+--   capability is actually exercised here — an atom's content lives in its
+--   own commit message (see 'Storage.Core.readTick'), not a separate blob
+--   'Storage.Core.readFile' would have to fetch — but the step still has
+--   to be monadic in 'StoreT' to satisfy 'Core.memoFold's own signature.
+foldChapterContent :: Core.StoreM m => ChapterContentCache -> Core.ObjectHash -> Core.Tick -> Core.StoreT m ChapterContentCache
+foldChapterContent acc _h tick = return $ case tick of
+  Core.Atom _ path content | Chapter _ <- classifyPath path ->
+    Map.insertWith (flip (<>)) path content acc
+  _ -> acc
 
 -- | The full organizational tree for this branch, plus every chapter
 --   number already paired with its own chapter file/beat sheet (see
 --   'Storyteller.Writer.Library.chapterUnits') — computed here, once, so
 --   nothing downstream (this connection's push, and eventually the planned
 --   Summarizer agent) has to re-derive "which chapter does this belong to"
---   independently.
-libraryTree :: BranchOpen r => Sem r ([LibraryNode], [ChapterUnit])
-libraryTree = do
+--   independently. Takes and returns a 'ChapterContentCache' — the memoized
+--   heading fold's own checkpoint set, to be threaded straight through into
+--   the next call (see 'Server.Writer.Library.Connection', which persists
+--   it across repeated ref-move pushes the same way it already threads its
+--   own file-set accumulator).
+libraryTree
+  :: BranchOpen r
+  => [(Core.ObjectHash, ChapterContentCache)]
+  -> Sem r ([LibraryNode], [ChapterUnit], [(Core.ObjectHash, ChapterContentCache)])
+libraryTree cache = do
   paths <- listAllFiles @(BranchTag Main) "/"
-  tree  <- mapM withHeading (buildLibraryTree paths)
-  return (tree, chapterUnits tree)
+  ((content, nextCache), _) <- runStorage @Main (Core.memoFold foldChapterContent Map.empty cache)
+  let tree = withHeadings content (buildLibraryTree paths)
+  return (tree, chapterUnits tree, nextCache)
 
--- | Fill in 'lnHeading' for chapter nodes (and recurse into folders) —
---   nothing else needs a filesystem read.
-withHeading :: BranchOpen r => LibraryNode -> Sem r LibraryNode
-withHeading node = case lnKind node of
-  Chapter _ -> do
-    content <- TE.decodeUtf8 <$> readFile @(BranchTag Main) (lnPath node)
-    return node { lnHeading = firstLine content }
-  Folder -> do
-    children <- mapM withHeading (lnChildren node)
-    return node { lnChildren = children }
-  _ -> return node
+-- | Fill in 'lnHeading' for chapter nodes (and recurse into folders) from
+--   the already-folded content cache — a pure lookup, no filesystem or
+--   'StoreT' access needed at this point.
+withHeadings :: ChapterContentCache -> [LibraryNode] -> [LibraryNode]
+withHeadings content = map go
+  where
+    go n = case lnKind n of
+      Chapter _ -> n { lnHeading = Map.lookup (lnPath n) content >>= firstLine }
+      Folder    -> n { lnChildren = withHeadings content (lnChildren n) }
+      _         -> n
 
 firstLine :: T.Text -> Maybe T.Text
 firstLine t = case T.lines t of

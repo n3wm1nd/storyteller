@@ -26,6 +26,7 @@ import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.FileSpec
 import qualified Server.CharacterSpec
+import qualified Server.LibrarySpec
 import qualified Server.NotificationSpec
 import qualified Server.Writer.GitWorkerSpec
 import Server.TestStack (testStack, testStackTransactional)
@@ -66,5 +67,6 @@ main = hspec $ do
   describe "Server.Core.File (eager)"           (Server.FileSpec.spec testStack)
   describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
   describe "Server.Writer.Character"            Server.CharacterSpec.spec
+  describe "Server.Writer.Library"               Server.LibrarySpec.spec
   describe "Server.Writer.Notification"         Server.NotificationSpec.spec
   describe "Server.Writer.GitWorker"            Server.Writer.GitWorkerSpec.spec

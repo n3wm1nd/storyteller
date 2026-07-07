@@ -11,11 +11,20 @@
 -- 'Server.Writer.File.Connection' (see their module comments for the full
 -- rationale): a command thread that pushes the initial tree then loops
 -- dispatching commands, and an independent notify thread that reopens the
--- branch scope and re-pushes the whole tree on every 'RefMoved'. Unlike
--- those two, there's no incremental\/since-last-push variant to maintain —
--- same call as 'Server.Writer.Character.Connection' makes: recomputing the
--- whole tree on every notification is cheap enough for now not to bother
--- with a diff.
+-- branch scope and re-pushes the tree on every 'RefMoved'.
+--
+-- Unlike 'Server.Writer.Character.Connection', a real incremental cache
+-- *is* worth maintaining here: 'Server.Writer.Library.libraryTree' folds
+-- chapter headings via 'Storage.Core.memoFold' rather than re-reading every
+-- chapter file's content on every push, so the notify thread threads its
+-- own accumulator through 'watchBranch' — same mechanism
+-- 'Server.Writer.Branch.Connection' already uses for its file-set
+-- accumulator, just carrying a 'ChapterContentCache' checkpoint set instead
+-- of a 'Set FilePath'. The command thread's own initial push starts cold
+-- (it only ever runs once); the notify thread seeds its own accumulator
+-- with one more push at startup, same reasoning as
+-- 'Server.Writer.Branch.Connection.runNotifier' seeding its initial file
+-- set — so the first real 'RefMoved' this connection sees is already warm.
 --
 -- 'TicksRemapped' is not forwarded: this connection never puts a bare tick
 -- id on the wire for the client to track, so there is nothing for a remap
@@ -37,7 +46,7 @@ import Polysemy.Error (catch)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Logging (logCommand)
-import Server.Writer.Library (libraryTree)
+import Server.Writer.Library (ChapterContentCache, libraryTree)
 import Server.Writer.Library.Dispatch (runCommand)
 import Server.Writer.Library.Protocol
 import Server.Writer.Env (ServerEnv(..))
@@ -48,6 +57,9 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction)
 import Server.Core.Util (withBranch)
 import Storyteller.Core.Git (withStorage)
+import qualified Storage.Core as Core
+
+type Cache = [(Core.ObjectHash, ChapterContentCache)]
 
 runLibrary :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runLibrary env branch conn = do
@@ -56,37 +68,42 @@ runLibrary env branch conn = do
   runCommands env branch conn `finally` killThread notifier
 
 -- | The command-loop thread's persistent stack: enter the branch once, push
---   the initial tree, then dispatch commands until the socket closes.
+--   the initial tree (cold -- this thread never loops on its own push, so
+--   there's no accumulator to seed), then dispatch commands until the
+--   socket closes.
 runCommands :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCommands env branch conn = do
   result <- runM $ wsAction env conn $
-    withBranch @Main branch (push conn) >> commandLoop conn branch
+    withBranch @Main branch (void (push conn [])) >> commandLoop conn branch
   either (reportError conn) return result
 
 -- | The notify-listener thread's persistent stack: react to ref-move
 --   broadcasts for the connection's lifetime, reopening the branch scope
 --   fresh each time (same "sync happens at open" rule as
---   'Server.Writer.Character.Connection').
+--   'Server.Writer.Character.Connection'). Seeds its own cache with one
+--   push at startup so the first real 'RefMoved' is already warm.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
-    void $ watchBranch chan branch () (onNotify branch conn)
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
+    initialCache <- withBranch @Main branch (push conn [])
+    void $ watchBranch chan branch initialCache (onNotify branch conn)
   either (reportError conn) return result
 
 onNotify
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> () -> BranchNotification -> Sem r ()
-onNotify branch conn () = \case
-  RefMoved _      -> withBranch @Main branch (push conn)
-  TicksRemapped _ -> return ()
+  => T.Text -> WS.Connection -> Cache -> BranchNotification -> Sem r Cache
+onNotify branch conn cache = \case
+  RefMoved _      -> withBranch @Main branch (push conn cache)
+  TicksRemapped _ -> return cache
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (LibraryError (T.pack err)))
 
-push :: (BranchOpen r, Member (Embed IO) r) => WS.Connection -> Sem r ()
-push conn = do
-  (tree, chapters) <- libraryTree
+push :: (BranchOpen r, Member (Embed IO) r) => WS.Connection -> Cache -> Sem r Cache
+push conn cache = do
+  (tree, chapters, nextCache) <- libraryTree cache
   embed $ WS.sendTextData conn (encode (LibraryTree tree chapters))
+  return nextCache
 
 -- | Dispatch commands until the socket closes. Each command reopens the
 --   branch scope fresh, nested inside 'withStorage', so its writes are
