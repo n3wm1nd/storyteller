@@ -153,6 +153,9 @@ export type FileCommand =
   | { type: "chat.append"; id?: string; content: string }
   | { type: "delete";      id?: string }
   | { type: "edit.atom";   id?: string; tickId: string; content: string }
+  // Edit a chat prompt tick's text in place — distinct from edit.atom: a
+  // prompt isn't file content, so this doesn't restage anything.
+  | { type: "edit.prompt"; id?: string; tickId: string; content: string }
   | { type: "delete.atom"; id?: string; tickId: string }
   | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string }
   // Merge: combine a contiguous run of one file's atoms (`targets`) into one.

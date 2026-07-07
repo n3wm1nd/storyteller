@@ -6,7 +6,7 @@
 // user/assistant bubbles. Not a separate connection or cache: this reads the
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Send, RotateCcw } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
@@ -39,8 +39,80 @@ const bubbleBase: React.CSSProperties = {
   lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
 };
 
+// A chat bubble that turns into a textarea on double-click — same
+// double-click-to-edit / Cmd-Enter-to-commit / Escape-to-cancel convention
+// as fileview.tsx's AtomBlock. Saving is the caller's job (see ChatView):
+// a mid-conversation edit is a plain content rewrite, but editing the most
+// recent user turn instead drops the stale reply and re-asks, since that
+// reply was generated against the text being replaced.
+function EditableBubble({
+  content, align, bubbleStyle, disabled, onSave,
+}: {
+  content: string;
+  align: "flex-start" | "flex-end";
+  bubbleStyle: React.CSSProperties;
+  disabled: boolean;
+  onSave: (text: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  function startEdit() {
+    if (disabled) return;
+    setDraft(content);
+    setEditing(true);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== content.trim()) onSave(trimmed);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div style={{ alignSelf: align, width: "72%", display: "flex", flexDirection: "column", gap: 4 }}>
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+            if (e.key === "Escape") setEditing(false);
+          }}
+          rows={3}
+          style={{
+            width: "100%", boxSizing: "border-box", resize: "vertical",
+            background: "var(--surface-deep)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+            borderRadius: 6, padding: "8px 10px", color: "var(--foreground)",
+            fontSize: 12.5, lineHeight: 1.5, fontFamily: "inherit", outline: "none",
+          }}
+        />
+        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+          <button onClick={() => setEditing(false)} style={{
+            background: "none", border: "1px solid var(--border-subtle)", borderRadius: 3,
+            color: "var(--text-ghost)", fontSize: 10, padding: "2px 8px", cursor: "pointer",
+          }}>Cancel</button>
+          <button onClick={commit} style={{
+            background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+            borderRadius: 3, color: "var(--text-secondary)", fontSize: 10, padding: "2px 8px", cursor: "pointer",
+          }}>Save</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div onDoubleClick={startEdit} title={disabled ? undefined : "Double-click to edit"} style={{ alignSelf: align, ...bubbleStyle, cursor: disabled ? undefined : "text" }}>
+      {content}
+    </div>
+  );
+}
+
 export function ChatView({
-  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onRegen,
+  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onRegen, onEditAtom, onEditPrompt,
 }: {
   ticks: Record<string, WireTick>;
   head: string | null;
@@ -49,6 +121,8 @@ export function ChatView({
   onClearAgentLogs: () => void;
   onSend: (text: string) => void;
   onRegen: (promptTickId: string, atomTickId: string, text: string) => void;
+  onEditAtom: (tickId: string, content: string) => void;
+  onEditPrompt: (tickId: string, content: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const chain = tickChain(ticks, head);
@@ -77,14 +151,29 @@ export function ChatView({
           const atomTick = ex.atomTick;
           return (
             <div key={ex.promptTick.tickId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ alignSelf: "flex-end", ...bubbleBase, background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)", color: "var(--text-heading)" }}>
-                {ex.promptTick.message}
-              </div>
+              <EditableBubble
+                align="flex-end"
+                content={ex.promptTick.message}
+                disabled={generating}
+                bubbleStyle={{ ...bubbleBase, background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)", color: "var(--text-heading)" }}
+                onSave={(text) => {
+                  // Editing the most recent turn: the existing reply was
+                  // generated against the text being replaced, so it's
+                  // dropped and re-asked rather than left stale (same path
+                  // as the Regenerate button, just with new text).
+                  if (i === lastIndex && atomTick) onRegen(ex.promptTick.tickId, atomTick.tickId, text);
+                  else onEditPrompt(ex.promptTick.tickId, text);
+                }}
+              />
               {atomTick && (
                 <div style={{ alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 4, maxWidth: "72%" }}>
-                  <div style={{ ...bubbleBase, maxWidth: "100%", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)" }}>
-                    {atomTick.content ?? atomTick.message}
-                  </div>
+                  <EditableBubble
+                    align="flex-start"
+                    content={atomTick.content ?? atomTick.message}
+                    disabled={generating}
+                    bubbleStyle={{ ...bubbleBase, maxWidth: "100%", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)" }}
+                    onSave={(text) => onEditAtom(atomTick.tickId, text)}
+                  />
                   {i === lastIndex && !generating && (
                     <button
                       onClick={() => onRegen(ex.promptTick.tickId, atomTick.tickId, ex.promptTick.message)}

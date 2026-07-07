@@ -222,6 +222,15 @@ export function editAtom(path: string, tickId: string, content: string) {
   dropFromSelection([tickId]);
 }
 
+// Edit a chat prompt tick's text — see ws.ts's "edit.prompt": a prompt
+// isn't file content, so this is a distinct command from editAtom.
+export function editPrompt(path: string, tickId: string, content: string) {
+  const ui = useUI.getState();
+  getServerCache().openFiles[path]?.conn.send(
+    atRebase(ui.rebaseMarker, { type: "edit.prompt", tickId, content }, ui.journalMarkers)
+  );
+}
+
 export function deleteAtom(path: string, tickId: string) {
   const ui = useUI.getState();
   getServerCache().openFiles[path]?.conn.send(

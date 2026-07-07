@@ -30,7 +30,7 @@ import Polysemy (Member, Sem)
 import Polysemy.Error (throw)
 
 import Server.Core.File (FileOpen, createFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, chatNote)
-import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
+import Server.Writer.File (chatWriter, chatFixer, chatConverse, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -55,6 +55,9 @@ runCommand path cmd = case cmd of
 
   EditAtom _mid tid content ->
     editFileAtom path (TickId tid) content
+
+  EditPrompt _mid tid content ->
+    editChatPrompt (TickId tid) content
 
   DeleteAtom _mid tid ->
     deleteFileAtom (TickId tid)

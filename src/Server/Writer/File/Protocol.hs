@@ -57,6 +57,12 @@ data FileCommand
   | ChatAppend { fcId :: Maybe T.Text, fcContent :: T.Text }
   | Delete     { fcId :: Maybe T.Text }
   | EditAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
+  -- | Edit a chat 'Storyteller.Writer.Agent.Prompt' tick's text in place.
+  --   Distinct from 'EditAtom': a prompt's message carries no filesystem
+  --   footprint the way an atom's does, so it goes through
+  --   'Server.Writer.File.editChatPrompt' \/ 'Storyteller.Core.StorageMonad.editTick'
+  --   rather than 'Server.Core.File.editFileAtom'.
+  | EditPrompt { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   | DeleteAtom { fcId :: Maybe T.Text, fcTickId :: T.Text }
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
   -- | Merge a contiguous run of one file's atoms (@fcTargets@) into one. See
@@ -111,6 +117,7 @@ instance FromJSON FileCommand where
       "chat.append" -> ChatAppend i <$> o .: "content"
       "delete"      -> pure (Delete i)
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
+      "edit.prompt" -> EditPrompt i <$> o .: "tickId" <*> o .: "content"
       "delete.atom" -> DeleteAtom i <$> o .: "tickId"
       "move.atom"   -> MoveAtom   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "merge.atoms" -> MergeAtoms i . fromMaybe [] <$> o .:? "targets"
@@ -148,6 +155,7 @@ commandKind = \case
   ChatAppend {}   -> "chat.append"
   Delete {}       -> "delete"
   EditAtom {}     -> "edit.atom"
+  EditPrompt {}   -> "edit.prompt"
   DeleteAtom {}   -> "delete.atom"
   MoveAtom {}     -> "move.atom"
   MergeAtoms {}   -> "merge.atoms"

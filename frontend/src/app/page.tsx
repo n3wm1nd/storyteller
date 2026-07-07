@@ -7,7 +7,7 @@ import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles } from "./sidebar.actions";
 import {
   openFile, createFile, closeFile, enterScene, leaveScene,
-  appendToFile, editAtom, deleteAtom, mergeSelected, splitSelected,
+  appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
   chatConverse, chatConverseRegen,
 } from "./fileview.actions";
@@ -498,6 +498,8 @@ export default function Home() {
               preview={preview} agentLogs={agentLogs} onClearAgentLogs={clearAgentLogs}
               onSend={(text) => chatConverse(selectedFile, text)}
               onRegen={(promptTickId, atomTickId, text) => chatConverseRegen(selectedFile, promptTickId, atomTickId, text)}
+              onEditAtom={(tickId, content) => editAtom(selectedFile, tickId, content)}
+              onEditPrompt={(tickId, content) => editPrompt(selectedFile, tickId, content)}
             />
           )}
 

@@ -16,6 +16,7 @@ module Server.Writer.File
   ( chatWriter
   , chatFixer
   , chatConverse
+  , editChatPrompt
   , chatChapterRegen
   , chatSplitOutline
   , RegenMode(..)
@@ -123,6 +124,13 @@ chatConverse path prompt = do
   let reply = mconcat [t | AssistantText t <- added]
   _ <- runStorage @Main (SM.append path reply)
   info $ "chat agent done: " <> T.pack path
+
+-- | Edit a chat prompt's text in place. A 'Prompt' is not an atom — its
+--   message carries no filesystem footprint (see 'SM.editTick') — so this
+--   goes through the tick-generic edit rather than 'editFileAtom'.
+editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
+editChatPrompt tid content =
+  void $ runStorageEdit @Main (SM.editTick tid (SM.setPayload content))
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
 --   single call or the beat-by-beat loop (see

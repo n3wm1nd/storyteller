@@ -94,6 +94,8 @@ module Storyteller.Core.StorageMonad
   , pushTick
   , deleteTick
   , editAtom
+  , editTick
+  , setPayload
   , moveTick
   , mergeAtoms
   , splitTick
@@ -1215,6 +1217,40 @@ rewriteAtom tid path content = atChecked True tid $ do
     , tdMessage   = tickMessage fresh
     , tdFileDiffs = Map.singleton path content
     }
+
+-- | Rewrite tick @tid@'s draft with an arbitrary transform and put it back
+--   at the same chain position, keeping the rest of the chain intact --
+--   the caller decides what changes (message, fields, refs); no filesystem
+--   footprint of its own. This is not a generalization of
+--   'rewriteAtom'\/'editAtom': an atom's message is a derived encoding of
+--   the file bytes it contributed, so it can't be set independently of the
+--   working tree -- editing one has to go through 'editAtom', which also
+--   restages the file. This is for every other tick kind, whose message
+--   has no such derivation and is the whole edit (e.g. a chat
+--   'Storyteller.Writer.Agent.Prompt' -- see 'setPayload').
+--
+--   No 'resetTree': unlike 'editAtom'/'deleteTick'/'moveTick', this never
+--   changes what content lives at head ('tdFileDiffs' is forced empty), so
+--   the caller's ambient tree is exactly as valid after as before -- and
+--   'pushTick' itself never touches it either way ('withFS' restores
+--   whatever the caller had before returning). Reloading it anyway would
+--   just discard any of the caller's unrelated uncommitted working-tree
+--   state for no reason.
+editTick :: StorageM m => TickId -> (TDraft -> TDraft) -> StorageT m (TickId, [(TickId, TickId)])
+editTick tid f = do
+  (newTid, mapping) <- atChecked True tid $ do
+    old <- popTick
+    pushTick (f old) { tdFileDiffs = Map.empty }
+  return (newTid, (tid, newTid) : mapping)
+
+-- | Replace a draft's payload -- the part of its message after the
+--   @"type:<tag>\\n"@ line 'encodeDraft' writes -- keeping that tag intact.
+--   The one-line transform most 'editTick' callers want: overwrite a
+--   tick's text without needing to know or reconstruct its own
+--   'TickType'.
+setPayload :: Text -> TDraft -> TDraft
+setPayload payload d = d { tdMessage = tag <> "\n" <> payload }
+  where (tag, _) = T.breakOn "\n" (tdMessage d)
 
 -- | Append @content@ to @path@ and commit it as a real atom tick, with no
 --   newline normalization — the primitive 'append' builds on. An isolated
