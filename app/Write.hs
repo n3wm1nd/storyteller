@@ -37,7 +37,7 @@ import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
                            , BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage )
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storyteller.Core.StorageMonad as SM
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..))
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
@@ -90,5 +90,5 @@ writeAction outFile instruction activeChars = do
 
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) outFile
   Prose generated <- writeAgent existing fileCtx instruction charBlocks
-  _ <- mapM (\c -> runStorage @Main (SM.append outFile c)) =<< splitAtoms generated
+  _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated

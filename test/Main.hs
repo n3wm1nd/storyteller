@@ -1,13 +1,15 @@
 module Main where
 
 import Test.Hspec
+import qualified Storage.CoreSpec
+import qualified Storage.OpsSpec
+import qualified Storage.CommitWorktreeSpec
+import qualified Storage.ChainEditSpec
+import qualified Storage.TickSpec
 import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.StorageSpec
-import qualified Storyteller.StorageMonadSpec
-import qualified Storyteller.EditSpec
 import qualified Storyteller.GitCascadeSpec
 import qualified Storyteller.AppendSpec
-import qualified Storyteller.CommitWorkingTreeSpec
 import qualified Storyteller.CommitNewFilesSpec
 import qualified Storyteller.CreateSpec
 import qualified Storyteller.SubdirSpec
@@ -27,13 +29,15 @@ import Server.TestStack (testStack, testStackTransactional)
 
 main :: IO ()
 main = hspec $ do
+  describe "Storage.Core"               Storage.CoreSpec.spec
+  describe "Storage.Ops"                Storage.OpsSpec.spec
+  describe "Storage.CommitWorktree"     Storage.CommitWorktreeSpec.spec
+  describe "Storage.ChainEdit"          Storage.ChainEditSpec.spec
+  describe "Storage.Tick"               Storage.TickSpec.spec
   describe "Storyteller.FileAtoms"      Storyteller.FileAtomsSpec.spec
   describe "Storyteller.Core.Storage"        Storyteller.StorageSpec.spec
-  describe "Storyteller.Core.StorageMonad"   Storyteller.StorageMonadSpec.spec
-  describe "Storyteller.Core.Edit"           Storyteller.EditSpec.spec
   describe "Storyteller.Core.Git (cascadeReplace)" Storyteller.GitCascadeSpec.spec
   describe "Storyteller.Core.Append"         Storyteller.AppendSpec.spec
-  describe "Storyteller.CommitWorkingTree" Storyteller.CommitWorkingTreeSpec.spec
   describe "Storyteller.CommitNewFiles" Storyteller.CommitNewFilesSpec.spec
   describe "Storyteller.Create"         Storyteller.CreateSpec.spec
   describe "Storyteller.Subdir"         Storyteller.SubdirSpec.spec

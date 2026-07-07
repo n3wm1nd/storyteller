@@ -43,7 +43,7 @@ import Runix.Logging (Logging)
 import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storyteller.Core.StorageMonad as SM
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent
   (Prose(..), CharLabel(..), CharContextBlock(..), WordCount(..))
@@ -117,7 +117,7 @@ chapterAction mode sheetPath outFile activeChars = do
     ByBeat -> chapterProseByBeat @StoryModel modelConfigs (Just (WordCount 300))
                 charContexts fileCtx existing sheet maxBeats
 
-  _ <- mapM (\c -> runStorage @Main (SM.append outFile c)) =<< splitAtoms generated
+  _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated
   where
     maxBeats = 40 :: Int

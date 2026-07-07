@@ -41,8 +41,8 @@ import           Runix.Logging (Logging)
 import           Storyteller.Writer.Agent.CharGen
   (charGenAgent, ScenarioTemplate(..), RngSeed(..), unSheet)
 import           Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
-import           Storyteller.Core.Git (BranchTag(..), BranchOp, runStorageEdit)
-import qualified Storyteller.Core.StorageMonad as SM
+import           Storyteller.Core.Git (BranchTag(..), BranchOp, runStorage)
+import qualified Storage.Ops as Ops
 import           Storyteller.Core.Runtime (runInfrastructure, runBranchAndFS, runStoryStorageGit)
 import           Storyteller.Core.Storage (StoryStorage)
 import           Storyteller.Core.Types (BranchName(..), TickId)
@@ -92,7 +92,7 @@ charGenAction
   => FilePath -> T.Text -> Sem r [(TickId, TickId)]
 charGenAction sheetFile text = do
   writeFile @(BranchTag branch) sheetFile (TE.encodeUtf8 text)
-  snd <$> runStorageEdit @branch (((),) <$> SM.commitFiles [sheetFile])
+  snd <$> runStorage @branch (Ops.commitFiles [sheetFile])
 
 parseArgs :: [String] -> IO (FilePath, FilePath, Maybe Int)
 parseArgs args = go args Nothing Nothing Nothing

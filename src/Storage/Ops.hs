@@ -7,11 +7,24 @@
 -- around them, or touches the chain\/ambient tree any other way.
 module Storage.Ops
   ( addAtom
+  , addAtomWithRefs
+  , append
   , findAtom
   , editAtom
+  , editAtomAt
   , replaceAtom
   , commitWorktree
   , commitFile
+  , commitFiles
+  , exists
+
+    -- * Chain-editing operations -- position-aware moves\/merges\/splits
+    -- over the whole chain, not just one file's own atom history
+  , chainPositions
+  , deleteTick
+  , moveTick
+  , mergeAtoms
+  , splitTick
   ) where
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)
@@ -47,8 +60,14 @@ appendFile path content = do
 --   in sync afterward (the same bytes landed in both places); if it
 --   wasn't, this doesn't touch whatever else was pending there.
 addAtom :: StoreM m => FilePath -> Text -> StoreT m ObjectHash
-addAtom path content = do
-  newHead <- store (Atom [] path content)
+addAtom = addAtomWithRefs []
+
+-- | 'addAtom', additionally carrying cross-branch refs on the new atom --
+--   for a caller (e.g. the tracker agent) that needs the committed tick
+--   to reference other ticks, not just append content.
+addAtomWithRefs :: StoreM m => [ObjectHash] -> FilePath -> Text -> StoreT m ObjectHash
+addAtomWithRefs refs path content = do
+  newHead <- store (Atom refs path content)
   appendFile path content
   return newHead
 
@@ -83,6 +102,27 @@ editAtom f = do
 --   constant function.
 replaceAtom :: StoreM m => Text -> StoreT m ObjectHash
 replaceAtom = editAtom . const
+
+-- | Replace a specific atom's content in place, wherever it sits in
+--   history -- the arbitrary-id generalization of 'editAtom' (which only
+--   ever targets the atom nearest head). Preserves the atom's own refs
+--   and chain position.
+editAtomAt :: StoreM m => ObjectHash -> Text -> StoreT m ObjectHash
+editAtomAt target content = at target $ editTick $ \old -> case old of
+  Atom refs path _ -> return (Atom refs path content)
+  NonAtom {}        -> fail ("editAtomAt: not an atom: " <> T.unpack (unObjectHash target))
+
+-- | Append @content@ to @path@ as a single atom, ensuring it ends with a
+--   newline first -- an appended atom is one text block on disk, and a
+--   block should end its line. The normalizing counterpart to 'addAtom',
+--   for a caller appending free-form prose rather than an already-shaped
+--   diff.
+append :: StoreM m => FilePath -> Text -> StoreT m ObjectHash
+append path content = addAtom path (ensureTrailingNewline content)
+  where
+    ensureTrailingNewline t
+      | "\n" `T.isSuffixOf` t = t
+      | otherwise             = t <> "\n"
 
 -- ---------------------------------------------------------------------------
 -- commitWorktree: fold the ambient tree into the chain
@@ -386,3 +426,200 @@ longestCommonSubstring a b
 zip5 :: [a] -> [b] -> [c] -> [d] -> [e] -> [(a, b, c, d, e)]
 zip5 (a:as) (b:bs) (c:cs) (d:ds) (e:es) = (a, b, c, d, e) : zip5 as bs cs ds es
 zip5 _ _ _ _ _ = []
+
+-- ---------------------------------------------------------------------------
+-- Chain-editing operations
+-- ---------------------------------------------------------------------------
+--
+-- Position-aware moves/merges/splits, over the whole chain rather than one
+-- file's own atom history. Built entirely from 'at'/'drop'/'store'/'follow'
+-- -- no separate draft type is needed the way "Storyteller.Core.StorageMonad"
+-- needed 'TDraft': a 'Tick' already carries its own diff (an 'Atom's
+-- 'atomContent' *is* the append), so popping and re-storing one directly is
+-- both the extraction and the reinsertion step.
+
+-- | Reconcile only the given files' working-tree content against their own
+--   atom history, rather than every file in the branch -- same rule as
+--   'commitWorktree', just scoped to a caller-chosen subset.
+commitFiles :: StoreM m => [FilePath] -> StoreT m ()
+commitFiles = mapM_ commitFile
+
+-- | Every non-root tick reachable from head, oldest first -- the position
+--   vocabulary 'chainPositions'\/'moveTick'\/'mergeAtoms' all share.
+contentChain :: StoreM m => StoreT m [(ObjectHash, Tick)]
+contentChain = List.drop 1 <$> follow [] (\acc h t -> ((h, t) : acc, True))
+
+-- | @oid@'s own position in @chain@ (0-indexed, oldest first). Fails if
+--   @oid@ isn't a member at all -- an unexceptional caller error (an id
+--   from outside this branch, or a stale one nothing has resolved), not a
+--   normal outcome to branch on.
+findPos :: StoreM m => ObjectHash -> [(ObjectHash, Tick)] -> StoreT m Int
+findPos oid chain = case List.findIndex ((== oid) . fst) chain of
+  Just i  -> return i
+  Nothing -> fail ("findPos: not found: " <> T.unpack (unObjectHash oid))
+
+-- | Resolve each id's position among content ticks (root excluded),
+--   oldest-first -- for a caller that needs to process a batch of ids in
+--   chain order without walking the chain once per id.
+chainPositions :: StoreM m => [ObjectHash] -> StoreT m [(ObjectHash, Int)]
+chainPositions oids = do
+  chain <- contentChain
+  mapM (\oid -> (,) oid <$> findPos oid chain) oids
+
+-- | Remove @tid@ from the chain entirely, replaying the tail on top of
+--   whatever comes before it.
+deleteTick :: StoreM m => ObjectHash -> StoreT m ()
+deleteTick tid = () <$ at tid drop
+
+-- | Move @tid@ to immediately after @mAfter@ (@Nothing@ = move to front).
+--   Returns @tid@'s new id.
+--
+--   Backward (tid currently after target):
+--     @at tid $ do { t <- drop; at after (store t) }@
+--
+--   Forward (tid currently before target):
+--     @at after $ do { t <- at tid drop; store t }@
+--
+--   Both are a single nested 'at' -- one coherent rebase pass; every id
+--   this displaces (including @tid@ itself) gets its remap logged by 'at'
+--   \/'editTick' as it goes -- see "Storage.Core"'s 'resolveId'.
+moveTick :: StoreM m => ObjectHash -> Maybe ObjectHash -> StoreT m ObjectHash
+moveTick tid mAfter = do
+  chain    <- contentChain
+  tidPos   <- findPos tid chain
+  afterPos <- case mAfter of
+    Nothing  -> return (-1)
+    Just aid -> findPos aid chain
+
+  checkMoveOrder tid tidPos afterPos chain
+
+  root <- rootHash
+  let resolvedAfter = maybe root id mAfter
+
+  -- 'at's own fallback only recognizes a single tick replaced in place;
+  -- this is a composite move (an outer 'at' whose action nests a further
+  -- 'at'\/'drop'\/'store' of its own), so @tid@'s own new id has to be
+  -- logged explicitly -- see "Storage.Core"'s 'at' Haddock.
+  if tidPos > afterPos
+    then at tid $ do
+      t     <- drop
+      newId <- at resolvedAfter (store t)
+      logRemap tid newId
+      return newId
+    else at resolvedAfter $ do
+      t     <- at tid drop
+      newId <- store t
+      logRemap tid newId
+      return newId
+
+-- | @tid@ may only move to a position that keeps every reference it makes
+--   (via its own 'tickRefs') behind it, and doesn't jump past anything
+--   that references @tid@ itself -- the append-only chain can't represent
+--   a forward reference, so a move that would require one is rejected
+--   rather than silently reordering the reference out from under it.
+checkMoveOrder :: StoreM m => ObjectHash -> Int -> Int -> [(ObjectHash, Tick)] -> StoreT m ()
+checkMoveOrder tid tidPos afterPos chain = do
+  movingTick <- case List.drop tidPos chain of
+    ((_, t) : _) -> return t
+    []           -> fail "moveTick: tick position out of range"
+  let newPos = afterPos + 1
+  mapM_ (checkRefBefore newPos) (tickRefs movingTick)
+  let precedingSlice = filter ((/= tid) . fst) (List.take (afterPos + 1) chain)
+  mapM_ checkNotRefTo precedingSlice
+  where
+    checkRefBefore newPos refId =
+      case List.findIndex ((== refId) . fst) chain of
+        Nothing -> return ()
+        Just rp
+          | rp < newPos -> return ()
+          | otherwise   -> fail ("moveTick: cannot move tick before its own reference "
+                                    <> T.unpack (unObjectHash refId))
+    checkNotRefTo (h, t) =
+      if tid `elem` tickRefs t
+        then fail ("moveTick: cannot move tick after tick that references it: "
+                     <> T.unpack (unObjectHash h))
+        else return ()
+
+-- | Merge a contiguous run of one file's atoms into a single atom, in the
+--   position of the earliest one.
+--
+--   Requires at least two ids, all on the same file, occupying consecutive
+--   chain positions. A gapped selection (another tick, atom or not,
+--   sitting between two of the chosen atoms) is rejected rather than
+--   silently collapsed -- collapsing across an unrelated tick would
+--   reorder it relative to content it didn't originally follow.
+mergeAtoms :: StoreM m => [ObjectHash] -> StoreT m ObjectHash
+mergeAtoms []  = fail "mergeAtoms: need at least two atoms"
+mergeAtoms [_] = fail "mergeAtoms: need at least two atoms"
+mergeAtoms tids = do
+  chain <- contentChain
+  positioned <- mapM (\tid -> (,) tid <$> findPos tid chain) tids
+  let ordered   = map fst (List.sortOn snd positioned)
+      positions = List.sort (map snd positioned)
+
+  checkContiguous positions
+  path <- sameFile chain ordered
+
+  merged <- at (last ordered) $ do
+    popped <- popN (length ordered)
+    let ticks   = reverse popped  -- oldest first, matching 'ordered'
+        content = T.concat [ c | Atom _ _ c <- ticks ]
+        refs    = filter (`notElem` tids) (concatMap tickRefs ticks)
+    store (Atom refs path content)
+  -- 'at's fallback only ever logs @last ordered -> merged@ (it's the one
+  -- 'at' actually navigated to); every *other* merged id also needs to
+  -- resolve to the same result -- several-old-ids-to-one-new-id, the
+  -- generalization of 'splitTick's one-to-several case.
+  mapM_ (\tid -> logRemap tid merged) (init ordered)
+  return merged
+  where
+    checkContiguous ps
+      | and (zipWith (\a b -> b == a + 1) ps (List.drop 1 ps)) = return ()
+      | otherwise = fail "mergeAtoms: selected atoms must be contiguous"
+
+    sameFile chain groupTids = do
+      paths <- mapM (fileOfTick chain) groupTids
+      case List.nub paths of
+        [p] -> return p
+        _   -> fail "mergeAtoms: selected atoms must all belong to the same file"
+
+    fileOfTick chain tid = case lookup tid chain of
+      Just (Atom _ p _) -> return p
+      _                 -> fail ("mergeAtoms: not an atom: " <> T.unpack (unObjectHash tid))
+
+    -- Popping n times off head (head is set to the last atom of the group
+    -- by the enclosing 'at') walks backward through each member in turn,
+    -- landing head on the anchor right before the first one once all n
+    -- are popped. Returned newest-first.
+    popN :: StoreM m => Int -> StoreT m [Tick]
+    popN 0 = return []
+    popN k = (:) <$> drop <*> popN (k - 1)
+
+-- | Explode one atom into several caller-supplied pieces, replacing it in
+--   place, and return each piece's own new id (oldest first). No
+--   splitting policy lives here -- the caller decides the pieces and hands
+--   them over already split. The first piece inherits @tid@'s incoming
+--   references (the reverse of 'mergeAtoms'); the rest are fresh ticks
+--   with no refs of their own.
+splitTick :: StoreM m => ObjectHash -> [Text] -> StoreT m [ObjectHash]
+splitTick _ pieces | length pieces < 2 =
+  fail "splitTick: need at least two pieces"
+splitTick tid pieces = at tid $ do
+  old <- drop
+  ids <- case old of
+    Atom refs path _ -> storePieces refs path pieces
+    NonAtom {}        -> fail ("splitTick: not an atom: " <> T.unpack (unObjectHash tid))
+  -- 'at' can't guess which of several new ticks a one-to-many action's
+  -- @target@ itself becomes -- say so explicitly, so a ref to @tid@
+  -- resolves to the piece that's meant to inherit it (see
+  -- "Storage.Core"'s 'at' Haddock).
+  case ids of
+    (inheritor : _) -> logRemap tid inheritor
+    []               -> return ()
+  return ids
+  where
+    storePieces _    _    []       = return []
+    storePieces refs path (p : ps) = do
+      newId <- store (Atom refs path p)
+      rest  <- storePieces [] path ps
+      return (newId : rest)

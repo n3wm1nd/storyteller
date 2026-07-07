@@ -36,7 +36,7 @@ import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (ticksSince)
-import Storyteller.Core.StorageMonad (fileTicksOf)
+import Storage.Tick (fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. @charBlocks@ is the same @(label, resolved summary
@@ -52,7 +52,7 @@ flowWriteAgent
   -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
   -> Sem r ([TickId], Prose)
 flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
-  allTicks <- runStorage @branch (fileTicksOf path)
+  (allTicks, _) <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0

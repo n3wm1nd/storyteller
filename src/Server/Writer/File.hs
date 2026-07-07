@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -51,9 +52,11 @@ import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Runtime (Main, StoryModel)
-import qualified Storyteller.Core.StorageMonad as SM
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (BranchName, TickId(..))
-import Storyteller.Core.Git (BranchTag, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchTag, runStorage)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -67,7 +70,7 @@ import Prelude hiding (readFile, writeFile)
 --   for where that's headed.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe TickId -> Sem r ()
 chatWriter path prompt context mFlowTid = do
-  _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
+  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) path
   let extraContext = toContextBlocks context <> fileCtx
       instruction  = Instruction prompt
@@ -75,12 +78,12 @@ chatWriter path prompt context mFlowTid = do
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
       (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid existing extraContext instruction []
-      _ <- mapM (\c -> runStorage @Main (SM.append path c)) =<< splitAtoms generated
+      _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
       Prose generated <- writeAgent existing extraContext instruction []
-      _ <- mapM (\c -> runStorage @Main (SM.append path c)) =<< splitAtoms generated
+      _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
@@ -91,7 +94,7 @@ chatWriter path prompt context mFlowTid = do
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
 chatFixer path prompt context [] = chatWriter path prompt context Nothing
 chatFixer path prompt _context targets = do
-  _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
+  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
   _ <- fixAgent @Main path targets (Instruction prompt)
   info $ "fixer agent done: " <> T.pack path
@@ -117,20 +120,26 @@ chatFixer path prompt _context targets = do
 --   includes the message currently being answered.
 chatConverse :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 chatConverse path prompt = do
-  history <- historyFromFileTicks <$> runStorage @Main (SM.fileTicksOf path)
-  _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
+  (ticks, _) <- runStorage @Main (Tick.fileTicksOf path)
+  let history = historyFromFileTicks ticks
+  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "chat agent starting: " <> T.pack path
   added <- chatAgent @(BranchTag Main) modelConfigs (history ++ [UserText prompt])
   let reply = mconcat [t | AssistantText t <- added]
-  _ <- runStorage @Main (SM.append path reply)
+  _ <- runStorage @Main (Ops.append path reply)
   info $ "chat agent done: " <> T.pack path
 
 -- | Edit a chat prompt's text in place. A 'Prompt' is not an atom — its
---   message carries no filesystem footprint (see 'SM.editTick') — so this
---   goes through the tick-generic edit rather than 'editFileAtom'.
+--   message carries no filesystem footprint -- so this edits the raw
+--   'NonAtom' message directly (keeping its own @"type:<tag>\n"@ line)
+--   rather than going through 'editFileAtom'.
 editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
-editChatPrompt tid content =
-  void $ runStorageEdit @Main (SM.editTick tid (SM.setPayload content))
+editChatPrompt (TickId tid) content =
+  void $ runStorage @Main $ Core.at (Core.ObjectHash tid) $ Core.editTick $ \case
+    Core.NonAtom refs msg -> return (Core.NonAtom refs (setPayload msg))
+    Core.Atom {}           -> fail "editChatPrompt: not a chat prompt (it's an atom)"
+  where
+    setPayload msg = let (tag, _) = T.breakOn "\n" msg in tag <> "\n" <> content
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
 --   single call or the beat-by-beat loop (see
@@ -158,7 +167,7 @@ chatChapterRegen mode path prompt context = do
   if not haveSheet
     then fail ("no beat sheet at " <> sheetPath <> " — generate one before regenerating from outline")
     else do
-      _ <- runStorage @Main (SM.storeAs (Prompt path prompt))
+      _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       (_, fileCtx) <- gatherFileContext @(BranchTag Main) path
@@ -176,7 +185,7 @@ chatChapterRegen mode path prompt context = do
       -- removed prose drops, new prose appends. commitFiles broadcasts its own
       -- ref mapping, so nothing to push explicitly here.
       writeFile @(BranchTag Main) path (TE.encodeUtf8 regenerated)
-      _ <- runStorageEdit @Main (((),) <$> SM.commitFiles [path])
+      _ <- runStorage @Main (Ops.commitFiles [path])
       info $ "chapter regen done: " <> T.pack path
   where
     maxBeats = 40 :: Int
@@ -199,7 +208,7 @@ chatSplitOutline path = do
   where
     writeSheet (ChapterBeats sheetPath (BeatSheet body)) = do
       info $ "  beat sheet: " <> T.pack sheetPath
-      mapM_ (\c -> runStorage @Main (SM.append sheetPath c)) =<< splitAtoms body
+      mapM_ (\c -> runStorage @Main (Ops.append sheetPath c)) =<< splitAtoms body
 
 -- | @chapters/ch1.md@ → @chapters/ch1.outline.md@; any @.md@ path → its
 --   @.outline.md@ sibling (see WRITER.md). A path without @.md@ just gets the

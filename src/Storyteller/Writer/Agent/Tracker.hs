@@ -17,10 +17,12 @@ import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import Polysemy
 
-import Storyteller.Core.Atom (Atom(..), contentFor)
+import Storyteller.Core.Atom (contentFor)
 import Storyteller.Core.Git (BranchOp, runStorage)
-import qualified Storyteller.Core.StorageMonad as SM
-import Storyteller.Core.Types ( Tick(..), TickData(..), TickId(..), TickType(..), tickId, tickParent )
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
+import Storyteller.Core.Types (Tick(..), TickId(..), tickId, tickParent)
 
 -- | Copy atoms from @trackeeBranch@ to @trackerBranch@ for a single file pair.
 --   Each new trackee atom produces exactly one tracker atom referencing it.
@@ -31,17 +33,24 @@ trackBranch
   => (FilePath, FilePath)   -- ^ (source file on trackee, dest file on tracker)
   -> Sem r [TickId]
 trackBranch (fromFile, toFile) = do
-  trackeeTicks <- runStorage @trackeeBranch $
-    SM.followChain [] $ \acc tick -> (tick : acc, tickParent tick)
+  (trackeeTicks, _) <- runStorage @trackeeBranch $ do
+    hashes <- Core.follow [] $ \acc h _t -> (h : acc, True)
+    mapM Tick.readTypesTick hashes
 
-  syncedRefs <- runStorage @trackerBranch $
-    SM.followChain Set.empty $ \acc tick ->
-      (foldr Set.insert acc (tickRefs (tickData tick)), tickParent tick)
+  -- 'Core.follow' hands back a raw 'Storage.Core.Tick', whose 'tickRefs'
+  -- are 'Core.ObjectHash', not the 'TickId' this module (and
+  -- 'dropUntilAfterLastSynced') deal in -- coerce at the one point they
+  -- meet (same underlying 'Text', see "Storage.Tick").
+  (syncedRefs, _) <- runStorage @trackerBranch $
+    Core.follow Set.empty $ \acc _h t ->
+      (foldr (Set.insert . coerceRef) acc (Core.tickRefs t), True)
 
   let contentTicks = filter ((/= Nothing) . tickParent) trackeeTicks
       newTicks     = dropUntilAfterLastSynced syncedRefs contentTicks
 
   mapM (copyAtom @trackerBranch fromFile toFile) newTicks
+  where
+    coerceRef (Core.ObjectHash h) = TickId h
 
 -- | Drop everything up to and including the last synced tick; return the rest.
 dropUntilAfterLastSynced :: Set.Set TickId -> [Tick] -> [Tick]
@@ -58,13 +67,13 @@ dropUntilAfterLastSynced synced ticks =
 --   copy is committed as a real 'Atom' too (same invariant applies on this
 --   side of the copy), with the cross-branch ref folded onto that draft
 --   rather than dropped in favor of a plain, untagged message -- via
---   'SM.addAtom' rather than the raw working-tree primitives, since
---   'SM.storeAtom' has no way to attach a ref.
+--   'Ops.addAtomWithRefs' rather than the raw working-tree primitives.
 copyAtom
   :: forall trackerBranch r
   .  Member (BranchOp trackerBranch) r
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
   let content = contentFor fromFile tick
-  runStorage @trackerBranch $
-    SM.addAtom toFile content (toDraft (Atom toFile content)) { tickRefs = [tickId tick] }
+      ref     = Core.ObjectHash (unTickId (tickId tick))
+  (newHash, _) <- runStorage @trackerBranch (Ops.addAtomWithRefs [ref] toFile content)
+  return (TickId (Core.unObjectHash newHash))

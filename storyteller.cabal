@@ -43,11 +43,11 @@ library gitlib-effect
 library
   exposed-modules:  Storage.Core
                   , Storage.Ops
+                  , Storage.Tick
                   , Storyteller
                   , Storyteller.Core.Types
                   , Storyteller.Writer.Agent
                   , Storyteller.Core.Storage
-                  , Storyteller.Core.StorageMonad
                   , Storyteller.Core.Branch
                   , Storyteller.Core.Undo
                   , Storyteller.Core.Git
@@ -223,13 +223,13 @@ test-suite storyteller-test
                   , Storage.MockStore
                   , Storage.CoreSpec
                   , Storage.OpsSpec
+                  , Storage.CommitWorktreeSpec
+                  , Storage.ChainEditSpec
+                  , Storage.TickSpec
                   , Storyteller.FileAtomsSpec
                   , Storyteller.StorageSpec
-                  , Storyteller.StorageMonadSpec
-                  , Storyteller.EditSpec
                   , Storyteller.GitCascadeSpec
                   , Storyteller.AppendSpec
-                  , Storyteller.CommitWorkingTreeSpec
                   , Storyteller.CommitNewFilesSpec
                   , Storyteller.CreateSpec
                   , Storyteller.SubdirSpec

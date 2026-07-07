@@ -33,8 +33,8 @@ import Server.Core.Util (withBranch)
 
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorageEdit, withStorage)
-import qualified Storyteller.Core.StorageMonad as SM
+import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage, withStorage)
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Storage (createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Data.Yaml as Yaml
@@ -92,7 +92,7 @@ charGen name path scenario seed = do
     rngSeed <- maybe drawSeed return (RngSeed <$> seed)
     let sheet = charGenAgent template rngSeed
     writeFile @(BranchTag CharBranch) path (TE.encodeUtf8 (unSheet sheet))
-    void $ runStorageEdit @CharBranch (((),) <$> SM.commitFiles [path])
+    void $ runStorage @CharBranch (Ops.commitFiles [path])
 
 -- | Write one or more files' content directly into the branch, bypassing
 --   the chat-agent pipeline entirely (an upload isn't an LLM-authored
@@ -114,7 +114,7 @@ uploadFiles
 uploadFiles files = do
   mapM_ (\(path, content) -> writeFile @(BranchTag Main) path content) files
   let paths = map fst files
-  _ <- runStorageEdit @Main (((),) <$> SM.commitFiles paths)
+  _ <- runStorage @Main (Ops.commitFiles paths)
   return paths
 
 -- | One-shot variant of 'uploadFiles' for the HTTP @PUT /branch/{name}/{path}@

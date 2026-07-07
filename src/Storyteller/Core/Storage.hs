@@ -28,7 +28,7 @@ import Data.List (find)
 import Polysemy
 import Data.Text (Text)
 import Storyteller.Core.Types (TickId, BranchName(..), Branch(..))
-import Storyteller.Core.StorageMonad (FileTick(..))
+import Storage.Tick (FileTick(..))
 
 -- | Operations across all branches.
 data StoryStorage m a where

@@ -32,7 +32,7 @@ import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
-import Storyteller.Core.StorageMonad (FileTick(..), fileTicksOf)
+import Storage.Tick (FileTick(..), fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 fixAgent
@@ -43,6 +43,6 @@ fixAgent
   -> Instruction
   -> Sem r [TickId]
 fixAgent path targets instruction = do
-  ticks0 <- runStorage @branch (fileTicksOf path)
+  (ticks0, _) <- runStorage @branch (fileTicksOf path)
   let idxs = mapMaybe (\t -> elemIndex (unTickId t) (map ftTickId ticks0)) targets
   reworkAtomsAt @branch path instruction idxs

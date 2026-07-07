@@ -18,10 +18,12 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
-import Storyteller.Core.Git (BranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
-import qualified Storyteller.Core.StorageMonad as SM
-import Storyteller.Core.StorageMonad (FileTick(..))
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
+import Storage.Tick (FileTick(..))
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
 
@@ -49,17 +51,20 @@ recordPresence file character event =
   getBranch character >>= \case
     Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName character))
     Just _  -> do
-      ticks <- runStorage @branch (SM.fileTicksOf file)
+      (ticks, _) <- runStorage @branch (Tick.fileTicksOf file)
       priorActive <- case trailingPresenceFor character ticks of
         Nothing  -> pure (isActive character ticks)
         Just tid -> do
-          _      <- runStorageEdit @branch (((),) <$> SM.deleteTick tid)
-          ticks' <- runStorage @branch (SM.fileTicksOf file)
+          _           <- runStorage @branch (Ops.deleteTick (toHash tid))
+          (ticks', _) <- runStorage @branch (Tick.fileTicksOf file)
           pure (isActive character ticks')
       let wantsActive = event == Enter
       if wantsActive == priorActive
         then pure Nothing
-        else Just <$> runStorage @branch (SM.storeAs (Presence file character event))
+        else Just . fst <$> runStorage @branch (fmap toTickId (Tick.storeAs (Presence file character event)))
+  where
+    toHash (TickId t) = Core.ObjectHash t
+    toTickId (Core.ObjectHash t) = TickId t
 
 -- | Whether @character@ is active as of the end of @ticks@, folding
 --   presence events oldest-first (as returned by 'fileTicks').

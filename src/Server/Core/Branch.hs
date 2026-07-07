@@ -40,10 +40,12 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFil
 import Server.Core.Protocol (Update(..), tickToWireTick)
 
 import qualified Storyteller.Common.Annotation as Annotation
-import Storyteller.Core.Git (BranchTag, BranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchTag, BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storyteller.Core.StorageMonad as SM
-import Storyteller.Core.Types (TickId(..), tickId, tickParent, unTickId)
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
+import Storyteller.Core.Types (TickId(..), tickId, unTickId)
 
 data Main
 
@@ -90,12 +92,14 @@ branchState = branchStateSince Nothing
 --   this to see writes made by other connections since we last synced.
 branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
-  runStorage @Main SM.resetTree
+  _ <- runStorage @Main Core.reset
   files <- listAllFiles @(BranchTag Main) "/"
-  ticks <- runStorage @Main $ SM.followChain [] $ \acc t ->
-    if Just (tickId t) == since
-      then (acc, Nothing)
-      else (t : acc, tickParent t)
+  (ticks, _) <- runStorage @Main $ do
+    hashes <- Core.follow [] $ \acc h _t ->
+      if Just (TickId (Core.unObjectHash h)) == since
+        then (acc, False)
+        else (h : acc, True)
+    mapM Tick.readTypesTick hashes
   case (reverse ticks, since) of
     (headTk : _, _) ->
       return (files, Update (map tickToWireTick ticks) (unTickId (tickId headTk)))
@@ -112,14 +116,17 @@ branchStateSince since = do
 
 -- | Add an annotation note referencing zero or more existing ticks.
 addNote :: BranchOpen r => [TickId] -> T.Text -> Sem r ()
-addNote refs text = runStorage @Main (Annotation.addNote refs text)
+addNote refs text = void $ runStorage @Main (Annotation.addNote refs text)
 
 -- | Move a tick to a new position in the chain.
 moveTickInBranch :: BranchOpen r => TickId -> Maybe TickId -> Sem r ()
 moveTickInBranch tid mAfter =
-  void $ runStorageEdit @Main (((),) <$> SM.moveTick tid mAfter)
+  void $ runStorage @Main (Ops.moveTick (toHash tid) (toHash <$> mAfter))
 
 -- | Delete a tick from the chain.
 deleteTickFromBranch :: BranchOpen r => TickId -> Sem r ()
 deleteTickFromBranch tid =
-  void $ runStorageEdit @Main (((),) <$> SM.deleteTick tid)
+  void $ runStorage @Main (Ops.deleteTick (toHash tid))
+
+toHash :: TickId -> Core.ObjectHash
+toHash (TickId t) = Core.ObjectHash t

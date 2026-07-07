@@ -6,7 +6,7 @@ import Data.Text (Text)
 import Test.Hspec
 
 import UniversalLLM (Message(..))
-import Storyteller.Core.StorageMonad (FileTick(..))
+import Storage.Tick (FileTick(..))
 import Storyteller.Writer.Agent.Chat (historyFromFileTicks)
 
 tick :: Text -> Text -> Maybe Text -> FileTick

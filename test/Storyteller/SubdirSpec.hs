@@ -17,6 +17,8 @@
 --     here; if these pass, the doubling lives above storage (agent\/handler).
 module Storyteller.SubdirSpec (spec) where
 
+import Prelude hiding (readFile)
+
 import Test.Hspec
 
 import Polysemy
@@ -27,11 +29,12 @@ import Git.Mock
 
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Storage (createBranch)
-import qualified Storyteller.Core.StorageMonad as SM
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Types
 
 runSub
-  :: (forall n. SM.StorageM n => SM.StorageT n a)
+  :: (forall n. Core.StoreM n => Core.StoreT n a)
   -> Either String a
 runSub action =
   run
@@ -41,9 +44,8 @@ runSub action =
   . runStoryStorageGit
   $ do
       b <- createBranch (BranchName "main")
-      let headHash0 = SM.ObjectHash (unTickId (branchHead b))
-      wt0 <- SM.loadWorkingTree headHash0
-      fst <$> SM.runStorageT headHash0 wt0 action
+      let headHash0 = Core.ObjectHash (unTickId (branchHead b))
+      fst <$> Core.runStoreT headHash0 action
 
 spec :: Spec
 spec = do
@@ -51,17 +53,17 @@ spec = do
 
     it "append + read-back at a subdir path round-trips at that exact path" $
       runSub (do
-        _ <- SM.append "chapters/ch1.outline.md" "beat one\n"
-        _ <- SM.append "chapters/ch1.outline.md" "beat two\n"
-        SM.resetTree
-        SM.readFileS "chapters/ch1.outline.md")
+        _ <- Ops.append "chapters/ch1.outline.md" "beat one\n"
+        _ <- Ops.append "chapters/ch1.outline.md" "beat two\n"
+        Core.reset
+        Core.readFile "chapters/ch1.outline.md")
       `shouldBe` Right "beat one\nbeat two\n"
 
     it "the subdir file appears under its own path in a full file listing (not doubled)" $
       runSub (do
-        _ <- SM.append "chapters/ch1.outline.md" "content\n"
-        SM.resetTree
-        SM.listAllFilesS "/")
+        _ <- Ops.append "chapters/ch1.outline.md" "content\n"
+        Core.reset
+        Core.list)
       `shouldBe` Right ["chapters/ch1.outline.md"]
 
     it "commitFiles reconciles a file under a subdirectory (no 'is a directory')" $
@@ -69,20 +71,20 @@ spec = do
         -- Establish a committed atom under chapters/, so the branch has a
         -- 'chapters' directory in its tree (this is what tripped the flat
         -- listFiles walk in readSnapshotAt).
-        _ <- SM.append "chapters/ch1.md" "hello world\n"
+        _ <- Ops.append "chapters/ch1.md" "hello world\n"
         -- Edit the working tree freely, then reconcile just this file.
-        SM.writeFileS "chapters/ch1.md" "hello world\nmore\n"
-        _ <- SM.commitFiles ["chapters/ch1.md"]
-        SM.resetTree
-        SM.readFileS "chapters/ch1.md")
+        Core.writeFile "chapters/ch1.md" "hello world\nmore\n"
+        _ <- Ops.commitFiles ["chapters/ch1.md"]
+        Core.reset
+        Core.readFile "chapters/ch1.md")
       `shouldBe` Right "hello world\nmore\n"
 
     it "commitFiles still works with sibling subdirectories present" $
       runSub (do
-        _ <- SM.append "chapters/ch1.md" "one\n"
-        _ <- SM.append "world/place.md" "somewhere\n"
-        SM.writeFileS "chapters/ch1.md" "one\ntwo\n"
-        _ <- SM.commitFiles ["chapters/ch1.md"]
-        SM.resetTree
-        SM.readFileS "chapters/ch1.md")
+        _ <- Ops.append "chapters/ch1.md" "one\n"
+        _ <- Ops.append "world/place.md" "somewhere\n"
+        Core.writeFile "chapters/ch1.md" "one\ntwo\n"
+        _ <- Ops.commitFiles ["chapters/ch1.md"]
+        Core.reset
+        Core.readFile "chapters/ch1.md")
       `shouldBe` Right "one\ntwo\n"

@@ -83,7 +83,7 @@ import UniversalLLM (HasTools, Message(..), ModelConfig(..), ProviderOf, Support
 import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFromList)
 
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
-import Storyteller.Core.StorageMonad (FileTick(..))
+import Storage.Tick (FileTick(..))
 
 -- | Continue a conversation: given everything the model should see so far
 --   (prior history plus, at minimum, the new message the caller wants

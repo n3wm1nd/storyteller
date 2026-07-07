@@ -56,7 +56,8 @@ import Runix.Git (Git)
 import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.Runtime (Prompts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import Storyteller.Core.StorageMonad (fileExistsS, readFileS)
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 
 -- | A dotted lookup key, e.g. @"agent.writer.system"@. Doubles as a file
@@ -102,11 +103,11 @@ interpretPromptStorageFS action = do
   interpret (\case
     GetPrompt (PromptKey key) def -> runBranchOpGit @Prompts promptsBranchName $ do
       let path = "/" <> T.unpack (T.replace "." "/" key) <> ".md"
-      runStorage @Prompts $ do
-        exists <- fileExistsS path
+      fst <$> runStorage @Prompts (do
+        exists <- Ops.exists path
         if exists
-          then Prompt . TE.decodeUtf8 <$> readFileS path
-          else return def
+          then Prompt . TE.decodeUtf8 <$> Core.readFile path
+          else return def)
     ) action
 
 -- | Test/pure interpreter: resolves from a fixed map, falling back to the

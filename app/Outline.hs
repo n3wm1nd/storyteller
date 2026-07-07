@@ -39,7 +39,7 @@ import Runix.Logging (Logging)
 import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storyteller.Core.StorageMonad as SM
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (ExistingContent(..))
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
@@ -88,5 +88,5 @@ outlineAction outFile guidance = do
         "" -> outline
         g  -> g <> "\n\n" <> outline
   beatSheet <- expandAgent @StoryModel modelConfigs ToBeatSheet fileCtx source
-  _ <- mapM (\c -> runStorage @Main (SM.append outFile c)) =<< splitAtoms beatSheet
+  _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms beatSheet
   return beatSheet

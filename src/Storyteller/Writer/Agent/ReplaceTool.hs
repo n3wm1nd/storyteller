@@ -57,10 +57,12 @@ import UniversalLLM.Tools
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
-import Storyteller.Core.Git (BranchOp, runStorage, runStorageEdit)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Runtime (StoryModel)
-import qualified Storyteller.Core.StorageMonad as SM
-import Storyteller.Core.StorageMonad (FileTick(..))
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
+import Storage.Tick (FileTick(..))
 import Storyteller.Core.Types (TickId(..))
 import Storyteller.Common.Types (Fixup(..))
 
@@ -162,14 +164,15 @@ reworkAtomsAt
 reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
   where
     oneAt idx = do
-      ticks <- runStorage @branch (SM.fileTicksOf path)
+      (ticks, _) <- runStorage @branch (Tick.fileTicksOf path)
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
           mProposal <- reworkAtom content instruction
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do
-              (newTid, _mapping) <- runStorageEdit @branch (SM.editAtom (TickId tid) path newText)
-              _ <- runStorage @branch (SM.storeAs (Fixup [newTid] reason))
+              (newHash, _) <- runStorage @branch (Ops.editAtomAt (Core.ObjectHash tid) newText)
+              let newTid = TickId (Core.unObjectHash newHash)
+              _ <- runStorage @branch (Tick.storeAs (Fixup [newTid] reason))
               return (Just newTid)
         _ -> return Nothing

@@ -12,6 +12,7 @@ module Storage.CoreSpec (spec) where
 import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
+import qualified Data.List
 
 import Test.Hspec
 
@@ -188,6 +189,68 @@ spec = do
           scene     `shouldBe` "p1-revised-again\n"
           other     `shouldBe` "unrelated\n"
 
+  describe "follow" $ do
+    it "folds over every tick from head back through root, oldest last" $ do
+      let result = fst <$> runChain (do
+            _ <- store (Atom [] "scene.md" "p1\n")
+            _ <- store (NonAtom [] "type:note\na note")
+            _ <- store (Atom [] "scene.md" "p2\n")
+            follow [] (\acc _h t -> (t : acc, True)))
+      result `shouldBe` Right
+        [ NonAtom [] "type:root\n"
+        , Atom [] "scene.md" "p1\n"
+        , NonAtom [] "type:note\na note"
+        , Atom [] "scene.md" "p2\n"
+        ]
+
+    it "stops early when the step function says so" $ do
+      let result = fst <$> runChain (do
+            _ <- store (Atom [] "scene.md" "p1\n")
+            _ <- store (Atom [] "scene.md" "p2\n")
+            _ <- store (Atom [] "scene.md" "p3\n")
+            follow (0 :: Int) (\n _h _t -> (n + 1, n < 1)))
+      result `shouldBe` Right 2
+
+    it "each tick's own hash matches what re-reading it directly gives" $ do
+      let result = runChain $ do
+            t1 <- store (Atom [] "scene.md" "p1\n")
+            _  <- store (Atom [] "scene.md" "p2\n")
+            follow [] (\acc h _t -> ((h == t1) : acc, True))
+      case result of
+        Left err -> expectationFailure err
+        Right (seen, _finalState) -> seen `shouldBe` [False, True, False]
+
+  describe "syncTo" $ do
+    it "jumps head to the given hash and resets the ambient tree to match it" $ do
+      let result = runChain $ do
+            t1 <- store (Atom [] "scene.md" "p1\n")
+            _  <- store (Atom [] "scene.md" "p2\n")
+            writeFile "scratch.md" "pending"
+            syncTo t1
+            h       <- headHash
+            content <- readFile "scene.md"
+            stray   <- elem "scratch.md" <$> list
+            return (h == t1, content, stray)
+      case result of
+        Left err -> expectationFailure err
+        Right ((atT1, content, stray), _finalState) -> do
+          atT1    `shouldBe` True
+          content `shouldBe` "p1\n"
+          stray   `shouldBe` False
+
+    it "resolves a stale id before jumping, same as at/readAt" $ do
+      let result = runChain $ do
+            t1    <- store (Atom [] "scene.md" "p1\n")
+            newT1 <- at t1 $ do
+              _ <- drop
+              store (Atom [] "scene.md" "p1-revised\n")
+            syncTo t1  -- stale, pre-edit id
+            h <- headHash
+            return (h == newT1)
+      case result of
+        Left err -> expectationFailure err
+        Right (atNewT1, _finalState) -> atNewT1 `shouldBe` True
+
   describe "reset / inWorktree" $ do
     it "reset doesn't move head" $ do
       let result = fst <$> runChain (do
@@ -257,6 +320,36 @@ spec = do
       case result of
         Left err -> err `shouldContain` "is a directory"
         Right _  -> expectationFailure "expected chapters to register as a directory"
+
+    it "isDirectory is True for an explicit directory and False for a file or unknown path" $ do
+      let result = fst <$> runChain (do
+            createDirectory "chapters"
+            writeFile "notes.md" "hello"
+            isDir  <- isDirectory "chapters"
+            isFile <- isDirectory "notes.md"
+            isMiss <- isDirectory "nowhere"
+            return (isDir, isFile, isMiss))
+      result `shouldBe` Right (True, False, False)
+
+    it "listChildren returns only the direct children of a directory" $ do
+      let result = fst <$> runChain (do
+            writeFile "chapters/one.md" "1"
+            writeFile "chapters/two.md" "2"
+            writeFile "chapters/sub/three.md" "3"
+            writeFile "root.md" "r"
+            listChildren "chapters")
+      case result of
+        Left err       -> expectationFailure err
+        Right children -> Data.List.sort children `shouldBe` ["chapters/one.md", "chapters/sub", "chapters/two.md"]
+
+    it "listChildren on the ambient root only sees top-level entries" $ do
+      let result = fst <$> runChain (do
+            writeFile "chapters/one.md" "1"
+            writeFile "root.md" "r"
+            listChildren "/")
+      case result of
+        Left err       -> expectationFailure err
+        Right children -> Data.List.sort children `shouldBe` ["chapters", "root.md"]
 
   describe "NonAtom fallback" $ do
     it "a message with no atom shape at all decodes as a NonAtom, verbatim" $ do

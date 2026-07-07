@@ -30,10 +30,10 @@ import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorageEdit)
+import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Runtime (Main, runInfrastructure, runStoryStorageGit)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import qualified Storyteller.Core.StorageMonad as SM
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 
@@ -66,4 +66,4 @@ rebaseAction
               , StoryStorage
               , Logging, Fail ] r
   => Sem r [(TickId, TickId)]
-rebaseAction = snd <$> runStorageEdit @Main (((),) <$> SM.commitWorkingTree)
+rebaseAction = snd <$> runStorage @Main Ops.commitWorktree

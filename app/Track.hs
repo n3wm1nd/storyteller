@@ -27,7 +27,7 @@ import System.IO (hPutStrLn, stderr)
 import Polysemy
 import Polysemy.Error (runError)
 import Storyteller.Core.Runtime
-  ( runInfrastructure, runBranchAndFS, runStoryStorageGit, BranchTag(..) )
+  ( runInfrastructure, runBranchAndFS, runStoryStorageGit )
 import Storyteller.Core.Storage (createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..), TickId)
 import Storyteller.Writer.Agent.Tracker (trackBranch)

@@ -64,8 +64,11 @@ module Storage.Core
     -- * The monad
   , StoreT
   , ScopeState
+  , freshScope
   , runStoreT
+  , runStoreTFrom
   , headHash
+
 
     -- * Chain contents
   , Tick(..)
@@ -79,6 +82,9 @@ module Storage.Core
   , editTick
   , replaceTick
   , resolveId
+  , logRemap
+  , follow
+  , syncTo
   , reset
   , inWorktree
 
@@ -87,7 +93,10 @@ module Storage.Core
   , writeFile
   , createDirectory
   , remove
+  , removeRecursive
   , list
+  , listChildren
+  , isDirectory
   ) where
 
 import Prelude hiding (drop, readFile, writeFile)
@@ -330,14 +339,28 @@ instance MonadTrans StoreT where
 instance MonadFail m => MonadFail (StoreT m) where
   fail = StoreT . lift . fail
 
--- | Run a 'StoreT' computation seeded at the given head (with the
---   ambient tree starting synced to it, as if 'reset' had just run, and
---   an empty remap table), returning the result together with the final
---   scope state.
-runStoreT :: StoreM m => ObjectHash -> StoreT m a -> m (a, ScopeState)
-runStoreT h (StoreT s) = do
+-- | The scope state a freshly-opened branch starts in: head at @h@, the
+--   ambient tree synced to it (as if 'reset' had just run), and an empty
+--   remap table.
+freshScope :: StoreM m => ObjectHash -> m ScopeState
+freshScope h = do
   wt <- loadWorkingTree h
-  runStateT s (h, wt, Map.empty)
+  return (h, wt, Map.empty)
+
+-- | Run a 'StoreT' computation seeded fresh at the given head -- see
+--   'freshScope'.
+runStoreT :: StoreM m => ObjectHash -> StoreT m a -> m (a, ScopeState)
+runStoreT h action = freshScope h >>= \seed -> runStoreTFrom seed action
+
+-- | Run a 'StoreT' computation resuming from a previously-captured
+--   'ScopeState' rather than reloading fresh -- for a caller making
+--   several separate dispatches against the same branch scope (e.g. one
+--   per 'Storyteller.Core.Branch.BranchOp' effect operation) that needs
+--   the ambient tree's own pending, uncommitted edits (and the remap
+--   table) to survive between them, not just head. A caller that doesn't
+--   need that continuity can just always call 'runStoreT' instead.
+runStoreTFrom :: ScopeState -> StoreT m a -> m (a, ScopeState)
+runStoreTFrom seed (StoreT s) = runStateT s seed
 
 liftG :: Monad m => m a -> StoreT m a
 liftG = lift
@@ -374,7 +397,12 @@ resolveId oid = gets (\(_, _, table) -> Map.findWithDefault oid oid table)
 --   points at @new@ instead -- keeps the table transitively closed
 --   (never more than one hop to walk) as a cheap fixup on write, so
 --   'resolveId' itself can stay a single lookup instead of chasing a
---   chain at every read.
+--   chain at every read. 'editTick'\/'replaceTick'\/'at'\'s own tail-replay
+--   already call this for the common case (one tick replaced by exactly
+--   one other); exported for an @action@ passed to 'at' that produces
+--   more than one successor and needs to say which one @target@ itself
+--   becomes, since 'at'\'s own generic fallback can't guess that (see its
+--   Haddock).
 logRemap :: Monad m => ObjectHash -> ObjectHash -> StoreT m ()
 logRemap old new = modify (\(h, wt, table) -> (h, wt, composeMapping table [(old, new)]))
 
@@ -431,31 +459,60 @@ drop = do
   return t
 
 -- | Move to @target@, run @action@ there, and restore the chain to
---   exactly where it started -- a read-only, isolated peek. Pure
---   navigation: descends by following @commitParents@ directly, with no
---   need for 'drop'\/'store' since nothing this does is meant to last.
---   Fails (via 'MonadFail') if @target@ isn't actually in head's history;
---   an unexceptional caller error, not a normal outcome to branch on.
---   @target@ is resolved once, right here, before the descent -- see
---   'resolveId': a caller may be holding an id from before some earlier
---   edit in this same scope replaced it.
+--   exactly where it started -- a read-only, isolated peek. Unlike 'at',
+--   nothing here is ever replayed (no tail to rebuild), so there's no
+--   need to walk there one parent at a time either -- just jump straight
+--   to it. @target@ is resolved once first -- see 'resolveId': a caller
+--   may be holding an id from before some earlier edit in this same
+--   scope replaced it. Valid for *any* commit this store can read, not
+--   just an ancestor of the current head -- a target that was never
+--   written at all only surfaces as a failure if @action@ actually
+--   dereferences something derived from it (e.g. 'readCommit'), not
+--   proactively; real callers only ever pass a 'resolveId'-backed or
+--   otherwise legitimate id.
 readAt :: StoreM m => ObjectHash -> StoreT m a -> StoreT m a
 readAt target0 action = do
   target    <- resolveId target0
   outerHead <- headHash
-  result    <- descend target
+  putHead target
+  result    <- action
   putHead outerHead
   return result
+
+-- | Every tick reachable from head, read-only and state-free -- never
+--   moves head, never calls 'drop'\/'store', just follows @commitParents@
+--   by reading commits directly. @step@ folds each tick into an
+--   accumulator, and decides whether to keep going -- the primary parent
+--   is always the next stop (there's only ever one meaningful "backward"
+--   in a linear chain; unlike 'StorageMonad''s 'Tick', this module's own
+--   'Tick' carries no position of its own, so @step@ gets the hash
+--   alongside it rather than having to dig it out). Stops when @step@
+--   says so, or when the root (no parent) is reached, whichever first.
+follow :: StoreM m => b -> (b -> ObjectHash -> Tick -> (b, Bool)) -> StoreT m b
+follow seed step = headHash >>= \h -> liftG (walk seed h)
   where
-    descend target = do
-      current <- headHash
-      if current == target
-        then action
+    walk acc h = do
+      t <- readTick h
+      let (acc', continue) = step acc h t
+      if not continue
+        then return acc'
         else do
-          cd <- liftG (readCommit current)
+          cd <- readCommit h
           case commitParents cd of
-            [] -> fail ("readAt: " <> T.unpack (unObjectHash target) <> " not found in history")
-            (parent : _) -> putHead parent >> descend target
+            []      -> return acc'
+            (p : _) -> walk acc' p
+
+-- | Move head to @target@ (resolved first, same as 'readAt') and reset
+--   the ambient tree to match -- unlike 'readAt', this doesn't restore
+--   anything afterward, and unlike 'at', nothing is replayed: a plain
+--   jump to wherever the branch's ref now actually points (e.g. after
+--   some other scope published a new head), same as if this scope had
+--   just been freshly opened there.
+syncTo :: StoreM m => ObjectHash -> StoreT m ()
+syncTo target0 = do
+  target <- resolveId target0
+  putHead target
+  reset
 
 -- | Move to @target@, run @action@ there, and replay every later commit
 --   back on top of whatever @action@ produced -- a rebase. Built entirely
@@ -483,16 +540,37 @@ at target0 action = do
       if current == target
         then do
           -- @action@ is arbitrary caller code, not necessarily built
-          -- from 'editTick'\/'replaceTick' (see 'Storage.CoreSpec'\'s
-          -- raw drop\/store actions) -- so it can't be trusted to have
-          -- logged its own replacement of @target@ itself. This is the
-          -- one entry the tail-recursive case below can't produce on its
-          -- own either, since it only ever sees ticks strictly after
-          -- @target@. A redundant log entry here (when @action@ *did* go
-          -- through 'editTick') is harmless -- 'logRemap' composes.
-          a     <- action
-          after <- headHash
-          if after /= target then logRemap target after else return ()
+          -- from 'editTick'\/'replaceTick' (see 'Storage.CoreSpec'\'s raw
+          -- drop\/store actions) -- so it can't be trusted to have logged
+          -- its own replacement of @target@ itself. This is the one entry
+          -- the tail-recursive case below can't produce on its own
+          -- either, since it only ever sees ticks strictly after @target@.
+          --
+          -- Only fires when @after@ looks exactly like "@target@, dropped
+          -- and something re-stored in its place" -- @after@'s own parent
+          -- is @target@'s *original* parent (captured before @action@
+          -- runs, in case @target@ itself doesn't survive it). Plain
+          -- @after \/= target@ isn't enough: a pure append (@action = store
+          -- newThing@ with no 'drop' at all, e.g. 'emitStandaloneGap') also
+          -- moves head away from @target@, but @target@ is still valid,
+          -- untouched, sitting right below the new tick -- @after@'s
+          -- parent is @target@ itself there, not @target@'s parent, so
+          -- this check correctly leaves it alone. A composite action (one
+          -- @target@ producing several successors, or an outer 'at' whose
+          -- action nests further 'at'\/'drop'\/'store' calls of its own --
+          -- 'moveTick'\/'mergeAtoms'\/'splitTick') won't match either
+          -- shape; those explicitly call 'logRemap' themselves for exactly
+          -- this reason, and are always checked here via a guard
+          -- ('resolveId target' no longer being @target@) that skips this
+          -- fallback once they have.
+          targetParent <- liftG (parentOf target)
+          a            <- action
+          after        <- headHash
+          afterParent  <- liftG (parentOf after)
+          stillUnmapped <- (== target) <$> resolveId target
+          if after /= target && afterParent == targetParent && stillUnmapped
+            then logRemap target after
+            else return ()
           return a
         else do
           cd <- liftG (readCommit current)
@@ -504,6 +582,16 @@ at target0 action = do
               new <- store t
               logRemap current new
               return a
+
+-- | @h@'s own parent, if it has one -- 'Nothing' at the root. Used only
+--   to compare "did this tick's parent change" without caring what the
+--   parent actually is.
+parentOf :: StoreM m => ObjectHash -> m (Maybe ObjectHash)
+parentOf h = do
+  cd <- readCommit h
+  case commitParents cd of
+    (p : _) -> return (Just p)
+    []      -> return Nothing
 
 -- | Pop the tick at head, apply @f@ to it, and store the result in its
 --   place, recording the old->new replacement (see 'resolveId'\/
@@ -582,11 +670,47 @@ createDirectory path = modify (\(h, wt, table) -> (h, Map.insertWith keepExistin
 remove :: Monad m => FilePath -> StoreT m ()
 remove path = modify (\(h, wt, table) -> (h, Map.delete path wt, table))
 
+-- | Remove @path@ and everything under it (files and subdirectory
+--   entries alike) from the ambient tree.
+removeRecursive :: Monad m => FilePath -> StoreT m ()
+removeRecursive path = modify (\(h, wt, table) -> (h, Map.filterWithKey keep wt, table))
+  where
+    keep k _ = k /= path && not (isUnderDir path k)
+    isUnderDir dir p =
+      let dirParts  = splitDirectories dir
+          pathParts = splitDirectories p
+      in List.take (length dirParts) pathParts == dirParts && length pathParts > length dirParts
+
 -- | Every file path currently in the ambient tree (directories excluded).
 list :: Monad m => StoreT m [FilePath]
 list = do
   wt <- getAmbientTree
   return [ p | (p, FSFile _) <- Map.toList wt ]
+
+-- | Whether @path@ is an explicit directory entry in the ambient tree.
+isDirectory :: Monad m => FilePath -> StoreT m Bool
+isDirectory path = do
+  wt <- getAmbientTree
+  return $ case Map.lookup path wt of
+    Just FSDir -> True
+    _          -> False
+
+-- | Every file *and* directory entry immediately under @dir@ (its direct
+--   children only -- unlike 'list', which is every file anywhere,
+--   recursively, with no directories at all). @"/"@\/@"."@\/@""@ all mean
+--   the ambient tree's own root.
+listChildren :: Monad m => FilePath -> StoreT m [FilePath]
+listChildren dir = do
+  wt <- getAmbientTree
+  return [ p | p <- Map.keys wt, isDirectChild dir p ]
+  where
+    isDirectChild d p
+      | d `elem` ["/", ".", ""] = length (splitDirectories p) == 1
+      | otherwise =
+          let dirParts  = splitDirectories d
+              pathParts = splitDirectories p
+          in List.take (length dirParts) pathParts == dirParts
+             && length pathParts == length dirParts + 1
 
 keepExisting :: FSNode -> FSNode -> FSNode
 keepExisting _ old = old
