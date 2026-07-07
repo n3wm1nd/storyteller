@@ -15,10 +15,10 @@
 -- separate entity/tracker branches (each tracker atom carrying a real
 -- commit-parent ref back to its source atom, exactly as
 -- 'Storyteller.Writer.Agent.Tracker' produces in production -- see
--- 'copyAtom'), then does one edit via 'Storyteller.Core.StorageMonad.at'/'withFS' at a chosen depth along
--- Source's chain: an Append while time-travelled, the scenario reported
--- to spike the server to ~200% CPU for a few seconds with as few as ~10
--- tracked atoms.
+-- 'copyAtom'), then does one edit via 'Storage.Core.at' at a chosen depth
+-- along Source's chain: an append while time-travelled (see
+-- 'Storage.Ops.append'), the scenario reported to spike the server to
+-- ~200% CPU for a few seconds with as few as ~10 tracked atoms.
 --
 -- Three independent dimensions can each drive the cost up on their own:
 --   N      -- atoms in Source (and so, per tracker, roughly N tracked atoms)
@@ -52,12 +52,10 @@
 module Main (main) where
 
 import Control.Exception (SomeException, evaluate, try)
-import Control.Monad (foldM_, forM_)
-import qualified Data.ByteString.Char8 as BS
-import Data.ByteString (ByteString)
-import Data.List (maximumBy)
+import Control.Monad (forM_)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Data.List (maximumBy)
 import Data.Ord (comparing)
 import qualified Data.Text as T
 import GHC.Clock (getMonotonicTime)
@@ -72,16 +70,14 @@ import Polysemy.Fail (runFail)
 import Polysemy.State (State, evalState, get, modify, runState)
 
 import Runix.Git (Git(..))
-import Runix.FileSystem (writeFile)
 
 import Git.Mock (GitState, emptyGitState, runGitMock)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage, runStorageEdit, runStoryStorageGit)
+import Storyteller.Core.Git (runBranchAndFS, runStorage, runStoryStorageGit)
 import Storyteller.Core.Storage (createBranch)
-import qualified Storyteller.Core.StorageMonad as SM
-import Storyteller.Core.Types (BranchName(..), TickId, draft, tickId, tickParent)
+import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-
-import Prelude hiding (writeFile, readFile)
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 
 -- | Phantom branch tags. 'Tracker' is reused sequentially for each of the K
 --   tracker branches -- they're never open at once, only nested with
@@ -115,13 +111,12 @@ countGitOps = interpret $ \case
     bump :: Member (State OpCounts) r' => String -> Sem r' ()
     bump k = modify (Map.insertWith (+) k (1 :: Int))
 
--- | The delta for the Nth atom -- appended, not rebuilt, so N atoms costs
---   O(N) total instead of O(N^2) (rebuilding the whole file from scratch
---   on every atom is an easy trap to fall into for an append-only harness,
---   and would swamp the very scaling behaviour this bench exists to
---   measure at the large N sweep 4 tests).
-atomDelta :: Int -> ByteString
-atomDelta n = BS.pack ("paragraph " <> show n <> "\n")
+-- | The delta for the Nth atom, appended via 'Storage.Ops.addAtom' --
+--   O(N) total across N atoms (an append, not a from-scratch rebuild),
+--   important for the large-N sweep not to swamp the scaling signal this
+--   bench exists to measure with its own quadratic setup cost.
+atomDelta :: Int -> T.Text
+atomDelta n = T.pack ("paragraph " <> show n <> "\n")
 
 trackerName :: Int -> BranchName
 trackerName j = BranchName (T.pack ("tracker" <> show j))
@@ -131,7 +126,7 @@ trackerName j = BranchName (T.pack ("tracker" <> show j))
 --   timed edit below needs already in place. Returns the resulting mock
 --   git state and the tick id to edit at, so the timed step can start from
 --   a fully-built history without setup cost polluting the measurement.
-buildScenario :: Int -> Int -> Double -> Either String (GitState, TickId)
+buildScenario :: Int -> Int -> Double -> Either String (GitState, Core.ObjectHash)
 buildScenario n k depthFrac =
   run
   . runFail
@@ -141,12 +136,8 @@ buildScenario n k depthFrac =
   $ do
       _ <- createBranch (BranchName "source")
       runBranchAndFS @Source (BranchName "source") $
-        foldM_ (\prevContent i -> do
-                  let !content = prevContent <> atomDelta i
-                  writeFile @(BranchTag Source) "story.md" content
-                  _ <- runStorage @Source (SM.store (draft (T.pack ("atom " <> show i))))
-                  return content
-               ) BS.empty [1 .. n]
+        forM_ [1 .. n] $ \i ->
+          runStorage @Source (Ops.addAtom "story.md" (atomDelta i))
 
       forM_ [1 .. k] $ \j -> do
         _ <- createBranch (trackerName j)
@@ -155,7 +146,7 @@ buildScenario n k depthFrac =
           $ trackBranch @Source @Tracker ("story.md", "story.md")
 
       runBranchAndFS @Source (BranchName "source") $ do
-        sourceTicks <- runStorage @Source (SM.followChain [] (\acc t -> (tickId t : acc, tickParent t)))
+        (sourceTicks, _) <- runStorage @Source (Core.follow [] (\acc h _t -> (h : acc, True)))
         let len = length sourceTicks
             idx = max 1 (min (len - 1) (round (depthFrac * fromIntegral (len - 1))))
         return (sourceTicks !! idx)
@@ -163,7 +154,7 @@ buildScenario n k depthFrac =
 -- | Run just the "Append while time-travelled" edit against an
 --   already-built history (see 'buildScenario'). Returns the git op counts
 --   for this step alone -- this is the thing worth timing.
-timedEdit :: GitState -> TickId -> Either String OpCounts
+timedEdit :: GitState -> Core.ObjectHash -> Either String OpCounts
 timedEdit gs mid =
   run
   . runFail
@@ -174,18 +165,15 @@ timedEdit gs mid =
   . runStoryStorageGit
   $ do
       _ <- runBranchAndFS @Source (BranchName "source") $
-        runStorageEdit @Source $ SM.atChecked True mid $ SM.withFS $ do
-          existing <- SM.readFileS "story.md"
-          SM.writeFileS "story.md" (existing <> "\nEDIT\n")
-          SM.store (draft "edit while at")
+        runStorage @Source $ Core.at mid (Ops.append "story.md" "EDIT")
       get
 
 -- | Build N atoms on Source, track all of them into K tracker branches (N
 --   real commit-parent edges into Source per tracker), then edit Source at
---   the given depth (0 = near root, 1 = near head) via 'Storyteller.Core.StorageMonad.at'/'withFS'. Returns
---   the git op counts for that single edit only -- setup's own git ops are
---   excluded, since it's built and timed separately (see 'buildScenario'/
---   'timedEdit').
+--   the given depth (0 = near root, 1 = near head) via 'Storage.Core.at'.
+--   Returns the git op counts for that single edit only -- setup's own git
+--   ops are excluded, since it's built and timed separately (see
+--   'buildScenario'/'timedEdit').
 runScenario :: Int -> Int -> Double -> Either String OpCounts
 runScenario n k depthFrac = do
   (gs, mid) <- buildScenario n k depthFrac

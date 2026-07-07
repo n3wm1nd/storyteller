@@ -17,7 +17,6 @@ module Main (main) where
 
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import qualified Data.Text as T
 import GHC.Clock (getMonotonicTime)
 import System.Environment (getArgs)
 import System.IO (BufferMode(..), hSetBuffering, stdout)
@@ -27,13 +26,14 @@ import Polysemy
 import Polysemy.Fail (Fail, runFail)
 import Polysemy.Resource (runResource)
 import Polysemy.State (State, evalState, modify, get)
-import Runix.Cmd (Cmds, cmdsIO, interpretCmd)
+import Runix.Cmd (cmdsIO, interpretCmd)
 import Runix.Git (Git(..), runGitIOPerCall)
 
-import Storyteller.Core.Git (runStorage, runStorageEdit, runBranchAndFS, runStoryStorageGit)
+import Storyteller.Core.Git (runStorage, runBranchAndFS, runStoryStorageGit)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
-import qualified Storyteller.Core.StorageMonad as SM
-import Storyteller.Core.Types
+import Storyteller.Core.Types (BranchName(..))
+import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 
 type OpCounts = Map String Int
 
@@ -81,10 +81,10 @@ main = do
         Right () -> return ()
 
 -- | Find the tick at (approximately) the given depth from HEAD on
---   refs/heads/story/master, then time a single 'editAtom' there (a
---   representative "edit deep in history" op: one rewind, one write at
---   the target, then a full tail-replay of everything after it back to
---   HEAD -- same shape of work 'splitTick'/'mergeAtoms' do).
+--   refs/heads/story/master, then time a single 'Storage.Ops.editAtomAt'
+--   there (a representative "edit deep in history" op: one rewind, one
+--   write at the target, then a full tail-replay of everything after it
+--   back to HEAD -- same shape of work 'splitTick'/'mergeAtoms' do).
 diagnostic
   :: Members '[StoryStorage, Git, State OpCounts, Fail, Embed IO] r
   => Int -> Sem r ()
@@ -94,28 +94,30 @@ diagnostic depth = do
     Nothing -> embed (putStrLn "branch story/master not found")
     Just _  -> runBranchAndFS @Main_ (BranchName "master") $ do
       t0chain <- embed getMonotonicTime
-      chain <- runStorage @Main_ (SM.followChain [] (\acc t -> (t : acc, tickParent t)))
+      (chain, _) <- runStorage @Main_ (Core.follow [] (\acc h t -> ((h, t) : acc, True)))
       t1chain <- embed getMonotonicTime
       embed $ printf "chain length: %d (walked in %.3fs)\n" (length chain) (t1chain - t0chain)
 
       -- chain is oldest-first here (root:...:head), so depth-from-HEAD n
       -- is index (length-1-n).
       let idx = max 0 (min (length chain - 1) (length chain - 1 - depth))
-          target = chain !! idx
-          tid = tickId target
-      embed $ printf "target tick at chain index %d (depth-from-head ~%d), kind-ish msg: %s\n"
-        idx (length chain - 1 - idx) (T.unpack (T.take 40 (tickMessage (tickData target))))
+          (tid, tick) = chain !! idx
+          tickKind = case tick of
+            Core.Atom {}    -> "atom" :: String
+            Core.NonAtom {} -> "non-atom"
+      embed $ printf "target tick at chain index %d (depth-from-head ~%d), kind-ish: %s\n"
+        idx (length chain - 1 - idx) tickKind
 
-      -- Only proceed if this tick actually carries a "file" field (i.e. is
-      -- editable via editAtom) -- else just report and stop.
-      case lookup "file" (tickFields (tickData target)) of
-        Nothing -> embed $ putStrLn "target tick has no 'file' field (not a plain atom) -- picking nearest one with one"
-        Just file -> do
+      -- Only proceed if this tick actually carries a file diff (i.e. is
+      -- editable via editAtomAt) -- else just report and stop.
+      case tick of
+        Core.NonAtom {} -> embed $ putStrLn "target tick has no file diff (not a plain atom) -- picking nearest one with one"
+        Core.Atom {} -> do
           t0 <- embed getMonotonicTime
-          (_newTid, mapping) <- runStorageEdit @Main_ (SM.editAtom tid (T.unpack file) "DIAGNOSTIC EDIT\n")
+          (_newTid, mapping) <- runStorage @Main_ (Ops.editAtomAt tid "DIAGNOSTIC EDIT\n")
           t1 <- embed getMonotonicTime
           counts <- get @OpCounts
-          embed $ printf "editAtom at depth ~%d: %.3fs wall, %d ticks remapped\n"
+          embed $ printf "editAtomAt at depth ~%d: %.3fs wall, %d ticks remapped\n"
             depth (t1 - t0) (length mapping)
           embed $ putStrLn "git op counts:"
           embed $ mapM_ (\(k, v) -> printf "  %-14s %d\n" k v) (Map.toList counts)
