@@ -8,6 +8,7 @@ import qualified Storage.CommitWorktreeSpec
 import qualified Storage.ChainEditSpec
 import qualified Storage.TickSpec
 import qualified Storyteller.FileAtomsSpec
+import qualified Storyteller.AtGenericSpec
 import qualified Storyteller.StorageSpec
 import qualified Storyteller.GitCascadeSpec
 import qualified Storyteller.AppendSpec
@@ -37,6 +38,7 @@ main = hspec $ do
   describe "Storage.ChainEdit"          Storage.ChainEditSpec.spec
   describe "Storage.Tick"               Storage.TickSpec.spec
   describe "Storyteller.FileAtoms"      Storyteller.FileAtomsSpec.spec
+  describe "Storyteller.AtGeneric"     Storyteller.AtGenericSpec.spec
   describe "Storyteller.Core.Storage"        Storyteller.StorageSpec.spec
   describe "Storyteller.Core.Git (cascadeReplace)" Storyteller.GitCascadeSpec.spec
   describe "Storyteller.Core.Append"         Storyteller.AppendSpec.spec

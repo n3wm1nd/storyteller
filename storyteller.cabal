@@ -229,6 +229,7 @@ test-suite storyteller-test
                   , Storage.ChainEditSpec
                   , Storage.TickSpec
                   , Storyteller.FileAtomsSpec
+                  , Storyteller.AtGenericSpec
                   , Storyteller.StorageSpec
                   , Storyteller.GitCascadeSpec
                   , Storyteller.AppendSpec
