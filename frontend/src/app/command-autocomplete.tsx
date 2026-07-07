@@ -36,7 +36,9 @@ export function useCommandAutocomplete(text: string, setText: (t: string) => voi
   // treat that as "don't also run my own handling for this key".
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): boolean {
     if (suggestions.length === 0) return false;
-    if (e.key === "Tab") { e.preventDefault(); accept(); return true; }
+    // Shift+Tab is reserved for InputBar's mode cycling — leave it alone
+    // even while suggestions are open, so it's always available.
+    if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); accept(); return true; }
     if (e.key === "ArrowDown") { e.preventDefault(); setActiveIndex((i) => (i + 1) % suggestions.length); return true; }
     if (e.key === "ArrowUp") { e.preventDefault(); setActiveIndex((i) => (i - 1 + suggestions.length) % suggestions.length); return true; }
     if (e.key === "Escape") { setDismissed(true); return true; }

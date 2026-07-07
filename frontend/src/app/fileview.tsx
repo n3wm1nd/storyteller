@@ -784,17 +784,35 @@ export function ChatPreviewStrip({ preview }: {
 // chatWrite). 'fix' targets the current atom selection. 'append' is the
 // instant, non-LLM verbatim insert. 'note' is also instant and non-LLM —
 // attaches the text as an annotation on the current selection, or (with
-// nothing selected) on the file's HEAD tick. Dropdown-only for now, no
-// default main/alt slot — see the routing table in the input-bar plan.
-type AgentId = "write" | "fix" | "append" | "note" | "regen" | "regenBeat";
+// nothing selected) on the file's HEAD tick. 'regen' still covers beat-by-
+// beat via the "/regen @beat" command (lib/commands.ts) — that's a command
+// parameter, not a separate mode, so it doesn't get its own pill.
+type AgentId = "write" | "fix" | "append" | "note" | "regen";
+
+// One color per mode so the input bar's own border/pill tells you where a
+// plain (non-"/command") send will land, without having to check anything
+// else. 'note' reuses the blue already used for annotation ticks elsewhere
+// in this file (see WireTickList); the rest are fresh hues not otherwise
+// claimed in the app's palette.
+const MODE_COLOR: Record<AgentId, string> = {
+  write:  "0.78 0.10 65",
+  fix:    "0.68 0.12 200",
+  append: "0.62 0.02 60",
+  note:   "0.60 0.15 240",
+  regen:  "0.68 0.15 300",
+};
+function modeColor(id: AgentId, alpha?: number): string {
+  return alpha === undefined ? `oklch(${MODE_COLOR[id]})` : `oklch(${MODE_COLOR[id]} / ${alpha})`;
+}
+
+const MODE_ORDER: AgentId[] = ["write", "fix", "append", "note", "regen"];
 
 const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof Sparkles | null }> = {
-  write:     { label: "Write",       title: "Send to writer agent",              icon: Sparkles },
-  fix:       { label: "Fix",         title: "Send to fixer agent (edit targets)", icon: Wrench },
-  append:    { label: "Append",      title: "Append verbatim, instant",           icon: null },
-  note:      { label: "Note",        title: "Attach as a note, instant",          icon: StickyNote },
-  regen:     { label: "Regen",       title: "Regenerate this chapter to fit its beat sheet (whole-chapter)", icon: RefreshCw },
-  regenBeat: { label: "Regen · beat", title: "Regenerate this chapter to fit its beat sheet (beat by beat)", icon: RefreshCw },
+  write:  { label: "Write",  title: "Send to writer agent",               icon: Sparkles },
+  fix:    { label: "Fix",    title: "Send to fixer agent (edit targets)",  icon: Wrench },
+  append: { label: "Append", title: "Append verbatim, instant",            icon: null },
+  note:   { label: "Note",   title: "Attach as a note, instant",           icon: StickyNote },
+  regen:  { label: "Regen",  title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
 };
 
 export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen }: {
@@ -818,26 +836,32 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
 
   const hasContext = contextAtomCount > 0 || contextAnnotationCount > 0;
 
-  // Sane defaults so the two keybinds cover the common cases without
-  // reaching for the dropdown: no selection → Write main / Append alt;
-  // selection present → Fix main / Write alt (selection stays reference
-  // context for Write, not an edit target).
-  const mainId: AgentId = hasContext ? "fix" : "write";
-  const altId:  AgentId = hasContext ? "write" : "append";
+  // Explicit, sticky mode — Shift+Tab (or the pill/dropdown) cycles it, and
+  // it stays put until you change it again. Seeded from context at mount
+  // only (selection present → Fix, since that's the common case), not kept
+  // in sync afterward: once you've picked a mode, it's yours until you pick
+  // a different one, not silently swapped out from under you.
+  const [mode, setMode] = useState<AgentId>(() => (hasContext ? "fix" : "write"));
+
+  function cycleMode(dir: 1 | -1) {
+    setMode((m) => {
+      const i = MODE_ORDER.indexOf(m);
+      return MODE_ORDER[(i + dir + MODE_ORDER.length) % MODE_ORDER.length];
+    });
+  }
 
   const actionFor: Record<AgentId, (t: string) => void> = {
-    write: onWrite, fix: onFix, append: onAppend, note: onNote,
-    regen: (t) => onRegen(t, false), regenBeat: (t) => onRegen(t, true),
+    write: onWrite, fix: onFix, append: onAppend, note: onNote, regen: (t) => onRegen(t, false),
   };
 
-  // A recognized leading "/command" always wins over the id the shortcut
-  // or dropdown button would otherwise fire — see lib/commands.ts.
+  // A recognized leading "/command" always wins over the currently selected
+  // mode — see lib/commands.ts.
   const commandActions: Record<string, (t: string, params: Record<string, string>) => void> = {
     write: (t) => onWrite(t), fix: (t) => onFix(t), append: (t) => onAppend(t), note: (t) => onNote(t),
     regen: (t, p) => onRegen(t, p.beat !== undefined),
   };
 
-  function fire(id: AgentId) {
+  function fire() {
     const raw = text.trim();
     if (!raw) return;
     const parsed = parseCommand(raw);
@@ -845,7 +869,7 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
     if (parsed && action) {
       if (parsed.text) action(parsed.text, parsed.params);
     } else {
-      actionFor[id](raw);
+      actionFor[mode](raw);
     }
     setText("");
     setMenuOpen(false);
@@ -910,38 +934,33 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
             onClick={auto.onSelect}
             onKeyDown={(e) => {
               if (auto.onKeyDown(e)) return;
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) { e.preventDefault(); fire(mainId); }
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) &&  e.shiftKey) { e.preventDefault(); fire(altId);  }
+              if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleMode(1); return; }
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); fire(); }
             }}
-            placeholder={enabled ? `⌘↵ ${AGENT_META[mainId].label.toLowerCase()} · ⌘⇧↵ ${AGENT_META[altId].label.toLowerCase()} · "/" for commands` : "Open a file to write"}
+            placeholder={enabled ? `⌘↵ send as ${AGENT_META[mode].label.toLowerCase()} · shift-tab cycles mode · "/" for commands` : "Open a file to write"}
             style={{
               flex: 1, resize: "none", fontFamily: "Georgia, serif", fontSize: 12,
-              background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
+              background: "var(--card)", border: `1px solid ${modeColor(mode, 0.35)}`, borderRadius: 6,
               color: "var(--foreground)", padding: "6px 8px", outline: "none",
             }}
           />
         </div>
         <div ref={menuRef} style={{ position: "relative", display: "flex", flexDirection: "column", gap: 4, justifyContent: "flex-end" }}>
-          <button onClick={() => fire(altId)} title={`${AGENT_META[altId].title} (⌘⇧↵)`} style={{
-            padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5,
-            color: "oklch(0.15 0.01 60)", fontWeight: 600, fontSize: 11, cursor: "pointer",
-          }}>{AGENT_META[altId].label}</button>
-
           <div style={{ display: "flex", gap: 2 }}>
-            <button onClick={() => fire(mainId)} title={`${AGENT_META[mainId].title} (⌘↵)`} style={{
+            <button onClick={() => fire()} title={`${AGENT_META[mode].title} (⌘↵) — shift-tab to change mode`} style={{
               flex: 1, padding: "4px 10px",
-              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)",
-              borderRadius: "5px 0 0 5px", color: "var(--amber)", fontWeight: 600, fontSize: 11, cursor: "pointer",
+              background: modeColor(mode, 0.15), border: `1px solid ${modeColor(mode, 0.4)}`,
+              borderRadius: "5px 0 0 5px", color: modeColor(mode), fontWeight: 600, fontSize: 11, cursor: "pointer",
               display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
             }}>
-              {(() => { const Icon = AGENT_META[mainId].icon; return Icon ? <Icon style={{ width: 10, height: 10 }} /> : null; })()}
-              {AGENT_META[mainId].label}
+              {(() => { const Icon = AGENT_META[mode].icon; return Icon ? <Icon style={{ width: 10, height: 10 }} /> : null; })()}
+              {AGENT_META[mode].label}
             </button>
-            <button onClick={() => setMenuOpen((o) => !o)} title="Choose agent" style={{
+            <button onClick={() => setMenuOpen((o) => !o)} title="Choose mode (shift-tab cycles)" style={{
               padding: "4px 5px",
-              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)",
-              borderLeft: "1px solid oklch(0.78 0.10 65 / 0.35)",
-              borderRadius: "0 5px 5px 0", color: "var(--amber)", cursor: "pointer",
+              background: modeColor(mode, 0.15), border: `1px solid ${modeColor(mode, 0.4)}`,
+              borderLeft: `1px solid ${modeColor(mode, 0.4)}`,
+              borderRadius: "0 5px 5px 0", color: modeColor(mode), cursor: "pointer",
               display: "flex", alignItems: "center",
             }}>
               <ChevronDown style={{ width: 11, height: 11 }} />
@@ -954,16 +973,16 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
               background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
               boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", overflow: "hidden", minWidth: 120,
             }}>
-              {(Object.keys(AGENT_META) as AgentId[]).map((id) => {
+              {MODE_ORDER.map((id) => {
                 const meta = AGENT_META[id];
                 const Icon = meta.icon;
                 return (
-                  <button key={id} onClick={() => fire(id)} title={meta.title} style={{
+                  <button key={id} onClick={() => { setMode(id); setMenuOpen(false); }} title={meta.title} style={{
                     display: "flex", alignItems: "center", gap: 6, width: "100%",
-                    padding: "6px 10px", background: "transparent", border: "none",
-                    color: "var(--foreground)", fontSize: 11, cursor: "pointer", textAlign: "left",
+                    padding: "6px 10px", background: id === mode ? modeColor(id, 0.12) : "transparent", border: "none",
+                    color: modeColor(id), fontSize: 11, cursor: "pointer", textAlign: "left",
                   }}>
-                    {Icon ? <Icon style={{ width: 11, height: 11, color: "var(--amber)" }} /> : <span style={{ width: 11 }} />}
+                    {Icon ? <Icon style={{ width: 11, height: 11 }} /> : <span style={{ width: 11 }} />}
                     {meta.label}
                   </button>
                 );
