@@ -5,14 +5,14 @@ import { Folder, FolderOpen, FileText, ChevronRight, Plus } from "lucide-react";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
 
-interface TreeNode {
+export interface TreeNode {
   name: string;
   path: string;
   isDir: boolean;
   children: TreeNode[];
 }
 
-function buildTree(paths: string[]): TreeNode[] {
+export function buildTree(paths: string[]): TreeNode[] {
   const root: TreeNode[] = [];
   for (const path of [...paths].sort()) {
     const parts = path.split("/");

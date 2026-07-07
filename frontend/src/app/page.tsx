@@ -22,23 +22,8 @@ import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceB
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
-import { ContextPreviewPanel } from "./contextpreview";
-
-// The whole-story outline is `outline.md` (optionally in a subdir). Chapter
-// beat sheets are `ch{N}.outline.md` — those are outputs of the split, not
-// inputs to it, so only the bare `outline.md` gets the "generate beat sheets"
-// action (see WRITER.md).
-function isOutlineFile(path: string): boolean {
-  const name = decodeURIComponent(path.split("/").pop() ?? "");
-  return name === "outline.md";
-}
-
-// A chat file is any path under a top-level chat/ folder (see WRITER.md) —
-// gets the chatbot view (chatview.tsx) as an alternative to the ordinary
-// prose/atom file view, not a replacement for it.
-function isChatFile(path: string): boolean {
-  return decodeURIComponent(path).split("/")[0] === "chat";
-}
+import { AgentsTab } from "./agentstab";
+import { isOutlineFile, isChatFile } from "@/lib/agents";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -84,15 +69,16 @@ const iconBtnStyle: React.CSSProperties = {
   color: "var(--text-dim)", borderRadius: 5, flexShrink: 0,
 };
 
-function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFile, onCloseFile, centerTab, onCenterTab }: {
+function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, rightAvailable, selectedFile, onCloseFile, centerTab, onCenterTab }: {
   leftOpen: boolean;
   onToggleLeft: () => void;
   rightOpen: boolean;
   onToggleRight: () => void;
+  rightAvailable: boolean;
   selectedFile: string | null;
   onCloseFile: () => void;
-  centerTab: "file" | "ticks" | "chat" | "context";
-  onCenterTab: (t: "file" | "ticks" | "chat" | "context") => void;
+  centerTab: "file" | "ticks" | "chat" | "agents";
+  onCenterTab: (t: "file" | "ticks" | "chat" | "agents") => void;
 }) {
   return (
     <div style={{
@@ -141,21 +127,23 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, selectedFil
       )}
 
       {selectedFile && (
-        <button onClick={() => onCenterTab("context")} title="Preview what a command's context slots would resolve to for this file"
+        <button onClick={() => onCenterTab("agents")} title="Configure the agents available for this file: their context slots and prompt overrides"
           style={{
           padding: "0 10px", fontSize: 11, fontWeight: 500,
-          border: "none", borderBottom: centerTab === "context" ? "2px solid var(--amber)" : "2px solid transparent",
+          border: "none", borderBottom: centerTab === "agents" ? "2px solid var(--amber)" : "2px solid transparent",
           borderTop: "2px solid transparent", background: "transparent",
-          color: centerTab === "context" ? "var(--amber)" : "var(--text-disabled)",
+          color: centerTab === "agents" ? "var(--amber)" : "var(--text-disabled)",
           cursor: "pointer", transition: "color 0.15s, border-color 0.15s",
-        }}>Context</button>
+        }}>Agents</button>
       )}
 
       <span style={{ flex: 1 }} />
-      <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
-      <button onClick={onToggleRight} style={{ ...iconBtnStyle, alignSelf: "center" }}>
-        {rightOpen ? <PanelRightClose style={{ width: 14, height: 14 }} /> : <PanelRightOpen style={{ width: 14, height: 14 }} />}
-      </button>
+      {rightAvailable && <>
+        <div style={{ width: 1, height: 16, background: "var(--border-subtle)", alignSelf: "center", margin: "0 6px" }} />
+        <button onClick={onToggleRight} style={{ ...iconBtnStyle, alignSelf: "center" }}>
+          {rightOpen ? <PanelRightClose style={{ width: 14, height: 14 }} /> : <PanelRightOpen style={{ width: 14, height: 14 }} />}
+        </button>
+      </>}
     </div>
   );
 }
@@ -184,7 +172,7 @@ export default function Home() {
   const [isResizingRight, setIsResizingRight] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters">("branches");
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
-  const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "context">("file");
+  const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
@@ -376,6 +364,7 @@ export default function Home() {
           <Toolbar
             leftOpen={leftOpen} onToggleLeft={() => setLeftOpen((v) => !v)}
             rightOpen={rightOpen} onToggleRight={() => setRightOpen((v) => !v)}
+            rightAvailable={centerTab === "file"}
             selectedFile={selectedFile}
             onCloseFile={handleCloseFile}
             centerTab={centerTab} onCenterTab={(tab) => {
@@ -512,12 +501,12 @@ export default function Home() {
             />
           )}
 
-          {centerTab === "context" && selectedFile && (
-            <ContextPreviewPanel activeBranch={activeBranch} path={selectedFile} />
+          {centerTab === "agents" && selectedFile && (
+            <AgentsTab activeBranch={activeBranch} path={selectedFile} />
           )}
         </div>
 
-        {rightOpen && (
+        {rightOpen && centerTab === "file" && (
           <div style={{ width: rightWidth, minWidth: rightWidth, position: "relative", display: "flex", flexDirection: "column" }}>
             <div
               onMouseDown={onRightSidebarResizeMouseDown}
