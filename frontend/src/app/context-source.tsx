@@ -12,18 +12,23 @@
 // exclude (hide these) and include-only (show only these), so one textarea
 // covers both cases without separate include/exclude fields.
 //
-// Deliberately not wired through lib/serverCacheStore.ts: unlike a file's
-// tick chain, nothing here is shared, synced state other components need to
-// read — it's a single-consumer, request/response preview (see
-// Server.Writer.ContextView's module header: every request is
-// self-contained, nothing persists server-side).
+// The filter itself persists client-side via lib/settingsStore.ts (nothing
+// server-side stores it yet). The live preview it drives does not: that's a
+// single-consumer, request/response resolve against the current file (see
+// Server.Writer.ContextView's module header — every request is
+// self-contained), so it stays local component state like
+// lib/serverCacheStore.ts's "one connection per component" convention, just
+// without a global store slice to mirror into.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw } from "lucide-react";
 import { contextViewConn } from "@/lib/ws";
 import type { ContextSlotPreview, ContextMode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
+import { useSettings, contextFilterKey, type ContextFilter } from "@/lib/settingsStore";
 import { buildTree, type TreeNode } from "./filetree";
+
+const DEFAULT_FILTER: ContextFilter = { patterns: "", invert: false };
 
 function isHidden(name: string): boolean {
   return name.startsWith(".");
@@ -77,8 +82,9 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
   label: string;
   mode: ContextMode;
 }) {
-  const [patterns, setPatterns] = useState("");
-  const [invert, setInvert] = useState(false);
+  const filterKey = activeBranch ? contextFilterKey(activeBranch, sourceId) : null;
+  const { patterns, invert } = useSettings((s) => (filterKey ? s.contextFilters[filterKey] : undefined) ?? DEFAULT_FILTER);
+  const setContextFilter = useSettings((s) => s.setContextFilter);
   const [preview, setPreview] = useState<ContextSlotPreview | null>(null);
   const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -140,12 +146,12 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
   }, [activeBranch, path, sourceId]);
 
   function commitPatterns(next: string) {
-    setPatterns(next);
+    if (filterKey) setContextFilter(filterKey, { patterns: next, invert });
     if (connRef.current) send(connRef.current, next, invert);
   }
 
   function commitInvert(next: boolean) {
-    setInvert(next);
+    if (filterKey) setContextFilter(filterKey, { patterns, invert: next });
     if (connRef.current) send(connRef.current, patterns, next);
   }
 
