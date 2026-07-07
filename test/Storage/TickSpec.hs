@@ -50,6 +50,46 @@ spec = do
             return (tickFields (tickData t), tickMessage (tickData t)))
       result `shouldBe` Right ([("file", "scene.md")], "type:atom\np1\n")
 
+  describe "readTypesTick for Binary and Opaque" $ do
+    -- Both are content-free at this layer by design (see Storage.Core's
+    -- own Tick Haddock) -- the point of these tests is just that decoding
+    -- one doesn't crash with a non-exhaustive pattern match, the way it
+    -- did before Binary/Opaque were added here.
+    it "decodes a Binary tick without crashing, carrying its own path as a field" $ do
+      let result = fst <$> runChain (do
+            writeFile "portrait.png" "\xFF\xFE\x00"
+            h <- store (Binary [] "portrait.png")
+            t <- readTypesTick h
+            return (tickFields (tickData t), tickMessage (tickData t)))
+      result `shouldBe` Right ([("file", "portrait.png")], "type:binary\n")
+
+    it "decodes an Opaque tick without crashing, carrying no fields at all" $ do
+      let result = fst <$> runChain (do
+            h <- store (Opaque [])
+            t <- readTypesTick h
+            return (tickFields (tickData t), tickMessage (tickData t)))
+      result `shouldBe` Right ([], "type:opaque\n")
+
+  describe "fileTicksOf alongside a Binary/Opaque tick" $ do
+    it "walks past a Binary tick for an unrelated path without crashing" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            writeFile "portrait.png" "\xFF\xFE\x00"
+            _ <- store (Binary [] "portrait.png")
+            fileTicksOf "scene.md")
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "p1\n"]
+
+    it "walks past an Opaque tick without crashing" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- store (Opaque [])
+            fileTicksOf "scene.md")
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "p1\n"]
+
   describe "tick position" $ do
     it "posParent of the second atom is the first atom's own id" $ do
       let result = fst <$> runChain (do
