@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, ChevronRight, Plus } from "lucide-react";
+import { Folder, FolderOpen, FileText, FileWarning, ChevronRight, Plus } from "lucide-react";
+import { branchFileUrl } from "@/lib/ws";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
 
@@ -9,10 +10,14 @@ export interface TreeNode {
   name: string;
   path: string;
   isDir: boolean;
+  // No atom history at all (see ws.ts's LibraryNode.binary, which this is
+  // sourced from — this flat file listing has no per-file metadata of its
+  // own). Never open the prose/atom viewer for one of these.
+  isBinary: boolean;
   children: TreeNode[];
 }
 
-export function buildTree(paths: string[]): TreeNode[] {
+export function buildTree(paths: string[], binaryPaths: Set<string> = new Set()): TreeNode[] {
   const root: TreeNode[] = [];
   for (const path of [...paths].sort()) {
     const parts = path.split("/");
@@ -24,7 +29,7 @@ export function buildTree(paths: string[]): TreeNode[] {
       const displayName = decodeURIComponent(parts[i]);
       let node = nodes.find((n) => n.name === displayName);
       if (!node) {
-        node = { name: displayName, path: builtPath, isDir: !isLast, children: [] };
+        node = { name: displayName, path: builtPath, isDir: !isLast, isBinary: isLast && binaryPaths.has(builtPath), children: [] };
         nodes.push(node);
       }
       nodes = node.children;
@@ -44,9 +49,10 @@ function resolveDroppedFiles(folderPath: string, fileList: FileList): { path: st
   }));
 }
 
-function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles }: {
+function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, activeBranch }: {
   node: TreeNode; depth: number; selectedFile: string | null; onSelectFile: (p: string) => void;
   onDropFiles: (folderPath: string, files: FileList) => void;
+  activeBranch: string | null;
 }) {
   const [open, setOpen] = useState(true);
   const [dragOver, setDragOver] = useState(false);
@@ -80,9 +86,31 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles }: 
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
         </button>
         {open && node.children.map((child) => (
-          <FileTreeNode key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={onDropFiles} />
+          <FileTreeNode key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={onDropFiles} activeBranch={activeBranch} />
         ))}
       </div>
+    );
+  }
+
+  // Binary (no atom history): no tick chain for the prose/atom viewer to
+  // show, and writing to it would just glue text onto whatever binary
+  // content is actually there — open the raw bytes in a new tab instead
+  // of calling onSelectFile (same endpoint uploadFiles PUTs to).
+  if (node.isBinary) {
+    return (
+      <button
+        onClick={() => activeBranch && window.open(branchFileUrl(activeBranch, node.path), "_blank")}
+        title="Binary file — opens raw, not editable here"
+        style={{
+          display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
+          padding: `3px 8px 3px ${pad}px`,
+          background: "transparent", color: "var(--text-ghost)",
+          border: "none", borderLeft: "2px solid transparent",
+          cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: 400,
+        }}>
+        <FileWarning style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+      </button>
     );
   }
 
@@ -111,10 +139,14 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles }: 
 // structure or file-level operations of their own.
 
 export function FileTree({
-  activeBranch, files, selectedFile, onSelectFile, onCreateFile, onUploadFiles,
+  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onUploadFiles,
 }: {
   activeBranch: string | null;
   files: string[];
+  // Paths with no atom history at all — sourced from the library tree's
+  // own per-node 'binary' flag (see ws.ts's LibraryNode), since this flat
+  // file listing carries no per-file metadata of its own.
+  binaryPaths?: Set<string>;
   selectedFile: string | null;
   onSelectFile: (f: string) => void;
   onCreateFile: (path: string) => void;
@@ -176,8 +208,8 @@ export function FileTree({
           Empty branch — drop files here to upload
         </div>
       ) : (
-        buildTree(files).map((node) => (
-          <FileTreeNode key={node.path} node={node} depth={0} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={handleDropFiles} />
+        buildTree(files, binaryPaths).map((node) => (
+          <FileTreeNode key={node.path} node={node} depth={0} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={handleDropFiles} activeBranch={activeBranch} />
         ))
       )}
 

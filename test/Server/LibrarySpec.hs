@@ -23,6 +23,7 @@ import Polysemy (Sem, run)
 
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -95,3 +96,20 @@ spec = describe "libraryTree" $ do
       Left err   -> expectationFailure err
       Right tree -> map lnHeading (collectChapters tree)
         `shouldBe` [Just "WRONG", Just "# Chapter Two"]
+
+  -- The client's own cue not to open a prose/atom viewer on a path (see
+  -- the "upload a binary file" design conversation): a never-atom-tracked
+  -- path is flagged 'lnBinary', an ordinary chapter is not.
+  it "flags an uploaded binary file as lnBinary, and leaves an ordinary chapter unflagged" $ do
+    let result = withLibraryBranch "story" $ do
+          chapterCreate "chapters/ch1.md" "Chapter One"
+          runStorage @Main (Core.writeFile "portrait.png" "\xFF\xFE\x00" >> Ops.commitFiles ["portrait.png"])
+          (tree, _, _) <- libraryTree []
+          return tree
+    case result of
+      Left err   -> expectationFailure err
+      Right tree -> do
+        let byPath p = [ lnBinary n | n <- flatten tree, lnPath n == p ]
+            flatten ns = ns ++ concatMap (flatten . lnChildren) ns
+        byPath "chapters/ch1.md" `shouldBe` [False]
+        byPath "portrait.png"    `shouldBe` [True]

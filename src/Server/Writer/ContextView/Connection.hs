@@ -49,6 +49,7 @@ import Server.Core.Run (SessionEffects)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Writer.Agent.ContextPreview (buildPreview)
+import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 
 -- | 'path' is accepted (mirroring 'Server.Writer.File.Connection's shape,
 --   and the eventual per-file scoping this preview is meant to describe)
@@ -115,5 +116,5 @@ pushPreview
   :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> Maybe T.Text -> [ContextSlot] -> Sem r ()
 pushPreview branch conn mid slots = do
-  previews <- withBranch @Main branch (buildPreview @(BranchTag Main) slots)
+  previews <- withBranch @Main branch (hideBinaryFiles @(BranchTag Main) @Main (buildPreview @(BranchTag Main) slots))
   embed $ WS.sendTextData conn (encode (ContextPreviewed mid previews))

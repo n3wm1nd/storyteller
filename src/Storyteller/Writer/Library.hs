@@ -50,10 +50,16 @@ data LibraryKind
 -- | One node in the organizational tree. 'lnHeading' is always 'Nothing'
 --   here — populating it needs the file's own content, which is
 --   'Server.Writer.Library.libraryTree's job, not this pure module's.
+--   'lnBinary' is always 'False' here for the same reason: whether a path
+--   has any atom history at all needs the tick chain, which this pure,
+--   IO-free module never touches (see the module Haddock) — it's filled
+--   in effectfully alongside the heading, so the file tree can tell the
+--   client "don't try to open a prose/atom viewer on this one."
 data LibraryNode = LibraryNode
   { lnPath     :: FilePath
   , lnName     :: T.Text
   , lnKind     :: LibraryKind
+  , lnBinary   :: Bool
   , lnHeading  :: Maybe T.Text
   , lnChildren :: [LibraryNode]
   } deriving (Show, Eq)
@@ -120,10 +126,10 @@ toNodes prefix forest = sortNodes [ mkNode name entry | (name, entry) <- Map.toL
   where
     mkNode name (Trie mFile children)
       | Map.null children, Just path <- mFile =
-          LibraryNode path (T.pack name) (classifyPath path) Nothing []
+          LibraryNode path (T.pack name) (classifyPath path) False Nothing []
       | otherwise =
           let fullPath = if null prefix then name else prefix <> "/" <> name
-          in LibraryNode fullPath (T.pack name) Folder Nothing (toNodes fullPath children)
+          in LibraryNode fullPath (T.pack name) Folder False Nothing (toNodes fullPath children)
 
 sortNodes :: [LibraryNode] -> [LibraryNode]
 sortNodes = List.sortOn sortKey

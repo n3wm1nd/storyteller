@@ -83,6 +83,7 @@ nodeToJSON n = object $
   ]
   <> maybe [] (\num -> ["number" .= num]) (kindNumber (lnKind n))
   <> maybe [] (\h -> ["heading" .= h]) (lnHeading n)
+  <> (if lnBinary n then ["binary" .= True] else [])
 
 kindTag :: LibraryKind -> T.Text
 kindTag = \case

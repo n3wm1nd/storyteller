@@ -84,7 +84,7 @@ libraryTree
 libraryTree cache = do
   paths <- listAllFiles @(BranchTag Main) "/"
   ((content, nextCache), _) <- runStorage @Main (Core.memoFold foldChapterContent Map.empty cache)
-  let tree = withHeadings content (buildLibraryTree paths)
+  tree <- withBinaryFlags (withHeadings content (buildLibraryTree paths))
   return (tree, chapterUnits tree, nextCache)
 
 -- | Fill in 'lnHeading' for chapter nodes (and recurse into folders) from
@@ -97,6 +97,22 @@ withHeadings content = map go
       Chapter _ -> n { lnHeading = Map.lookup (lnPath n) content >>= firstLine }
       Folder    -> n { lnChildren = withHeadings content (lnChildren n) }
       _         -> n
+
+-- | Fill in 'lnBinary' for every leaf (and recurse into folders) -- a
+--   path has never had an atom if and only if it opted out of atom
+--   tracking entirely (see "Storage.Ops"'s 'Storage.Ops.hasAnyAtom' and
+--   the 'Binary'\/'Opaque' tick kinds it's checking for), which is exactly
+--   the client's own cue not to open a prose\/atom viewer on it.
+withBinaryFlags :: BranchOpen r => [LibraryNode] -> Sem r [LibraryNode]
+withBinaryFlags = mapM go
+  where
+    go n = case lnKind n of
+      Folder -> do
+        children <- withBinaryFlags (lnChildren n)
+        return n { lnChildren = children }
+      _ -> do
+        (tracked, _) <- runStorage @Main (Ops.hasAnyAtom (lnPath n))
+        return n { lnBinary = not tracked }
 
 firstLine :: T.Text -> Maybe T.Text
 firstLine t = case T.lines t of

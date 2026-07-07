@@ -8,6 +8,10 @@ import { statusColor, characterDisplayName } from "@/lib/utils";
 import { FileTree } from "./filetree";
 import { LibraryTree } from "./library";
 
+function flattenLibrary(nodes: LibraryNode[]): LibraryNode[] {
+  return nodes.flatMap((n) => [n, ...flattenLibrary(n.children)]);
+}
+
 function BranchItem({ name, active, onSelect, onDelete }: {
   name: string; active: boolean; onSelect: () => void; onDelete: () => void;
 }) {
@@ -117,6 +121,12 @@ export function LeftSidebar({
 }) {
   const [newBranch, setNewBranch] = useState("");
 
+  // 'files' (the Explorer tab's flat listing) carries no per-file metadata
+  // of its own — cross-reference against the library tree's own 'binary'
+  // flag (see ws.ts's LibraryNode) so both tabs treat the same paths
+  // consistently instead of duplicating the classification.
+  const binaryPaths = new Set(flattenLibrary(libraryTree).filter((n) => n.binary).map((n) => n.path));
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--sidebar)" }}>
       <div style={{ flexShrink: 0, padding: "8px 8px 0", borderBottom: "1px solid var(--border-subtle)" }}>
@@ -148,7 +158,7 @@ export function LeftSidebar({
 
       {tab === "explorer" && (
         <FileTree
-          activeBranch={activeBranch} files={files} selectedFile={selectedFile}
+          activeBranch={activeBranch} files={files} binaryPaths={binaryPaths} selectedFile={selectedFile}
           onSelectFile={onSelectFile} onCreateFile={onCreateFile} onUploadFiles={onUploadFiles}
         />
       )}

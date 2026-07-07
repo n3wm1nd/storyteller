@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpen, ListTree, FileText, Plus } from "lucide-react";
+import { BookOpen, ListTree, FileText, FileWarning, Plus } from "lucide-react";
 import type { LibraryNode, ChapterUnit } from "@/lib/ws";
+import { branchFileUrl } from "@/lib/ws";
 
 // ── Library tab (LeftSidebar) ─────────────────────────────────────────────────
 //
@@ -84,11 +85,11 @@ function SectionHeader({ label, count, muted }: { label: string; count: number; 
   );
 }
 
-function Row({ active, muted, onClick, icon, label }: {
-  active: boolean; muted?: boolean; onClick: () => void; icon: React.ReactNode; label: string;
+function Row({ active, muted, onClick, icon, label, title }: {
+  active: boolean; muted?: boolean; onClick: () => void; icon: React.ReactNode; label: string; title?: string;
 }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} title={title} style={{
       display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0, textAlign: "left",
       padding: "4px 10px 4px 12px",
       background: active ? "oklch(0.78 0.10 65 / 0.10)" : "transparent",
@@ -225,7 +226,18 @@ export function LibraryTree({
           {other.length > 0 && (
             <>
               <SectionHeader label="Notes & Other" count={other.length} muted />
-              {other.map((n) => (
+              {other.map((n) => n.binary ? (
+                // No atom history at all (see ws.ts's LibraryNode.binary) —
+                // there's no tick chain for the prose/atom viewer to show,
+                // and writing to it would just glue text onto whatever
+                // binary content is actually there. Open the raw bytes
+                // (same endpoint uploadFiles PUTs to) in a new tab instead.
+                <Row key={n.path} active={false} muted
+                  onClick={() => activeBranch && window.open(branchFileUrl(activeBranch, n.path), "_blank")}
+                  icon={<FileWarning style={{ width: 11, height: 11, flexShrink: 0 }} />}
+                  title="Binary file — opens raw, not editable here"
+                  label={n.name} />
+              ) : (
                 <Row key={n.path} active={selectedFile === n.path} muted onClick={() => onSelectFile(n.path)}
                   icon={<FileText style={{ width: 11, height: 11, flexShrink: 0 }} />}
                   label={pathNoExt(n.path)} />

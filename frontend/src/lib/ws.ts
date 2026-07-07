@@ -294,6 +294,13 @@ export interface LibraryNode {
   kind: "folder" | "chapter" | "chapter-outline" | "story-outline" | "other";
   number?: number;
   heading?: string;
+  // True when this path has no atom history at all (an uploaded binary
+  // asset, or anything else that opted out of atom tracking — see
+  // Storage.Ops.hasAnyAtom). Never open the prose/atom file-viewer
+  // (openFile in fileview.actions.ts) for one of these — there's no tick
+  // chain for it to show, and writing to it would just glue text onto
+  // whatever binary content is actually there.
+  binary?: boolean;
   children: LibraryNode[];
 }
 

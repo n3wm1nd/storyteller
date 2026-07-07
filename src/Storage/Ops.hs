@@ -18,6 +18,7 @@ module Storage.Ops
   , commitFile
   , commitFiles
   , atomHistory
+  , hasAnyAtom
   , exists
 
     -- * Chain-editing operations -- position-aware moves\/merges\/splits
