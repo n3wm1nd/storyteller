@@ -7,6 +7,8 @@ import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
+import { parseCommand } from "@/lib/commands";
+import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
 
 // A character's presence, as a set of this file's own atom tickIds — not
 // fromTickId/toTickId, since a character can enter/leave more than once
@@ -812,6 +814,7 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   const [height, setHeight] = useState(90);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const auto = useCommandAutocomplete(text, setText);
 
   const hasContext = contextAtomCount > 0 || contextAnnotationCount > 0;
 
@@ -827,10 +830,23 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
     regen: (t) => onRegen(t, false), regenBeat: (t) => onRegen(t, true),
   };
 
+  // A recognized leading "/command" always wins over the id the shortcut
+  // or dropdown button would otherwise fire — see lib/commands.ts.
+  const commandActions: Record<string, (t: string, params: Record<string, string>) => void> = {
+    write: (t) => onWrite(t), fix: (t) => onFix(t), append: (t) => onAppend(t), note: (t) => onNote(t),
+    regen: (t, p) => onRegen(t, p.beat !== undefined),
+  };
+
   function fire(id: AgentId) {
-    const t = text.trim();
-    if (!t) return;
-    actionFor[id](t);
+    const raw = text.trim();
+    if (!raw) return;
+    const parsed = parseCommand(raw);
+    const action = parsed && commandActions[parsed.name];
+    if (parsed && action) {
+      if (parsed.text) action(parsed.text, parsed.params);
+    } else {
+      actionFor[id](raw);
+    }
     setText("");
     setMenuOpen(false);
   }
@@ -884,20 +900,27 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
         </div>
       )}
       <div style={{ flex: 1, display: "flex", gap: 8, alignItems: "stretch", padding: "4px 16px 10px", minHeight: 0 }}>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) { e.preventDefault(); fire(mainId); }
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) &&  e.shiftKey) { e.preventDefault(); fire(altId);  }
-          }}
-          placeholder={enabled ? `⌘↵ ${AGENT_META[mainId].label.toLowerCase()} · ⌘⇧↵ ${AGENT_META[altId].label.toLowerCase()}` : "Open a file to write"}
-          style={{
-            flex: 1, resize: "none", fontFamily: "Georgia, serif", fontSize: 12,
-            background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
-            color: "var(--foreground)", padding: "6px 8px", outline: "none",
-          }}
-        />
+        <div style={{ position: "relative", flex: 1, display: "flex" }}>
+          <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} />
+          <textarea
+            ref={auto.taRef}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onSelect={auto.onSelect}
+            onClick={auto.onSelect}
+            onKeyDown={(e) => {
+              if (auto.onKeyDown(e)) return;
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) { e.preventDefault(); fire(mainId); }
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) &&  e.shiftKey) { e.preventDefault(); fire(altId);  }
+            }}
+            placeholder={enabled ? `⌘↵ ${AGENT_META[mainId].label.toLowerCase()} · ⌘⇧↵ ${AGENT_META[altId].label.toLowerCase()} · "/" for commands` : "Open a file to write"}
+            style={{
+              flex: 1, resize: "none", fontFamily: "Georgia, serif", fontSize: 12,
+              background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
+              color: "var(--foreground)", padding: "6px 8px", outline: "none",
+            }}
+          />
+        </div>
         <div ref={menuRef} style={{ position: "relative", display: "flex", flexDirection: "column", gap: 4, justifyContent: "flex-end" }}>
           <button onClick={() => fire(altId)} title={`${AGENT_META[altId].title} (⌘⇧↵)`} style={{
             padding: "4px 10px", background: "var(--amber)", border: "none", borderRadius: 5,
