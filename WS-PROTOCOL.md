@@ -212,13 +212,121 @@ Planned commands, none implemented yet:
 
 Not implemented: no commands, no wire types, and no push event exist for this yet. `WorkingTree` today is purely an internal storage detail — shared `State WorkingTree` used transiently within a single handler call — not something a client can address.
 
-### `/chapters/{id}` *(planned, app-specific)*
+### `/library/{name}` *(app-specific)*
 
-**Scope:** metadata for one chapter — not its prose (see "New scopes are app-specific, not core" above).  
-**On connect:** title, tick-range boundaries (start/end refs), the summary tick if one exists, character-presence list (resolved from cross-branch refs into the range).  
-**Commands:** none yet envisioned — this scope is read-only; edits happen through the file connection for the chapter's content.  
-**Events:** an `update`-shaped push whenever a tick lands inside the range or a referencing entity-branch tick appears.  
-**Why separate from `/branch/{name}/{path}`:** keeps the (large, per-atom) prose stream and the (small, cross-cutting) metadata stream from duplicating each other over the wire — a panel that only needs the chrome (breadcrumb, summary, cast list) doesn't have to receive or filter the full atom chain to get it.
+**Supersedes** the earlier `/chapters/{id}` sketch (per-chapter-only metadata) — same
+motivation, generalized to the whole branch's organizational tree instead of one
+chapter at a time.
+
+**Scope:** the writer's organizational view over one branch — which
+folders/chapters/outline artifacts exist, and how they relate, *not* their
+prose content (see "New scopes are app-specific, not core" above; prose
+still comes from the file connection). File-first: a unit's identity is its
+file path, same as everywhere else in this backend — there is no separate id
+space for "chapter 5" distinct from whatever file backs it.
+
+Detection is deliberately freeform, by convention, not by prescribed depth or
+folder naming — see `Storyteller.Writer.Library.classifyPath`. A path is
+recognized as a chapter (`chapters/ch{N}.md`), a beat sheet
+(`chapters/ch{N}.outline.md`), or the whole-story outline (`outline.md`,
+anywhere) purely from its own basename and immediate parent directory name —
+independent of how deep that sits in an otherwise arbitrary, user-chosen
+structure (`series/epic/book3/act1/chapters/ch1.md` is recognized exactly as
+well as a bare `chapters/ch1.md`). Every other file or folder still becomes a
+real, labeled tree node — nothing is filtered out for not matching a known
+convention; the library view *labels*, it never limits how a user chooses to
+organize.
+
+**On connect:** two things, both derived from the same read —
+- `nodes`: the full raw organizational tree, every node carrying its path,
+  kind (`folder`/`chapter`/`chapter-outline`/`story-outline`/`other`), and
+  for chapters, the chapter number and `heading` (the chapter file's own
+  first line — see "Read side" below).
+- `chapters`: every chapter *number* that has a chapter file, a beat sheet,
+  or both, already paired by number
+  (`Storyteller.Writer.Library.chapterUnits`) — `chapterPath`/`heading`/
+  `outlinePath` each absent independently depending on which artifact(s)
+  exist. This pairing is computed once, server-side, rather than left for
+  each consumer (this connection's own UI, and eventually the planned
+  Summarizer agent) to reconstruct independently: "chapter N exists" is a
+  real domain fact — either artifact existing already means the chapter
+  exists as a concept (a beat sheet with no prose yet is still real
+  planning content, see WRITER.md's "disposable scaffolding") — not a
+  display-only grouping, so duplicating it per-consumer would risk two
+  independently-driftable answers to "what belongs to chapter N."
+
+Payload is deliberately open-ended and expected to grow the same way
+`/character/{charBranch}`'s does: character-presence per unit, summary (once
+the Summarizer agent exists), notes, style guides — none of that exists yet.
+New fields get added additively as those features land, not as a wire
+redesign.
+
+**Read side stays a bandwidth call, not an interpretation call.** A chapter
+node's `heading` is its file's raw first line, not a parsed/validated H1 —
+same "server hands over raw text, client decides what a display name is"
+contract `sheet.md` already has (see WRITER.md), just narrowed to one line
+instead of the whole file so a tree covering many chapters stays push-cheap
+(see "stays push-cheap indefinitely" above) — sending each chapter's entire
+prose just to read its first line would defeat that test.
+
+**No tick chain of its own** — like `/character/{charBranch}`, this is
+composed/derived data, not a tick stream, so it does not use the
+`ticks`/`update` event shape. Its own structural push event (`library.tree`)
+carries the whole tree; there is no separate per-unit sub-push.
+
+**Commands:** `chapter.create { path, name }` — write `path` as a new file,
+seeded with `# {name}` as its first line (the same "first H1 line is the
+display name" convention `sheet.md` uses, see WRITER.md), and commit it as its
+own atom tick. This is *not* the same as `file.create`: it's the one command
+here that needs to know the heading convention, which is this connection's
+business, not the generic file connection's — `file.create` still creates an
+empty file with no header at all. Deliberately doesn't validate that `path`
+matches the `chapters/ch{N}.md` shape — detection is freeform (see above), so
+a path that doesn't match is still created, just not later recognized as a
+`chapter` node. No other mutation lives here — everything else (actual
+content edits) goes through `/branch/{name}/{path}` as usual, same "read is
+raw-but-complete, write path stays unified" split as `/character/{charBranch}`.
+
+**Events:** `library.tree`, `error`.
+
+**Notification:** watches this branch's own ref-moves via the same
+`watchBranch` plumbing `/branch/{name}` uses. Extend to also watch relevant
+entity/character branches once character-presence is actually implemented —
+not needed yet, since nothing derived here crosses branches today.
+
+**Derivation lives in `Storyteller.Writer`, not in the connection.** "What
+files belong to which book/chapter/scene, given the file-organization
+conventions" has a second real consumer already anticipated (the Summarizer
+agent will need the identical answer to know its own chapter boundaries), so
+this logic belongs as its own function in `Storyteller.Writer`, with the
+`/library/{name}` connection as its first caller — not inlined into the push
+function, where a second consumer could silently drift from it later.
+
+**Why per-branch, not global:** a global, cross-branch view (compare book X's
+divergent versions across two branches, or browse the whole project's shelf
+regardless of which branch is checked out) was considered and deliberately
+deferred — see "Not here" below.
+
+**Not here:**
+- The prose content itself — same as `/character/{charBranch}`, opening a unit
+  for editing goes through `/branch/{name}/{path}`, reusing the ordinary file
+  view rather than a bespoke chapter editor.
+- A cross-branch view — branches are already this project's organizational
+  layer (including divergent, not-yet-merged storylines), so a per-branch
+  `/library/{name}` doesn't need to flatten across them; a single-user tool
+  focused on one checked-out branch at a time doesn't need every other
+  branch's tree kept live just in case. If a genuine cross-branch feature
+  (comparing/reconciling divergent books) becomes a real need later, it gets
+  its own deliberately-designed scope for exactly that, rather than
+  retrofitting dual-mode behavior into this one.
+
+### `/library` *(reserved, not yet designed)*
+
+The root path is reserved for a possible future global, cross-branch view —
+see "Why per-branch, not global" above. No handler exists for it today; only
+`/library/{name}` is implemented. Reserving the path now means that feature,
+if it ever becomes a real need, gets a clean namespace instead of retrofitting
+one into `/library/{name}` after the fact.
 
 ### `/character/{charBranch}` *(app-specific)*
 

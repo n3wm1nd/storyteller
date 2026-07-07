@@ -7,7 +7,7 @@
 // safe (writes go through the loudly-named 'mirrorServerEvent', importable
 // from anywhere).
 
-import { sessionConn, branchConn, uploadBranchFile } from "@/lib/ws";
+import { sessionConn, branchConn, libraryConn, uploadBranchFile } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent } from "@/lib/wsHelpers";
@@ -62,10 +62,15 @@ export function deleteBranch(name: string) {
 
 export async function selectBranch(name: string): Promise<void> {
   const prev = getServerCache()._branch;
+  const prevLibrary = getServerCache()._library;
   const prevName = getServerCache().activeBranch;
   if (prev) {
     prev.close();
     if (prevName) removeConn(`branch:${prevName}`);
+  }
+  if (prevLibrary) {
+    prevLibrary.close();
+    if (prevName) removeConn(`library:${prevName}`);
   }
 
   for (const fc of Object.values(getServerCache().openFiles)) fc.conn.close();
@@ -78,6 +83,8 @@ export async function selectBranch(name: string): Promise<void> {
     files: [],
     ticks: {},
     branchHead: null,
+    libraryTree: [],
+    libraryChapters: [],
     openFiles: {},
     openCharacters: {},
     openJournals: {},
@@ -128,6 +135,46 @@ export async function selectBranch(name: string): Promise<void> {
     setConnStatus(label, "error");
     setError(String(err));
   }
+
+  // A second, independent connection (see WS-PROTOCOL.md's /library/{name})
+  // — it carries genuinely different, derived data (per-node kind, chapter
+  // numbers, headings) the branch connection's own plain file list doesn't,
+  // so it isn't worth trying to piggyback on 'branch' above.
+  const libraryLabel = `library:${name}`;
+  setConnStatus(libraryLabel, "connecting");
+
+  const library = libraryConn(name);
+
+  library.onStatus((s) => {
+    if (s !== "connected") setConnStatus(libraryLabel, "connecting");
+  });
+
+  library.subscribe((evt) => {
+    bumpActivity(libraryLabel);
+    if (evt.type === "library.tree") {
+      mirrorServerEvent({ libraryTree: evt.nodes, libraryChapters: evt.chapters });
+      setConnStatus(libraryLabel, "connected");
+    } else if (evt.type === "error") {
+      setError(evt.message);
+    }
+  });
+
+  try {
+    await library.connect();
+    mirrorServerEvent({ _library: library });
+  } catch (err) {
+    setConnStatus(libraryLabel, "error");
+    setError(String(err));
+  }
+}
+
+// Introduce a new chapter file, seeded with its heading — see
+// WS-PROTOCOL.md's /library/{name} chapter.create. The resulting file
+// itself reaches this connection (and every other open one) via the
+// library/branch connections' own ref-move pushes, same as any other write;
+// nothing needs to be applied optimistically here.
+export function createChapter(path: string, name: string) {
+  getServerCache()._library?.send({ type: "chapter.create", path, name });
 }
 
 // Drag-and-drop upload — one or more dropped files, written directly to

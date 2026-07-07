@@ -1,11 +1,12 @@
 // WebSocket connection abstractions for the storyteller server.
 //
-// Five connection types mirror the server's five endpoints:
+// Six connection types mirror the server's six endpoints:
 //   sessionConn    (/session)                        — branch management
 //   branchConn     (/branch/{name})                  — full branch tick chain + file tree
 //   fileConn       (/branch/{name}/{path})            — file-scoped tick chain
 //   characterConn  (/character/{name})                — sidebar-facing character state (read-only)
 //   contextViewConn (/branch/{name}/$context/{path})  — stateless context-filter preview
+//   libraryConn    (/library/{name})                  — writer-facing book/chapter tree (mostly read-only)
 //
 // All connections support auto-reconnect. Reconnecting is the only resync
 // mechanism — the server pushes full state on every new connection.
@@ -270,6 +271,53 @@ export type ContextViewEvent =
   | { type: "context.preview"; id?: string; slots: ContextSlotPreview[] }
   | ErrorEvent;
 
+// ── Library protocol ──────────────────────────────────────────────────────────
+
+// One node in the branch's organizational tree (see WS-PROTOCOL.md's
+// /library/{name} and Storyteller.Writer.Library). 'kind' is server-detected
+// by convention (chapters/ch{N}.md, chapters/ch{N}.outline.md, outline.md
+// anywhere — see WRITER.md) purely from a path's own basename + immediate
+// parent dirname, at any nesting depth; "other" is not an error, just an
+// unrecognized (but still shown) file/folder. 'heading' is a chapter's raw
+// first line, not a parsed/validated H1 — same "server hands over raw text,
+// client decides" contract as CharacterSummary.sheet, just narrowed to one
+// line so a tree covering many chapters stays cheap to push.
+export interface LibraryNode {
+  path: string;
+  name: string;
+  kind: "folder" | "chapter" | "chapter-outline" | "story-outline" | "other";
+  number?: number;
+  heading?: string;
+  children: LibraryNode[];
+}
+
+// One chapter number's worth of artifacts, already paired server-side (see
+// Storyteller.Writer.Library.chapterUnits) — either the chapter file, the
+// beat sheet, or both existing already means the chapter exists as a
+// concept, which is a real domain fact, not a display grouping this client
+// should reconstruct itself (the planned Summarizer agent will need the
+// identical answer later). `chapterPath`/`outlinePath` absent means that
+// artifact doesn't exist yet for this number.
+export interface ChapterUnit {
+  number: number;
+  chapterPath?: string;
+  heading?: string;
+  outlinePath?: string;
+}
+
+// The only mutation here: introduce `path` as a new chapter file, seeded
+// with "# {name}" as its first line (same convention sheet.md uses for a
+// character's display name). Distinct from file.create, which has no
+// heading convention to seed. Doesn't require `path` to match
+// chapters/ch{N}.md — detection is freeform, so a non-matching path is
+// still created, just shown as "other" rather than "chapter".
+export type LibraryCommand =
+  | { type: "chapter.create"; path: string; name: string };
+
+export type LibraryEvent =
+  | { type: "library.tree"; nodes: LibraryNode[]; chapters: ChapterUnit[] }
+  | ErrorEvent;
+
 // ── Connection ────────────────────────────────────────────────────────────────
 
 type Listener<E> = (event: E) => void;
@@ -384,6 +432,10 @@ export function fileConn(branch: string, path: string) {
 // No commands, so 'Cmd' is 'never' — nothing can be sent on this connection.
 export function characterConn(branch: string) {
   return new StoryWS<never, CharacterEvent>(`${wsBase()}/character/${encodeURIComponent(branch)}`);
+}
+
+export function libraryConn(name: string) {
+  return new StoryWS<LibraryCommand, LibraryEvent>(`${wsBase()}/library/${encodeURIComponent(name)}`);
 }
 
 // Stateless: send a full slot list whenever the filter changes, get a full

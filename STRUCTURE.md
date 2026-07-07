@@ -90,6 +90,7 @@ Writer-specific business logic).
 | `Server.Writer.File.Connection` | `/branch/{name}/{path}` connection lifecycle |
 | `Server.Writer.Character`/`.Protocol`/`.Connection` | `/character/{charBranch}` connection: the sidebar-facing view of a character branch (display name + `sheet.md` content) — knows the `character/{id}` naming convention from WRITER.md, which Core has no business knowing |
 | `Server.Writer.ContextView.Protocol`/`.Connection` | `/branch/{name}/$context/{path}` connection: a read-only, preview-only sibling of `Server.Writer.File.Connection` — resolves a command's context slots into the files that would populate them, without running any agent or LLM call |
+| `Server.Writer.Library`/`.Protocol`/`.Connection`/`.Dispatch` | `/library/{name}` connection: the writer-facing book/chapter organizational tree over a branch — mostly read-only (one `chapter.create` command), otherwise the same "server hands over raw text, client decides" shape as Character's sheet content. `/library` (no name) is reserved, not yet implemented — see WS-PROTOCOL.md for why it stays per-branch. |
 
 ### Executable
 
@@ -170,6 +171,19 @@ specific: `Storyteller.Writer.Types` holds `Presence`/`PresenceEvent` (the
 something to this app), and `Storyteller.Writer.Presence` is the operation
 (`recordPresence`) that creates a `Presence` tick — the same relationship
 `Storyteller.Common.Annotation` has to `Storyteller.Common.Types`.
+
+## `Storyteller.Writer.Library` — pure book/chapter tree derivation
+
+Not a tick kind — a pure, IO-free function (`classifyPath`/`buildLibraryTree`)
+that turns a branch's flat file-path list into the organizational tree
+`Server.Writer.Library.libraryTree` serves over `/library/{name}` (see
+WS-PROTOCOL.md). Kept pure and Writer-specific (it knows the
+`chapters/ch{N}.md` convention from WRITER.md) rather than folded into
+`Storyteller.Core`, on the same "erring toward specificity" basis as
+everything else in this section — but deliberately factored out of the
+connection itself, since the planned Summarizer agent will need the
+identical "what belongs to which chapter" answer and shouldn't have to
+re-derive it independently.
 
 ## `Storyteller.Writer.Agent.*` — the business logic
 

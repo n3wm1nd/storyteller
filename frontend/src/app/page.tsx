@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
-import { connect, createBranch, deleteBranch, selectBranch, uploadFiles } from "./sidebar.actions";
+import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
 import {
   openFile, createFile, closeFile, enterScene, leaveScene,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
@@ -152,7 +152,7 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, rightAvaila
 
 export default function Home() {
   const {
-    branches, characterBranches, activeBranch, files, ticks, branchHead, openFiles,
+    branches, characterBranches, activeBranch, files, ticks, branchHead, libraryTree, libraryChapters, openFiles,
     openCharacters, openJournals, preview,
   } = useServerCache();
 
@@ -170,7 +170,7 @@ export default function Home() {
   const [rightOpen, setRightOpen] = useState(true);
   const [rightWidth, setRightWidth] = useState(260);
   const [isResizingRight, setIsResizingRight] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters">("branches");
+  const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters" | "library">("branches");
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -338,11 +338,13 @@ export default function Home() {
               tab={sidebarTab} setTab={setSidebarTab}
               branches={branches} characterBranches={characterBranches} activeBranch={activeBranch}
               files={files} selectedFile={selectedFile}
+              libraryTree={libraryTree} libraryChapters={libraryChapters}
               onSelectBranch={handleSelectBranch}
               onSelectFile={handleSelectFile}
               onCreateFile={handleCreateFile}
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
+              onCreateChapter={createChapter}
               onHoverCharacter={setHoveredCharacter}
               onUploadFiles={uploadFiles}
               conns={conns} error={error}

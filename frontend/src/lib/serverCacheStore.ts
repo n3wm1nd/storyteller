@@ -28,6 +28,7 @@ import type {
   BranchCommand,  BranchEvent,
   FileCommand,    FileEvent,
   CharacterEvent, CharacterSummary,
+  LibraryCommand, LibraryEvent, LibraryNode, ChapterUnit,
 } from "./ws";
 
 export type { WireTick };
@@ -67,6 +68,17 @@ export interface ServerCacheState {
   ticks:        Record<string, WireTick>;
   branchHead:   string | null;
 
+  // The active branch's book/chapter organizational tree — kept live by
+  // /library/{name}'s own notifier, same lifecycle as '_branch' below (see
+  // sidebar.actions.ts's selectBranch). Empty when no branch is active or
+  // the branch has no recognized chapters yet — not an error state.
+  libraryTree: LibraryNode[];
+
+  // Every chapter number already paired with its own chapter file/beat
+  // sheet, precomputed server-side (see Storyteller.Writer.Library.chapterUnits)
+  // — this client never reconstructs that pairing itself; see library.tsx.
+  libraryChapters: ChapterUnit[];
+
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
 
@@ -93,6 +105,7 @@ export interface ServerCacheState {
 
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
+  _library: StoryWS<LibraryCommand, LibraryEvent> | null;
 }
 
 const _store = create<ServerCacheState>(() => ({
@@ -102,12 +115,15 @@ const _store = create<ServerCacheState>(() => ({
   files: [],
   ticks: {},
   branchHead: null,
+  libraryTree: [],
+  libraryChapters: [],
   openFiles: {},
   openCharacters: {},
   openJournals: {},
   preview: null,
   _session: null,
   _branch: null,
+  _library: null,
 }));
 
 // Read access — a hook (optionally with a selector, same convention as

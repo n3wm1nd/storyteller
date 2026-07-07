@@ -33,7 +33,21 @@ Writer-specific.
 
 ## Story structure
 
-- `chapters/ch{N}.md` — one file per chapter, narrative order.
+- `chapters/ch{N}.md` — one file per chapter, narrative order. The first
+  Markdown H1 (`# `) line is the chapter's **display name** — same convention
+  `sheet.md` uses for a character's display name (see "Character structure"
+  below), and the same "server hands over raw text, client decides" contract:
+  the `/library/{name}` connection's `chapter.create` command writes this
+  line, but reading it back into a display name is a client-side concern
+  (WS-PROTOCOL.md's read-side principle), not something the server parses.
+- Surrounding folder structure is otherwise **freeform, not prescribed** —
+  `chapters/ch1.md` and `series/epic/book3/act1/chapters/ch1.md` are both
+  recognized identically, since detection only ever looks at a path's own
+  basename and immediate parent directory name
+  (`Storyteller.Writer.Library.classifyPath`, see WS-PROTOCOL.md's
+  `/library/{name}`). Nothing requires a `chapters/` folder to exist at any
+  particular depth, or to exist at all — a story with no chapter files just
+  has an empty chapter list, same as any other convention in this document.
 
 ## Outlines and beat sheets
 

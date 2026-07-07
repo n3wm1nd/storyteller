@@ -21,6 +21,7 @@ import qualified Storyteller.CharGenSpec
 import qualified Storyteller.PresenceSpec
 import qualified Storyteller.UndoSpec
 import qualified Storyteller.ChatSpec
+import qualified Storyteller.LibrarySpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.FileSpec
@@ -51,6 +52,7 @@ main = hspec $ do
   describe "Storyteller.Presence"       Storyteller.PresenceSpec.spec
   describe "Storyteller.Undo"           Storyteller.UndoSpec.spec
   describe "Storyteller.Writer.Agent.Chat" Storyteller.ChatSpec.spec
+  describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
   -- eager, and buffered through 'Storyteller.Core.Git.withStorage' — the

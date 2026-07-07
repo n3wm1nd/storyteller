@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, GitBranch, Plus, Users } from "lucide-react";
+import { Folder, GitBranch, Plus, Users, BookOpen } from "lucide-react";
 import { type ConnInfo } from "@/lib/uiStore";
-import { type CharacterSummary } from "@/lib/ws";
+import { type CharacterSummary, type LibraryNode, type ChapterUnit } from "@/lib/ws";
 import { statusColor, characterDisplayName } from "@/lib/utils";
 import { FileTree } from "./filetree";
+import { LibraryTree } from "./library";
 
 function BranchItem({ name, active, onSelect, onDelete }: {
   name: string; active: boolean; onSelect: () => void; onDelete: () => void;
@@ -77,14 +78,16 @@ function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart
 export function LeftSidebar({
   tab, setTab,
   branches, characterBranches, activeBranch, files, selectedFile,
+  libraryTree, libraryChapters,
   onSelectBranch, onSelectFile, onCreateFile,
   onCreateBranch, onDeleteBranch,
+  onCreateChapter,
   onHoverCharacter,
   onUploadFiles,
   conns, error,
 }: {
-  tab: "explorer" | "branches" | "characters";
-  setTab: (t: "explorer" | "branches" | "characters") => void;
+  tab: "explorer" | "branches" | "characters" | "library";
+  setTab: (t: "explorer" | "branches" | "characters" | "library") => void;
   branches: string[];
   // Live-tracked character/* branch list from the session connection (see
   // Server.Writer.Session.Connection's notifier) — kept up to date across
@@ -94,11 +97,19 @@ export function LeftSidebar({
   activeBranch: string | null;
   files: string[];
   selectedFile: string | null;
+  // The active branch's book/chapter tree from its own /library/{name}
+  // connection (see sidebar.actions.ts's selectBranch) — independent of
+  // 'files' above, which is the plain, unclassified branch file list.
+  libraryTree: LibraryNode[];
+  // Chapter/outline pairing, precomputed server-side (see library.tsx's own
+  // header comment for why this isn't reconstructed client-side).
+  libraryChapters: ChapterUnit[];
   onSelectBranch: (b: string) => void;
   onSelectFile: (f: string) => void;
   onCreateFile: (path: string) => void;
   onCreateBranch: (name: string) => void;
   onDeleteBranch: (name: string) => void;
+  onCreateChapter: (path: string, name: string) => void;
   onHoverCharacter: (branch: string | null) => void;
   onUploadFiles: (files: { path: string; content: File }[]) => void;
   conns: ConnInfo[];
@@ -109,10 +120,13 @@ export function LeftSidebar({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--sidebar)" }}>
       <div style={{ flexShrink: 0, padding: "8px 8px 0", borderBottom: "1px solid var(--border-subtle)" }}>
-        <div style={{ display: "flex", background: "var(--surface)", borderRadius: 6, padding: 2, gap: 1 }}>
-          {(["explorer", "branches", "characters"] as const).map((t) => (
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1,
+          background: "var(--surface)", borderRadius: 6, padding: 2,
+        }}>
+          {(["explorer", "library", "branches", "characters"] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)} style={{
-              flex: 1, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+              height: 26, display: "flex", alignItems: "center", justifyContent: "center",
               gap: 5, fontSize: 11, borderRadius: 4, border: "none", cursor: "pointer",
               background: tab === t ? "var(--surface-raised)" : "transparent",
               color: tab === t ? "var(--amber)" : "var(--text-disabled)",
@@ -120,10 +134,12 @@ export function LeftSidebar({
             }}>
               {t === "explorer"
                 ? <Folder style={{ width: 12, height: 12 }} />
+                : t === "library"
+                ? <BookOpen style={{ width: 12, height: 12 }} />
                 : t === "branches"
                 ? <GitBranch style={{ width: 12, height: 12 }} />
                 : <Users style={{ width: 12, height: 12 }} />}
-              {t === "explorer" ? "Explorer" : t === "branches" ? "Branches" : "Characters"}
+              {t === "explorer" ? "Explorer" : t === "library" ? "Library" : t === "branches" ? "Branches" : "Characters"}
             </button>
           ))}
         </div>
@@ -134,6 +150,13 @@ export function LeftSidebar({
         <FileTree
           activeBranch={activeBranch} files={files} selectedFile={selectedFile}
           onSelectFile={onSelectFile} onCreateFile={onCreateFile} onUploadFiles={onUploadFiles}
+        />
+      )}
+
+      {tab === "library" && (
+        <LibraryTree
+          activeBranch={activeBranch} tree={libraryTree} chapters={libraryChapters} selectedFile={selectedFile}
+          onSelectFile={onSelectFile} onCreateChapter={onCreateChapter}
         />
       )}
 

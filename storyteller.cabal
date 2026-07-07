@@ -73,6 +73,7 @@ library
                   , Storyteller.Common.Annotation
                   , Storyteller.Writer.Types
                   , Storyteller.Writer.Presence
+                  , Storyteller.Writer.Library
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run
@@ -89,6 +90,7 @@ library
                   , Server.Writer.Branch
                   , Server.Writer.File
                   , Server.Writer.Character
+                  , Server.Writer.Library
                   , Server.Writer.Branch.Protocol
                   , Server.Writer.Branch.Connection
                   , Server.Writer.Branch.Dispatch
@@ -99,6 +101,9 @@ library
                   , Server.Writer.Character.Connection
                   , Server.Writer.ContextView.Protocol
                   , Server.Writer.ContextView.Connection
+                  , Server.Writer.Library.Protocol
+                  , Server.Writer.Library.Connection
+                  , Server.Writer.Library.Dispatch
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix
@@ -242,6 +247,7 @@ test-suite storyteller-test
                   , Storyteller.PresenceSpec
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
+                  , Storyteller.LibrarySpec
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.Writer.BranchSpec
