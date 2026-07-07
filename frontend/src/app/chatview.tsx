@@ -41,6 +41,17 @@ const bubbleBase: React.CSSProperties = {
   lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
 };
 
+// Rough row estimate for the edit textarea — assistant replies can run to
+// paragraphs, so a fixed row count either clips them or wastes space on a
+// one-line user prompt. Chars-per-row is a guess (the bubble's actual width
+// varies with panel size), not a measurement — good enough for an initial
+// size, and 'resize: vertical' on the textarea covers the rest.
+function estimateRows(text: string): number {
+  const CHARS_PER_ROW = 60;
+  const total = text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / CHARS_PER_ROW)), 0);
+  return Math.min(24, Math.max(3, total));
+}
+
 // A chat bubble that turns into a textarea on double-click — same
 // double-click-to-edit / Cmd-Enter-to-commit / Escape-to-cancel convention
 // as fileview.tsx's AtomBlock. Saving is the caller's job (see ChatView):
@@ -48,43 +59,53 @@ const bubbleBase: React.CSSProperties = {
 // recent user turn instead drops the stale reply and re-asks, since that
 // reply was generated against the text being replaced.
 function EditableBubble({
-  content, align, bubbleStyle, disabled, onSave,
+  content, align, bubbleStyle, disabled, onSave, onEditingChange,
 }: {
   content: string;
   align: "flex-start" | "flex-end";
   bubbleStyle: React.CSSProperties;
   disabled: boolean;
   onSave: (text: string) => void;
+  // The bubble's display width is capped (bubbleBase's 72%, see below), but
+  // that's too narrow to comfortably edit a multi-paragraph assistant
+  // reply in. The caller (ChatView) owns that cap on an outer wrapper div,
+  // so editing needs to tell it to lift it for the duration.
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  function setEditingState(v: boolean) {
+    setEditing(v);
+    onEditingChange?.(v);
+  }
+
   function startEdit() {
     if (disabled) return;
     setDraft(content);
-    setEditing(true);
+    setEditingState(true);
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
   function commit() {
     const trimmed = draft.trim();
     if (trimmed && trimmed !== content.trim()) onSave(trimmed);
-    setEditing(false);
+    setEditingState(false);
   }
 
   if (editing) {
     return (
-      <div style={{ alignSelf: align, width: "72%", display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ alignSelf: align, width: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
         <textarea
           ref={textareaRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
-            if (e.key === "Escape") setEditing(false);
+            if (e.key === "Escape") setEditingState(false);
           }}
-          rows={3}
+          rows={estimateRows(draft)}
           style={{
             width: "100%", boxSizing: "border-box", resize: "vertical",
             background: "var(--surface-deep)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
@@ -93,7 +114,7 @@ function EditableBubble({
           }}
         />
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-          <button onClick={() => setEditing(false)} style={{
+          <button onClick={() => setEditingState(false)} style={{
             background: "none", border: "1px solid var(--border-subtle)", borderRadius: 3,
             color: "var(--text-ghost)", fontSize: 10, padding: "2px 8px", cursor: "pointer",
           }}>Cancel</button>
@@ -109,6 +130,46 @@ function EditableBubble({
   return (
     <div onDoubleClick={startEdit} title={disabled ? undefined : "Double-click to edit"} style={{ alignSelf: align, ...bubbleStyle, cursor: disabled ? undefined : "text" }}>
       {content}
+    </div>
+  );
+}
+
+// Wraps the assistant reply + its Regenerate button. Holds its own editing
+// state (can't be a plain inline div in ChatView's .map — the width cap
+// needs to react to EditableBubble's internal edit toggle, and hooks can't
+// live in a loop body) so the 72% display cap can lift only while editing.
+function AssistantReply({ atomTick, disabled, showRegen, onSave, onRegen }: {
+  atomTick: WireTick;
+  disabled: boolean;
+  showRegen: boolean;
+  onSave: (text: string) => void;
+  onRegen: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <div style={{ alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 4, maxWidth: editing ? "100%" : "72%", width: editing ? "100%" : undefined }}>
+      <EditableBubble
+        align="flex-start"
+        content={atomTick.content ?? atomTick.message}
+        disabled={disabled}
+        onEditingChange={setEditing}
+        bubbleStyle={{ ...bubbleBase, maxWidth: "100%", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)" }}
+        onSave={onSave}
+      />
+      {showRegen && !editing && (
+        <button
+          onClick={onRegen}
+          title="Regenerate this reply"
+          style={{
+            alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 4,
+            fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer",
+            background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)",
+          }}
+        >
+          <RotateCcw style={{ width: 10, height: 10 }} />
+          Regenerate
+        </button>
+      )}
     </div>
   );
 }
@@ -177,29 +238,13 @@ export function ChatView({
                 }}
               />
               {atomTick && (
-                <div style={{ alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 4, maxWidth: "72%" }}>
-                  <EditableBubble
-                    align="flex-start"
-                    content={atomTick.content ?? atomTick.message}
-                    disabled={generating}
-                    bubbleStyle={{ ...bubbleBase, maxWidth: "100%", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)" }}
-                    onSave={(text) => onEditAtom(atomTick.tickId, text)}
-                  />
-                  {i === lastIndex && !generating && (
-                    <button
-                      onClick={() => onRegen(ex.promptTick.tickId, atomTick.tickId, ex.promptTick.message)}
-                      title="Regenerate this reply"
-                      style={{
-                        alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 4,
-                        fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer",
-                        background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)",
-                      }}
-                    >
-                      <RotateCcw style={{ width: 10, height: 10 }} />
-                      Regenerate
-                    </button>
-                  )}
-                </div>
+                <AssistantReply
+                  atomTick={atomTick}
+                  disabled={generating}
+                  showRegen={i === lastIndex && !generating}
+                  onSave={(text) => onEditAtom(atomTick.tickId, text)}
+                  onRegen={() => onRegen(ex.promptTick.tickId, atomTick.tickId, ex.promptTick.message)}
+                />
               )}
             </div>
           );
