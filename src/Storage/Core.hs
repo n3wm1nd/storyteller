@@ -87,6 +87,7 @@ module Storage.Core
   , resolveId
   , logRemap
   , follow
+  , memoFold
   , syncTo
   , reset
   , inWorktree
@@ -515,6 +516,84 @@ follow seed step = headHash >>= \h -> liftG (walk seed h)
           case commitParents cd of
             []      -> return acc'
             (p : _) -> walk acc' p
+
+-- | Fold from head back to whichever cached ancestor is nearest (or all the
+--   way to root, if none is cached), then combine forward from there back up
+--   to head -- a memoized 'follow'. Given a small cache of already-known
+--   (hash, accumulated-value) checkpoints (from a previous call), the walk
+--   stops the instant it reaches a checkpointed hash, since content-
+--   addressing guarantees everything below that hash -- and whatever was
+--   already folded into it -- is provably unchanged; there is nothing left
+--   to verify by walking further. The common case (head has advanced by one
+--   tick since the last call) costs one step; a rebase costs one step per
+--   replayed tick -- the same cost the replay itself already pays at the
+--   storage layer, not an extra one this adds on top.
+--
+--   @combine acc h t@ folds one more tick (@h@, its data @t@) onto whatever
+--   @acc@ already represents -- monadic in 'StoreT', not a plain
+--   'Data.List.foldl'' step, since a real fold step often needs more than
+--   @t@'s own content: following one of @t@'s cross-branch refs, jumping
+--   elsewhere with 'at'\/'readAt', or reading the ambient tree all need
+--   'StoreT'. It never has to think about the cache, though -- that
+--   bookkeeping is entirely this function's job. @seed@ is @combine@'s value
+--   below root, used only when the walk never hits a checkpoint and reaches
+--   root instead.
+--
+--   Returns the folded value at head, plus the *next* cache to pass back in
+--   on the following call -- callers never construct or merge this
+--   themselves, they just thread whatever comes back through. It holds
+--   @O(log k)@ checkpoints (@k@ = how many ticks were newly walked this
+--   time), at exponentially doubling distance back from head (head itself,
+--   one before it, three before, seven before, ...) rather than only the
+--   single most recent position: that keeps a future call's walk short even
+--   when the next head isn't a simple one-tick advance on this one (a
+--   multi-tick append, or a jump to a different but nearby position),
+--   without the cache ever growing past @O(log k)@ entries. When nothing
+--   new was walked (head was already a checkpoint), the input cache is
+--   handed back unchanged -- there is nothing new to checkpoint.
+memoFold
+  :: StoreM m
+  => (b -> ObjectHash -> Tick -> StoreT m b)
+  -> b
+  -> [(ObjectHash, b)]
+  -> StoreT m (b, [(ObjectHash, b)])
+memoFold combine seed cache = do
+  h            <- headHash
+  (base, path) <- collect h []
+  if null path
+    then return (base, cache)
+    else do
+      scanned <- scanForward base path
+      let final       = last scanned
+          k           = length path
+          distances   = takeWhile (<= k) (iterate (* 2) 1)
+          checkpoints = [ (fst (path !! (k - d)), scanned !! (k - d + 1)) | d <- distances ]
+      return (final, checkpoints)
+  where
+    cacheMap = Map.fromList cache
+
+    -- Walks backward from @cur@, prepending each newly-seen tick onto
+    -- @acc@ as it goes -- since each recursive call prepends *before*
+    -- descending further, the final list comes back oldest-first (the
+    -- tick nearest the checkpoint hit\/root first, head's own tick last),
+    -- exactly the order 'scanForward' needs to replay them in.
+    collect cur acc = case Map.lookup cur cacheMap of
+      Just cachedVal -> return (cachedVal, acc)
+      Nothing -> do
+        t  <- liftG (readTick cur)
+        cd <- liftG (readCommit cur)
+        case commitParents cd of
+          []      -> return (seed, (cur, t) : acc)
+          (p : _) -> collect p ((cur, t) : acc)
+
+    -- Monadic scanl: [base, combine base .., combine (that) .., ...],
+    -- length = length path + 1, so the value at index (i+1) is what @acc@
+    -- becomes after folding in @path !! i@.
+    scanForward acc [] = return [acc]
+    scanForward acc ((h, t) : rest) = do
+      acc' <- combine acc h t
+      more <- scanForward acc' rest
+      return (acc : more)
 
 -- | Move head to @target@ (resolved first, same as 'readAt') and reset
 --   the ambient tree to match -- unlike 'readAt', this doesn't restore

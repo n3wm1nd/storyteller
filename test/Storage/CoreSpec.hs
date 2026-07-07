@@ -12,12 +12,24 @@ module Storage.CoreSpec (spec) where
 import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
+import Data.Text (Text)
+import qualified Data.Text as T
 
 import Test.Hspec
 
 import Storage.Core
 import Storage.FS (list)
 import Storage.MockStore
+
+-- | A cache-oblivious fold step for 'memoFold's tests -- concatenates every
+--   atom's own content, ignoring anything else (root, notes). Doesn't
+--   itself need any 'StoreT' capability, but the signature still has to be
+--   monadic in it -- a real fold step often does (following a ref, reading
+--   the ambient tree).
+combineContent :: StoreM m => Text -> ObjectHash -> Tick -> StoreT m Text
+combineContent acc _h = \case
+  Atom _ _ c -> return (acc <> c)
+  NonAtom {} -> return acc
 
 spec :: Spec
 spec = do
@@ -219,6 +231,60 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right (seen, _finalState) -> seen `shouldBe` [False, True, False]
+
+  describe "memoFold" $ do
+    it "with an empty cache, folds the same result a plain fold from root would" $ do
+      let result = fst <$> runChain (do
+            _        <- store (Atom [] "scene.md" "p1\n")
+            _        <- store (Atom [] "scene.md" "p2\n")
+            (val, _) <- memoFold combineContent "" []
+            return val)
+      result `shouldBe` Right "p1\np2\n"
+
+    it "reuses a checkpoint from a previous call once head has advanced" $ do
+      let result = fst <$> runChain (do
+            _              <- store (Atom [] "scene.md" "p1\n")
+            (val1, cache1) <- memoFold combineContent "" []
+            _              <- store (Atom [] "scene.md" "p2\n")
+            (val2, _)      <- memoFold combineContent "" cache1
+            return (val1, val2))
+      result `shouldBe` Right ("p1\n", "p1\np2\n")
+
+    -- The real proof that a checkpoint short-circuits the walk, not just
+    -- that reusing one happens to give the right answer anyway: a
+    -- deliberately *wrong* cached value at a real ancestor hash must show
+    -- up verbatim in the result -- if this instead recomputed from root
+    -- regardless of the cache, the wrong value could never surface.
+    it "trusts a supplied checkpoint instead of recomputing below it" $ do
+      let result = fst <$> runChain (do
+            _            <- store (Atom [] "scene.md" "p1\n")
+            afterP1      <- headHash
+            _            <- store (Atom [] "scene.md" "p2\n")
+            (val, _)     <- memoFold combineContent "" [(afterP1, "WRONG")]
+            return val)
+      result `shouldBe` Right "WRONGp2\n"
+
+    it "hands back the same cache unchanged when head was already a checkpoint" $ do
+      let result = fst <$> runChain (do
+            _              <- store (Atom [] "scene.md" "p1\n")
+            (_, cache1)    <- memoFold combineContent "" []
+            (val2, cache2) <- memoFold combineContent "" cache1
+            return (val2, cache1 == cache2))
+      result `shouldBe` Right ("p1\n", True)
+
+    it "produces O(log k) checkpoints, anchored at exponentially doubling distance from head" $ do
+      let result = fst <$> runChain (do
+            mapM_ (\n -> store (Atom [] "scene.md" (T.pack (show (n :: Int))))) [1 .. 8]
+            h        <- headHash
+            (val, checkpoints) <- memoFold combineContent "" []
+            return (val, h, checkpoints))
+      case result of
+        Left err -> expectationFailure err
+        Right (val, h, checkpoints) -> do
+          -- root + 8 atoms = 9 ticks total; checkpoints land at distances
+          -- 1/2/4/8 back from head (16 would exceed the 9 available).
+          length checkpoints `shouldBe` 4
+          lookup h checkpoints `shouldBe` Just val
 
   describe "syncTo" $ do
     it "jumps head to the given hash and resets the ambient tree to match it" $ do
