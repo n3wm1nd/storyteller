@@ -14,6 +14,7 @@ module Storage.Ops
   , editAtomAt
   , replaceAtom
   , setAtomHidden
+  , addBinary
   , commitWorktree
   , commitFile
   , commitFiles
@@ -128,6 +129,20 @@ setAtomHidden target hidden = at target $ editTick $ \old -> case old of
     setTag tags
       | hidden    = ("hide", "true") : filter ((/= "hide") . fst) tags
       | otherwise = filter ((/= "hide") . fst) tags
+
+-- | Introduce or replace @path@ as a deliberately binary asset: write
+--   @content@ into the ambient tree (replacing whatever was there, unlike
+--   an atom's append) and commit a path-aware 'Binary' tick for it in one
+--   atomic step -- bypassing 'commitFile's own decode-and-guess
+--   reconciliation entirely. Use this when the caller already knows the
+--   content isn't prose (e.g. an uploaded image); 'commitFiles'\/
+--   'commitWorktree' remain the right call for content whose atom-vs-
+--   binary status still needs to be discovered from the bytes themselves,
+--   with the anonymous 'Storage.Core.Opaque' tick as their safe fallback.
+addBinary :: StoreM m => FilePath -> BS.ByteString -> StoreT m ObjectHash
+addBinary path content = do
+  writeFile path content
+  store (Binary [] path)
 
 -- | Append @content@ to @path@ as a single atom, ensuring it ends with a
 --   newline first -- an appended atom is one text block on disk, and a

@@ -8,6 +8,7 @@ module Storage.OpsSpec (spec) where
 import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
+import qualified Data.ByteString as BS
 
 import Test.Hspec
 
@@ -139,3 +140,25 @@ spec = do
             _  <- setAtomHidden t1 True
             committedContent "scene.md")
       result `shouldBe` Right "p1\np2\n"
+
+  describe "addBinary" $ do
+    it "commits a path-aware Binary tick, not an Atom" $ do
+      let bytes = BS.pack [0xFF, 0xFE, 0x00]
+      let result = fst <$> runChain (do
+            _ <- addBinary "portrait.png" bytes
+            h <- headHash
+            lift (readTick h))
+      result `shouldBe` Right (Binary [] "portrait.png")
+
+    it "lands the exact bytes in the committed tree" $ do
+      let bytes = BS.pack [0xFF, 0xFE, 0x00]
+      let result = fst <$> runChain (do
+            _ <- addBinary "portrait.png" bytes
+            committedContent "portrait.png")
+      result `shouldBe` Right bytes
+
+    it "never registers as atom-tracked" $ do
+      let result = fst <$> runChain (do
+            _ <- addBinary "portrait.png" (BS.pack [0xFF])
+            hasAnyAtom "portrait.png")
+      result `shouldBe` Right False

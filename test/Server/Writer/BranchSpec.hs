@@ -8,12 +8,14 @@
 
 module Server.Writer.BranchSpec (spec) where
 
+import qualified Data.ByteString as BS
 import qualified Data.Text.Encoding as TE
 import Test.Hspec
 
 import Polysemy (Sem, run)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listFiles, listAllFiles, readFile)
-import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS)
+import qualified Storage.Ops as Ops
+import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
@@ -89,3 +91,24 @@ spec runner = describe "uploadFiles" $ do
           _ <- uploadFiles [("second.md", "second content")]
           readFile @(BranchTag Main) "first.md"
     fmap TE.decodeUtf8 result `shouldBe` Right "first content"
+
+  -- 'uploadFiles' always deposits via 'Ops.addBinary' now (see its own
+  -- Haddock) — an upload is a deposit, not a claim the bytes are prose,
+  -- so it never becomes atom-tracked on its own, whether or not the
+  -- content happens to decode as UTF-8. Promoting a path to atom-tracked
+  -- text is a separate, deliberate "ingest" action (not yet built).
+  it "a non-UTF8 upload is not atom-tracked, and its exact bytes survive" $ do
+    let bytes = BS.pack [0xFF, 0xFE, 0x00, 0x01]
+    let result = withBranch_ runner (BranchName "test") $ do
+          _       <- uploadFiles [("portrait.png", bytes)]
+          content <- readFile @(BranchTag Main) "portrait.png"
+          (tracked, _) <- runStorage @Main (Ops.hasAnyAtom "portrait.png")
+          return (content, tracked)
+    result `shouldBe` Right (bytes, False)
+
+  it "a plain-text upload is also not atom-tracked -- it stays an opaque asset until explicitly ingested" $ do
+    let result = withBranch_ runner (BranchName "test") $ do
+          _ <- uploadFiles [("notes.md", "hello")]
+          (tracked, _) <- runStorage @Main (Ops.hasAnyAtom "notes.md")
+          return tracked
+    result `shouldBe` Right False

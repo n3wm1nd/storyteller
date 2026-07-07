@@ -101,10 +101,13 @@ charGen name path scenario seed = do
 --   'uploadFile' below, which opens that scope itself for the HTTP PUT
 --   endpoint's one-shot case.
 --
---   Each path is reconciled independently via 'commitFiles' — same
---   new-file-vs-edit-existing-file logic 'commitWorkingTree' uses, just
---   scoped to the uploaded paths instead of the whole branch, so an upload
---   never touches any other file's pending working-tree state.
+--   Every uploaded path lands as a 'Ops.addBinary' asset — an opaque,
+--   path-aware 'Storage.Core.Binary' tick — regardless of whether its
+--   content happens to decode as UTF-8. An upload is a deposit, not a
+--   claim that the bytes are prose; deciding that is a separate, deliberate
+--   "ingest this file" action (not yet built) that promotes a specific
+--   path to atom-tracked text on request, not something this function
+--   should guess at from the bytes alone.
 --
 --   Returns the uploaded paths, so the caller can push 'FileAdded' events.
 uploadFiles
@@ -112,10 +115,8 @@ uploadFiles
   => [(FilePath, BS.ByteString)] -- ^ (path, content) pairs
   -> Sem r [FilePath]
 uploadFiles files = do
-  mapM_ (\(path, content) -> writeFile @(BranchTag Main) path content) files
-  let paths = map fst files
-  _ <- runStorage @Main (Ops.commitFiles paths)
-  return paths
+  mapM_ (\(path, content) -> runStorage @Main (Ops.addBinary path content)) files
+  return (map fst files)
 
 -- | One-shot variant of 'uploadFiles' for the HTTP @PUT /branch/{name}/{path}@
 --   endpoint, which has no already-open 'BranchOpen' connection to run
