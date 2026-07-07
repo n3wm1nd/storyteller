@@ -3,7 +3,7 @@
 
 -- | User-facing operations built entirely from "Storage.Core"'s
 -- primitives (store\/drop\/at\/readAt\/reset\/inWorktree\/readFile\/
--- writeFile\/createDirectory\/remove\/list) -- nothing here reaches
+-- writeFile) and "Storage.FS"'s ('list') -- nothing here reaches
 -- around them, or touches the chain\/ambient tree any other way.
 module Storage.Ops
   ( addAtom
@@ -39,6 +39,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 
 import Storage.Core
+import Storage.FS (list)
 
 -- | Whether @path@ currently has any content in the ambient tree.
 exists :: StoreM m => FilePath -> StoreT m Bool

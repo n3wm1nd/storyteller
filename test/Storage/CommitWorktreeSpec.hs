@@ -28,6 +28,7 @@ import Test.Hspec
 import Test.QuickCheck
 
 import Storage.Core
+import Storage.FS (remove, list)
 import Storage.Ops
 import Storage.MockStore
 

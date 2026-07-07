@@ -30,6 +30,7 @@ import Git.Mock
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Storage (createBranch)
 import qualified Storage.Core as Core
+import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types
 
@@ -63,7 +64,7 @@ spec = do
       runSub (do
         _ <- Ops.append "chapters/ch1.outline.md" "content\n"
         Core.reset
-        Core.list)
+        FS.list)
       `shouldBe` Right ["chapters/ch1.outline.md"]
 
     it "commitFiles reconciles a file under a subdirectory (no 'is a directory')" $

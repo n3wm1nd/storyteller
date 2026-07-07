@@ -21,6 +21,7 @@ import Storyteller.Core.Types
 import Storyteller.Common.Types (Note(..))
 import Storyteller.Core.Storage (createBranch)
 import qualified Storage.Core as Core
+import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Git (runStoryStorageGit)
@@ -119,7 +120,7 @@ spec = describe "fileTicks" $ do
   it "after file deletion and re-creation, only post-creation atoms appear" $ do
     let result = runTestFS $ do
           _ <- Ops.addAtom "scene.md" "before\n"
-          Core.remove "scene.md"
+          FS.remove "scene.md"
           _ <- Core.store (Core.NonAtom [] "delete")
           _ <- Ops.addAtom "scene.md" "after\n"
           Tick.fileTicksOf "scene.md"

@@ -2,6 +2,7 @@ module Main where
 
 import Test.Hspec
 import qualified Storage.CoreSpec
+import qualified Storage.FSSpec
 import qualified Storage.OpsSpec
 import qualified Storage.CommitWorktreeSpec
 import qualified Storage.ChainEditSpec
@@ -30,6 +31,7 @@ import Server.TestStack (testStack, testStackTransactional)
 main :: IO ()
 main = hspec $ do
   describe "Storage.Core"               Storage.CoreSpec.spec
+  describe "Storage.FS"                Storage.FSSpec.spec
   describe "Storage.Ops"                Storage.OpsSpec.spec
   describe "Storage.CommitWorktree"     Storage.CommitWorktreeSpec.spec
   describe "Storage.ChainEdit"          Storage.ChainEditSpec.spec

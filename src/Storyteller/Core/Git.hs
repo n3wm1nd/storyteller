@@ -98,6 +98,7 @@ import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
 import Storyteller.Core.Branch (BranchOp(..), runStorage)
 import qualified Storage.Core as Core
+import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 
@@ -522,11 +523,11 @@ runBranchOpGit branch action = do
 newtype BranchTag (branch :: k) = BranchTag BranchName
 
 -- | Every path under @root@ (recursively) -- @root@ of @"/"@\/@"."@\/@""@
---   means the whole tree. 'Core.list' itself is already every file
+--   means the whole tree. 'FS.list' itself is already every file
 --   anywhere with no directories; this just adds the root-scoping 'Glob'
 --   needs.
 listAllUnder :: Core.StoreM m => FilePath -> Core.StoreT m [FilePath]
-listAllUnder root = filter isRootOrUnder <$> Core.list
+listAllUnder root = filter isRootOrUnder <$> FS.list
   where
     isRootOrUnder p
       | root `elem` ["/", ".", ""] = True
@@ -561,12 +562,12 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       GetCwd ->
         return $ Right "/"
       ListFiles dir ->
-        Right . fst <$> runStorage @branch (Core.listChildren dir)
+        Right . fst <$> runStorage @branch (FS.listChildren dir)
       FileExists path ->
         Right . fst <$> runStorage @branch
-          ((||) <$> Ops.exists path <*> Core.isDirectory path)
+          ((||) <$> Ops.exists path <*> FS.isDirectory path)
       IsDirectory path ->
-        Right . fst <$> runStorage @branch (Core.isDirectory path)
+        Right . fst <$> runStorage @branch (FS.isDirectory path)
       -- Working-tree paths carry a leading @/@, but glob patterns are
       -- written relative (@\"chapters/*.md\"@), so that leading slash is
       -- stripped before matching — only for the match, not for what's
@@ -584,7 +585,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       ReadFile path ->
         fst <$> runStorage @branch (do
           exists <- Ops.exists path
-          isDir  <- Core.isDirectory path
+          isDir  <- FS.isDirectory path
           if isDir then return (Left (path <> ": is a directory"))
           else if not exists then return (Left (path <> ": not found"))
           else Right <$> Core.readFile path)
@@ -595,11 +596,11 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       -> Sem r' a'
     interpretFSWrite = interpret $ \case
       WriteFile path content ->
-        Right . fst <$> runStorage @branch (Core.writeFile path content)
+        Right . fst <$> runStorage @branch (FS.writeFile path content)
       CreateDirectory _recursive path ->
-        Right . fst <$> runStorage @branch (Core.createDirectory path)
+        Right . fst <$> runStorage @branch (FS.createDirectory path)
       Remove recursive path ->
-        Right . fst <$> runStorage @branch (if recursive then Core.removeRecursive path else Core.remove path)
+        Right . fst <$> runStorage @branch (if recursive then FS.removeRecursive path else FS.remove path)
 
 -- | Interpret 'BranchOp branch' and all three filesystem effects for a
 --   branch together — takes a 'Branch' obtained from 'StoryStorage' — the

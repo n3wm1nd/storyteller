@@ -26,13 +26,16 @@
 --     the tick at head, moving head to its parent, and hand back
 --     everything it was. @store =<< drop@ rebuilds the same commit in
 --     place -- the identity 'at' replays on top of during a rebase.
---   * 'reset'\/'inWorktree'\/'readFile'\/'writeFile'\/'createDirectory'\/
---     'remove' -- the only operations that touch the ambient tree.
+--   * 'reset'\/'inWorktree'\/'readFile'\/'writeFile' -- the only
+--     operations here that touch the ambient tree (the directory\/listing
+--     operations -- 'createDirectory'\/'remove'\/'removeRecursive'\/'list'\/
+--     'isDirectory'\/'listChildren' -- live in "Storage.FS", built on the
+--     'getAmbientTree'\/'modifyAmbientTree' seam exported below).
 --     'reset' sets it to match head's own committed content, discarding
 --     whatever was there before. 'inWorktree' runs an action against a
 --     freshly-'reset' tree, then restores whatever the ambient tree held
 --     before -- independent of the chain entirely, since nothing here
---     moves head. 'readFile'/'writeFile'/'createDirectory'/'remove'/'list' read or write it by path.
+--     moves head. 'readFile'\/'writeFile' read or write it by path.
 --
 -- Moving around the chain -- 'readAt'\/'at' -- touches neither piece of
 -- state directly; both are built entirely from 'store'\/'drop':
@@ -91,12 +94,10 @@ module Storage.Core
     -- * Ambient file access
   , readFile
   , writeFile
-  , createDirectory
-  , remove
-  , removeRecursive
-  , list
-  , listChildren
-  , isDirectory
+
+    -- * Ambient tree state (seam for "Storage.FS")
+  , getAmbientTree
+  , modifyAmbientTree
   ) where
 
 import Prelude hiding (drop, readFile, writeFile)
@@ -314,8 +315,9 @@ readTick h = do
 -- ---------------------------------------------------------------------------
 -- The monad: the current position in the chain, plus an ambient working
 -- tree that's entirely independent of it -- 'at'\/'readAt' only ever move
--- through the chain and never touch this; 'reset'\/'inWorktree' and the four
--- file operations are the only ones that do.
+-- through the chain and never touch this; 'reset'\/'inWorktree' and the
+-- file operations ('readFile'\/'writeFile' here; 'createDirectory'\/
+-- 'remove'\/'list'\/... in "Storage.FS") are the only ones that do.
 -- ---------------------------------------------------------------------------
 
 -- | The three pieces of state a scope needs: the commit currently at
@@ -371,11 +373,23 @@ headHash = gets (\(h, _, _) -> h)
 putHead :: Monad m => ObjectHash -> StoreT m ()
 putHead h = modify (\(_, wt, table) -> (h, wt, table))
 
+-- | The ambient working tree 'readFile'\/'writeFile' (and, via
+--   "Storage.FS", 'createDirectory'\/'remove'\/'list'\/...) operate on.
+--   Exported only as the read seam for "Storage.FS"; nothing else outside
+--   this module needs it -- 'reset'\/'inWorktree' replace or isolate the
+--   whole thing, the file operations touch it by path.
 getAmbientTree :: Monad m => StoreT m WorkingTree
 getAmbientTree = gets (\(_, wt, _) -> wt)
 
 putAmbientTree :: Monad m => WorkingTree -> StoreT m ()
 putAmbientTree wt = modify (\(h, _, table) -> (h, wt, table))
+
+-- | Apply @f@ to the ambient working tree -- the write seam "Storage.FS"'s
+--   own ambient file operations are built on, so they needn't reach into
+--   'ScopeState' themselves. Like 'getAmbientTree', exported only for that
+--   sibling module.
+modifyAmbientTree :: Monad m => (WorkingTree -> WorkingTree) -> StoreT m ()
+modifyAmbientTree f = modify (\(h, wt, table) -> (h, f wt, table))
 
 -- | What @oid@ has become, if this scope has ever replaced it (directly,
 --   or transitively through a chain of replacements) -- @oid@ itself if
@@ -636,8 +650,12 @@ inWorktree action = do
 
 -- ---------------------------------------------------------------------------
 -- Ambient file access -- the operations that read or write the
--- ambient tree by path; 'reset'\/'inWorktree' are the only ones that replace
--- or isolate the whole thing.
+-- ambient tree by path. Only 'readFile'\/'writeFile' (which need the
+-- object store for blob I/O) live here; the directory\/listing operations
+-- ('createDirectory'\/'remove'\/'removeRecursive'\/'list'\/'isDirectory'\/
+-- 'listChildren') are in "Storage.FS", built on 'getAmbientTree'\/
+-- 'modifyAmbientTree'. 'reset'\/'inWorktree' are the only ones that
+-- replace or isolate the whole thing.
 -- ---------------------------------------------------------------------------
 
 -- | Read @path@'s current content from the ambient tree.
@@ -660,57 +678,6 @@ writeFile path content = do
         (foldr (\d m -> Map.insertWith keepExisting d FSDir m) wt (ancestorDirs path))
     , table
     )
-
--- | Introduce @path@ as an explicit, possibly-empty directory entry in
---   the ambient tree.
-createDirectory :: Monad m => FilePath -> StoreT m ()
-createDirectory path = modify (\(h, wt, table) -> (h, Map.insertWith keepExisting path FSDir wt, table))
-
--- | Remove @path@ from the ambient tree.
-remove :: Monad m => FilePath -> StoreT m ()
-remove path = modify (\(h, wt, table) -> (h, Map.delete path wt, table))
-
--- | Remove @path@ and everything under it (files and subdirectory
---   entries alike) from the ambient tree.
-removeRecursive :: Monad m => FilePath -> StoreT m ()
-removeRecursive path = modify (\(h, wt, table) -> (h, Map.filterWithKey keep wt, table))
-  where
-    keep k _ = k /= path && not (isUnderDir path k)
-    isUnderDir dir p =
-      let dirParts  = splitDirectories dir
-          pathParts = splitDirectories p
-      in List.take (length dirParts) pathParts == dirParts && length pathParts > length dirParts
-
--- | Every file path currently in the ambient tree (directories excluded).
-list :: Monad m => StoreT m [FilePath]
-list = do
-  wt <- getAmbientTree
-  return [ p | (p, FSFile _) <- Map.toList wt ]
-
--- | Whether @path@ is an explicit directory entry in the ambient tree.
-isDirectory :: Monad m => FilePath -> StoreT m Bool
-isDirectory path = do
-  wt <- getAmbientTree
-  return $ case Map.lookup path wt of
-    Just FSDir -> True
-    _          -> False
-
--- | Every file *and* directory entry immediately under @dir@ (its direct
---   children only -- unlike 'list', which is every file anywhere,
---   recursively, with no directories at all). @"/"@\/@"."@\/@""@ all mean
---   the ambient tree's own root.
-listChildren :: Monad m => FilePath -> StoreT m [FilePath]
-listChildren dir = do
-  wt <- getAmbientTree
-  return [ p | p <- Map.keys wt, isDirectChild dir p ]
-  where
-    isDirectChild d p
-      | d `elem` ["/", ".", ""] = length (splitDirectories p) == 1
-      | otherwise =
-          let dirParts  = splitDirectories d
-              pathParts = splitDirectories p
-          in List.take (length dirParts) pathParts == dirParts
-             && length pathParts == length dirParts + 1
 
 keepExisting :: FSNode -> FSNode -> FSNode
 keepExisting _ old = old

@@ -42,6 +42,7 @@ library gitlib-effect
 
 library
   exposed-modules:  Storage.Core
+                  , Storage.FS
                   , Storage.Ops
                   , Storage.Tick
                   , Storyteller
@@ -222,6 +223,7 @@ test-suite storyteller-test
                   , Paths_storyteller
                   , Storage.MockStore
                   , Storage.CoreSpec
+                  , Storage.FSSpec
                   , Storage.OpsSpec
                   , Storage.CommitWorktreeSpec
                   , Storage.ChainEditSpec
