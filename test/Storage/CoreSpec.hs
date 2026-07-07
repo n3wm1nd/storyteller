@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Quick sanity tests for "Storage.Core", against 'Storage.MockStore'
@@ -137,6 +138,55 @@ spec = do
       case result of
         Left err -> err `shouldContain` "not found in history"
         Right _  -> expectationFailure "expected at to fail on an unknown target"
+
+  describe "editTick / replaceTick / resolveId" $ do
+    it "editTick logs its own replacement, resolvable afterward" $ do
+      let result = runChain $ do
+            t1  <- store (Atom [] "scene.md" "p1\n")
+            new <- editTick $ \case
+              Atom refs path content -> return (Atom refs path (content <> "edited\n"))
+              other                  -> return other
+            resolved <- resolveId t1
+            return (new, resolved)
+      case result of
+        Left err -> expectationFailure err
+        Right ((new, resolved), _finalState) -> resolved `shouldBe` new
+
+    it "resolveId is the identity for an id nothing has ever replaced" $ do
+      let result = fst <$> runChain (do
+            t1 <- store (Atom [] "scene.md" "p1\n")
+            resolved <- resolveId t1
+            return (resolved == t1))
+      result `shouldBe` Right True
+
+    it "a ref captured before an unrelated at, then used by a later at's target, still resolves to where that tick actually ended up" $ do
+      -- t1 gets edited (id changes) entirely independently of anything
+      -- holding a reference to it; a *later* operation, given only t1's
+      -- original (now-stale) id, must still land on the right tick --
+      -- this is the case 'at'\/'readAt' resolving their own @target@
+      -- exists for, distinct from 'at'\'s own tail-replay (which only
+      -- ever sees refs embedded *inside* the ticks it's replaying).
+      let result = runChain $ do
+            t1     <- store (Atom [] "scene.md" "p1\n")
+            _      <- store (Atom [] "other.md" "unrelated\n")
+            newT1  <- at t1 $ do
+              _ <- drop
+              store (Atom [] "scene.md" "p1-revised\n")
+            -- now use the *original*, stale t1 id as an 'at' target --
+            -- not newT1, which nothing outside this module would know
+            -- to use without consulting 'resolveId' itself.
+            newerT1 <- at t1 $ do
+              _ <- drop
+              store (Atom [] "scene.md" "p1-revised-again\n")
+            scene   <- committedContent "scene.md"
+            other   <- committedContent "other.md"
+            return (newT1 /= newerT1, scene, other)
+      case result of
+        Left err -> expectationFailure err
+        Right ((idsDiffer, scene, other), _finalState) -> do
+          idsDiffer `shouldBe` True
+          scene     `shouldBe` "p1-revised-again\n"
+          other     `shouldBe` "unrelated\n"
 
   describe "reset / inWorktree" $ do
     it "reset doesn't move head" $ do

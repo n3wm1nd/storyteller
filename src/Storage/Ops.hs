@@ -75,11 +75,9 @@ editAtom :: StoreM m => (Text -> Text) -> StoreT m ObjectHash
 editAtom f = do
   h      <- headHash
   target <- findAtom h
-  at target $ do
-    old <- drop
-    case old of
-      Atom refs path content -> store (Atom refs path (f content))
-      NonAtom {}             -> fail "editAtom: findAtom returned a non-atom (unreachable)"
+  at target $ editTick $ \old -> case old of
+    Atom refs path content -> return (Atom refs path (f content))
+    NonAtom {}              -> fail "editAtom: findAtom returned a non-atom (unreachable)"
 
 -- | Replace the nearest atom's content outright -- 'editAtom' with a
 --   constant function.
@@ -246,11 +244,9 @@ reconcileFile path history target = do
         Kept    -> return (origId, liveIdx1 + 1)
         Dropped -> at origId drop >> return (anchor1, liveIdx1)
         Changed -> do
-          newId <- at origId $ do
-            old <- drop
-            case old of
-              Atom refs _ _ -> store (Atom refs p content)
-              NonAtom {}    -> fail "commitFile: matched tick isn't an atom (unreachable)"
+          newId <- at origId $ editTick $ \old -> case old of
+            Atom refs _ _ -> return (Atom refs p content)
+            NonAtom {}    -> fail "commitFile: matched tick isn't an atom (unreachable)"
           return (newId, liveIdx1 + 1)
 
 -- | The @idx@-th atom (0-indexed, oldest first) currently in @path@'s

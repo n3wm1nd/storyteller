@@ -80,7 +80,7 @@ committedContent path = inWorktree (readFile path)
 --   way any other empty tree would be, holding a plain 'NonAtom' so it
 --   decodes like any other tick) and run @action@ from there, returning
 --   its result and the final scope state.
-runChain :: StoreT Mock a -> Either String (a, (ObjectHash, WorkingTree))
+runChain :: StoreT Mock a -> Either String (a, ScopeState)
 runChain action = runMockGit $ do
   emptyTreeHash <- writeObject (TreeObject [])
   rootHash <- writeCommit CommitData

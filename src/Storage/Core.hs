@@ -63,6 +63,7 @@ module Storage.Core
 
     -- * The monad
   , StoreT
+  , ScopeState
   , runStoreT
   , headHash
 
@@ -75,6 +76,9 @@ module Storage.Core
   , drop
   , readAt
   , at
+  , editTick
+  , replaceTick
+  , resolveId
   , reset
   , inWorktree
 
@@ -305,12 +309,17 @@ readTick h = do
 -- file operations are the only ones that do.
 -- ---------------------------------------------------------------------------
 
--- | The two pieces of state a scope needs: the commit currently at head,
---   and the ambient working tree 'readFile'\/'writeFile'\/
---   'createDirectory'\/'remove' operate on. Kept as a plain pair, not a
---   record, since nothing outside this module ever touches either half
---   directly -- see 'headHash'\/'reset'\/'inWorktree'.
-type ScopeState = (ObjectHash, WorkingTree)
+-- | The three pieces of state a scope needs: the commit currently at
+--   head, the ambient working tree 'readFile'\/'writeFile'\/
+--   'createDirectory'\/'remove' operate on, and a running old->new
+--   remap table (every id any 'store' this scope has made has since
+--   become, transitively closed -- see 'resolveId'\/'logRemap'). Kept as
+--   a plain triple, not a record: nothing outside this module reaches
+--   into any one piece without going through 'headHash'\/'reset'\/
+--   'inWorktree'\/'resolveId', except a caller of 'runStoreT' who wants
+--   the final remap table to propagate elsewhere once this computation
+--   is done -- the one piece worth exposing 'ScopeState''s shape for.
+type ScopeState = (ObjectHash, WorkingTree, Map ObjectHash ObjectHash)
 
 newtype StoreT m a = StoreT (StateT ScopeState m a)
   deriving (Functor, Applicative, Monad, MonadState ScopeState)
@@ -322,27 +331,59 @@ instance MonadFail m => MonadFail (StoreT m) where
   fail = StoreT . lift . fail
 
 -- | Run a 'StoreT' computation seeded at the given head (with the
---   ambient tree starting synced to it, as if 'reset' had just run),
---   returning the result together with the final scope state.
+--   ambient tree starting synced to it, as if 'reset' had just run, and
+--   an empty remap table), returning the result together with the final
+--   scope state.
 runStoreT :: StoreM m => ObjectHash -> StoreT m a -> m (a, ScopeState)
 runStoreT h (StoreT s) = do
   wt <- loadWorkingTree h
-  runStateT s (h, wt)
+  runStateT s (h, wt, Map.empty)
 
 liftG :: Monad m => m a -> StoreT m a
 liftG = lift
 
 headHash :: Monad m => StoreT m ObjectHash
-headHash = gets fst
+headHash = gets (\(h, _, _) -> h)
 
 putHead :: Monad m => ObjectHash -> StoreT m ()
-putHead h = modify (\(_, wt) -> (h, wt))
+putHead h = modify (\(_, wt, table) -> (h, wt, table))
 
 getAmbientTree :: Monad m => StoreT m WorkingTree
-getAmbientTree = gets snd
+getAmbientTree = gets (\(_, wt, _) -> wt)
 
 putAmbientTree :: Monad m => WorkingTree -> StoreT m ()
-putAmbientTree wt = modify (\(h, _) -> (h, wt))
+putAmbientTree wt = modify (\(h, _, table) -> (h, wt, table))
+
+-- | What @oid@ has become, if this scope has ever replaced it (directly,
+--   or transitively through a chain of replacements) -- @oid@ itself if
+--   not. Must be called right before actually using an id, never cached
+--   from an earlier read: a value that was current when read can go
+--   stale the moment something else in the same scope replaces it, so
+--   only a lookup made at the point of use can be trusted. 'store'\/'at'\/
+--   'readAt' already do this for the ids they themselves handle
+--   (a tick's own 'tickRefs', and 'at'\/'readAt''s own @target@) --
+--   nothing else in this module ever holds an id across a gap where it
+--   could go stale, so nothing else needs to call this. A caller outside
+--   this module, holding an id from before some other edit in the same
+--   scope, does.
+resolveId :: Monad m => ObjectHash -> StoreT m ObjectHash
+resolveId oid = gets (\(_, _, table) -> Map.findWithDefault oid oid table)
+
+-- | Record that @old@ has become @new@, folding it into the running
+--   table so every earlier entry whose current value was @old@ now
+--   points at @new@ instead -- keeps the table transitively closed
+--   (never more than one hop to walk) as a cheap fixup on write, so
+--   'resolveId' itself can stay a single lookup instead of chasing a
+--   chain at every read.
+logRemap :: Monad m => ObjectHash -> ObjectHash -> StoreT m ()
+logRemap old new = modify (\(h, wt, table) -> (h, wt, composeMapping table [(old, new)]))
+
+composeMapping :: Map ObjectHash ObjectHash -> [(ObjectHash, ObjectHash)] -> Map ObjectHash ObjectHash
+composeMapping table new =
+  let newMap       = Map.fromList new
+      updatedOld   = Map.map (\cur -> Map.findWithDefault cur cur newMap) table
+      freshEntries = Map.filterWithKey (\k _ -> not (Map.member k table)) newMap
+  in Map.union updatedOld freshEntries
 
 -- ---------------------------------------------------------------------------
 -- Core operations
@@ -350,10 +391,15 @@ putAmbientTree wt = modify (\(h, _) -> (h, wt))
 
 -- | Commit @t@ onto head, advancing head to the new commit and returning
 --   it. See the module Haddock for how the new tree is computed for each
---   'Tick' constructor.
+--   'Tick' constructor. @t@'s own 'tickRefs' are resolved against the
+--   running remap table right here -- the one point any ref actually
+--   gets *used* (baked into the new commit as an extra parent) -- rather
+--   than trusting whatever a caller happened to read earlier; see
+--   'resolveId'.
 store :: StoreM m => Tick -> StoreT m ObjectHash
 store t = do
-  h <- headHash
+  h    <- headHash
+  refs <- mapM resolveId (tickRefs t)
   treeHash <- case t of
     NonAtom {} -> commitTree <$> liftG (readCommit h)
     Atom { atomPath = path, atomContent = suffix } -> do
@@ -364,7 +410,7 @@ store t = do
       newBlob <- liftG (writeBlobM (oldContent <> TE.encodeUtf8 suffix))
       liftG (flushWorkingTree (Map.insert path (FSFile newBlob) parentWt))
   newHash <- liftG $ writeCommit CommitData
-    { commitParents = h : tickRefs t
+    { commitParents = h : refs
     , commitTree    = treeHash
     , commitMessage = encodeTick t
     }
@@ -390,14 +436,18 @@ drop = do
 --   need for 'drop'\/'store' since nothing this does is meant to last.
 --   Fails (via 'MonadFail') if @target@ isn't actually in head's history;
 --   an unexceptional caller error, not a normal outcome to branch on.
+--   @target@ is resolved once, right here, before the descent -- see
+--   'resolveId': a caller may be holding an id from before some earlier
+--   edit in this same scope replaced it.
 readAt :: StoreM m => ObjectHash -> StoreT m a -> StoreT m a
-readAt target action = do
+readAt target0 action = do
+  target    <- resolveId target0
   outerHead <- headHash
-  result    <- descend
+  result    <- descend target
   putHead outerHead
   return result
   where
-    descend = do
+    descend target = do
       current <- headHash
       if current == target
         then action
@@ -405,59 +455,73 @@ readAt target action = do
           cd <- liftG (readCommit current)
           case commitParents cd of
             [] -> fail ("readAt: " <> T.unpack (unObjectHash target) <> " not found in history")
-            (parent : _) -> putHead parent >> descend
+            (parent : _) -> putHead parent >> descend target
 
 -- | Move to @target@, run @action@ there, and replay every later commit
 --   back on top of whatever @action@ produced -- a rebase. Built entirely
---   from 'drop' (popping each tail tick on the way down to @target@,
---   recording what it was) and 'store' (re-pushing it on the way back
---   up, onto whatever head the recursive call underneath it left behind)
---   -- the two operations that actually touch the chain; this only
---   orchestrates position and order on top of them.
+--   from 'drop' (popping each tail tick on the way down to @target@) and
+--   'store' (re-pushing it on the way back up, onto whatever head the
+--   recursive call underneath it left behind, logging that old id's own
+--   replacement as it goes -- see 'resolveId'\/'logRemap') -- the
+--   operations that actually touch the chain; this only orchestrates
+--   position and order on top of them. @target@ itself is resolved once
+--   before descending, same as 'readAt'; a cross-reference between two
+--   tail ticks never goes stale mid-replay either, since 'store' (which
+--   every re-push here, and @action@ itself if it edits, eventually
+--   calls) resolves a tick's own 'tickRefs' at the point it's actually
+--   used, not before.
 --
 --   Fails (via 'MonadFail') if @target@ isn't actually in head's history,
 --   same as 'readAt'.
---
---   Applies its own old->new id mapping as it goes, rather than handing
---   it back: each tail tick's own 'tickRefs' are remapped against every
---   id already rewritten *earlier* in the same unwind before it's
---   re-'store'd, so a same-rebase cross-reference between two tail ticks
---   never goes stale pointing at an id this same call just replaced.
---   Safe to do unconditionally -- nothing here is visible outside this
---   'StoreT' computation until the caller actually uses the resulting
---   head, so there's nothing to "commit to" by applying it eagerly; a
---   caller who doesn't like the result just discards the whole
---   computation, same as always. (Cascading those same updates across
---   *other* chains that might also reference these ids is a different,
---   multi-chain concern this single-chain module has no visibility into
---   -- an app-level caller's job, not this one's.)
 at :: StoreM m => ObjectHash -> StoreT m a -> StoreT m a
-at target action = fst <$> go
+at target0 action = do
+  target <- resolveId target0
+  go target
   where
-    go = do
+    go target = do
       current <- headHash
       if current == target
         then do
+          -- @action@ is arbitrary caller code, not necessarily built
+          -- from 'editTick'\/'replaceTick' (see 'Storage.CoreSpec'\'s
+          -- raw drop\/store actions) -- so it can't be trusted to have
+          -- logged its own replacement of @target@ itself. This is the
+          -- one entry the tail-recursive case below can't produce on its
+          -- own either, since it only ever sees ticks strictly after
+          -- @target@. A redundant log entry here (when @action@ *did* go
+          -- through 'editTick') is harmless -- 'logRemap' composes.
           a     <- action
           after <- headHash
-          -- @action@ typically pops and re-pushes @target@ itself (e.g.
-          -- 'editAtom'), so this is where *its* old->new pair comes from
-          -- -- the one entry the tail-recursive case below can't produce
-          -- on its own, since it only ever sees ticks strictly after
-          -- @target@. Unchanged (@action@ didn't move head at all) needs
-          -- no entry.
-          return (a, [(target, after) | after /= target])
+          if after /= target then logRemap target after else return ()
+          return a
         else do
           cd <- liftG (readCommit current)
           case commitParents cd of
             [] -> fail ("at: " <> T.unpack (unObjectHash target) <> " not found in history")
             (_ : _) -> do
-              t                 <- drop
-              (a, innerMapping) <- go
-              let remap r = maybe r id (lookup r innerMapping)
-                  t'       = t { tickRefs = map remap (tickRefs t) }
-              newHash <- store t'
-              return (a, innerMapping <> [(current, newHash)])
+              t   <- drop
+              a   <- go target
+              new <- store t
+              logRemap current new
+              return a
+
+-- | Pop the tick at head, apply @f@ to it, and store the result in its
+--   place, recording the old->new replacement (see 'resolveId'\/
+--   'logRemap'). The one pattern every "edit the tick at head" operation
+--   is built from.
+editTick :: StoreM m => (Tick -> StoreT m Tick) -> StoreT m ObjectHash
+editTick f = do
+  old     <- headHash
+  oldTick <- drop
+  newTick <- f oldTick
+  new     <- store newTick
+  logRemap old new
+  return new
+
+-- | 'editTick' with the replacement given outright rather than derived
+--   from what was popped.
+replaceTick :: StoreM m => Tick -> StoreT m ObjectHash
+replaceTick t = editTick (const (return t))
 
 -- | Set the ambient working tree to match head's own committed content,
 --   discarding whatever was there before. The chain itself (head, and
@@ -502,20 +566,21 @@ readFile path = do
 writeFile :: StoreM m => FilePath -> BS.ByteString -> StoreT m ()
 writeFile path content = do
   h <- liftG (writeBlobM content)
-  modify $ \(hd, wt) ->
+  modify $ \(hd, wt, table) ->
     ( hd
     , Map.insert path (FSFile h)
         (foldr (\d m -> Map.insertWith keepExisting d FSDir m) wt (ancestorDirs path))
+    , table
     )
 
 -- | Introduce @path@ as an explicit, possibly-empty directory entry in
 --   the ambient tree.
 createDirectory :: Monad m => FilePath -> StoreT m ()
-createDirectory path = modify (\(h, wt) -> (h, Map.insertWith keepExisting path FSDir wt))
+createDirectory path = modify (\(h, wt, table) -> (h, Map.insertWith keepExisting path FSDir wt, table))
 
 -- | Remove @path@ from the ambient tree.
 remove :: Monad m => FilePath -> StoreT m ()
-remove path = modify (\(h, wt) -> (h, Map.delete path wt))
+remove path = modify (\(h, wt, table) -> (h, Map.delete path wt, table))
 
 -- | Every file path currently in the ambient tree (directories excluded).
 list :: Monad m => StoreT m [FilePath]
