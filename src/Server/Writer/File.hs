@@ -137,7 +137,7 @@ editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
 editChatPrompt (TickId tid) content =
   void $ runStorage @Main $ Core.at (Core.ObjectHash tid) $ Core.editTick $ \case
     Core.NonAtom refs msg -> return (Core.NonAtom refs (setPayload msg))
-    Core.Atom {}           -> fail "editChatPrompt: not a chat prompt (it's an atom)"
+    _                      -> fail "editChatPrompt: not a chat prompt (it's an atom)"
   where
     setPayload msg = let (tag, _) = T.breakOn "\n" msg in tag <> "\n" <> content
 

@@ -429,3 +429,14 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right ((before, after), _finalState) -> after `shouldBe` before
+
+    -- The upload endpoint (Server.Writer.Branch.uploadFiles) reconciles
+    -- via 'commitFiles', not the whole-tree 'commitWorktree' -- a binary
+    -- upload needs the same persistence guarantee through that narrower
+    -- path too, not just the general one.
+    it "commitFiles (the scoped reconciler the upload endpoint uses) also persists a binary file" $ do
+      let result = fst <$> runChain (do
+            writeFile "portrait.png" binaryBytes
+            commitFiles ["portrait.png"]
+            committedContent "portrait.png")
+      result `shouldBe` Right binaryBytes

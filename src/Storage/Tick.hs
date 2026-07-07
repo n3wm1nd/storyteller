@@ -95,8 +95,10 @@ storeAs a = store (NonAtom (map coerceRef (ST.tickRefs td)) (encodeTickData td))
 -- | @h@'s own commit, decoded as a typed 'Tick' -- an 'Atom'\'s "type:atom\n"
 --   tag and "file" field are reconstructed ('Storage.Core' strips both off
 --   into 'atomPath'\/'atomContent' directly on the way in, and any other
---   header field into 'atomTags' -- e.g. a "hide" tag); anything else is
---   decoded via 'decodeTickData'.
+--   header field into 'atomTags' -- e.g. a "hide" tag); a 'Binary'\/'Opaque'
+--   marker gets a matching, content-free 'ST.TickData' (see their own
+--   'Storage.Core.Tick' Haddock -- neither carries prose content this layer
+--   would ever show); anything else is decoded via 'decodeTickData'.
 readTypesTick :: StoreM m => ObjectHash -> StoreT m ST.Tick
 readTypesTick h = do
   t  <- lift (readTick h)
@@ -112,6 +114,16 @@ readTypesTick h = do
           { ST.tickRefs    = ST.posRefs pos
           , ST.tickFields  = ("file", T.pack path) : tags
           , ST.tickMessage = "type:atom\n" <> content
+          }
+        Binary _ path -> ST.TickData
+          { ST.tickRefs    = ST.posRefs pos
+          , ST.tickFields  = [("file", T.pack path)]
+          , ST.tickMessage = "type:binary\n"
+          }
+        Opaque _ -> ST.TickData
+          { ST.tickRefs    = ST.posRefs pos
+          , ST.tickFields  = []
+          , ST.tickMessage = "type:opaque\n"
           }
         NonAtom _ raw -> (decodeTickData raw) { ST.tickRefs = ST.posRefs pos }
   return ST.Tick { ST.tickPos = pos, ST.tickData = td }
@@ -197,6 +209,8 @@ fileTicksOf path = do
             Atom _ p tags content ->
               ( ("file", T.pack p) : tags, "type:atom\n" <> content
               , if p == path then Just content else Nothing )
+            Binary _ p -> ( [("file", T.pack p)], "type:binary\n", Nothing )
+            Opaque _   -> ( [], "type:opaque\n", Nothing )
             NonAtom _ raw ->
               let td = decodeTickData raw in (ST.tickFields td, ST.tickMessage td, Nothing)
           kind = fromMaybe "unknown" (tagOf msg)

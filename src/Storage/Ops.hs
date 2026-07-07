@@ -81,8 +81,8 @@ findAtom :: StoreM m => ObjectHash -> StoreT m ObjectHash
 findAtom start = do
   t <- lift (readTick start)
   case t of
-    Atom {}    -> return start
-    NonAtom {} -> do
+    Atom {} -> return start
+    _       -> do
       cd <- lift (readCommit start)
       case commitParents cd of
         []      -> fail "findAtom: no atom in history"
@@ -99,7 +99,7 @@ editAtom f = do
   target <- findAtom h
   at target $ editTick $ \old -> case old of
     Atom refs path tags content -> return (Atom refs path tags (f content))
-    NonAtom {}                   -> fail "editAtom: findAtom returned a non-atom (unreachable)"
+    _                            -> fail "editAtom: findAtom returned a non-atom (unreachable)"
 
 -- | Replace the nearest atom's content outright -- 'editAtom' with a
 --   constant function.
@@ -113,7 +113,7 @@ replaceAtom = editAtom . const
 editAtomAt :: StoreM m => ObjectHash -> Text -> StoreT m ObjectHash
 editAtomAt target content = at target $ editTick $ \old -> case old of
   Atom refs path tags _ -> return (Atom refs path tags content)
-  NonAtom {}             -> fail ("editAtomAt: not an atom: " <> T.unpack (unObjectHash target))
+  _                      -> fail ("editAtomAt: not an atom: " <> T.unpack (unObjectHash target))
 
 -- | Set or clear a specific atom's own "hide" tag in place -- same
 --   arbitrary-id, preserves-refs-and-position shape as 'editAtomAt'. The
@@ -122,7 +122,7 @@ editAtomAt target content = at target $ editTick $ \old -> case old of
 setAtomHidden :: StoreM m => ObjectHash -> Bool -> StoreT m ObjectHash
 setAtomHidden target hidden = at target $ editTick $ \old -> case old of
   Atom refs path tags content -> return (Atom refs path (setTag tags) content)
-  NonAtom {}                   -> fail ("setAtomHidden: not an atom: " <> T.unpack (unObjectHash target))
+  _                            -> fail ("setAtomHidden: not an atom: " <> T.unpack (unObjectHash target))
   where
     setTag tags
       | hidden    = ("hide", "true") : filter ((/= "hide") . fst) tags
@@ -358,7 +358,7 @@ reconcileFile path history target = do
         Changed -> do
           newId <- at origId $ editTick $ \old -> case old of
             Atom refs _ tags _ -> return (Atom refs p tags content)
-            NonAtom {}         -> fail "commitFile: matched tick isn't an atom (unreachable)"
+            _                  -> fail "commitFile: matched tick isn't an atom (unreachable)"
           return (newId, liveIdx1 + 1)
 
 -- | The @idx@-th atom (0-indexed, oldest first) currently in @path@'s
@@ -512,9 +512,13 @@ zip5 _ _ _ _ _ = []
 
 -- | Reconcile only the given files' working-tree content against their own
 --   atom history, rather than every file in the branch -- same rule as
---   'commitWorktree', just scoped to a caller-chosen subset.
+--   'commitWorktree', just scoped to a caller-chosen subset. Still needs
+--   its own 'syncOpaqueContent' pass, same reason 'commitWorktree' does:
+--   a binary/non-UTF8 path in @paths@ (e.g. an uploaded portrait) is
+--   deliberately left untouched by 'commitFile' itself, and wouldn't
+--   otherwise ever land in a real commit at all.
 commitFiles :: StoreM m => [FilePath] -> StoreT m ()
-commitFiles = mapM_ commitFile
+commitFiles paths = mapM_ commitFile paths >> syncOpaqueContent
 
 -- | Every non-root tick reachable from head, oldest first -- the position
 --   vocabulary 'chainPositions'\/'moveTick'\/'mergeAtoms' all share.
@@ -680,7 +684,7 @@ splitTick tid pieces = at tid $ do
   old <- drop
   ids <- case old of
     Atom refs path tags _ -> storePieces refs path tags pieces
-    NonAtom {}             -> fail ("splitTick: not an atom: " <> T.unpack (unObjectHash tid))
+    _                      -> fail ("splitTick: not an atom: " <> T.unpack (unObjectHash tid))
   -- 'at' can't guess which of several new ticks a one-to-many action's
   -- @target@ itself becomes -- say so explicitly, so a ref to @tid@
   -- resolves to the piece that's meant to inherit it (see

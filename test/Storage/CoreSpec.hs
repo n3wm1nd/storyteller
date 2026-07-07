@@ -29,7 +29,7 @@ import Storage.MockStore
 combineContent :: StoreM m => Text -> ObjectHash -> Tick -> StoreT m Text
 combineContent acc _h = \case
   Atom _ _ _ c -> return (acc <> c)
-  NonAtom {} -> return acc
+  _            -> return acc
 
 spec :: Spec
 spec = do

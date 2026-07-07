@@ -24,11 +24,10 @@ import Storage.Core
 data MockState = MockState
   { msObjects :: Map T.Text StoreObject
   , msCommits :: Map T.Text CommitData
-  , msNext    :: Int
   }
 
 emptyMock :: MockState
-emptyMock = MockState Map.empty Map.empty 0
+emptyMock = MockState Map.empty Map.empty
 
 newtype Mock a = Mock (StateT MockState (Either String) a)
   deriving (Functor, Applicative, Monad, MonadState MockState)
@@ -36,15 +35,21 @@ newtype Mock a = Mock (StateT MockState (Either String) a)
 instance MonadFail Mock where
   fail = Mock . lift . Left
 
-freshHash :: String -> Mock ObjectHash
-freshHash prefix = do
-  n <- gets msNext
-  modify (\s -> s { msNext = n + 1 })
-  return (ObjectHash (T.pack (prefix <> show n)))
+-- | The hash *is* a canonical serialization of the content -- no separate
+--   hash function needed, since all that's required of a mock is the one
+--   property real content-addressing guarantees and tests actually rely
+--   on: identical content always yields the identical id, byte-for-byte,
+--   with no side-effecting counter to make two writes of the same thing
+--   look artificially distinct.
+objectKey :: StoreObject -> T.Text
+objectKey obj = "obj:" <> T.pack (show obj)
+
+commitKey :: CommitData -> T.Text
+commitKey cd = "commit:" <> T.pack (show cd)
 
 instance MonadStore Mock where
   writeObject obj = do
-    h <- freshHash "obj"
+    let h = ObjectHash (objectKey obj)
     modify (\s -> s { msObjects = Map.insert (unObjectHash h) obj (msObjects s) })
     return h
 
@@ -55,7 +60,7 @@ instance MonadStore Mock where
       Nothing -> fail ("object not found: " <> T.unpack (unObjectHash h))
 
   writeCommit cd = do
-    h <- freshHash "commit"
+    let h = ObjectHash (commitKey cd)
     modify (\s -> s { msCommits = Map.insert (unObjectHash h) cd (msCommits s) })
     return h
 
