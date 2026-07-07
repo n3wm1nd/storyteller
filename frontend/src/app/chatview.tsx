@@ -12,6 +12,8 @@ import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { AgentLogStrip, ChatPreviewStrip } from "./fileview";
+import { CHAT_COMMANDS, parseCommand } from "@/lib/commands";
+import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
 
 interface ChatExchange {
   promptTick: WireTick;
@@ -112,7 +114,7 @@ function EditableBubble({
 }
 
 export function ChatView({
-  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onRegen, onEditAtom, onEditPrompt,
+  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onNote, onRegen, onEditAtom, onEditPrompt,
 }: {
   ticks: Record<string, WireTick>;
   head: string | null;
@@ -120,11 +122,13 @@ export function ChatView({
   agentLogs: { level: string; message: string }[];
   onClearAgentLogs: () => void;
   onSend: (text: string) => void;
+  onNote: (text: string) => void;
   onRegen: (promptTickId: string, atomTickId: string, text: string) => void;
   onEditAtom: (tickId: string, content: string) => void;
   onEditPrompt: (tickId: string, content: string) => void;
 }) {
   const [draft, setDraft] = useState("");
+  const auto = useCommandAutocomplete(draft, setDraft, CHAT_COMMANDS);
   const chain = tickChain(ticks, head);
   const exchanges = exchangesFromChain(chain);
   const lastIndex = exchanges.length - 1;
@@ -132,10 +136,17 @@ export function ChatView({
 
   const scrollRef = useAutoScroll<HTMLDivElement>(exchanges.length + (preview?.text.length ?? 0), head, "end");
 
+  // A leading "/note" sends an annotation instead of a conversational turn
+  // (see CHAT_COMMANDS) — anything else, slash or not, is plain conversation.
   function submit() {
-    const text = draft.trim();
-    if (!text || generating) return;
-    onSend(text);
+    const raw = draft.trim();
+    if (!raw || generating) return;
+    const parsed = parseCommand(raw);
+    if (parsed?.name === "note") {
+      if (parsed.text) onNote(parsed.text);
+    } else {
+      onSend(raw);
+    }
     setDraft("");
   }
 
@@ -199,18 +210,27 @@ export function ChatView({
       <AgentLogStrip logs={agentLogs} onClear={onClearAgentLogs} />
 
       <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "10px 14px", display: "flex", gap: 8 }}>
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
-          placeholder={generating ? "Waiting for a reply…" : "Message…"}
-          disabled={generating}
-          rows={2}
-          style={{
-            flex: 1, resize: "none", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)",
-            borderRadius: 6, color: "var(--foreground)", padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", outline: "none",
-          }}
-        />
+        <div style={{ position: "relative", flex: 1, display: "flex" }}>
+          <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} />
+          <textarea
+            ref={auto.taRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onSelect={auto.onSelect}
+            onClick={auto.onSelect}
+            onKeyDown={(e) => {
+              if (auto.onKeyDown(e)) return;
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+            }}
+            placeholder={generating ? "Waiting for a reply…" : "Message… (/note to annotate)"}
+            disabled={generating}
+            rows={2}
+            style={{
+              flex: 1, resize: "none", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)",
+              borderRadius: 6, color: "var(--foreground)", padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", outline: "none",
+            }}
+          />
+        </div>
         <button
           onClick={submit}
           disabled={generating || draft.trim().length === 0}

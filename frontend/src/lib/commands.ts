@@ -31,6 +31,12 @@ export const COMMANDS: CommandDef[] = [
   },
 ];
 
+// ChatView's input only ever sends a conversational turn (chatConverse) —
+// none of write/fix/append/regen are atom-editing operations that make
+// sense there. 'note' is the one exception: annotations are file-wide, not
+// atom-scoped (see fileview.actions.ts's chatNote), so it still applies.
+export const CHAT_COMMANDS: CommandDef[] = COMMANDS.filter((c) => c.name === "note");
+
 export interface ParsedCommand {
   name: string;
   params: Record<string, string>;
@@ -78,12 +84,12 @@ function currentToken(text: string, cursor: number): { start: number; word: stri
 // is only recognized at the start of input — see parseCommand). Param-name
 // completion looks at that first token to know which CommandDef's params to
 // offer, so "@" only suggests once a valid command name precedes it.
-export function commandSuggestions(text: string, cursor: number): Suggestion[] {
+export function commandSuggestions(text: string, cursor: number, commands: CommandDef[] = COMMANDS): Suggestion[] {
   const { start, word } = currentToken(text, cursor);
 
   if (start === 0 && word.startsWith("/")) {
     const prefix = word.slice(1).toLowerCase();
-    return COMMANDS.filter((c) => c.name.toLowerCase().startsWith(prefix)).map((c) => ({
+    return commands.filter((c) => c.name.toLowerCase().startsWith(prefix)).map((c) => ({
       replaceStart: start,
       replaceEnd: cursor,
       insertText: `/${c.name} `,
@@ -96,7 +102,7 @@ export function commandSuggestions(text: string, cursor: number): Suggestion[] {
     const firstSpace = text.indexOf(" ");
     const firstToken = firstSpace === -1 ? text : text.slice(0, firstSpace);
     if (!firstToken.startsWith("/")) return [];
-    const cmd = COMMANDS.find((c) => c.name === firstToken.slice(1));
+    const cmd = commands.find((c) => c.name === firstToken.slice(1));
     if (!cmd) return [];
     const prefix = word.slice(1).toLowerCase();
     return cmd.params.filter((p) => p.name.toLowerCase().startsWith(prefix)).map((p) => ({

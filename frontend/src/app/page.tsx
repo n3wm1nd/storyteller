@@ -499,6 +499,7 @@ export default function Home() {
               ticks={fileChainTicks} head={fileChainHead}
               preview={preview} agentLogs={agentLogs} onClearAgentLogs={clearAgentLogs}
               onSend={(text) => chatConverse(selectedFile, text)}
+              onNote={(text) => chatNote(selectedFile, text)}
               onRegen={(promptTickId, atomTickId, text) => chatConverseRegen(selectedFile, promptTickId, atomTickId, text)}
               onEditAtom={(tickId, content) => editAtom(selectedFile, tickId, content)}
               onEditPrompt={(tickId, content) => editPrompt(selectedFile, tickId, content)}

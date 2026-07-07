@@ -6,9 +6,9 @@
 // the trailing text — so completion still works after the caret has moved
 // back into an earlier token.
 import { useEffect, useRef, useState } from "react";
-import { commandSuggestions, type Suggestion } from "@/lib/commands";
+import { COMMANDS, commandSuggestions, type CommandDef, type Suggestion } from "@/lib/commands";
 
-export function useCommandAutocomplete(text: string, setText: (t: string) => void) {
+export function useCommandAutocomplete(text: string, setText: (t: string) => void, commands: CommandDef[] = COMMANDS) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -17,7 +17,7 @@ export function useCommandAutocomplete(text: string, setText: (t: string) => voi
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => { setDismissed(false); }, [text]);
 
-  const suggestions = dismissed ? [] : commandSuggestions(text, cursor);
+  const suggestions = dismissed ? [] : commandSuggestions(text, cursor, commands);
   useEffect(() => { setActiveIndex(0); }, [suggestions.map((s) => s.display).join("|")]);
 
   function accept(idx: number = activeIndex): boolean {
