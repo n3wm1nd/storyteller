@@ -11,8 +11,8 @@
 --   rebase behind the rebase-marker feature, whose inner action runs
 --   arbitrary effects (LLM calls, further dispatches) at an earlier tick's
 --   position. 'atGeneric' descends one tick per 'runStorage' dispatch, runs
---   the inner action at the target, then replays the tail back on top -- so
---   internally it asks 'runBranchOpGit' to 'setRef' on every step.
+--   the inner action at the target, then replays the tail back on top in a
+--   single batched 'StoreT' dispatch.
 --
 --   What that amounts to /externally/ is entirely a property of the
 --   'withStorage' transaction 'atGeneric' always runs under in production
@@ -39,7 +39,7 @@ import Git.Mock (emptyGitState, runGitMock)
 import Runix.Git
 
 import Storyteller.Core.Types (BranchName(..), TickId(..), branchHead)
-import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch, setRef)
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.Git
   ( atGeneric, runBranchOpGit, runStoryStorageGit, storyRefPrefix, withStorage )
@@ -63,9 +63,12 @@ mainRef = RefName (storyRefPrefix <> "main")
 --   the in-memory overlay 'withStorage' buffers writes in before its
 --   end-of-transaction replay. Sits between 'runStoryStorageGit' and
 --   'runGitMock' so it sees the 'UpdateRef' 'applyToGit' issues on replay.
+--   Also tallies 'IsAncestorOfAny' calls into a separate 'State Int' --
+--   that effect is issued only by 'rewriteRef' inside 'cascadeReplace', so
+--   the count is exactly the cross-branch cascade's per-branch sweeps.
 type RefLog = [(RefName, Maybe ObjectHash)]
 
-recordRefWrites :: Members '[Git, State RefLog] r => Sem (Git : r) a -> Sem r a
+recordRefWrites :: Members '[Git, State RefLog, State Int] r => Sem (Git : r) a -> Sem r a
 recordRefWrites = interpret $ \case
   CreateRef ref h      -> send (CreateRef ref h)  <* modify (++ [(ref, Just h)])
   UpdateRef ref h      -> send (UpdateRef ref h)  <* modify (++ [(ref, Just h)])
@@ -77,7 +80,7 @@ recordRefWrites = interpret $ \case
   ReadObject h         -> send (ReadObject h)
   WriteObject obj      -> send (WriteObject obj)
   LookupPath t path    -> send (LookupPath t path)
-  IsAncestorOfAny ts h -> send (IsAncestorOfAny ts h)
+  IsAncestorOfAny ts h -> modify @Int (+ 1) >> send (IsAncestorOfAny ts h)
 
 writesOn :: RefName -> RefLog -> [Maybe ObjectHash]
 writesOn ref = fmap snd . filter ((== ref) . fst)
@@ -103,23 +106,27 @@ buildChain = do
 --   short-circuit that hides the ref log), and the branch head afterwards.
 runUnderWithStorage
   :: (forall r. Members '[BranchOp Main, Git, Fail] r => Sem r ())
-  -> Either String (Core.ObjectHash, [Maybe ObjectHash], Either String (), Maybe TickId)
+  -> Either String (Core.ObjectHash, [Maybe ObjectHash], Either String (), Maybe TickId, Int)
 runUnderWithStorage inner =
   run
   . runFail
   . evalState emptyGitState
   . evalState ([] :: RefLog)
+  . evalState (0 :: Int)
   . runGitMock
   . recordRefWrites
   . runStoryStorageGit
   $ do
     (target, origHead) <- buildChain
+    cascadesBefore <- get @Int
     logBefore <- get @RefLog
     txRes  <- runFail $ withStorage $ runBranchOpGit @Main mainBranch $
                atGeneric @Main (TickId (Core.unObjectHash target)) inner
     logAfter  <- get @RefLog
+    cascadesAfter <- get @Int
     finalHead <- (branchHead <$>) <$> getBranch mainBranch
-    return (origHead, writesOn mainRef (drop (length logBefore) logAfter), txRes, finalHead)
+    return (origHead, writesOn mainRef (drop (length logBefore) logAfter), txRes, finalHead,
+            cascadesAfter - cascadesBefore)
 
 -- | Same rebase, but with NO 'withStorage' -- eager mode, where every
 --   internal 'setRef' lands in git immediately. Returns the ref writes
@@ -132,6 +139,7 @@ runEager inner =
   . runFail
   . evalState emptyGitState
   . evalState ([] :: RefLog)
+  . evalState (0 :: Int)
   . runGitMock
   . recordRefWrites
   . runStoryStorageGit
@@ -149,16 +157,91 @@ singleWriteText :: [Maybe ObjectHash] -> Maybe Text
 singleWriteText [Just h] = Just (unObjectHash h)
 singleWriteText _        = Nothing
 
+-- | Inner action that changes the working tree at the rebase target, so the
+--   replayed ticks differ from the originals (newA2\/newA3 != a2\/a3).
+--   Without this the replay reproduces identical content-addressed commits
+--   and the remap is identity -- no real cross-branch work to verify.
+markerInner :: forall r. Members '[BranchOp Main, Git, Fail] r => Sem r ()
+markerInner = () <$ runStorage @Main (Core.store (Core.Atom [] "m.md" "M\n"))
+
+forkBranch :: BranchName
+forkBranch = BranchName "fork"
+
+-- | Fork 'forkBranch' at main's head (a3), rebase main to a1 with 'inner',
+--   return both branches' heads afterwards. The fork sits exactly at the
+--   deepest replayed tick a3, so under the batched replay it is rewritten
+--   directly via the a3->newA3 mapping entry and lands on newA3 = main's
+--   replayed head. (The old per-tick cascade reparented a3 onto newA2 first,
+--   leaving the fork on a reparented copy a3' != newA3.)
+runForkAtHead
+  :: (forall r. Members '[BranchOp Main, Git, Fail] r => Sem r ())
+  -> Either String (Maybe TickId, Maybe TickId, Either String ())
+runForkAtHead inner =
+  run
+  . runFail
+  . evalState emptyGitState
+  . evalState ([] :: RefLog)
+  . evalState (0 :: Int)
+  . runGitMock
+  . recordRefWrites
+  . runStoryStorageGit
+  $ do
+    (target, origHead) <- buildChain
+    setRef forkBranch (Just (TickId (Core.unObjectHash origHead)))
+    txRes <- runFail $ withStorage $ runBranchOpGit @Main mainBranch $
+               atGeneric @Main (TickId (Core.unObjectHash target)) inner
+    mainHead <- (branchHead <$>) <$> getBranch mainBranch
+    forkHead <- (branchHead <$>) <$> getBranch forkBranch
+    return (mainHead, forkHead, txRes)
+
+-- | Like 'runForkAtHead' but adds a commit f1 on top of the fork point, so
+--   the fork's head is its own commit (not a remapped one). After the rebase
+--   the cascade must reparent f1 onto newA3 -- transitively: f1 isn't in the
+--   mapping, but its ancestry contains a3 which is. Returns main's head and
+--   fork's head's first parent, which should coincide (both newA3).
+runForkWithOwnCommit
+  :: (forall r. Members '[BranchOp Main, Git, Fail] r => Sem r ())
+  -> Either String (Maybe TickId, Maybe ObjectHash, Either String ())
+runForkWithOwnCommit inner =
+  run
+  . runFail
+  . evalState emptyGitState
+  . evalState ([] :: RefLog)
+  . evalState (0 :: Int)
+  . runGitMock
+  . recordRefWrites
+  . runStoryStorageGit
+  $ do
+    (target, origHead) <- buildChain
+    setRef forkBranch (Just (TickId (Core.unObjectHash origHead)))
+    _ <- runBranchOpGit @Main forkBranch (runStorage @Main (Core.store (Core.Atom [] "f.md" "F\n")))
+    txRes <- runFail $ withStorage $ runBranchOpGit @Main mainBranch $
+               atGeneric @Main (TickId (Core.unObjectHash target)) inner
+    mainHead <- (branchHead <$>) <$> getBranch mainBranch
+    forkHead <- (branchHead <$>) <$> getBranch forkBranch
+    forkParent <- case forkHead of
+      Just h  -> do cd <- readCommit (ObjectHash (unTickId h))
+                    return (case commitParents cd of (p : _) -> Just p; [] -> Nothing)
+      Nothing -> return Nothing
+    return (mainHead, forkParent, txRes)
+
 spec :: Spec
 spec = describe "atGeneric" $ do
 
   it "under withStorage, publishes exactly one ref write (the final replayed head) despite one setRef per internal step" $
     case runUnderWithStorage (pure ()) of
       Left err -> expectationFailure err
-      Right (_origHead, mainWrites, txRes, finalHead) -> do
+      Right (_origHead, mainWrites, txRes, finalHead, _cascades) -> do
         txRes `shouldBe` Right ()
         length mainWrites `shouldBe` 1
         singleWriteText mainWrites `shouldBe` fmap unTickId finalHead
+
+  it "under withStorage, the cross-branch cascade fires exactly once for the whole replay tail (not once per replayed tick)" $
+    case runUnderWithStorage (pure ()) of
+      Left err -> expectationFailure err
+      Right (_origHead, _mainWrites, txRes, _finalHead, cascades) -> do
+        txRes `shouldBe` Right ()
+        cascades `shouldBe` 1
 
   it "without withStorage (eager), the same rebase publishes a ref write at every internal step" $
     case runEager (pure ()) of
@@ -168,7 +251,21 @@ spec = describe "atGeneric" $ do
   it "under withStorage, a failure mid-rebase publishes nothing and leaves the head untouched" $
     case runUnderWithStorage (send (Fail "boom")) of
       Left err -> expectationFailure err
-      Right (origHead, mainWrites, txRes, finalHead) -> do
+      Right (origHead, mainWrites, txRes, finalHead, _cascades) -> do
         txRes `shouldSatisfy` isLeft
         mainWrites `shouldBe` []
         fmap unTickId finalHead `shouldBe` Just (Core.unObjectHash origHead)
+
+  it "a branch forked at the deepest replayed tick tracks the replayed commit, not a reparented copy" $
+    case runForkAtHead markerInner of
+      Left err -> expectationFailure err
+      Right (mainHead, forkHead, txRes) -> do
+        txRes `shouldBe` Right ()
+        forkHead `shouldBe` mainHead
+
+  it "a forked branch's own commit is reparented onto the replayed chain (parent rewritten)" $
+    case runForkWithOwnCommit markerInner of
+      Left err -> expectationFailure err
+      Right (mainHead, forkParent, txRes) -> do
+        txRes `shouldBe` Right ()
+        (unObjectHash <$> forkParent) `shouldBe` (unTickId <$> mainHead)

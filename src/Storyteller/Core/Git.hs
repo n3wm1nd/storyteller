@@ -633,21 +633,20 @@ runBranchAndFS name = runBranchOpGit @branch name . runStoryFSGit @branch name
 -- The rebase-marker feature ("run this arbitrary command as if an earlier
 -- tick were HEAD") is different: its inner action is a recursive dispatch
 -- call that can invoke agents, LLM calls, anything. It still doesn't need
--- 'interpretH', though: each navigation step here is its own small,
--- separate 'runStorage' dispatch (pop one tick, or re-store one), and
--- 'runBranchOpGit' already carries the scope's own state across separate
--- dispatches — so ordinary 'Sem' recursion can move down one tick at a
--- time, let arbitrary code run at the bottom, and walk back up replaying
--- each level by hand, with 'inner' running as perfectly ordinary
--- in-between 'Sem' code rather than something spliced into a single
--- 'Core.StoreT' computation.
+-- 'interpretH', though: descent is ordinary 'Sem' recursion, one small
+-- 'runStorage' dispatch per tick popped ('runBranchOpGit' carries the
+-- scope's state across those dispatches), 'inner' runs at the bottom as
+-- perfectly ordinary in-between 'Sem' code, and the whole tail is then
+-- replayed in a single 'Core.StoreT' computation — one dispatch, so the
+-- cross-branch cascade fires once with the full old->new mapping instead
+-- of once per replayed tick (see 'replayBack').
 
 -- | Move to @tid@'s position, run an arbitrary inner action there, then
 --   replay everything after it back onto whatever the action produced.
---   Each individual pop\/store this makes is its own 'runStorage'
---   dispatch, so each already broadcasts its own remap entry via
---   'runBranchOpGit' — nothing further to do here once @inner@ and the
---   replay are done.
+--   Descent pops one tick per 'runStorage' dispatch; the replay is a
+--   single 'StoreT' dispatch (see 'replayBack') that hands the whole
+--   old->new remap table to 'runBranchOpGit' at once, so the cross-branch
+--   cascade fires exactly once for the entire tail.
 atGeneric
   :: forall branch r a
   .  Members '[BranchOp branch, Git, Fail] r
@@ -672,8 +671,11 @@ atGeneric tid inner = goDown []
               (_ : _) -> Core.drop
           goDown ((current, t) : poppedRev)
 
+    -- One 'StoreT' dispatch for the whole tail: each 'store' builds on the
+    --   previous (its head advances via 'Core.putHead' inside the 'StateT'),
+    --   so 'runBranchOpGit' receives a single remap table covering every
+    --   replayed tick and runs the cross-branch cascade once with it --
+    --   rather than once per tick (O(N) cascades, O(N^2) remap entries).
     replayBack :: [(Core.ObjectHash, Core.Tick)] -> Sem r ()
-    replayBack [] = return ()
-    replayBack ((oldHash, t) : rest) = do
-      _ <- runStorage @branch (Core.store t >>= \newHash -> newHash <$ Core.logRemap oldHash newHash)
-      replayBack rest
+    replayBack popped = () <$ runStorage @branch
+      (mapM_ (\(oldHash, t) -> Core.store t >>= \newHash -> Core.logRemap oldHash newHash) popped)
