@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, FileWarning, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { Folder, FolderOpen, FileText, FileWarning, ChevronRight, Plus, Trash2, Pencil } from "lucide-react";
 import { branchFileUrl } from "@/lib/ws";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
@@ -59,15 +59,46 @@ function resolveDroppedFiles(folderPath: string, fileList: FileList): { path: st
   }));
 }
 
-function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, activeBranch }: {
+// Custom drag MIME type marking "this drag is an internal tree node being
+// moved," not an OS file drop — a folder's own onDrop checks for this
+// first so an in-tree drag never gets misread as an upload.
+const MOVE_MIME = "application/x-storyteller-move";
+
+function targetPathFor(folderPath: string, sourcePath: string): string {
+  const name = sourcePath.split("/").pop() ?? sourcePath;
+  return folderPath ? `${folderPath}/${name}` : name;
+}
+
+function FileTreeNode({
+  node, depth, selectedFile, onSelectFile, onDropFiles, onMoveFile, activeBranch,
+  renamingPath, onStartRename, onCommitRename, onCancelRename,
+}: {
   node: TreeNode; depth: number; selectedFile: string | null; onSelectFile: (p: string) => void;
   onDropFiles: (folderPath: string, files: FileList) => void;
+  onMoveFile: (sourcePath: string, newPath: string) => void;
   activeBranch: string | null;
+  renamingPath: string | null;
+  onStartRename: (path: string) => void;
+  onCommitRename: (path: string, newName: string) => void;
+  onCancelRename: () => void;
 }) {
   const [open, setOpen] = useState(true);
   const [dragOver, setDragOver] = useState(false);
   const active = selectedFile === node.path;
   const pad = 8 + depth * 14;
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const movedFrom = e.dataTransfer.getData(MOVE_MIME);
+    if (movedFrom) {
+      const dest = targetPathFor(node.path, movedFrom);
+      if (dest !== movedFrom) onMoveFile(movedFrom, dest);
+    } else {
+      onDropFiles(node.path, e.dataTransfer.files);
+    }
+  }
 
   if (node.isDir) {
     return (
@@ -76,12 +107,7 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, ac
           onClick={() => setOpen((v) => !v)}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setDragOver(false);
-            onDropFiles(node.path, e.dataTransfer.files);
-          }}
+          onDrop={handleDrop}
           style={{
             display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
             padding: `3px 8px 3px ${pad}px`,
@@ -96,9 +122,23 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, ac
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
         </button>
         {open && node.children.map((child) => (
-          <FileTreeNode key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={onDropFiles} activeBranch={activeBranch} />
+          <FileTreeNode
+            key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile}
+            onSelectFile={onSelectFile} onDropFiles={onDropFiles} onMoveFile={onMoveFile} activeBranch={activeBranch}
+            renamingPath={renamingPath} onStartRename={onStartRename} onCommitRename={onCommitRename} onCancelRename={onCancelRename}
+          />
         ))}
       </div>
+    );
+  }
+
+  if (renamingPath === node.path) {
+    return (
+      <RenameInput
+        pad={pad} initialName={node.name}
+        onCommit={(name) => onCommitRename(node.path, name)}
+        onCancel={onCancelRename}
+      />
     );
   }
 
@@ -109,8 +149,11 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, ac
   if (node.isBinary) {
     return (
       <button
+        draggable
+        onDragStart={(e) => e.dataTransfer.setData(MOVE_MIME, node.path)}
+        onDoubleClick={() => onStartRename(node.path)}
         onClick={() => activeBranch && window.open(branchFileUrl(activeBranch, node.path), "_blank")}
-        title="Binary file — opens raw, not editable here"
+        title="Binary file — opens raw, not editable here (double-click to rename)"
         style={{
           display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
           padding: `3px 8px 3px ${pad}px`,
@@ -125,31 +168,78 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, ac
   }
 
   return (
-    <button onClick={() => onSelectFile(node.path)} style={{
-      display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
-      padding: `3px 8px 3px ${pad}px`,
-      background: active ? "oklch(0.78 0.10 65 / 0.10)" : "transparent",
-      color: active ? "var(--amber)" : "var(--text-secondary)",
-      border: "none", borderLeft: active ? "2px solid var(--amber)" : "2px solid transparent",
-      cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: active ? 500 : 400,
-    }}>
+    <button
+      draggable
+      onDragStart={(e) => e.dataTransfer.setData(MOVE_MIME, node.path)}
+      onDoubleClick={() => onStartRename(node.path)}
+      onClick={() => onSelectFile(node.path)}
+      title={`${node.path} (double-click to rename)`}
+      style={{
+        display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
+        padding: `3px 8px 3px ${pad}px`,
+        background: active ? "oklch(0.78 0.10 65 / 0.10)" : "transparent",
+        color: active ? "var(--amber)" : "var(--text-secondary)",
+        border: "none", borderLeft: active ? "2px solid var(--amber)" : "2px solid transparent",
+        cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: active ? 500 : 400,
+      }}>
       <FileText style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
     </button>
   );
 }
 
+// Inline rename editor, swapped in for a leaf node's own label — edits just
+// the leaf name (moving to a different folder is drag-and-drop's job, not
+// this input's), Enter commits, Escape/blur-with-no-change cancels.
+function RenameInput({ pad, initialName, onCommit, onCancel }: {
+  pad: number; initialName: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialName);
+  return (
+    <div style={{ display: "flex", alignItems: "center", padding: `3px 8px 3px ${pad}px` }}>
+      <FileText style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6, marginRight: 5 }} />
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onFocus={(e) => e.target.select()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const trimmed = value.trim();
+            if (trimmed && trimmed !== initialName) onCommit(trimmed); else onCancel();
+          } else if (e.key === "Escape") {
+            onCancel();
+          }
+        }}
+        onBlur={() => {
+          const trimmed = value.trim();
+          if (trimmed && trimmed !== initialName) onCommit(trimmed); else onCancel();
+        }}
+        style={{
+          flex: 1, fontSize: 12, padding: "1px 4px",
+          background: "var(--card)", border: "1px solid var(--amber)",
+          borderRadius: 3, color: "var(--foreground)", outline: "none",
+        }}
+      />
+    </div>
+  );
+}
+
 // ── File tree (Explorer tab content) ─────────────────────────────────────────
 //
 // Home for anything that acts on the branch's file tree as a whole —
-// currently browsing + drag-and-drop upload, expected to grow rename,
-// delete, new-file/new-folder creation, and moving (see TODO.md) as those
-// land. Kept separate from LeftSidebar's Branches/Characters tabs (sidebar.tsx),
-// which are plain list renderers over the branch list with no tree
-// structure or file-level operations of their own.
+// browsing, drag-and-drop upload, delete, rename/move (double-click to
+// rename in place; drag a node onto a folder to move it — both are just
+// Server.Writer.File.Protocol's "rename" command, see page.tsx's
+// handleRenameFile), new-file creation. Kept separate from LeftSidebar's
+// Branches/Characters tabs (sidebar.tsx), which are plain list renderers
+// over the branch list with no tree structure or file-level operations of
+// their own.
 
 export function FileTree({
-  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onDeleteFile, onUploadFiles,
+  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onDeleteFile, onRenameFile, onUploadFiles,
 }: {
   activeBranch: string | null;
   files: string[];
@@ -161,20 +251,41 @@ export function FileTree({
   onSelectFile: (f: string) => void;
   onCreateFile: (path: string) => void;
   onDeleteFile: (path: string) => void;
+  onRenameFile: (path: string, newPath: string) => void;
   onUploadFiles: (files: { path: string; content: File }[]) => void;
 }) {
   const [rootDragOver, setRootDragOver] = useState(false);
   const [newFilePath, setNewFilePath] = useState("");
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
 
   function handleDropFiles(folderPath: string, fileList: FileList) {
     onUploadFiles(resolveDroppedFiles(folderPath, fileList));
   }
 
+  function handleRootDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setRootDragOver(false);
+    const movedFrom = e.dataTransfer.getData(MOVE_MIME);
+    if (movedFrom) {
+      const dest = targetPathFor("", movedFrom);
+      if (dest !== movedFrom) onRenameFile(movedFrom, dest);
+    } else {
+      handleDropFiles("", e.dataTransfer.files);
+    }
+  }
+
+  function commitRename(path: string, newName: string) {
+    setRenamingPath(null);
+    const parts = path.split("/");
+    parts[parts.length - 1] = newName;
+    onRenameFile(path, parts.join("/"));
+  }
+
   // No dedicated folder-creation affordance yet — a path typed with "/"s
   // just nests under those segments via 'buildTree', same as a dropped
-  // upload's destination. No rename yet either. Creation is now its own
-  // explicit tick (file.create — see WS-PROTOCOL.md) rather than the path
-  // just sitting "absent" until whatever's typed into it first lands.
+  // upload's destination. Creation is now its own explicit tick
+  // (file.create — see WS-PROTOCOL.md) rather than the path just sitting
+  // "absent" until whatever's typed into it first lands.
   function handleCreateFile() {
     const path = newFilePath.trim().replace(/^\/+/, "");
     if (!path) return;
@@ -186,12 +297,7 @@ export function FileTree({
     <div
       onDragOver={(e) => { if (activeBranch) { e.preventDefault(); setRootDragOver(true); } }}
       onDragLeave={() => setRootDragOver(false)}
-      onDrop={(e) => {
-        if (!activeBranch) return;
-        e.preventDefault();
-        setRootDragOver(false);
-        handleDropFiles("", e.dataTransfer.files);
-      }}
+      onDrop={(e) => { if (activeBranch) handleRootDrop(e); }}
       style={{
         flex: 1, overflow: "auto", padding: "4px 4px",
         background: rootDragOver ? "oklch(0.78 0.10 65 / 0.06)" : "transparent",
@@ -208,6 +314,19 @@ export function FileTree({
           {activeBranch ?? "no branch"}
         </span>
         {activeBranch && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>{files.length} files</span>}
+        {activeBranch && selectedFile && (
+          <button
+            onClick={() => setRenamingPath(selectedFile)}
+            title={`Rename ${decodeURIComponent(selectedFile)}`}
+            style={{
+              width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "transparent", border: "none", borderRadius: 4,
+              color: "var(--text-dim)", cursor: "pointer", flexShrink: 0, padding: 0,
+            }}
+          >
+            <Pencil style={{ width: 11, height: 11 }} />
+          </button>
+        )}
         {activeBranch && selectedFile && (
           <button
             onClick={() => onDeleteFile(selectedFile)}
@@ -233,7 +352,11 @@ export function FileTree({
         </div>
       ) : (
         buildTree(files, binaryPaths).map((node) => (
-          <FileTreeNode key={node.path} node={node} depth={0} selectedFile={selectedFile} onSelectFile={onSelectFile} onDropFiles={handleDropFiles} activeBranch={activeBranch} />
+          <FileTreeNode
+            key={node.path} node={node} depth={0} selectedFile={selectedFile}
+            onSelectFile={onSelectFile} onDropFiles={handleDropFiles} onMoveFile={onRenameFile} activeBranch={activeBranch}
+            renamingPath={renamingPath} onStartRename={setRenamingPath} onCommitRename={commitRename} onCancelRename={() => setRenamingPath(null)}
+          />
         ))
       )}
 

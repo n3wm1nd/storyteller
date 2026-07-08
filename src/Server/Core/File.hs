@@ -26,6 +26,7 @@ module Server.Core.File
   , fileStateSince
   , createFile
   , deleteFile
+  , renameFile
   , appendToFile
   , editFileAtom
   , deleteFileAtom
@@ -130,6 +131,23 @@ deleteFile path = do
     else do
       info $ "deleting file: " <> T.pack path
       void $ runStorage @Main (Ops.deleteFile path)
+
+-- | Rename @path@'s current lifetime to @newPath@ -- see
+-- 'Storage.Ops.renameFile'. Fails if @path@ isn't currently present, or
+-- @newPath@ already is (this is a move, not a merge/overwrite). Both
+-- checked against the tree, same reasoning as 'createFile'/'deleteFile's
+-- own guards.
+renameFile :: (FileOpen r, Member Logging r) => FilePath -> FilePath -> Sem r ()
+renameFile path newPath = do
+  (present, _)    <- runStorage @Main (Ops.exists path)
+  (newTaken, _)   <- runStorage @Main (Ops.exists newPath)
+  if not present
+    then fail ("renameFile: no such file: " <> path)
+    else if newTaken
+      then fail ("renameFile: already exists: " <> newPath)
+      else do
+        info $ "renaming file: " <> T.pack path <> " -> " <> T.pack newPath
+        void $ runStorage @Main (Ops.renameFile path newPath)
 
 -- | Append content to a file as a single atom — the caller (someone typing
 --   and appending their own text) already chose exactly what they wanted

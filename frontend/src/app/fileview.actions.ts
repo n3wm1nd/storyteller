@@ -87,12 +87,25 @@ export async function createFile(path: string): Promise<void> {
   getServerCache().openFiles[path]?.conn.send({ type: "file.create" });
 }
 
-// Whole-file delete: every atom on path's chain is rebased out. The
-// server pushes file.absent once this lands (see Server.Writer.File.
-// Connection's pushIncremental) — same absent-state handling openFiles
-// already renders for a not-yet-created path.
+// Whole-file delete: a forward tick, not a rebase (see
+// Storyteller.Core.Create's Haddock) — path's whole tick history stays
+// intact for anyone time-travelling to before the deletion, but the path
+// itself drops out of the tree, so fileState on this same connection
+// comes back present-but-headed-at-the-deletion-tick, not absent.
 export function deleteFile(path: string) {
   sendFileCommand(path, { type: "delete" });
+}
+
+// Rename path's current lifetime to newPath — a rebase at the file's own
+// creation tick (see Storage.Ops.renameFile), sent on the *old* path's
+// connection since that's where the file currently lives. The server
+// pushes file.absent on this connection once it lands (fileState on the
+// old path genuinely empties out — rename rewrites those ticks' own
+// atomPath, unlike delete's forward event); the caller is responsible for
+// switching to the new path's connection afterward (see page.tsx's
+// handleRenameFile), same as closing/reopening on any other path change.
+export function renameFile(path: string, newPath: string) {
+  sendFileCommand(path, { type: "rename", newPath });
 }
 
 export function closeFile(path: string) {

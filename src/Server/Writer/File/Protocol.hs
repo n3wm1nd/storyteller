@@ -56,6 +56,10 @@ data FileCommand
   = CreateFile { fcId :: Maybe T.Text }
   | ChatAppend { fcId :: Maybe T.Text, fcContent :: T.Text }
   | Delete     { fcId :: Maybe T.Text }
+  -- | Rename this path's current lifetime to 'fcNewPath' -- a rebase, not
+  --   a forward event (contrast with 'Delete') -- see
+  --   'Storage.Ops.renameFile'. Fails if 'fcNewPath' already exists.
+  | Rename     { fcId :: Maybe T.Text, fcNewPath :: T.Text }
   | EditAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   -- | Edit a chat 'Storyteller.Writer.Agent.Prompt' tick's text in place.
   --   Distinct from 'EditAtom': a prompt's message carries no filesystem
@@ -120,6 +124,7 @@ instance FromJSON FileCommand where
       "file.create" -> pure (CreateFile i)
       "chat.append" -> ChatAppend i <$> o .: "content"
       "delete"      -> pure (Delete i)
+      "rename"      -> Rename i <$> o .: "newPath"
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
       "edit.prompt" -> EditPrompt i <$> o .: "tickId" <*> o .: "content"
       "delete.atom" -> DeleteAtom i <$> o .: "tickId"
@@ -160,6 +165,7 @@ commandKind = \case
   CreateFile {}   -> "file.create"
   ChatAppend {}   -> "chat.append"
   Delete {}       -> "delete"
+  Rename {}       -> "rename"
   EditAtom {}     -> "edit.atom"
   EditPrompt {}   -> "edit.prompt"
   DeleteAtom {}   -> "delete.atom"

@@ -27,8 +27,9 @@ module Server.Writer.File.Dispatch
   ) where
 
 import Polysemy (Member, Sem)
+import qualified Data.Text as T
 
-import Server.Core.File (FileOpen, createFile, deleteFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote)
+import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote)
 import Server.Writer.File (chatWriter, chatFixer, chatConverse, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
@@ -49,6 +50,9 @@ runCommand path cmd = case cmd of
 
   Delete _mid ->
     deleteFile path
+
+  Rename _mid newPath ->
+    renameFile path (T.unpack newPath)
 
   EditAtom _mid tid content ->
     editFileAtom path (TickId tid) content

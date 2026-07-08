@@ -163,6 +163,27 @@ spec = do
             hasAnyAtom "portrait.png")
       result `shouldBe` Right False
 
+    -- Binary's own 'store' case reads the *ambient* tree to decide its
+    -- content -- correct for a fresh commit (see 'addBinary'), but a
+    -- rebase (here, 'deleteTick' removing an unrelated earlier atom)
+    -- replays this same tick later by re-'store'-ing it, at which point
+    -- ambient state has nothing to do with what this tick originally
+    -- committed. Reproduces exactly that: ambient is deliberately
+    -- clobbered with different bytes (an unrelated pending edit) before
+    -- the rebase runs, and the replayed Binary tick must still reproduce
+    -- its own *original* content, not whatever ambient now holds.
+    it "a rebase replaying past a Binary tick still reproduces its own original content" $ do
+      let original = BS.pack [0xFF, 0xFE, 0x00]
+          unrelated = BS.pack [0x11, 0x22, 0x33, 0x44]
+      let result = fst <$> runChain (do
+            t1 <- addAtom "a.md" "hello\n"
+            _  <- addBinary "portrait.png" original
+            writeFile "portrait.png" unrelated
+            _  <- addAtom "a.md" " world\n"
+            deleteTick t1
+            committedContent "portrait.png")
+      result `shouldBe` Right original
+
   describe "findCreationTick" $ do
     it "finds the file's only atom when it was never deleted" $ do
       let result = fst <$> runChain (do

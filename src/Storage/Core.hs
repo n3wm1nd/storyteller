@@ -113,6 +113,7 @@ import Control.Monad.State.Strict
 import qualified Data.ByteString as BS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -591,6 +592,45 @@ store t = do
   putHead newHash
   return newHash
 
+-- | Every path where @commitHash@'s own tree differs from @parentHash@'s
+--   -- @Just node@ for an added\/changed entry, @Nothing@ for one removed.
+--   This is a tick's own, exact tree contribution, independent of
+--   anything ambient -- the piece 'store's own 'Binary'\/'Opaque' cases
+--   can't recover on replay (see 'atWith's own Haddock for why they need
+--   it precomputed rather than re-derived from ambient state).
+treeDelta :: StoreM m => ObjectHash -> ObjectHash -> StoreT m (Map FilePath (Maybe FSNode))
+treeDelta commitHash parentHash = do
+  cur <- liftG (loadWorkingTree commitHash)
+  par <- liftG (loadWorkingTree parentHash)
+  return $ Map.fromList
+    [ (p, Map.lookup p cur)
+    | p <- Set.toList (Map.keysSet cur `Set.union` Map.keysSet par)
+    , Map.lookup p cur /= Map.lookup p par
+    ]
+
+-- | Commit @t@ with its tree built by applying @delta@ (see 'treeDelta')
+--   onto the *current* head's own tree, instead of 'store's usual
+--   per-constructor computation. Used only by 'atWith's replay of a
+--   'Binary'\/'Opaque' tick: reapplies that tick's own original
+--   contribution onto the rebuilt parent, rather than re-deriving it from
+--   whatever the ambient tree happens to hold now.
+storeWithDelta :: StoreM m => Tick -> Map FilePath (Maybe FSNode) -> StoreT m ObjectHash
+storeWithDelta t delta = do
+  h    <- headHash
+  refs <- mapM resolveId (tickRefs t)
+  parentWt <- liftG (loadWorkingTree h)
+  let apply wt (p, Just node) = Map.insert p node wt
+      apply wt (p, Nothing)   = Map.delete p wt
+      newWt = foldl apply parentWt (Map.toList delta)
+  treeHash <- liftG (flushWorkingTree newWt)
+  newHash  <- liftG $ writeCommit CommitData
+    { commitParents = h : refs
+    , commitTree    = treeHash
+    , commitMessage = encodeTick t
+    }
+  putHead newHash
+  return newHash
+
 -- | Pop the tick at head, moving head to its parent, and hand back
 --   everything it was. @store =<< drop@ rebuilds the same commit in
 --   place.
@@ -821,10 +861,25 @@ atWith onReplay target0 action = do
           cd <- liftG (readCommit current)
           case commitParents cd of
             [] -> fail ("at: " <> T.unpack (unObjectHash target) <> " not found in history")
-            (_ : _) -> do
+            (par : _) -> do
+              -- 'Binary'/'Opaque' read the *ambient* tree to decide their
+              -- own tree contribution (see 'store's own Haddock) -- fine
+              -- for a fresh commit, wrong on replay, where ambient state
+              -- has nothing to do with the rebase in progress. Their exact
+              -- contribution has to be captured here, from the commits
+              -- themselves, before 'drop' discards this position -- then
+              -- reapplied via 'storeWithDelta' once the parent's replay
+              -- below has rebuilt whatever it rebuilds onto.
+              t0    <- liftG (readTick current)
+              delta <- case t0 of
+                Binary {} -> Just <$> treeDelta current par
+                Opaque {} -> Just <$> treeDelta current par
+                _         -> return Nothing
               t   <- drop
               a   <- go target
-              new <- store (onReplay t)
+              new <- case delta of
+                Just d  -> storeWithDelta (onReplay t) d
+                Nothing -> store (onReplay t)
               logRemap current new
               return a
 

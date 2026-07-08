@@ -154,6 +154,7 @@ export type FileCommand =
   | { type: "file.create"; id?: string }
   | { type: "chat.append"; id?: string; content: string }
   | { type: "delete";      id?: string }
+  | { type: "rename";      id?: string; newPath: string }
   | { type: "edit.atom";   id?: string; tickId: string; content: string }
   // Edit a chat prompt tick's text in place — distinct from edit.atom: a
   // prompt isn't file content, so this doesn't restage anything.

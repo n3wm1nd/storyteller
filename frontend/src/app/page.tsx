@@ -6,7 +6,7 @@ import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
 import {
-  openFile, createFile, deleteFile, closeFile, enterScene, leaveScene,
+  openFile, createFile, deleteFile, renameFile, closeFile, enterScene, leaveScene,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
@@ -269,6 +269,20 @@ export default function Home() {
     pushPath(activeBranch, null);
   }
 
+  // Covers both the rename UI action and drag-to-move (dropping a file
+  // onto a folder in the tree) — a move is just a rename to a path under
+  // the target folder, same server command either way.
+  function handleRenameFile(path: string, newPath: string) {
+    renameFile(path, newPath);
+    closeFile(path);
+    if (selectedFile === path) {
+      setSelectedFile(newPath);
+      openFile(newPath);
+      setCenterTab(isChatFile(newPath) ? "chat" : "file");
+      pushPath(activeBranch, newPath);
+    }
+  }
+
   function handleCloseFile() {
     if (selectedFile) closeFile(selectedFile);
     setSelectedFile(null);
@@ -351,6 +365,7 @@ export default function Home() {
               onSelectFile={handleSelectFile}
               onCreateFile={handleCreateFile}
               onDeleteFile={handleDeleteFile}
+              onRenameFile={handleRenameFile}
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
               onCreateChapter={createChapter}

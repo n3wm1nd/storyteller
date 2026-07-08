@@ -186,6 +186,34 @@ spec runner = do
           length (updateTicks upd) `shouldBe` 3
           mconcat (map snd history) `shouldBe` ""
 
+  describe "renameFile" $ do
+
+    it "moves the file's content to the new path" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- appendAtom "f.md" "hello"
+            renameFile "f.md" "g.md"
+            (,) <$> fileState "f.md" <*> fileState "g.md"
+      case result of
+        Left err -> expectationFailure err
+        Right (oldState, newState) -> do
+          updateTicks oldState `shouldBe` []
+          length (updateTicks newState) `shouldBe` 1
+
+    it "fails when the source file isn't currently present" $
+      (run $ runner $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (renameFile "nope.md" "g.md"))
+        `shouldSatisfy` \case
+          Left _  -> True
+          Right _ -> False
+
+    it "fails when the destination path already exists" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- appendAtom "f.md" "hello"
+            _ <- appendAtom "g.md" "already here"
+            renameFile "f.md" "g.md"
+      case result of
+        Left _  -> return ()
+        Right _ -> expectationFailure "expected renameFile to fail when the destination already exists"
+
   describe "moveFileAtom" $ do
 
     it "moving a single atom to front is a no-op on chain length" $ do
