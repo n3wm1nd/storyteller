@@ -36,33 +36,30 @@ import Data.Aeson (encode, object, (.=), Value)
 import qualified Network.WebSockets as WS
 import Polysemy
 import Polysemy.Error (Error, runError)
+import Polysemy.Fail (Fail)
 import Runix.Logging (Logging(..), Level(..))
 import Runix.StreamChunk (StreamChunk(..), ignoreChunks)
 import Runix.Config (runConfig, Config)
-import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent(..), StreamingEnabled(..))
+import Runix.LLM (LLM)
+import Runix.LLM.Streaming (StreamEvent(..), StreamingEnabled(..))
 import Runix.Runner (loggingIO, failLog)
+import Runix.Git (Git)
+import Runix.HTTP (HTTP, HTTPStreaming)
+import Runix.Random (Random)
+import Runix.Time (Sleep, Time)
 
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
-import Storyteller.Core.CLI.Env (modelConfigs)
-import Storyteller.Core.Runtime (runInfrastructureWith, StoryModel, storyModel)
+import Storyteller.Core.LLM.Registry (SomeLLMRunner(..))
+import Storyteller.Core.LLM.Role (ProseRole, ProseModel, FixerRole, FixerModel, reinterpretRole)
+import Storyteller.Core.Runtime (runInfrastructureWith)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Storage (StoryStorage(..))
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Types (TickId, unTickId)
 import Storyteller.Core.Undo (Undo)
-
-import Runix.LLM.Interpreter (interpretLLM, LlamaCppAuth(..))
-import Runix.RestAPI (RestEndpoint(..), RestAPI, restapiHTTP, llmRetry)
-import qualified UniversalLLM
-import qualified Runix.LLM
-import qualified Runix.Random
-import qualified Runix.HTTP
-import qualified Runix.Time
-import qualified Runix.Git
-import qualified Polysemy.Fail.Type
 
 -- | Intercept 'StoryStorage' and notify whenever a non-empty batch of tick
 -- ids gets renamed — the point at which any client tracking one of those
@@ -100,13 +97,6 @@ storageNotify chan = intercept $ \case
     announce mapping = if null mapping then return () else
       embed $ atomically $ writeTChan chan $
         TicksRemapped (map (\(o, n) -> (unTickId o, unTickId n)) mapping)
-
-newtype ServerAuth = ServerAuth LlamaCppAuth
-
-instance RestEndpoint ServerAuth where
-  apiroot    (ServerAuth a) = apiroot a
-  authheaders _             = []
-  useragent  _              = "storyteller-server/0.1"
 
 -- | Logging interpreter that calls an IO callback for each log entry.
 --   Use this to forward logs to a WebSocket connection or any other IO sink.
@@ -148,24 +138,47 @@ streamChunksWS :: Member (Embed IO) r => WS.Connection -> Sem (StreamChunk Strea
 streamChunksWS conn = interpret $ \(EmitChunk event) ->
   maybe (return ()) (embed . WS.sendTextData conn . encode) (previewEvent event)
 
-actionStack :: (Member (Embed IO) r,
- Member (StreamChunk StreamEvent) r) => ServerEnv -> Sem      (Runix.LLM.LLM StoryModel         : Runix.Config.Config StreamingEnabled         : Storyteller.Core.Prompt.PromptStorage : StoryStorage : Undo         : Runix.Random.Random : Runix.HTTP.HTTP : Runix.HTTP.HTTPStreaming         : Runix.Time.Sleep : Runix.Time.Time : Runix.Git.Git         : Polysemy.Fail.Type.Fail : Logging : Error String : r)      a -> Sem r (Either String a)
+-- | Interprets both role proxy effects: 'reinterpretRole' re-tags each
+--   role's requests onto its runtime-chosen model (see
+--   'Storyteller.Core.LLM.Role'), and the model's own already-built
+--   interpreter (resolved once at startup by 'Server.Writer.Env.loadServerEnv'
+--   — includes streaming preview wiring, retry, and auth; see
+--   'Storyteller.Core.LLM.Registry.resolveRoleRunner') takes it from there.
+--   'raiseUnder' inserts the chosen model's own 'LLM' effect directly under
+--   the role effect being eliminated, which is what lets 'reinterpretRole's
+--   converted request reach it.
+actionStack
+  :: (Member (Embed IO) r, Member (StreamChunk StreamEvent) r)
+  => ServerEnv
+  -> Sem ( LLM ProseModel : LLM FixerModel
+         : Config StreamingEnabled : PromptStorage : StoryStorage : Undo
+         : Random : HTTP : HTTPStreaming : Sleep : Time : Git
+         : Fail : Logging : Error String : r) a
+  -> Sem r (Either String a)
 actionStack env action =
-  let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
-  in runError @String
-   . loggingIO
-   . failLog
-   . runInfrastructureWith (runGitViaWorker (envGitWorker env))
-   . runStoryStorageGit
-   . storageNotify (envNotifyChan env)
-   . interpretPromptStorageFS
-   . runConfig (StreamingEnabled True)
-   . restapiHTTP auth
-   . llmStreamingRestAPI @StoryModel auth
-   . llmRetry @ServerAuth
-   . interpretLLM @ServerAuth (UniversalLLM.route @StoryModel) storyModel modelConfigs
-   . raiseUnder @(RestAPI ServerAuth)
-   $ action
+  case (envProseRunner env, envFixerRunner env) of
+    ( SomeLLMRunner (proseRunner :: forall r' a'. Members
+        '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r'
+        => Sem (LLM proseChosen : r') a' -> Sem r' a')
+      , SomeLLMRunner (fixerRunner :: forall r' a'. Members
+        '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r'
+        => Sem (LLM fixerChosen : r') a' -> Sem r' a')
+      ) ->
+        runError @String
+      . loggingIO
+      . failLog
+      . runInfrastructureWith (runGitViaWorker (envGitWorker env))
+      . runStoryStorageGit
+      . storageNotify (envNotifyChan env)
+      . interpretPromptStorageFS
+      . runConfig (StreamingEnabled True)
+      . fixerRunner
+      . reinterpretRole @FixerRole @fixerChosen
+      . raiseUnder @(LLM fixerChosen)
+      . proseRunner
+      . reinterpretRole @ProseRole @proseChosen
+      . raiseUnder @(LLM proseChosen)
+      $ action
 
 -- | No WS connection to push a streaming preview to (CLI/session-only use);
 --   drop chunks instead, same as 'wsAction' consuming them into pushes.

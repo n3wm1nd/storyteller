@@ -45,11 +45,11 @@ import Storyteller.Core.Types (TickId(..))
 --   Generic over @proseModel@ (the new continuation) and @fixerModel@ (the
 --   in-flight revision) independently -- this function is the one place in
 --   production where both roles genuinely run side by side in a single
---   call, so it's a real example of why they're separate type variables
---   rather than one shared model. Every production call site instantiates
---   both at 'Storyteller.Core.Runtime.StoryModel' today (see
---   'Server.Writer.File.chatWriter') -- a choice made at the call site,
---   not baked in here.
+--   call, which is exactly why 'Storyteller.Core.LLM.Role' needs two
+--   distinct role proxy types rather than one shared model. The production
+--   call site (see 'Server.Writer.File.chatWriter') instantiates them at
+--   'Storyteller.Core.LLM.Role.ProseModel'\/'Storyteller.Core.LLM.Role.FixerModel'
+--   -- a choice made at the call site, not baked in here.
 flowWriteAgent
   :: forall proseModel fixerModel branch r
   .  ( SupportsSystemPrompt (ProviderOf proseModel)

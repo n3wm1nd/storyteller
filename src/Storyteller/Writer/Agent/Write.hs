@@ -31,11 +31,11 @@ import Storyteller.Core.Prompt (PromptStorage)
 --   prose-generation role (and its configs) explicitly, the same way
 --   'Storyteller.Writer.Agent.Continuation.proseAgent' itself already does;
 --   this is a thin wrapper adding character-context formatting on top, not
---   a place that should itself commit to one model. Every production call
---   site instantiates @proseModel@ at
---   'Storyteller.Core.Runtime.StoryModel' today (see
---   'Server.Writer.File.chatWriter' and @app/Write.hs@) -- that's a choice
---   made at each call site, not baked in here.
+--   a place that should itself commit to one model. The server call site
+--   instantiates @proseModel@ at 'Storyteller.Core.LLM.Role.ProseModel'
+--   (see 'Server.Writer.File.chatWriter'); @app/Write.hs@'s CLI path still
+--   uses 'Storyteller.Core.Runtime.StoryModel' -- that's a choice made at
+--   each call site, not baked in here.
 --
 --   @charBlocks@ is @(label, resolved summary blocks)@ per active character
 --   branch — already read, not a deferred action: the caller has already

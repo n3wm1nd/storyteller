@@ -21,14 +21,21 @@ import Runix.LLM (LLM)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
-import Storyteller.Core.Runtime (StoryModel)
+import Storyteller.Core.LLM.Role (ProseModel, FixerModel)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Undo (Undo)
 
 -- | Effects available at the session level (no branch open). Deliberately
 --   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
---   network through the 'LLM' effect, never directly.
+--   network through an 'LLM' effect, never directly.
+--
+--   Two closed, concrete 'LLM' members (not one, and not a type variable) —
+--   one per role. See 'Storyteller.Core.LLM.Role': each role's model is
+--   chosen independently at server startup, but that choice never surfaces
+--   here or in any handler/dispatch module that merely threads 'r' through —
+--   only the leaf call sites that actually invoke an agent
+--   (e.g. 'Server.Writer.File') need to know which role they're using.
 type SessionEffects r =
   Members '[ Random
            , Sleep
@@ -39,6 +46,7 @@ type SessionEffects r =
            , Logging
            , Error String
            , StoryStorage
-           , LLM StoryModel
+           , LLM ProseModel
+           , LLM FixerModel
            , PromptStorage
            ] r

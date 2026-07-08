@@ -19,6 +19,7 @@ import System.IO (hPutStrLn, stderr)
 
 import Server.Writer.GitWorker (GitWorkerQueue, startGitWorker)
 import Server.Writer.Notification (BranchNotification)
+import Storyteller.Core.LLM.Registry (SomeLLMRunner, resolveKnownModel, resolveRoleRunner)
 
 -- | Mutable shared state across requests. Starts empty; extended as needed.
 data AppState = AppState
@@ -36,6 +37,8 @@ data ServerEnv = ServerEnv
   , appState       :: TVar AppState
   , envNotifyChan  :: TChan BranchNotification    -- ^ broadcast channel; connections dupTChan to subscribe
   , envGitWorker   :: GitWorkerQueue              -- ^ the process's one git-storage worker; see PLAN-git-storage-worker.md
+  , envProseRunner :: SomeLLMRunner                -- ^ ROLE_PROSE_MODEL, resolved once at startup — see Storyteller.Core.LLM.Role
+  , envFixerRunner :: SomeLLMRunner                -- ^ ROLE_FIXER_MODEL, resolved once at startup
   }
 
 loadServerEnv :: IO ServerEnv
@@ -47,6 +50,10 @@ loadServerEnv = do
   state     <- newTVarIO emptyAppState
   notify    <- newBroadcastTChanIO
   worker    <- startGitWorker repo notify
+  proseKnown  <- resolveKnownModel "ROLE_PROSE_MODEL" "qwen35-40b"
+  fixerKnown  <- resolveKnownModel "ROLE_FIXER_MODEL" "qwen35-40b"
+  proseRunner <- resolveRoleRunner proseKnown
+  fixerRunner <- resolveRoleRunner fixerKnown
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint
@@ -55,6 +62,8 @@ loadServerEnv = do
     , appState       = state
     , envNotifyChan  = notify
     , envGitWorker   = worker
+    , envProseRunner = proseRunner
+    , envFixerRunner = fixerRunner
     }
 
 requireEnv :: String -> IO String

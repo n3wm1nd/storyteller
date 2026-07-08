@@ -108,9 +108,9 @@ proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newTe
 --   plays the prose-generation role (see
 --   'Storyteller.Writer.Agent.Write.writeAgent'); a caller like
 --   'Storyteller.Writer.Agent.FlowWrite.flowWriteAgent' can genuinely use
---   different models for the two. Every production call site instantiates
---   @fixerModel@ at 'Storyteller.Core.Runtime.StoryModel' today -- a
---   choice made at the call site, not baked in here.
+--   different models for the two. The server call site instantiates
+--   @fixerModel@ at 'Storyteller.Core.LLM.Role.FixerModel' -- a choice made
+--   at the call site, not baked in here.
 reworkAtom
   :: forall fixerModel r
   .  ( HasTools fixerModel

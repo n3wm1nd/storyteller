@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Common ENV-variable configuration for all CLI tools.
@@ -20,8 +21,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.IO (hPutStrLn, stderr)
 
-import UniversalLLM (ModelConfig(..))
-import Storyteller.Core.Runtime (StoryModel)
+import UniversalLLM (ModelConfig(..), ProviderOf, SupportsMaxTokens, SupportsTemperature)
 
 data StoryEnv = StoryEnv
   { envRepo        :: FilePath  -- ^ STORY_REPO: path to git repository
@@ -56,8 +56,10 @@ requireEnv var = do
 
 -- | Sampling defaults shared by every agent. System prompts are agent-owned
 --   (see 'Storyteller.Core.Prompt') and layered on top of this by each
---   agent, rather than baked in here.
-modelConfigs :: [ModelConfig StoryModel]
+--   agent, rather than baked in here. Polymorphic in @model@ (rather than
+--   pinned to one type) so the same defaults work for every role's proxy
+--   model -- see 'Storyteller.Core.LLM.Role'.
+modelConfigs :: (SupportsMaxTokens (ProviderOf model), SupportsTemperature (ProviderOf model)) => [ModelConfig model]
 modelConfigs =
   [ MaxTokens 2048
   , Temperature 0.8

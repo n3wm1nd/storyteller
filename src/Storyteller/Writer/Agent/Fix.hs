@@ -36,8 +36,8 @@ import Storage.Tick (FileTick(..), fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 -- | Generic over @fixerModel@ -- see 'Storyteller.Writer.Agent.ReplaceTool.reworkAtom'.
---   Every production call site instantiates it at
---   'Storyteller.Core.Runtime.StoryModel' (see 'Server.Writer.File.chatFixer').
+--   The server call site instantiates it at
+--   'Storyteller.Core.LLM.Role.FixerModel' (see 'Server.Writer.File.chatFixer').
 fixAgent
   :: forall fixerModel branch r
   .  ( HasTools fixerModel
