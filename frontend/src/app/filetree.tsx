@@ -14,10 +14,15 @@ export interface TreeNode {
   // sourced from — this flat file listing has no per-file metadata of its
   // own). Never open the prose/atom viewer for one of these.
   isBinary: boolean;
+  // Whether a context-source filter currently includes this file (see
+  // context-source.tsx) — always true for callers that don't pass
+  // 'includedPaths' (the ordinary Explorer/Library trees), which have no
+  // such concept and just ignore it.
+  included: boolean;
   children: TreeNode[];
 }
 
-export function buildTree(paths: string[], binaryPaths: Set<string> = new Set()): TreeNode[] {
+export function buildTree(paths: string[], binaryPaths: Set<string> = new Set(), includedPaths?: Set<string>): TreeNode[] {
   const root: TreeNode[] = [];
   for (const path of [...paths].sort()) {
     const parts = path.split("/");
@@ -29,7 +34,12 @@ export function buildTree(paths: string[], binaryPaths: Set<string> = new Set())
       const displayName = decodeURIComponent(parts[i]);
       let node = nodes.find((n) => n.name === displayName);
       if (!node) {
-        node = { name: displayName, path: builtPath, isDir: !isLast, isBinary: isLast && binaryPaths.has(builtPath), children: [] };
+        node = {
+          name: displayName, path: builtPath, isDir: !isLast,
+          isBinary: isLast && binaryPaths.has(builtPath),
+          included: !includedPaths || !isLast || includedPaths.has(builtPath),
+          children: [],
+        };
         nodes.push(node);
       }
       nodes = node.children;

@@ -41,6 +41,12 @@ export interface AgentDef {
   id: string;
   label: string;
   description: string;
+  // Optional grouping label for the Agents tab's left-hand list (see
+  // agentstab.tsx) — undefined agents render ungrouped, ahead of any
+  // category. Not assigned on today's 5 agents; exists so the list degrades
+  // to categories once there are enough agents that a flat list stops being
+  // scannable, without a separate registry shape for that day.
+  category?: string;
   // Dotted Prompt.hs lookup keys this agent reads (see Storyteller.Core.Prompt)
   // — each doubles as a path on the "prompts" branch (dots -> slashes, ".md"
   // suffix). Empty for agents that never touch an LLM (append/note).
@@ -99,4 +105,14 @@ export const AGENTS: AgentDef[] = [
 
 export function promptKeyToPath(key: string): string {
   return key.split(".").join("/") + ".md";
+}
+
+// What a context source's mode actually means for the model, in plain
+// language — shown under the source's label in the Agents tab (see
+// agentstab.tsx) so "ambient"/"on-demand" reads as a consequence, not just
+// a badge to decode.
+export function contextModeDescription(mode: ContextSourceDef["mode"]): string {
+  return mode === "ambient"
+    ? "Every included file below is gathered up front and sent to the model in full, alongside every request this agent makes."
+    : "The model can browse and read included files from this branch itself, as tool calls, if it judges them relevant — nothing here is sent unless it asks.";
 }

@@ -72,10 +72,18 @@ data ContextSlot = ContextSlot
 --   same as what an agent would actually be handed; 'OnDemand' slots show
 --   only a blurb, since the real thing an on-demand slot hands over is a
 --   tool the model may or may not call, not injected text.
+--
+--   'ceIncluded' is False for a file the include patterns matched but the
+--   exclude patterns then dropped (or, inverted, everything the include-only
+--   list didn't pick) — kept in the list rather than removed so a client can
+--   show it shaded-out in place instead of just disappearing, per the design
+--   discussion on the Agents tab's context preview. Excluded entries never
+--   load content/blurb: nothing reads a file that won't be sent anyway.
 data ContextEntry = ContextEntry
-  { cePath    :: FilePath
-  , ceContent :: Maybe T.Text
-  , ceBlurb   :: Maybe T.Text
+  { cePath      :: FilePath
+  , ceContent   :: Maybe T.Text
+  , ceBlurb     :: Maybe T.Text
+  , ceIncluded  :: Bool
   } deriving (Show, Eq)
 
 data ContextSlotPreview = ContextSlotPreview
@@ -84,36 +92,46 @@ data ContextSlotPreview = ContextSlotPreview
   , cspEntries :: [ContextEntry]
   } deriving (Show, Eq)
 
--- | Resolve one slot: glob each include pattern (defaulting to "everything"
---   when none given), union the matches, drop anything an exclude pattern
---   catches, then load each survivor as full content or a blurb depending
---   on the slot's mode. Same 'FileSystem'/'FileSystemRead' pair
---   'Storyteller.Writer.Agent.Continuation.gatherFileContext' already
---   requires — this is a third consumer of that same read surface, not a
---   new capability.
+-- | Resolve one slot: always list every file the slot could possibly see
+--   ("**/*"), then mark each one included or not per the filter, rather
+--   than using 'pfInclude'\/'pfExclude' to narrow which paths are listed at
+--   all. That keeps the same full listing (and thus the same shaded-not-
+--   missing behaviour, see 'ContextEntry's 'ceIncluded') whichever way the
+--   filter is pointed: a non-empty 'pfInclude' means "only these survive"
+--   (everything else still appears, just excluded), a non-empty
+--   'pfExclude' means "only these are dropped" — the two are never both
+--   populated at once (one client-side filter just flips which list it
+--   fills, see context-source.tsx's 'send'). Only survivors get their
+--   content/blurb loaded, per the slot's mode. Same 'FileSystem'/
+--   'FileSystemRead' pair 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
+--   already requires — this is a third consumer of that same read surface,
+--   not a new capability.
 buildSlotPreview
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
   => ContextSlot
   -> Sem r ContextSlotPreview
 buildSlotPreview (ContextSlot label mode (PathFilter includes excludes)) = do
-  let patterns = if null includes then ["**/*"] else includes
-  matched <- concat <$> mapM (glob @project "/" . T.unpack) patterns
-  let excludeGlobs = map (Glob.compile . T.unpack) excludes
-      survivors     = List.nub $
-        filter (\p -> not (any (`Glob.match` dropWhile (== '/') p) excludeGlobs)) matched
-  entries <- mapM (loadEntry @project mode) (List.sort survivors)
+  matched <- glob @project "/" "**/*"
+  let includeGlobs = map (Glob.compile . T.unpack) includes
+      excludeGlobs = map (Glob.compile . T.unpack) excludes
+      normalized p = dropWhile (== '/') p
+      isIncluded p
+        | not (null includes) = any (`Glob.match` normalized p) includeGlobs
+        | otherwise            = not (any (`Glob.match` normalized p) excludeGlobs)
+  entries <- mapM (loadEntry @project mode . (\p -> (p, isIncluded p))) (List.nub (List.sort matched))
   return (ContextSlotPreview label mode entries)
 
 loadEntry
   :: forall project r
   .  Members '[FileSystemRead project, Fail] r
-  => ContextMode -> FilePath -> Sem r ContextEntry
-loadEntry mode path = do
+  => ContextMode -> (FilePath, Bool) -> Sem r ContextEntry
+loadEntry _ (path, False) = return (ContextEntry path Nothing Nothing False)
+loadEntry mode (path, True) = do
   text <- TE.decodeUtf8 <$> readFile @project path
   return $ case mode of
-    Ambient  -> ContextEntry path (Just text) Nothing
-    OnDemand -> ContextEntry path Nothing (Just (blurb text))
+    Ambient  -> ContextEntry path (Just text) Nothing True
+    OnDemand -> ContextEntry path Nothing (Just (blurb text)) True
 
 -- | First non-blank line, trimmed to a short teaser — enough to recognise a
 --   file by without loading its full content, since 'OnDemand' entries are

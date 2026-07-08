@@ -9,8 +9,24 @@
 // file listing — not a general slot/label mechanism (see prior design
 // discussion: there's no backend concept of an arbitrarily-named,
 // glob-populated "slot"). "Invert" swaps the same pattern list between
-// exclude (hide these) and include-only (show only these), so one textarea
-// covers both cases without separate include/exclude fields.
+// exclude (hide these) and include-only (show only these). Patterns are
+// entered one at a time (Enter commits the current input as a removable tag,
+// Backspace on an empty input pops the last one) and still persist as the
+// same newline-joined string via lib/settingsStore.ts — only the input
+// widget is tokenized, not the underlying representation.
+//
+// Layout is a single column, not the old side-by-side split: the pattern bar
+// only takes the height its content needs (wraps, never scrolls). The tree
+// below is content-sized too (capped, with its own internal scrollbar past
+// that) rather than flex-stretched to fill the detail pane — any leftover
+// space belongs below the Prompts section on the page, not inside this box.
+//
+// Excluded files are never removed from the tree — 'ContextEntry.included'
+// (see ws.ts, sourced from 'Storyteller.Writer.Agent.ContextPreview') marks
+// them instead, so they render shaded in place. Clicking a file toggles the
+// exact-path pattern; clicking a folder (its icon/name, not the expand
+// chevron) toggles a "folder/**/*" pattern — both just call the same
+// addPattern/removeTag pair the typed input uses.
 //
 // The filter itself persists client-side via lib/settingsStore.ts (nothing
 // server-side stores it yet). The live preview it drives does not: that's a
@@ -20,8 +36,8 @@
 // lib/serverCacheStore.ts's "one connection per component" convention, just
 // without a global store slice to mirror into.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw, X } from "lucide-react";
 import { contextViewConn } from "@/lib/ws";
 import type { ContextSlotPreview, ContextMode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
@@ -38,7 +54,12 @@ function countFiles(node: TreeNode): number {
   return node.isDir ? node.children.reduce((n, c) => n + countFiles(c), 0) : 1;
 }
 
-function PreviewTreeNode({ node, depth }: { node: TreeNode; depth: number }) {
+function PreviewTreeNode({ node, depth, onToggleFile, onToggleFolder }: {
+  node: TreeNode;
+  depth: number;
+  onToggleFile: (path: string) => void;
+  onToggleFolder: (path: string) => void;
+}) {
   const [open, setOpen] = useState(true);
   const pad = 8 + depth * 14;
   if (isHidden(node.name)) return null;
@@ -46,32 +67,54 @@ function PreviewTreeNode({ node, depth }: { node: TreeNode; depth: number }) {
   if (node.isDir) {
     return (
       <div>
-        <button
-          onClick={() => setOpen((v) => !v)}
-          style={{
-            display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
-            padding: `2px 8px 2px ${pad}px`, border: "none", background: "transparent",
-            cursor: "pointer", borderRadius: 5, color: "var(--text-muted)", fontSize: 11,
-          }}
-        >
-          <ChevronRight style={{ width: 10, height: 10, flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
-          {open ? <FolderOpen style={{ width: 11, height: 11, flexShrink: 0 }} /> : <Folder style={{ width: 11, height: 11, flexShrink: 0 }} />}
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
-          <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-ghost)" }}>{countFiles(node)}</span>
-        </button>
-        {open && node.children.map((child) => <PreviewTreeNode key={child.path} node={child} depth={depth + 1} />)}
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            title={open ? "Collapse" : "Expand"}
+            style={{
+              display: "flex", alignItems: "center", flexShrink: 0,
+              padding: `2px 2px 2px ${pad}px`, border: "none", background: "transparent",
+              cursor: "pointer", color: "var(--text-dim)",
+            }}
+          >
+            <ChevronRight style={{ width: 10, height: 10, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+          </button>
+          <button
+            onClick={() => onToggleFolder(node.path)}
+            title={`Toggle ${node.path}/**/* in the pattern list`}
+            style={{
+              display: "flex", alignItems: "center", gap: 5, flex: 1, minWidth: 0, textAlign: "left",
+              padding: "2px 8px 2px 2px", border: "none", background: "transparent",
+              cursor: "pointer", borderRadius: 5, color: "var(--text-muted)", fontSize: 11,
+            }}
+          >
+            {open ? <FolderOpen style={{ width: 11, height: 11, flexShrink: 0 }} /> : <Folder style={{ width: 11, height: 11, flexShrink: 0 }} />}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+            <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-ghost)" }}>{countFiles(node)}</span>
+          </button>
+        </div>
+        {open && node.children.map((child) => (
+          <PreviewTreeNode key={child.path} node={child} depth={depth + 1} onToggleFile={onToggleFile} onToggleFolder={onToggleFolder} />
+        ))}
       </div>
     );
   }
 
   return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 5, padding: `2px 8px 2px ${pad}px`,
-      color: "var(--text-secondary)", fontSize: 11,
-    }}>
+    <button
+      onClick={() => onToggleFile(node.path)}
+      title={`Toggle ${node.path} in the pattern list`}
+      style={{
+        display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
+        padding: `2px 8px 2px ${pad}px`, border: "none", background: "transparent", cursor: "pointer",
+        color: node.included ? "var(--text-secondary)" : "var(--text-faint)",
+        opacity: node.included ? 1 : 0.55,
+        textDecoration: node.included ? "none" : "line-through",
+      }}
+    >
       <FileText style={{ width: 10, height: 10, flexShrink: 0, opacity: 0.6 }} />
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
-    </div>
+    </button>
   );
 }
 
@@ -87,16 +130,9 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
   const setContextFilter = useSettings((s) => s.setContextFilter);
   const [preview, setPreview] = useState<ContextSlotPreview | null>(null);
   const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [draft, setDraft] = useState("");
 
-  // Grows with content instead of being user-resizable — a resize handle on
-  // a narrow sidebar column just invites dragging it into the tree below.
-  useLayoutEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [patterns]);
+  const tags = patterns.split("\n").map((s) => s.trim()).filter(Boolean);
 
   function send(conn: ReturnType<typeof contextViewConn>, pat: string, inv: boolean) {
     const list = pat.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -155,42 +191,102 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
     if (connRef.current) send(connRef.current, patterns, next);
   }
 
-  const tree = preview ? buildTree(preview.entries.map((e) => e.path)) : [];
+  function addPattern(val: string) {
+    if (!val || tags.includes(val)) return;
+    commitPatterns([...tags, val].join("\n"));
+  }
+
+  function removeTag(tag: string) {
+    commitPatterns(tags.filter((t) => t !== tag).join("\n"));
+  }
+
+  function togglePattern(val: string) {
+    if (tags.includes(val)) removeTag(val); else addPattern(val);
+  }
+
+  function addDraft() {
+    const val = draft.trim();
+    setDraft("");
+    addPattern(val);
+  }
+
+  function onDraftKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addDraft();
+    } else if (e.key === "Backspace" && draft === "" && tags.length > 0) {
+      removeTag(tags[tags.length - 1]);
+    }
+  }
+
+  const includedPaths = new Set(preview?.entries.filter((e) => e.included).map((e) => e.path) ?? []);
+  const tree = preview ? buildTree(preview.entries.map((e) => e.path), undefined, includedPaths) : [];
 
   return (
-    <div style={{ height: "100%", display: "flex", overflow: "hidden" }}>
-      <div style={{ width: 260, minWidth: 260, height: "100%", display: "flex", flexDirection: "column", borderRight: "1px solid var(--border-subtle)", overflow: "auto" }}>
-        <textarea
-          ref={textareaRef}
-          value={patterns}
-          onChange={(e) => commitPatterns(e.target.value)}
-          placeholder={invert ? "one glob per line — only these are shown" : "one glob per line — these are hidden"}
-          rows={3}
-          style={{
-            margin: 8, fontSize: 11, padding: "5px 7px", background: "var(--card)",
-            border: "1px solid var(--border-subtle)", borderRadius: 5,
-            color: "var(--foreground)", outline: "none", resize: "none", overflow: "hidden", fontFamily: "monospace",
-          }}
-        />
-        <label style={{ display: "flex", alignItems: "center", gap: 5, margin: "0 8px 8px", fontSize: 10.5, color: "var(--text-muted)", cursor: "pointer" }}>
-          <input type="checkbox" checked={invert} onChange={(e) => commitInvert(e.target.checked)} />
-          Invert (include only these, hide everything else)
-        </label>
-        <div style={{ margin: "0 8px 8px", fontSize: 9.5, color: "var(--text-ghost)", lineHeight: 1.4 }}>
-          <code>**</code> alone matches directories, not files — use <code>**/*</code> to reach files at any depth (e.g. <code>characters/**/*</code>).
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <div style={{ flexShrink: 0, padding: 8, display: "flex", flexDirection: "column", gap: 6, borderBottom: "1px solid var(--border-subtle)" }}>
+        <div style={{
+          display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4,
+          padding: "3px 5px", background: "var(--card)",
+          border: "1px solid var(--border-subtle)", borderRadius: 5,
+        }}>
+          {tags.map((tag) => (
+            <span key={tag} style={{
+              display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontFamily: "monospace",
+              padding: "2px 3px 2px 7px", borderRadius: 9, background: "var(--surface)", color: "var(--text-secondary)",
+            }}>
+              {tag}
+              <button
+                onClick={() => removeTag(tag)}
+                title="Remove"
+                style={{ display: "flex", border: "none", background: "none", cursor: "pointer", color: "var(--text-ghost)", padding: 2 }}
+              >
+                <X style={{ width: 9, height: 9 }} />
+              </button>
+            </span>
+          ))}
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onDraftKeyDown}
+            onBlur={addDraft}
+            placeholder={tags.length === 0 ? (invert ? "pattern to show, enter to add" : "pattern to hide, enter to add") : "add another…"}
+            style={{
+              flex: 1, minWidth: 100, border: "none", outline: "none", background: "transparent",
+              fontSize: 11, fontFamily: "monospace", color: "var(--foreground)", padding: "3px 2px",
+            }}
+          />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--text-muted)", cursor: "pointer" }}>
+            <input
+              type="checkbox" checked={invert} onChange={(e) => commitInvert(e.target.checked)}
+              style={{ accentColor: "var(--amber)", colorScheme: "dark" }}
+            />
+            Show only these, hide everything else
+          </label>
+          <span style={{ fontSize: 9.5, color: "var(--text-ghost)" }}>
+            use <code>**/*</code> to reach files at any depth
+          </span>
         </div>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto" }}>
+      <div style={{ maxHeight: 340, overflow: "auto" }}>
         {preview === null ? (
           <div style={{ display: "flex", alignItems: "center", gap: 6, padding: 12, fontSize: 11, color: "var(--text-ghost)" }}>
             <RefreshCw style={{ width: 11, height: 11 }} className="animate-spin" /> resolving…
           </div>
         ) : preview.entries.length === 0 ? (
-          <div style={{ fontSize: 10, color: "var(--text-ghost)", padding: 12 }}>no files match</div>
+          <div style={{ fontSize: 10, color: "var(--text-ghost)", padding: 12 }}>no files in this branch</div>
         ) : (
           <div style={{ padding: "6px 4px" }}>
-            {tree.map((node) => <PreviewTreeNode key={node.path} node={node} depth={0} />)}
+            {tree.map((node) => (
+              <PreviewTreeNode
+                key={node.path} node={node} depth={0}
+                onToggleFile={togglePattern}
+                onToggleFolder={(p) => togglePattern(`${p}/**/*`)}
+              />
+            ))}
           </div>
         )}
       </div>

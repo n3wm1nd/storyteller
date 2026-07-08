@@ -257,8 +257,9 @@ export interface ContextSlot {
 
 export interface ContextEntry {
   path: string;
-  content?: string;   // full text, only present for Ambient entries
-  blurb?: string;      // short teaser, only present for OnDemand entries
+  included: boolean;  // false for a file the current filter drops — still listed, just shaded, not hidden
+  content?: string;   // full text, only present for included Ambient entries
+  blurb?: string;      // short teaser, only present for included OnDemand entries
 }
 
 export interface ContextSlotPreview {

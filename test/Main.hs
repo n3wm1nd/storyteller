@@ -23,6 +23,7 @@ import qualified Storyteller.UndoSpec
 import qualified Storyteller.ChatSpec
 import qualified Storyteller.LibrarySpec
 import qualified Storyteller.ContextFilterSpec
+import qualified Storyteller.ContextPreviewSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.FileSpec
@@ -57,6 +58,7 @@ main = hspec $ do
   describe "Storyteller.Writer.Agent.Chat" Storyteller.ChatSpec.spec
   describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec
   describe "Storyteller.Writer.Agent.ContextFilter" Storyteller.ContextFilterSpec.spec
+  describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
   -- eager, and buffered through 'Storyteller.Core.Git.withStorage' — the

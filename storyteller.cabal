@@ -250,6 +250,7 @@ test-suite storyteller-test
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec
                   , Storyteller.ContextFilterSpec
+                  , Storyteller.ContextPreviewSpec
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.Writer.BranchSpec

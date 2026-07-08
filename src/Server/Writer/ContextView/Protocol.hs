@@ -57,7 +57,7 @@ instance FromJSON ContextSlot where
 
 instance ToJSON ContextEntry where
   toJSON e = object $
-    [ "path" .= cePath e ] <>
+    [ "path" .= cePath e, "included" .= ceIncluded e ] <>
     maybe [] (\c -> ["content" .= c]) (ceContent e) <>
     maybe [] (\b -> ["blurb"   .= b]) (ceBlurb   e)
 
