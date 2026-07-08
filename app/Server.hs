@@ -6,6 +6,12 @@
 --   STORY_REPO          path to the git repository
 --   LLAMACPP_ENDPOINT   (optional, default http://localhost:8080/v1)
 --   PORT                (optional, default 8090)
+--   STATIC_DIR          (optional) a built frontend (frontend/`npm run
+--                        build:static`) to serve alongside the API, for a
+--                        single-process production deployment. Unset in
+--                        dev — the frontend runs as its own `next dev`
+--                        process/container instead (see frontend/README or
+--                        WRITER.md), talking to this server cross-origin.
 --
 -- WebSocket endpoints:
 --   /session          — storage-level session (branch management)
@@ -23,10 +29,12 @@
 --                                 'Server.Writer.Branch.uploadFile') — the
 --                                 only way to upload now; there is no WS
 --                                 command for this anymore
---   /                           — static assets (placeholder)
+--   /                           — the built frontend, if STATIC_DIR is set
+--                                 (see 'staticApp'); otherwise a plain
+--                                 placeholder response, unchanged from before
 module Main (main) where
 
-import Network.Wai (Application, Request(pathInfo, requestMethod), responseLBS, strictRequestBody)
+import Network.Wai (Application, Request(pathInfo, requestMethod), responseLBS, responseFile, strictRequestBody)
 import qualified Network.Wai as Wai
 import Network.Wai.Handler.Warp (runSettings, defaultSettings, setTimeout, setPort)
 import Network.Wai.Handler.WebSockets (websocketsOr)
@@ -36,13 +44,14 @@ import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as LBC
 import Network.HTTP.Types (urlDecode)
-import System.FilePath (takeExtension, takeFileName)
+import System.Directory (doesFileExist)
+import System.FilePath ((</>), takeExtension, takeFileName)
 import System.IO (hPutStrLn, stderr)
 
 import qualified Data.Text as T
 import Server.Core.File (readFileContent)
 import Server.Writer.Branch (uploadFile)
-import Server.Writer.Env (ServerEnv, loadServerEnv, envPort)
+import Server.Writer.Env (ServerEnv, loadServerEnv, envPort, envStaticDir)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
 import Server.Writer.ContextView.Connection (runContextView)
@@ -114,6 +123,10 @@ httpApp env req respond
           Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
           Right () -> respond $ responseLBS status200 (corsHeaders req) ""
 
+      (m, path) | m == methodGet -> case envStaticDir env of
+        Nothing  -> respond $ responseLBS status200 (corsHeaders req) "storyteller"
+        Just dir -> staticApp dir path req respond
+
       _ -> respond $ responseLBS status200 (corsHeaders req) "storyteller"
 
 corsHeaders :: Request -> [Header]
@@ -123,8 +136,51 @@ corsHeaders req =
   , ("Access-Control-Allow-Headers", "Content-Type")
   ]
 
+-- | Serve a built frontend (@STATIC_DIR@, see this module's ENV doc) out of
+--   @dir@. Deliberately hand-rolled rather than pulling in a package like
+--   @wai-app-static@ — the actual requirement is small (serve a file by
+--   extension, SPA-fallback to @index.html@ for anything else) and this
+--   reuses 'mimeType', already present here for the branch-file GET route.
+--
+--   Falls back to @dir\/index.html@ for any path that isn't a real file —
+--   not just @\/@. That covers two cases identically: a genuine 404 (bad
+--   path), and a deep link into the app's own client-side routing (e.g.
+--   @\/master\/somefile.md@, which is never a real file — see
+--   'page.tsx's @history.pushState@ — only ever a client-rendered state).
+--   Serving @index.html@ either way is exactly what @next.config.ts@'s dev-
+--   only @rewrites()@ already does for the same reason; this is that
+--   behavior's production equivalent once the static export drops it.
+staticApp :: FilePath -> [T.Text] -> Application
+staticApp dir path req respond = do
+  -- '/' rejection: a bare ".." segment can't smuggle a traversal past this
+  -- join, since every real segment is checked before any filesystem access.
+  if any (== "..") path
+    then respond $ responseLBS status404 (corsHeaders req) "not found"
+    else do
+      -- Empty 'path' (a bare "/") joins to just 'dir' itself, a directory —
+      -- 'doesFileExist' is False for it, same as any other non-file path,
+      -- so it falls through to the index.html branch below with no special
+      -- case needed here.
+      let filePath = foldl (</>) dir (map T.unpack path)
+      exists <- doesFileExist filePath
+      if exists
+        then respond $ responseFile status200
+               ((hContentType, mimeType filePath) : cacheHeaders path ++ corsHeaders req)
+               filePath Nothing
+        else respond $ responseFile status200
+               ((hContentType, "text/html; charset=utf-8") : corsHeaders req)
+               (dir </> "index.html") Nothing
+
+-- | Next's static export content-hashes everything under @_next/static/@,
+--   so it's safe (and worth it) to cache those aggressively; anything else
+--   — the HTML shell in particular — must always be revalidated, since it's
+--   what changes across a redeploy.
+cacheHeaders :: [T.Text] -> [Header]
+cacheHeaders ("_next" : "static" : _) = [("Cache-Control", "public, max-age=31536000, immutable")]
+cacheHeaders _                        = [("Cache-Control", "no-cache")]
+
 -- | Best-effort content type from extension — good enough for the
---   image/document types this endpoint exists to serve; anything
+--   image/document/frontend-asset types this server ever serves; anything
 --   unrecognized falls back to a generic binary type rather than guessing.
 mimeType :: FilePath -> BC.ByteString
 mimeType path = case takeExtension (takeFileName path) of
@@ -138,4 +194,10 @@ mimeType path = case takeExtension (takeFileName path) of
   ".txt"  -> "text/plain; charset=utf-8"
   ".json" -> "application/json"
   ".md"   -> "text/markdown; charset=utf-8"
+  ".html" -> "text/html; charset=utf-8"
+  ".js"   -> "text/javascript; charset=utf-8"
+  ".css"  -> "text/css; charset=utf-8"
+  ".map"  -> "application/json"
+  ".woff2" -> "font/woff2"
+  ".ico"  -> "image/x-icon"
   _       -> "application/octet-stream"

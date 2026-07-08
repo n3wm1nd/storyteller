@@ -6,6 +6,7 @@ dist/
 *.dyn_hi
 *.dyn_o
 .ghc.environment.*
+frontend/out
 
 # Local machine config, never shared
 cabal.project.local

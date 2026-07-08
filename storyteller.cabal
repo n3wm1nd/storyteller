@@ -221,6 +221,7 @@ executable story-server
                   , wai-websockets
                   , http-types
                   , filepath
+                  , directory
 
 test-suite storyteller-test
   type:             exitcode-stdio-1.0

@@ -32,6 +32,7 @@ data ServerEnv = ServerEnv
   { envRepoPath    :: FilePath                    -- ^ STORY_REPO
   , envLLMEndpoint :: String                      -- ^ LLAMACPP_ENDPOINT
   , envPort        :: Int                         -- ^ PORT (default 8090)
+  , envStaticDir   :: Maybe FilePath              -- ^ STATIC_DIR (optional; see app/Server.hs's httpApp)
   , appState       :: TVar AppState
   , envNotifyChan  :: TChan BranchNotification    -- ^ broadcast channel; connections dupTChan to subscribe
   , envGitWorker   :: GitWorkerQueue              -- ^ the process's one git-storage worker; see PLAN-git-storage-worker.md
@@ -39,16 +40,18 @@ data ServerEnv = ServerEnv
 
 loadServerEnv :: IO ServerEnv
 loadServerEnv = do
-  repo     <- requireEnv "STORY_REPO"
-  endpoint <- maybe "http://localhost:8080/v1" id <$> lookupEnv "LLAMACPP_ENDPOINT"
-  port     <- maybe 8090 read <$> lookupEnv "PORT"
-  state    <- newTVarIO emptyAppState
-  notify   <- newBroadcastTChanIO
-  worker   <- startGitWorker repo notify
+  repo      <- requireEnv "STORY_REPO"
+  endpoint  <- maybe "http://localhost:8080/v1" id <$> lookupEnv "LLAMACPP_ENDPOINT"
+  port      <- maybe 8090 read <$> lookupEnv "PORT"
+  staticDir <- lookupEnv "STATIC_DIR"
+  state     <- newTVarIO emptyAppState
+  notify    <- newBroadcastTChanIO
+  worker    <- startGitWorker repo notify
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint
     , envPort        = port
+    , envStaticDir   = staticDir
     , appState       = state
     , envNotifyChan  = notify
     , envGitWorker   = worker

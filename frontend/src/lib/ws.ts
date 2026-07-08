@@ -14,6 +14,13 @@
 function wsBase() {
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  // Single-process production build (STATIC_DIR, see app/Server.hs): the
+  // page and the API are the same origin, whatever host:port that turned
+  // out to be — set only by `npm run build:static` (next.config.ts's
+  // STATIC_EXPORT), baked in at build time like any other NEXT_PUBLIC_ var.
+  // Dev mode never sets this, so it keeps hitting the hard-coded :8090
+  // below, same as always.
+  if (process.env.NEXT_PUBLIC_WS_SAME_ORIGIN) return `${proto}//${window.location.host}`;
   return `${proto}//${window.location.hostname}:8090`;
 }
 
