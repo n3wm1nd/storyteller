@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -24,9 +25,11 @@ module Agent.Integration.Harness
   ( CacheProject(..)
   , KnownModel(..)
   , LLMRunner(..)
+  , Main
   , ModelID(..)
   , Runner
   , knownModels
+  , mainBranch
   , modelInterpreter
   , resolveFixture
   , resolveKnownModel
@@ -43,7 +46,8 @@ import System.Environment (lookupEnv)
 import Test.Hspec (expectationFailure)
 
 import Paths_storyteller (getDataFileName)
-import Runix.FileSystem (HasProjectPath(..))
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, HasProjectPath(..))
+import Runix.Git (Git)
 import Runix.HTTP (HTTP)
 import Runix.LLM (LLM)
 import Runix.Logging (Logging)
@@ -56,7 +60,11 @@ import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))
 import UniversalLLM.Models.DeepSeek.DeepSeek (DeepSeekV4Flash(..))
 import UniversalLLM.Providers.OpenAI (LlamaCpp(..), OpenRouter(..))
 
+import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.Prompt (PromptStorage)
+import Storyteller.Core.Runtime (Main)
+import Storyteller.Core.Storage (StoryStorage)
+import Storyteller.Core.Types (BranchName(..))
 
 -- | Chroot marker for the shared on-disk response cache. A plain
 --   'FilePath' isn't reused directly (unlike 'Runix.FileSystem.HasProjectPath's
@@ -164,16 +172,37 @@ withKnownModel (KnownModel modelID model configs) k = do
 resolveFixture :: FilePath -> IO FilePath
 resolveFixture = getDataFileName
 
--- | The fully-built interpreter every spec runs its scenarios through:
---   'LLM' @storyModel@ (the agent under test), 'LLM' @judgeModel@, and
---   'PromptStorage', built exactly once by @Main.hs@ (inside a pair of
---   nested 'withKnownModel' calls, which is what pins @storyModel@\/
---   @judgeModel@ to concrete types for the rest of that scope) and passed
---   down -- see this module's Haddock. @action@ stays row-polymorphic via
---   'Members' (the usual Polysemy shape), not pinned to one closed,
---   exactly-ordered effect list -- a spec's @do@ block is free to call
---   into whatever combination of 'writeAgent'\/'reworkAtom'\/'judge' it
---   needs without caring what order this module happens to list the
+-- | The one content branch every scenario gets for free, already created
+--   before its action runs (see @Main.hs@) -- most agents work against a
+--   single branch, so that's the default a scenario starts with. Nothing
+--   stops a scenario from opening more branches itself the same way (via
+--   'Storyteller.Core.Storage.createBranch' then
+--   'Storyteller.Core.Git.runBranchAndFS' @\@SomeOtherTag@) -- 'Git' and
+--   'StoryStorage' are already in 'Runner''s row for exactly that.
+mainBranch :: BranchName
+mainBranch = BranchName "main"
+
+-- | Every effect a scenario runs in: both models, prompt overrides,
+--   logging, and (see 'mainBranch') git-backed storage -- 'Git'\/
+--   'StoryStorage' directly, plus 'mainBranch''s own already-open
+--   'BranchOp'\/'FileSystem' trio. Shared between 'Runner' and 'runExpect'
+--   so the two can't drift apart.
+type ScenarioEffects storyModel judgeModel =
+  '[ LLM storyModel, LLM judgeModel, PromptStorage, Logging
+   , Git, StoryStorage, BranchOp Main
+   , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
+   , Fail, Embed IO
+   ]
+
+-- | The fully-built interpreter every spec runs its scenarios through --
+--   built exactly once by @Main.hs@ (inside a pair of nested
+--   'withKnownModel' calls, which is what pins @storyModel@\/@judgeModel@
+--   to concrete types for the rest of that scope) and passed down -- see
+--   this module's Haddock. @action@ stays row-polymorphic via 'Members'
+--   (the usual Polysemy shape), not pinned to one closed, exactly-ordered
+--   effect list -- a spec's @do@ block is free to call into whatever
+--   combination of 'writeAgent'\/'reworkAtom'\/'judge'\/branch operations
+--   it needs without caring what order this module happens to list the
 --   required effects in.
 --
 --   The @forall r.@ is deliberately scoped *inside* the parens, over just
@@ -183,7 +212,7 @@ resolveFixture = getDataFileName
 --   (ambiguous -- GHC has nothing to pin it to), since nothing in
 --   @IO (Either String a)@ mentions @r@ at all.
 type Runner storyModel judgeModel
-  = forall a. (forall r. Members '[LLM storyModel, LLM judgeModel, PromptStorage, Logging, Fail, Embed IO] r => Sem r a) -> IO (Either String a)
+  = forall a. (forall r. Members (ScenarioEffects storyModel judgeModel) r => Sem r a) -> IO (Either String a)
 
 -- | Run a scenario and turn a 'Fail' into an hspec failure -- the
 --   @result <- runner (...); case result of Left err -> expectationFailure
@@ -194,7 +223,7 @@ type Runner storyModel judgeModel
 runExpect
   :: forall storyModel judgeModel
   .  Runner storyModel judgeModel
-  -> (forall r. Members '[LLM storyModel, LLM judgeModel, PromptStorage, Logging, Fail, Embed IO] r => Sem r ())
+  -> (forall r. Members (ScenarioEffects storyModel judgeModel) r => Sem r ())
   -> IO ()
 runExpect runner action = runner action >>= either expectationFailure pure
 

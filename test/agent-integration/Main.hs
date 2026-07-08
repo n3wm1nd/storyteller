@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -8,6 +9,7 @@ module Main where
 
 import Polysemy
 import Polysemy.Fail (runFail)
+import Polysemy.State (evalState)
 import Runix.FileSystem (fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 import Runix.HTTP (httpIO)
@@ -17,11 +19,14 @@ import Runix.Runner (withRequestTimeout)
 import Runix.Time (timeIO, sleepIO)
 import Test.Hspec
 
+import Git.Mock (emptyGitState, runGitMock)
+import Storyteller.Core.Git (runBranchAndFS, runStoryStorageGit)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
+import Storyteller.Core.Storage (createBranch)
 
 import Agent.Integration.Harness
-  ( CacheProject(..), LLMRunner(..)
-  , resolveFixture, resolveKnownModel, withKnownModel
+  ( CacheProject(..), LLMRunner(..), Main
+  , mainBranch, resolveFixture, resolveKnownModel, withKnownModel
   )
 import qualified Agent.Integration.CharContextWriteSpec
 import qualified Agent.Integration.ReworkAtomSpec
@@ -34,6 +39,14 @@ import qualified Agent.Integration.ReworkAtomSpec
 --   calls are what pin @storyModel@\/@judgeModel@ to concrete types for
 --   the rest of this scope, including the 'hspec' call below -- every
 --   spec runs against whichever models were actually resolved this run.
+--
+--   Git storage is an in-memory 'Git.Mock' per scenario -- this suite
+--   evaluates whether agents get the LLM to do the right thing, not
+--   whether git plumbing works (that's what @storyteller-test@'s own
+--   suite, against real interpreters, is for); a fresh 'emptyGitState' is
+--   seeded on every 'runner' call, so scenarios stay hermetic from each
+--   other. 'Agent.Integration.Harness.mainBranch' is created up front so a
+--   scenario can start working against it immediately.
 main :: IO ()
 main = do
   storyKnown <- resolveKnownModel "STORY_MODEL" "qwen35-40b"
@@ -42,7 +55,7 @@ main = do
 
   withKnownModel storyKnown $ \runStory ->
     withKnownModel judgeKnown $ \runJudge -> do
-      let runner =
+      let runner action =
             runM
             . runFail
             . loggingIO
@@ -60,6 +73,12 @@ main = do
             . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStory)
             . runLLMRunner runJudge
             . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runJudge)
+            . evalState emptyGitState
+            . runGitMock
+            . runStoryStorageGit
+            $ do
+                _ <- createBranch mainBranch
+                runBranchAndFS @Main mainBranch action
 
       hspec $ do
         describe "Agent.Integration.CharContextWriteSpec" (Agent.Integration.CharContextWriteSpec.spec runner)
