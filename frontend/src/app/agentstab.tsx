@@ -171,7 +171,11 @@ function PromptEditor({ path }: { path: string }) {
   );
 }
 
-function PromptOverrides({ promptKeys, files }: { promptKeys: string[]; files: string[] | null }) {
+function PromptOverrides({ promptKeys, files, onJumpToPrompt }: {
+  promptKeys: string[];
+  files: string[] | null;
+  onJumpToPrompt: (path: string) => void;
+}) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   if (promptKeys.length === 0) {
@@ -189,35 +193,46 @@ function PromptOverrides({ promptKeys, files }: { promptKeys: string[]; files: s
   return (
     <div style={{ padding: "0 14px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
       {promptKeys.map((key) => {
-        const active = files?.includes(promptKeyToPath(key)) ?? false;
+        const path = promptKeyToPath(key);
+        const active = files?.includes(path) ?? false;
         const open = active && expanded.has(key);
         return (
           <div key={key} style={{ borderRadius: 5, background: "var(--surface)", overflow: "hidden" }}>
-            <button
-              onClick={() => active && toggle(key)}
-              disabled={!active}
-              style={{
-                display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, width: "100%",
-                padding: "5px 8px", border: "none", background: "none", textAlign: "left",
-                cursor: active ? "pointer" : "default",
-              }}
-            >
-              {active ? (
-                <ChevronRight style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
-              ) : (
-                <FileText style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0 }} />
+            <div style={{ display: "flex", alignItems: "center" }}>
+              {active && (
+                <button
+                  onClick={() => toggle(key)}
+                  title={open ? "Collapse" : "Expand to view/edit"}
+                  style={{
+                    display: "flex", alignItems: "center", flexShrink: 0,
+                    padding: "5px 0 5px 8px", border: "none", background: "none", cursor: "pointer", color: "var(--text-dim)",
+                  }}
+                >
+                  <ChevronRight style={{ width: 10, height: 10, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+                </button>
               )}
-              <span style={{ fontFamily: "monospace", color: "var(--text-secondary)" }}>{key}</span>
-              <span style={{
-                marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8,
-                background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
-                color: active ? "var(--amber)" : "var(--text-ghost)",
-                border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
-              }}>
-                {active ? "override" : "default"}
-              </span>
-            </button>
-            {open && <PromptEditor path={promptKeyToPath(key)} />}
+              <button
+                onClick={() => onJumpToPrompt(path)}
+                title={`Open ${path} in the file view`}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, flex: 1, minWidth: 0,
+                  padding: active ? "5px 8px 5px 4px" : "5px 8px", border: "none", background: "none", textAlign: "left",
+                  cursor: "pointer",
+                }}
+              >
+                {!active && <FileText style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0 }} />}
+                <span style={{ fontFamily: "monospace", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{key}</span>
+                <span style={{
+                  marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8, flexShrink: 0,
+                  background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
+                  color: active ? "var(--amber)" : "var(--text-ghost)",
+                  border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
+                }}>
+                  {active ? "override" : "default"}
+                </span>
+              </button>
+            </div>
+            {open && <PromptEditor path={path} />}
           </div>
         );
       })}
@@ -239,7 +254,11 @@ function groupByCategory(agents: AgentDef[]): { category: string | null; agents:
   return groups;
 }
 
-export function AgentsTab({ activeBranch, path }: { activeBranch: string | null; path: string }) {
+export function AgentsTab({ activeBranch, path, onJumpToPrompt }: {
+  activeBranch: string | null;
+  path: string;
+  onJumpToPrompt: (path: string) => void;
+}) {
   const applicable = AGENTS.filter((a) => a.appliesTo(path));
   const [selectedId, setSelectedId] = useState<string | null>(applicable[0]?.id ?? null);
   const promptFiles = usePromptFiles();
@@ -324,7 +343,7 @@ export function AgentsTab({ activeBranch, path }: { activeBranch: string | null;
         ))}
 
         <SectionLabel icon={FileText}>Prompts</SectionLabel>
-        <PromptOverrides promptKeys={selected.promptKeys} files={promptFiles} />
+        <PromptOverrides promptKeys={selected.promptKeys} files={promptFiles} onJumpToPrompt={onJumpToPrompt} />
       </div>
     </div>
   );

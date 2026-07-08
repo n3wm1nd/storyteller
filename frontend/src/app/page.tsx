@@ -296,6 +296,30 @@ export default function Home() {
     pushPath(name, null);
   }
 
+  // Agents tab -> "open this prompt override in the main file view" (see
+  // agentstab.tsx's PromptOverrides). Branch switch is async — only
+  // openFile/pushPath once selectBranch's new connection is up, same
+  // sequencing the initial-load effect above uses. Skips the branch-switch
+  // round trip entirely when already on "prompts" (e.g. editing one
+  // override's file, then jumping to a different one).
+  function handleJumpToPrompt(path: string) {
+    handleCloseFile();
+    setSidebarTab("explorer");
+    if (activeBranch === "prompts") {
+      setSelectedFile(path);
+      openFile(path);
+      setCenterTab("file");
+      pushPath("prompts", path);
+    } else {
+      selectBranch("prompts").then(() => {
+        setSelectedFile(path);
+        openFile(path);
+        setCenterTab("file");
+        pushPath("prompts", path);
+      });
+    }
+  }
+
   // Selection (contextAtoms) is shared across the main scene and every open
   // journal (see character-sidebar.tsx) — deleting/fixing "the selection"
   // therefore has to sweep every chain that might contain a selected id, not
@@ -551,7 +575,7 @@ export default function Home() {
           )}
 
           {centerTab === "agents" && selectedFile && (
-            <AgentsTab activeBranch={activeBranch} path={selectedFile} />
+            <AgentsTab activeBranch={activeBranch} path={selectedFile} onJumpToPrompt={handleJumpToPrompt} />
           )}
         </div>
 
