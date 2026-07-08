@@ -35,7 +35,7 @@ import Runix.LLM (LLM, queryLLM)
 import UniversalLLM (Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
 
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
-import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
+import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
 
 import Prelude hiding (readFile)
 
@@ -55,38 +55,10 @@ proseAgent
   -> Instruction
   -> Sem r Prose
 proseAgent configs outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
-  Prompt systemPrompt <- getPrompt "agent.writer.system" defaultWriterSystemPrompt
-  Prompt template     <- getPrompt "agent.writer.template" defaultWriterTemplate
+  Prompt systemPrompt <- getPrompt "agent.writer.system"       defaultWriterSystemPrompt
+  Prompt extraInstructions <- getPrompt "agent.writer.instructions" defaultWriterInstructions
 
-  let contextSection
-        | null contextBlocks = ""
-        | otherwise =
-            "Context files:\n\n"
-            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
-            <> "\n\n"
-
-      charSection
-        | null charContexts = ""
-        | otherwise =
-            "Character information:\n\n"
-            <> T.intercalate "\n\n" [ t | CharContextBlock t <- charContexts ]
-            <> "\n\n"
-
-      existingSection
-        | T.null existing = "The file is currently empty.\n\n"
-        | otherwise       = "File to continue:\n\n" <> existing <> "\n\n"
-
-      lengthHint = case outputHint of
-        Nothing            -> ""
-        Just (WordCount n) -> "Write approximately " <> T.pack (show n) <> " words.\n"
-
-      Prompt userMsg = applyTemplate (Prompt template)
-        [ ("context",     Prompt contextSection)
-        , ("characters",  Prompt charSection)
-        , ("existing",    Prompt existingSection)
-        , ("instruction", Prompt instruction)
-        , ("length_hint", Prompt lengthHint)
-        ]
+  let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
 
   response <- queryLLM @model (SystemPrompt systemPrompt : configs) [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
@@ -97,13 +69,63 @@ defaultWriterSystemPrompt :: Prompt
 defaultWriterSystemPrompt =
   "You are a creative writing assistant. Write only what is asked. Output only prose, nothing else."
 
--- | Fallback for @agent.writer.template@.
---   Slots: {{context}}, {{characters}}, {{existing}}, {{instruction}}, {{length_hint}}.
-defaultWriterTemplate :: Prompt
-defaultWriterTemplate =
-  "{{context}}{{characters}}{{existing}}\
-  \## Instruction\n\n{{instruction}}\n\n{{length_hint}}\
-  \Write only the new text to append. Do not repeat or summarise existing content."
+-- | Fallback for @agent.writer.instructions@: standing instructions appended
+--   to every writer prompt (house style, voice, recurring constraints), on
+--   top of the per-call 'Instruction'. Empty by default — a project opts in
+--   by committing an override to the 'Storyteller.Core.Runtime.Prompts' branch.
+defaultWriterInstructions :: Prompt
+defaultWriterInstructions = ""
+
+-- | Assemble the user-facing prompt from its parts directly, rather than
+--   through a named-placeholder template: the section order and headers are
+--   fixed by this function, so there's no way for a caller to typo a slot
+--   name that silently drops a section. The one piece of free text a
+--   project can still override is @extraInstructions@ (see
+--   'defaultWriterInstructions'), inserted verbatim at a single fixed point.
+writerUserMessage
+  :: [ContextBlock]
+  -> [CharContextBlock]
+  -> T.Text            -- ^ existing file content
+  -> T.Text            -- ^ extra standing instructions (may be empty)
+  -> T.Text            -- ^ per-call instruction
+  -> Maybe WordCount
+  -> T.Text
+writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint =
+  mconcat
+    [ contextSection
+    , charSection
+    , existingSection
+    , extraInstructionsSection
+    , "## Instruction\n\n" <> instruction <> "\n\n"
+    , lengthHint
+    , "Write only the new text to append. Do not repeat or summarise existing content."
+    ]
+  where
+    contextSection
+      | null contextBlocks = ""
+      | otherwise =
+          "Context files:\n\n"
+          <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+          <> "\n\n"
+
+    charSection
+      | null charContexts = ""
+      | otherwise =
+          "Character information:\n\n"
+          <> T.intercalate "\n\n" [ t | CharContextBlock t <- charContexts ]
+          <> "\n\n"
+
+    existingSection
+      | T.null existing = "The file is currently empty.\n\n"
+      | otherwise        = "File to continue:\n\n" <> existing <> "\n\n"
+
+    extraInstructionsSection
+      | T.null extraInstructions = ""
+      | otherwise                = extraInstructions <> "\n\n"
+
+    lengthHint = case outputHint of
+      Nothing            -> ""
+      Just (WordCount n) -> "Write approximately " <> T.pack (show n) <> " words.\n"
 
 -- | Read the target file's existing content and every other branch file,
 --   as plain data — no LLM involved. Requires the target branch's

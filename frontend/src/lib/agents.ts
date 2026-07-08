@@ -65,7 +65,7 @@ export const AGENTS: AgentDef[] = [
     id: "writer",
     label: "Writer",
     description: "Continues prose from the selection or file end.",
-    promptKeys: ["agent.writer.system", "agent.writer.template"],
+    promptKeys: ["agent.writer.system", "agent.writer.instructions"],
     contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
   },
