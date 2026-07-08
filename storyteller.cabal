@@ -306,8 +306,10 @@ test-suite storyteller-agent-integration-test
   main-is:          Main.hs
   other-modules:    Agent.Integration.Harness
                   , Agent.Integration.Judge
+                  , Agent.Integration.Journey
                   , Agent.Integration.CharContextWriteSpec
                   , Agent.Integration.ReworkAtomSpec
+                  , Agent.Integration.JourneySpec
                   , Git.Mock
                   , Paths_storyteller
   autogen-modules:  Paths_storyteller

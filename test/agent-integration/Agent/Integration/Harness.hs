@@ -60,6 +60,7 @@ import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))
 import UniversalLLM.Models.DeepSeek.DeepSeek (DeepSeekV4Flash(..))
 import UniversalLLM.Providers.OpenAI (LlamaCpp(..), OpenRouter(..))
 
+import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
@@ -189,7 +190,7 @@ mainBranch = BranchName "main"
 --   so the two can't drift apart.
 type ScenarioEffects storyModel judgeModel =
   '[ LLM storyModel, LLM judgeModel, PromptStorage, Logging
-   , Git, StoryStorage, BranchOp Main
+   , Git, StoryStorage, BranchOp Main, Splitter
    , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
    , Fail, Embed IO
    ]

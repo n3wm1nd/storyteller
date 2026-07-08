@@ -203,7 +203,7 @@ chatSplitOutline path = do
   outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
   (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) path)
   info $ "outline split starting: " <> T.pack path
-  sheets <- splitOutlineAgent modelConfigs fileCtx outline
+  sheets <- splitOutlineAgent @StoryModel modelConfigs fileCtx outline
   mapM_ writeSheet sheets
   info $ "outline split done: " <> T.pack path <> " (" <> T.pack (show (length sheets)) <> " chapters)"
   where

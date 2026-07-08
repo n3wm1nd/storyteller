@@ -20,6 +20,7 @@ import Runix.Time (timeIO, sleepIO)
 import Test.Hspec
 
 import Git.Mock (emptyGitState, runGitMock)
+import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (runBranchAndFS, runStoryStorageGit)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Storage (createBranch)
@@ -30,6 +31,7 @@ import Agent.Integration.Harness
   )
 import qualified Agent.Integration.CharContextWriteSpec
 import qualified Agent.Integration.ReworkAtomSpec
+import qualified Agent.Integration.JourneySpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
 --   env vars -- see 'Agent.Integration.Harness.knownModels') and build the
@@ -59,6 +61,7 @@ main = do
             runM
             . runFail
             . loggingIO
+            . splitMarkdownAware
             . filesystemIO
             . fileSystemLocal (CacheProject agentCacheDir)
             . timeIO
@@ -83,3 +86,4 @@ main = do
       hspec $ do
         describe "Agent.Integration.CharContextWriteSpec" (Agent.Integration.CharContextWriteSpec.spec runner)
         describe "Agent.Integration.ReworkAtomSpec"        (Agent.Integration.ReworkAtomSpec.spec runner)
+        describe "Agent.Integration.JourneySpec"           (Agent.Integration.JourneySpec.spec runner)

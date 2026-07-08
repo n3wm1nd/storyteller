@@ -50,7 +50,7 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.LLM (LLM, queryLLM)
 import Runix.LLM.ToolInstances ()
-import UniversalLLM (Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (HasTools, Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
   , executeToolCallFromList, ToolResult(..)
@@ -61,7 +61,6 @@ import Storyteller.Writer.Agent
   , ExistingContent(..), WordCount(..) )
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, applyTemplate)
-import Storyteller.Core.Runtime (StoryModel)
 
 -- | A coarse planning document — the source of an expansion. Usually the
 --   contents of @outline.md@ (whole story) or the slice of it covering one
@@ -165,9 +164,10 @@ instance ToolParameter BeatSheetBody where
 --   'Server.Writer.File.chatSplitOutline'). A malformed call is dropped
 --   rather than failing the whole batch.
 splitOutlineAgent
-  :: forall r
-  .  Members '[LLM StoryModel, PromptStorage, Fail] r
-  => [ModelConfig StoryModel]
+  :: forall model r
+  .  ( HasTools model, SupportsSystemPrompt (ProviderOf model)
+     , Members '[LLM model, PromptStorage, Fail] r )
+  => [ModelConfig model]
   -> [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
@@ -209,7 +209,7 @@ splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
     -- rather than caring what the model does with the result message.
     loop _ _ 0 _ = return []
     loop tools allConfigs budget history = do
-      response <- queryLLM @StoryModel allConfigs history
+      response <- queryLLM @model allConfigs history
       let calls = [tc | AssistantTool tc <- response]
       if null calls
         then return []
