@@ -35,6 +35,7 @@ import Runix.LLM (LLM, queryLLM)
 import UniversalLLM (Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
 
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
+import Storyteller.Writer.Agent.ContextFilter (ContextLayout, applyContextLayout)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
 
 import Prelude hiding (readFile)
@@ -131,14 +132,27 @@ writerUserMessage contextBlocks charContexts existing extraInstructions instruct
 --   as plain data — no LLM involved. Requires the target branch's
 --   filesystem to be in scope. This is the machinery 'proseAgent' needs fed
 --   in; composing the two is the caller's job, e.g.
---   @gatherFileContext path >>= \\(existing, ctx) -> proseAgent configs hint chars (extra <> ctx) existing instr@.
+--   @gatherFileContext layout path >>= \\(existing, ctx) -> proseAgent configs hint chars (extra <> ctx) existing instr@.
+--
+--   @layout@ is the user-facing bucket-picker ordering
+--   ('Storyteller.Writer.Agent.ContextFilter.applyContextLayout') a client
+--   may have configured for this call. @[]@ ("no layout configured") falls
+--   back to the plain alphabetical order this always used, rather than
+--   'applyContextLayout'\'s own @[]@ meaning ("claim nothing, show
+--   nothing") — only this caller knows that its own no-layout default is
+--   "show everything", so that check has to happen here, not inside
+--   'applyContextLayout' itself.
 gatherFileContext
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => FilePath               -- ^ file to continue
+  => ContextLayout          -- ^ user-configured bucket ordering, or [] for the default sort
+  -> FilePath               -- ^ file to continue
   -> Sem r (ExistingContent, [ContextBlock])
-gatherFileContext path = do
-  files       <- List.sort <$> listAllFiles @project "/"
+gatherFileContext layout path = do
+  unordered   <- listAllFiles @project "/"
+  let files = case layout of
+        [] -> List.sort unordered
+        _  -> applyContextLayout layout unordered
   fileContext <- mapM (readContextFile @project) files
   existing    <- fileExists @project path >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @project path

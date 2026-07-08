@@ -6,12 +6,13 @@
 // see lib/serverCacheStore.ts's header for the write-access convention.
 
 import { fileConn } from "@/lib/ws";
-import type { FileCommand, ContextItem } from "@/lib/ws";
+import type { FileCommand, ContextItem, PickerRule } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain } from "@/lib/utils";
+import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
 
 export async function openFile(path: string): Promise<void> {
   const { activeBranch, openFiles } = getServerCache();
@@ -276,9 +277,23 @@ export function unhideSelected(path: string) {
   dropFromSelection(targets);
 }
 
+// Writer's ambient story-branch context source, per lib/agents.ts's
+// STORY_AMBIENT ("writer:story") — the same sourceId context-source.tsx's
+// ContextSourceConfig keys its settings entry by for the Writer agent's
+// Agents-tab panel, so a layout configured there is the one attached here.
+const WRITER_STORY_SOURCE_ID = "writer:story";
+
+function writerContextLayout(): PickerRule[] {
+  const branch = getServerCache().activeBranch;
+  if (!branch) return [];
+  const filter = useSettings.getState().contextFilters[contextFilterKey(branch, WRITER_STORY_SOURCE_ID)];
+  return filter ? toContextLayout(filter) : [];
+}
+
 export function chatWrite(path: string, text: string) {
   const context = buildContextItems(path);
-  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text, context, flowTid }));
+  const contextLayout = writerContextLayout();
+  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text, context, contextLayout, flowTid }));
 }
 
 export function chatFix(path: string, text: string) {

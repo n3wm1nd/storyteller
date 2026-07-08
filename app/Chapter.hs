@@ -106,7 +106,7 @@ chapterAction mode sheetPath outFile activeChars = do
             $ charSummaryAgent @(BranchTag Char_)
     return (CharLabel charBranch, blocks)
 
-  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) outFile
+  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
   let charContexts = concatMap
         (\(CharLabel name, bs) -> CharContextBlock ("## Character: " <> name) : bs)
         charBlocks

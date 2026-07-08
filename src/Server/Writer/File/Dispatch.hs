@@ -78,8 +78,8 @@ runCommand path cmd = case cmd of
   UnhideAtoms _mid targets ->
     unhideFileAtoms (map TickId targets)
 
-  ChatWriter _mid prompt context flowTid ->
-    chatWriter path prompt context (TickId <$> flowTid)
+  ChatWriter _mid prompt context layout flowTid ->
+    chatWriter path prompt context layout (TickId <$> flowTid)
 
   ChatFixer _mid prompt context targets ->
     chatFixer path prompt context (map TickId targets)

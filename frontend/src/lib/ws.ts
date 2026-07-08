@@ -173,8 +173,11 @@ export type FileCommand =
   | { type: "unhide.atoms"; id?: string; targets: string[] }
   // Writer, or FlowWriter (implicitly) when `flowTid` is set — the tick
   // that was HEAD when the user started typing, so the agent can judge
-  // whether atoms generated since then are still provisional.
-  | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; flowTid?: string }
+  // whether atoms generated since then are still provisional. `contextLayout`
+  // is the user-configured bucket-picker ordering for this call's ambient
+  // context (see PickerRule below); omitted/empty falls back to the
+  // server's default alphabetical order.
+  | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; flowTid?: string }
   // Fixer: `targets` are the atoms flagged as the subject of `text`.
   | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
   // Regen: rewrite this chapter to fit its beat sheet (ch{N}.outline.md by
@@ -241,27 +244,39 @@ export type CharacterEvent =
 // reads). Not something the client picks per file.
 export type ContextMode = "ambient" | "on-demand";
 
-// Which files populate a slot. Glob syntax, same as the server's own file
-// glob op. Empty `include` means "everything".
-export interface PathFilter {
-  include?: string[];
-  exclude?: string[];
+// One claim in a ContextLayout: every path matching `pattern` that no
+// earlier rule in the list already claimed is assigned `bucket`. Glob
+// syntax, same as the server's own file glob op. `bucket` omitted (or null)
+// means an explicit trash claim — hide this path even if a later, broader
+// rule would also match it (see Storyteller.Writer.Agent.ContextFilter).
+// Claim order (list position) and bucket order (the number itself) are
+// independent axes: a narrow pattern needs to claim ahead of a broad
+// catch-all regardless of which bucket either targets.
+export interface PickerRule {
+  pattern: string;
+  bucket?: number;
 }
 
+// An ordered picker list. Empty means "no layout configured" — falls back
+// to the server's default alphabetical order, not "claim nothing" (that's
+// what an empty layout means to buildSlotPreview/applyContextLayout
+// directly — see their own docs for why the two differ).
+export type ContextLayout = PickerRule[];
+
 // One named context slot: a label the command chose (e.g.
-// "character:alice-chen", "branch-files"), its fixed mode, and the filter
-// selecting its files — the one part the client configures.
+// "character:alice-chen", "branch-files"), its fixed mode, and the layout
+// selecting and ordering its files — the one part the client configures.
 export interface ContextSlot {
   label: string;
   mode: ContextMode;
-  filter?: PathFilter;
+  layout?: ContextLayout;
 }
 
 export interface ContextEntry {
   path: string;
-  included: boolean;  // false for a file the current filter drops — still listed, just shaded, not hidden
-  content?: string;   // full text, only present for included Ambient entries
-  blurb?: string;      // short teaser, only present for included OnDemand entries
+  bucket: number | null;  // null for a file no rule claims — still listed, just shaded, not hidden
+  content?: string;       // full text, only present for claimed Ambient entries
+  blurb?: string;         // short teaser, only present for claimed OnDemand entries
 }
 
 export interface ContextSlotPreview {

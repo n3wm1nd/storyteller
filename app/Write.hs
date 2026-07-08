@@ -88,7 +88,7 @@ writeAction outFile instruction activeChars = do
             $ charSummaryAgent @(BranchTag Char_)
     return (CharLabel charBranch, blocks)
 
-  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) outFile
+  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
   Prose generated <- writeAgent @StoryModel modelConfigs existing fileCtx instruction charBlocks
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated

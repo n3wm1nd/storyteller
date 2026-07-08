@@ -15,7 +15,6 @@
 --           'Server.Writer.ContextView.Connection').
 module Server.Writer.ContextView.Protocol
   ( ContextMode(..)
-  , PathFilter(..)
   , ContextSlot(..)
   , ContextViewCommand(..)
   , ContextEntry(..)
@@ -29,7 +28,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 import Storyteller.Writer.Agent.ContextPreview
-  ( ContextMode(..), PathFilter(..), ContextSlot(..)
+  ( ContextMode(..), ContextSlot(..)
   , ContextEntry(..), ContextSlotPreview(..) )
 
 instance FromJSON ContextMode where
@@ -42,22 +41,16 @@ instance ToJSON ContextMode where
   toJSON Ambient  = String "ambient"
   toJSON OnDemand = String "on-demand"
 
-instance FromJSON PathFilter where
-  parseJSON = withObject "PathFilter" $ \o ->
-    PathFilter
-      <$> (fromMaybe [] <$> o .:? "include")
-      <*> (fromMaybe [] <$> o .:? "exclude")
-
 instance FromJSON ContextSlot where
   parseJSON = withObject "ContextSlot" $ \o ->
     ContextSlot
       <$> o .: "label"
       <*> o .: "mode"
-      <*> (fromMaybe (PathFilter [] []) <$> o .:? "filter")
+      <*> (fromMaybe [] <$> o .:? "layout")
 
 instance ToJSON ContextEntry where
   toJSON e = object $
-    [ "path" .= cePath e, "included" .= ceIncluded e ] <>
+    [ "path" .= cePath e, "bucket" .= ceBucket e ] <>
     maybe [] (\c -> ["content" .= c]) (ceContent e) <>
     maybe [] (\b -> ["blurb"   .= b]) (ceBlurb   e)
 

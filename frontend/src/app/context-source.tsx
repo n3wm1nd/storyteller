@@ -1,19 +1,26 @@
 "use client";
 
-// Per-(agent, context-source) exclude/include-only config, e.g. "Writer's
+// Per-(agent, context-source) bucket-picker config, e.g. "Writer's
 // story-branch (ambient) context". Each agent has a small, fixed set of real
 // context sources (see lib/agents.ts) — this widget configures exactly one
 // of them, it never invents new sources or lets the user rename/retarget it.
 //
-// The pattern list is just what gets filtered from that source's existing
-// file listing — not a general slot/label mechanism (see prior design
-// discussion: there's no backend concept of an arbitrarily-named,
-// glob-populated "slot"). "Invert" swaps the same pattern list between
-// exclude (hide these) and include-only (show only these). Patterns are
-// entered one at a time (Enter commits the current input as a removable tag,
-// Backspace on an empty input pops the last one) and still persist as the
-// same newline-joined string via lib/settingsStore.ts — only the input
-// widget is tokenized, not the underlying representation.
+// The tag list is a set of globs (see lib/settingsStore.ts's FilterTag) that
+// get compiled into a PickerRule[] layout (lib/settingsStore.ts's
+// toContextLayout) — same primitive Storyteller.Writer.Agent.ContextFilter
+// uses server-side to claim-and-order a real chat.writer call's context, so
+// what this widget previews is exactly what generation would see, not an
+// approximation of it.
+//
+// Two layers of control, most users only ever touch the first:
+//   - "Show only these, hide everything else" (the `invert` toggle) picks
+//     each tag's *default* bucket — trash for untouched tags in the normal
+//     (hide these) mode, bucket 1 in the inverted (show only these) mode.
+//     This alone reproduces the old include/exclude-only behaviour exactly.
+//   - A tag's bucket badge lets a user promote it to its own numbered
+//     group, overriding that default — click cycles trash -> 1 -> 2 -> 3 ->
+//     back to trash. Untouched tags keep tracking the mode default even as
+//     `invert` is flipped; touched tags don't (see toContextLayout).
 //
 // Layout is a single column, not the old side-by-side split: the pattern bar
 // only takes the height its content needs (wraps, never scrolls). The tree
@@ -21,12 +28,14 @@
 // that) rather than flex-stretched to fill the detail pane — any leftover
 // space belongs below the Prompts section on the page, not inside this box.
 //
-// Excluded files are never removed from the tree — 'ContextEntry.included'
-// (see ws.ts, sourced from 'Storyteller.Writer.Agent.ContextPreview') marks
-// them instead, so they render shaded in place. Clicking a file toggles the
-// exact-path pattern; clicking a folder (its icon/name, not the expand
-// chevron) toggles a "folder/**/*" pattern — both just call the same
-// addPattern/removeTag pair the typed input uses.
+// Trashed files are never removed from the tree — 'ContextEntry.bucket'
+// (see ws.ts, sourced from 'Storyteller.Writer.Agent.ContextPreview') is
+// null for them instead, so they render shaded in place; a claimed file
+// shows a small badge for the bucket it landed in, same colour as that
+// bucket's tags. Clicking a file toggles the exact-path pattern; clicking a
+// folder (its icon/name, not the expand chevron) toggles a "folder/**/*"
+// pattern — both just call the same addPattern/removeTag pair the typed
+// input uses, defaulting to the current mode like any other new tag.
 //
 // The filter itself persists client-side via lib/settingsStore.ts (nothing
 // server-side stores it yet). The live preview it drives does not: that's a
@@ -37,14 +46,42 @@
 // without a global store slice to mirror into.
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw, X } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw, X, Trash2 } from "lucide-react";
 import { contextViewConn } from "@/lib/ws";
 import type { ContextSlotPreview, ContextMode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { useSettings, contextFilterKey, type ContextFilter } from "@/lib/settingsStore";
+import {
+  useSettings, contextFilterKey, defaultBucket, toContextLayout,
+  type ContextFilter, type FilterTag,
+} from "@/lib/settingsStore";
 import { buildTree, type TreeNode } from "./filetree";
 
-const DEFAULT_FILTER: ContextFilter = { patterns: "", invert: false };
+const DEFAULT_FILTER: ContextFilter = { tags: [], invert: false };
+
+// Cycle order for a tag badge click: trash, then bucket 1..MAX_BUCKET, then
+// back to trash. Small on purpose — this is for "a handful of named
+// groups" (WRITER.md's outline/notes/chapters split has three), not a
+// general-purpose numbering scheme; nothing stops a bucket above this from
+// being reached by editing settings storage directly; a badge can only
+// reach one via serial clicks.
+const MAX_BUCKET = 4;
+
+// Stable colour per bucket number, cycling through a small palette — used
+// for both a tag's own badge and a matching file's badge in the tree, so
+// the two are visually the same group at a glance. Trash gets its own fixed
+// (muted/red) treatment, never one of these.
+const BUCKET_HUES = [65, 200, 320, 140]; // amber, blue, magenta, green
+
+function bucketColor(bucket: number, alpha = 1): string {
+  const hue = BUCKET_HUES[(bucket - 1) % BUCKET_HUES.length];
+  return `oklch(0.75 0.13 ${hue} / ${alpha})`;
+}
+
+function nextBucket(current: number | null): number | null {
+  if (current === null) return 1;
+  if (current >= MAX_BUCKET) return null;
+  return current + 1;
+}
 
 function isHidden(name: string): boolean {
   return name.startsWith(".");
@@ -54,9 +91,36 @@ function countFiles(node: TreeNode): number {
   return node.isDir ? node.children.reduce((n, c) => n + countFiles(c), 0) : 1;
 }
 
-function PreviewTreeNode({ node, depth, onToggleFile, onToggleFolder }: {
+// Small round badge shared by tag chips and tree entries — a number on its
+// bucket's colour, or a trash icon in a muted/red treatment. `onClick`
+// absent renders it inert (used in the tree, which only ever displays a
+// file's resolved bucket, never edits it directly).
+function BucketBadge({ bucket, onClick, title }: {
+  bucket: number | null;
+  onClick?: () => void;
+  title: string;
+}) {
+  const interactive = !!onClick;
+  const style: React.CSSProperties = {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    width: 15, height: 15, borderRadius: "50%", flexShrink: 0,
+    fontSize: 9, fontWeight: 700, fontFamily: "monospace",
+    border: "none", padding: 0, cursor: interactive ? "pointer" : "default",
+    background: bucket === null ? "oklch(0.55 0.15 25 / 0.18)" : bucketColor(bucket, 0.22),
+    color: bucket === null ? "oklch(0.65 0.18 25)" : bucketColor(bucket),
+  };
+  const content = bucket === null ? <Trash2 style={{ width: 9, height: 9 }} /> : bucket;
+  return interactive ? (
+    <button onClick={onClick} title={title} style={style}>{content}</button>
+  ) : (
+    <span title={title} style={style}>{content}</span>
+  );
+}
+
+function PreviewTreeNode({ node, depth, bucketOf, onToggleFile, onToggleFolder }: {
   node: TreeNode;
   depth: number;
+  bucketOf: (path: string) => number | null | undefined; // undefined = not in the preview at all
   onToggleFile: (path: string) => void;
   onToggleFolder: (path: string) => void;
 }) {
@@ -94,12 +158,14 @@ function PreviewTreeNode({ node, depth, onToggleFile, onToggleFolder }: {
           </button>
         </div>
         {open && node.children.map((child) => (
-          <PreviewTreeNode key={child.path} node={child} depth={depth + 1} onToggleFile={onToggleFile} onToggleFolder={onToggleFolder} />
+          <PreviewTreeNode key={child.path} node={child} depth={depth + 1} bucketOf={bucketOf} onToggleFile={onToggleFile} onToggleFolder={onToggleFolder} />
         ))}
       </div>
     );
   }
 
+  const bucket = bucketOf(node.path) ?? null;
+  const claimed = bucket !== null;
   return (
     <button
       onClick={() => onToggleFile(node.path)}
@@ -107,13 +173,14 @@ function PreviewTreeNode({ node, depth, onToggleFile, onToggleFolder }: {
       style={{
         display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
         padding: `2px 8px 2px ${pad}px`, border: "none", background: "transparent", cursor: "pointer",
-        color: node.included ? "var(--text-secondary)" : "var(--text-faint)",
-        opacity: node.included ? 1 : 0.55,
-        textDecoration: node.included ? "none" : "line-through",
+        color: claimed ? "var(--text-secondary)" : "var(--text-faint)",
+        opacity: claimed ? 1 : 0.55,
+        textDecoration: claimed ? "none" : "line-through",
       }}
     >
       <FileText style={{ width: 10, height: 10, flexShrink: 0, opacity: 0.6 }} />
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{node.name}</span>
+      <BucketBadge bucket={bucket} title={claimed ? `bucket ${bucket}` : "hidden from context"} />
     </button>
   );
 }
@@ -126,19 +193,18 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
   mode: ContextMode;
 }) {
   const filterKey = activeBranch ? contextFilterKey(activeBranch, sourceId) : null;
-  const { patterns, invert } = useSettings((s) => (filterKey ? s.contextFilters[filterKey] : undefined) ?? DEFAULT_FILTER);
+  const filter = useSettings((s) => (filterKey ? s.contextFilters[filterKey] : undefined) ?? DEFAULT_FILTER);
   const setContextFilter = useSettings((s) => s.setContextFilter);
   const [preview, setPreview] = useState<ContextSlotPreview | null>(null);
   const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
   const [draft, setDraft] = useState("");
 
-  const tags = patterns.split("\n").map((s) => s.trim()).filter(Boolean);
+  const { tags, invert } = filter;
 
-  function send(conn: ReturnType<typeof contextViewConn>, pat: string, inv: boolean) {
-    const list = pat.split("\n").map((s) => s.trim()).filter(Boolean);
+  function send(conn: ReturnType<typeof contextViewConn>, f: ContextFilter) {
     conn.send({
       type: "context.preview",
-      slots: [{ label, mode, filter: inv ? { include: list, exclude: [] } : { include: [], exclude: list } }],
+      slots: [{ label, mode, layout: toContextLayout(f) }],
     });
   }
 
@@ -164,7 +230,7 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
       try {
         await conn.connect();
         setConnStatus(connLabel, "connected");
-        send(conn, patterns, invert);
+        send(conn, filter);
       } catch (err) {
         setConnStatus(connLabel, "error");
         setError(String(err));
@@ -176,32 +242,42 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
       connRef.current = null;
       removeConn(connLabel);
     };
-    // patterns/invert are re-sent explicitly on every edit (see the two
-    // onChange handlers below) — this effect only re-runs on target change.
+    // filter is re-sent explicitly on every edit (see commitFilter below) —
+    // this effect only re-runs on target change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBranch, path, sourceId]);
 
-  function commitPatterns(next: string) {
-    if (filterKey) setContextFilter(filterKey, { patterns: next, invert });
-    if (connRef.current) send(connRef.current, next, invert);
-  }
-
-  function commitInvert(next: boolean) {
-    if (filterKey) setContextFilter(filterKey, { patterns, invert: next });
-    if (connRef.current) send(connRef.current, patterns, next);
+  function commitFilter(next: ContextFilter) {
+    if (filterKey) setContextFilter(filterKey, next);
+    if (connRef.current) send(connRef.current, next);
   }
 
   function addPattern(val: string) {
-    if (!val || tags.includes(val)) return;
-    commitPatterns([...tags, val].join("\n"));
+    if (!val || tags.some((t) => t.pattern === val)) return;
+    commitFilter({ tags: [...tags, { pattern: val }], invert });
   }
 
-  function removeTag(tag: string) {
-    commitPatterns(tags.filter((t) => t !== tag).join("\n"));
+  function removeTag(pattern: string) {
+    commitFilter({ tags: tags.filter((t) => t.pattern !== pattern), invert });
   }
 
   function togglePattern(val: string) {
-    if (tags.includes(val)) removeTag(val); else addPattern(val);
+    if (tags.some((t) => t.pattern === val)) removeTag(val); else addPattern(val);
+  }
+
+  function cycleTagBucket(pattern: string) {
+    commitFilter({
+      tags: tags.map((t) => {
+        if (t.pattern !== pattern) return t;
+        const current = t.bucket !== undefined ? t.bucket : defaultBucket(invert);
+        return { ...t, bucket: nextBucket(current) };
+      }),
+      invert,
+    });
+  }
+
+  function commitInvert(next: boolean) {
+    commitFilter({ tags, invert: next });
   }
 
   function addDraft() {
@@ -215,12 +291,21 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
       e.preventDefault();
       addDraft();
     } else if (e.key === "Backspace" && draft === "" && tags.length > 0) {
-      removeTag(tags[tags.length - 1]);
+      removeTag(tags[tags.length - 1].pattern);
     }
   }
 
-  const includedPaths = new Set(preview?.entries.filter((e) => e.included).map((e) => e.path) ?? []);
-  const tree = preview ? buildTree(preview.entries.map((e) => e.path), undefined, includedPaths) : [];
+  const bucketByPath = new Map(preview?.entries.map((e) => [e.path, e.bucket] as const) ?? []);
+  const claimedPaths = new Set(preview?.entries.filter((e) => e.bucket !== null).map((e) => e.path) ?? []);
+  const tree = preview ? buildTree(preview.entries.map((e) => e.path), undefined, claimedPaths) : [];
+
+  const bucketCounts = new Map<number, number>();
+  let hiddenCount = 0;
+  for (const e of preview?.entries ?? []) {
+    if (e.bucket === null) hiddenCount++;
+    else bucketCounts.set(e.bucket, (bucketCounts.get(e.bucket) ?? 0) + 1);
+  }
+  const sortedBuckets = [...bucketCounts.keys()].sort((a, b) => a - b);
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -230,21 +315,29 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
           padding: "3px 5px", background: "var(--card)",
           border: "1px solid var(--border-subtle)", borderRadius: 5,
         }}>
-          {tags.map((tag) => (
-            <span key={tag} style={{
-              display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontFamily: "monospace",
-              padding: "2px 3px 2px 7px", borderRadius: 9, background: "var(--surface)", color: "var(--text-secondary)",
-            }}>
-              {tag}
-              <button
-                onClick={() => removeTag(tag)}
-                title="Remove"
-                style={{ display: "flex", border: "none", background: "none", cursor: "pointer", color: "var(--text-ghost)", padding: 2 }}
-              >
-                <X style={{ width: 9, height: 9 }} />
-              </button>
-            </span>
-          ))}
+          {tags.map((tag) => {
+            const effective = tag.bucket !== undefined ? tag.bucket : defaultBucket(invert);
+            return (
+              <span key={tag.pattern} style={{
+                display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, fontFamily: "monospace",
+                padding: "2px 3px 2px 7px", borderRadius: 9, background: "var(--surface)", color: "var(--text-secondary)",
+              }}>
+                {tag.pattern}
+                <BucketBadge
+                  bucket={effective}
+                  onClick={() => cycleTagBucket(tag.pattern)}
+                  title={effective === null ? "hidden — click to assign a bucket" : `bucket ${effective} — click to change`}
+                />
+                <button
+                  onClick={() => removeTag(tag.pattern)}
+                  title="Remove"
+                  style={{ display: "flex", border: "none", background: "none", cursor: "pointer", color: "var(--text-ghost)", padding: 2 }}
+                >
+                  <X style={{ width: 9, height: 9 }} />
+                </button>
+              </span>
+            );
+          })}
           <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -257,7 +350,7 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
             }}
           />
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--text-muted)", cursor: "pointer" }}>
             <input
               type="checkbox" checked={invert} onChange={(e) => commitInvert(e.target.checked)}
@@ -266,9 +359,23 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
             Show only these, hide everything else
           </label>
           <span style={{ fontSize: 9.5, color: "var(--text-ghost)" }}>
-            use <code>**/*</code> to reach files at any depth
+            use <code>**/*</code> to reach files at any depth · click a tag&apos;s badge to give it its own bucket
           </span>
         </div>
+        {preview && (sortedBuckets.length > 0 || hiddenCount > 0) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {sortedBuckets.map((b) => (
+              <span key={b} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--text-dim)" }}>
+                <BucketBadge bucket={b} title={`bucket ${b}`} /> {bucketCounts.get(b)} file{bucketCounts.get(b) === 1 ? "" : "s"}
+              </span>
+            ))}
+            {hiddenCount > 0 && (
+              <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--text-dim)" }}>
+                <BucketBadge bucket={null} title="hidden" /> {hiddenCount} hidden
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={{ maxHeight: 340, overflow: "auto" }}>
@@ -283,6 +390,7 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
             {tree.map((node) => (
               <PreviewTreeNode
                 key={node.path} node={node} depth={0}
+                bucketOf={(p) => bucketByPath.get(p)}
                 onToggleFile={togglePattern}
                 onToggleFolder={(p) => togglePattern(`${p}/**/*`)}
               />

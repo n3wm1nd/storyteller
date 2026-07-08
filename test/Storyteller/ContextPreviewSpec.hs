@@ -28,6 +28,7 @@ import qualified Storage.Ops as Ops
 
 import Server.Core.Branch (Main)
 import Server.TestStack
+import Storyteller.Writer.Agent.ContextFilter (PickerRule(..))
 import Storyteller.Writer.Agent.ContextPreview
 
 withPreviewBranch
@@ -46,8 +47,9 @@ withPreviewBranch name action = run $ testStack $ do
 spec :: Spec
 spec = describe "buildSlotPreview" $ do
 
-  it "keeps an excluded file in the result, marked not-included and without content" $ do
-    let slot = ContextSlot "story" Ambient (PathFilter [] ["secret.md"])
+  it "keeps a trashed file in the result, marked unclaimed and without content" $ do
+    let slot = ContextSlot "story" Ambient
+          [ PickerRule "secret.md" Nothing, PickerRule "**/*" (Just 1) ]
         result = withPreviewBranch "story" $ do
           _ <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
           _ <- runStorage @Main (Ops.addAtom "secret.md" "shh\n")
@@ -58,13 +60,13 @@ spec = describe "buildSlotPreview" $ do
         map cePath entries `shouldMatchList` ["scene.md", "secret.md"]
         let Just secret = lookup "secret.md" [ (cePath e, e) | e <- entries ]
             Just scene  = lookup "scene.md"  [ (cePath e, e) | e <- entries ]
-        ceIncluded secret `shouldBe` False
-        ceContent  secret `shouldBe` Nothing
-        ceIncluded scene  `shouldBe` True
-        ceContent  scene  `shouldBe` Just "p1\n"
+        ceBucket  secret `shouldBe` Nothing
+        ceContent secret `shouldBe` Nothing
+        ceBucket  scene  `shouldBe` Just 1
+        ceContent scene  `shouldBe` Just "p1\n"
 
-  it "inverted (include-only) filter still lists everything, marking only the include list as included" $ do
-    let slot = ContextSlot "story" Ambient (PathFilter ["scene.md"] [])
+  it "an include-only layout (no catch-all) still lists everything, unmatched files unclaimed" $ do
+    let slot = ContextSlot "story" Ambient [ PickerRule "scene.md" (Just 1) ]
         result = withPreviewBranch "story" $ do
           _ <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
           _ <- runStorage @Main (Ops.addAtom "other.md" "p2\n")
@@ -75,5 +77,5 @@ spec = describe "buildSlotPreview" $ do
         map cePath entries `shouldMatchList` ["scene.md", "other.md"]
         let Just scene = lookup "scene.md" [ (cePath e, e) | e <- entries ]
             Just other = lookup "other.md" [ (cePath e, e) | e <- entries ]
-        ceIncluded scene `shouldBe` True
-        ceIncluded other `shouldBe` False
+        ceBucket scene `shouldBe` Just 1
+        ceBucket other `shouldBe` Nothing

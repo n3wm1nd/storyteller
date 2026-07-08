@@ -83,7 +83,7 @@ outlineAction outFile guidance = do
   -- @outline.md@ is the document being expanded; every other branch file goes
   -- along as surrounding context ("all files" is the context, subject to
   -- filtering later). 'gatherFileContext' hands back both in one read.
-  (ExistingContent outline, fileCtx) <- gatherFileContext @(BranchTag Main) "outline.md"
+  (ExistingContent outline, fileCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
   let source = OutlineDoc $ case guidance of
         "" -> outline
         g  -> g <> "\n\n" <> outline

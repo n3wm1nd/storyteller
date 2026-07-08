@@ -21,6 +21,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 import Server.Core.Protocol (Update, withId)
+import Storyteller.Writer.Agent.ContextFilter (PickerRule)
 
 -- | A piece of pinned context the client attaches to a chat prompt — an
 --   atom or annotation the user selected as reference material. 'ciContent'
@@ -79,7 +80,13 @@ data FileCommand
   --   place -- the atoms stay in the file. See 'Storage.Ops.setAtomHidden'.
   | HideAtoms   { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | UnhideAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
-  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcFlowTid :: Maybe T.Text }
+  -- | 'fcContextLayout' is the client's bucket-picker ordering for this
+  --   call's ambient context (empty means "no layout configured", falling
+  --   back to the default alphabetical order — see
+  --   'Storyteller.Writer.Agent.Continuation.gatherFileContext'). See the
+  --   project's context-assembly design notes for the picker model this
+  --   implements.
+  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcFlowTid :: Maybe T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
   -- | Discuss, don't write: send a message to the chat agent, which sees
   --   this file's own prior 'ChatConverse' exchanges as conversation
@@ -135,8 +142,9 @@ instance FromJSON FileCommand where
       "unhide.atoms" -> UnhideAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
         context <- fromMaybe [] <$> o .:? "context"
+        layout  <- fromMaybe [] <$> o .:? "contextLayout"
         flowTid <- o .:? "flowTid"
-        ChatWriter i <$> o .: "text" <*> pure context <*> pure flowTid
+        ChatWriter i <$> o .: "text" <*> pure context <*> pure layout <*> pure flowTid
       "chat.fixer"  -> do
         context <- fromMaybe [] <$> o .:? "context"
         targets <- fromMaybe [] <$> o .:? "targets"

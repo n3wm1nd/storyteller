@@ -108,7 +108,7 @@ runJourney configs = do
   outline <- writeChat @storyModel configs "outline.md" storyPremise
 
   info "journey: splitting outline into chapter beat sheets"
-  (_, outlineCtx) <- gatherFileContext @(BranchTag Main) "outline.md"
+  (_, outlineCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
   sheets <- splitOutlineAgent @storyModel configs outlineCtx (OutlineDoc outline)
   mapM_ (\(ChapterBeats path (BeatSheet body)) -> appendGenerated path body) sheets
   info $ "journey: got " <> T.pack (show (length sheets)) <> " beat sheet(s)"
@@ -147,7 +147,7 @@ writeChat
   => [ModelConfig storyModel] -> FilePath -> T.Text -> Sem r T.Text
 writeChat configs path prompt = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
-  (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) path)
+  (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
   Prose generated <- writeAgent @storyModel configs existing fileCtx (Instruction prompt) []
   appendGenerated path generated
   return generated

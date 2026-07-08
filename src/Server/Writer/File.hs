@@ -41,7 +41,7 @@ import UniversalLLM (Message(..))
 import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
-import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
+import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
@@ -69,10 +69,10 @@ import Prelude hiding (readFile, writeFile)
 --   result is done here too. No character branches are wired into a scene
 --   yet, hence the empty list below — see WRITER.md presence conventions
 --   for where that's headed.
-chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe TickId -> Sem r ()
-chatWriter path prompt context mFlowTid = do
+chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Sem r ()
+chatWriter path prompt context layout mFlowTid = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
-  (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) path)
+  (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)
   let extraContext = toContextBlocks context <> fileCtx
       instruction  = Instruction prompt
   case mFlowTid of
@@ -93,7 +93,7 @@ chatWriter path prompt context mFlowTid = do
 --   to the same Writer path 'chatWriter' takes, rather than living inside
 --   'Storyteller.Writer.Agent.Fix.fixAgent'.
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt context [] = chatWriter path prompt context Nothing
+chatFixer path prompt context [] = chatWriter path prompt context [] Nothing
 chatFixer path prompt _context targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
@@ -171,7 +171,7 @@ chatChapterRegen mode path prompt context = do
       _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
-      (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) path)
+      (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
       let extraContext = toContextBlocks context <> fileCtx
           instruction  = Instruction prompt
           noChars      = [] :: [CharContextBlock]
@@ -201,7 +201,7 @@ chatChapterRegen mode path prompt context = do
 chatSplitOutline :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> Sem r ()
 chatSplitOutline path = do
   outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
-  (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) path)
+  (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
   info $ "outline split starting: " <> T.pack path
   sheets <- splitOutlineAgent @StoryModel modelConfigs fileCtx outline
   mapM_ writeSheet sheets
