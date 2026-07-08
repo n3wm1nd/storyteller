@@ -9,7 +9,7 @@ import { fileConn } from "@/lib/ws";
 import type { FileCommand, ContextItem, WireTick } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
+import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase, stashMarkerFixup, consumeMarkerFixup } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain } from "@/lib/utils";
 
@@ -42,19 +42,27 @@ export async function openFile(path: string): Promise<void> {
       setConnStatus(label, "connected");
     } else if (evt.type === "update") {
       clearPreviewDelayTimer();
+      let nextTicks: Record<string, WireTick> = {};
       mirrorServerEvent((s) => {
         const prev = s.openFiles[path];
         if (!prev) return {};
+        nextTicks = applyUpdate(prev.ticks, evt);
         return {
           openFiles: {
             ...s.openFiles,
-            [path]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
+            [path]: { ...prev, ticks: nextTicks, head: evt.head, absent: false },
           },
           preview: null,
         };
       });
+      // See wsHelpers.consumeMarkerFixup: an at-wrapped command's own reply
+      // is just this one plain 'update', with no accompanying 'tick.remap'
+      // to look an old->new id up in — relocating the marker has to happen
+      // here, from the tail-length invariant stashed at send time.
+      const fixup = consumeMarkerFixup(path, tickChain(nextTicks, evt.head));
+      if (fixup !== undefined) useUI.setState({ rebaseMarker: fixup });
     } else if (evt.type === "tick.remap") {
-      handleTickRemap(path, evt.mapping);
+      handleTickRemap(evt.mapping);
     } else if (evt.type === "agent.log") {
       useUI.getState().addAgentLog(evt.level, evt.message);
     } else if (isChatPreviewEvent(evt)) {
@@ -97,38 +105,23 @@ export function closeFile(path: string) {
   removeConn(`file:${path}`);
 }
 
-// After remapping, the marker sits at the (possibly-renamed) tick it was
-// pinned to — but if the command that just ran wrote brand-new atoms right
-// after it (e.g. an append issued while rebasing), the marker should follow
-// them so a second command chains after the first instead of both landing
-// on the same pivot. New atoms are never a "to" of the mapping — only
-// pre-existing atoms that got rebased are — so we can tell them apart from
-// the old tail without knowing anything about the specific command that ran.
-function advanceMarker(marker: string, ticks: Record<string, WireTick>, head: string | null, toSet: Set<string>): string | null {
-  const chain = tickChain(ticks, head).filter((t) => t.kind === "atom");
-  const idx = chain.findIndex((t) => t.tickId === marker);
-  if (idx === -1) return null; // no longer in the chain (e.g. deleted) — nothing sensible to fall back to
-  let i = idx;
-  while (i + 1 < chain.length && !toSet.has(chain[i + 1].tickId)) i++;
-  return chain[i].tickId;
-}
-
-// contextAtoms/contextAnnotations are shared, connection-agnostic selection
-// sets (see character-sidebar.actions.ts's 'openJournal') — any tick.remap,
-// whether from the main file connection or a character's journal
-// connection, must keep them pointing at the right ids.
-function handleTickRemap(path: string, mapping: [string, string][]) {
+// rebaseMarker (see lib/utils.tailLeadTicks / wsHelpers.atRebase) is the
+// tick the bar is stuck to — the first tick of whatever's suppressed after
+// it. Whenever a command runs through this marker, that exact tick is the
+// first thing 'at' pops and later replays back on top (see
+// Storyteller.Core.Git.atGeneric) — its parent changed, so it's always one
+// of the "from" ids in the resulting mapping. That makes keeping it current
+// a plain table lookup, no different from contextAtoms/contextAnnotations
+// below — no walking the chain, no reasoning about where "this file's own
+// tail" starts versus some other branch's cascade caught in the same
+// broadcast.
+function handleTickRemap(mapping: [string, string][]) {
   const table = new Map(mapping);
-  const toSet = new Set(mapping.map(([, to]) => to));
-  const fc = getServerCache().openFiles[path];
-  useUI.setState((s) => {
-    const marker = s.rebaseMarker ? remapTickId(table, s.rebaseMarker) : s.rebaseMarker;
-    return {
-      rebaseMarker: marker && fc ? advanceMarker(marker, fc.ticks, fc.head, toSet) : marker,
-      contextAtoms: remapSet(table, s.contextAtoms),
-      contextAnnotations: remapSet(table, s.contextAnnotations),
-    };
-  });
+  useUI.setState((s) => ({
+    rebaseMarker: s.rebaseMarker ? remapTickId(table, s.rebaseMarker) : s.rebaseMarker,
+    contextAtoms: remapSet(table, s.contextAtoms),
+    contextAnnotations: remapSet(table, s.contextAnnotations),
+  }));
 }
 
 // Build the read-only context items for a chat command from the current
@@ -179,6 +172,22 @@ function buildContextTargets(path: string): string[] {
     .map((t) => t.tickId);
 }
 
+// Send a command on path's file connection, rebased at the current marker
+// if one's set (see wsHelpers.atRebase) — the one place that reads
+// 'rebaseMarker'/'journalMarkers' and this file's own live 'ticks' to
+// resolve the actual 'at' pivot, so every mutating command below gets that
+// resolution identically instead of repeating it. Also stashes the tail
+// length (wsHelpers.stashMarkerFixup) right before sending, so whatever
+// 'update' comes back can relocate the marker with nothing else to go on
+// — see openFile's 'update' handler.
+function sendFileCommand(path: string, cmd: FileCommand) {
+  const fc = getServerCache().openFiles[path];
+  if (!fc) return;
+  const ui = useUI.getState();
+  stashMarkerFixup(path, tickChain(fc.ticks, fc.head), ui.rebaseMarker);
+  fc.conn.send(atRebase(ui.rebaseMarker, fc.ticks, cmd, ui.journalMarkers));
+}
+
 // Send a chat.* command now, or hold it if a generation is already
 // streaming on this connection (server processes one command at a time).
 // 'buildCmd' receives the captured flowTid (HEAD at queue-time) only when
@@ -187,12 +196,11 @@ function buildContextTargets(path: string): string[] {
 function sendChatCommand(path: string, buildCmd: (flowTid?: string) => FileCommand) {
   const fc = getServerCache().openFiles[path];
   if (!fc) return;
-  const ui = useUI.getState();
   if (getServerCache().preview !== null) {
     useUI.setState({ pendingSubmit: { path, cmd: buildCmd(fc.head ?? undefined) } });
   } else {
     schedulePreviewPlaceholder();
-    fc.conn.send(atRebase(ui.rebaseMarker, buildCmd(undefined), ui.journalMarkers));
+    sendFileCommand(path, buildCmd(undefined));
   }
 }
 
@@ -200,13 +208,11 @@ function sendChatCommand(path: string, buildCmd: (flowTid?: string) => FileComma
 // WRITER.md — so this sends on the file connection, same as any other
 // mutating file command, and gets rebase-at-marker for free via 'atRebase'.
 export function enterScene(path: string, character: string) {
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(atRebase(ui.rebaseMarker, { type: "enter.scene", character }, ui.journalMarkers));
+  sendFileCommand(path, { type: "enter.scene", character });
 }
 
 export function leaveScene(path: string, character: string) {
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(atRebase(ui.rebaseMarker, { type: "leave.scene", character }, ui.journalMarkers));
+  sendFileCommand(path, { type: "leave.scene", character });
 }
 
 export function appendToFile(path: string, content: string) {
@@ -215,27 +221,18 @@ export function appendToFile(path: string, content: string) {
 }
 
 export function editAtom(path: string, tickId: string, content: string) {
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "edit.atom", tickId, content }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "edit.atom", tickId, content });
   dropFromSelection([tickId]);
 }
 
 // Edit a chat prompt tick's text — see ws.ts's "edit.prompt": a prompt
 // isn't file content, so this is a distinct command from editAtom.
 export function editPrompt(path: string, tickId: string, content: string) {
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "edit.prompt", tickId, content }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "edit.prompt", tickId, content });
 }
 
 export function deleteAtom(path: string, tickId: string) {
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "delete.atom", tickId }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "delete.atom", tickId });
   dropFromSelection([tickId]);
 }
 
@@ -245,40 +242,28 @@ export function deleteAtom(path: string, tickId: string) {
 export function mergeSelected(path: string) {
   const targets = buildContextTargets(path);
   if (targets.length < 2) return;
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "merge.atoms", targets }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "merge.atoms", targets });
   dropFromSelection(targets);
 }
 
 export function splitSelected(path: string) {
   const targets = buildContextTargets(path);
   if (targets.length < 1) return;
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "split.atoms", targets }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "split.atoms", targets });
   dropFromSelection(targets);
 }
 
 export function hideSelected(path: string) {
   const targets = buildContextTargets(path);
   if (targets.length < 1) return;
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "hide.atoms", targets }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "hide.atoms", targets });
   dropFromSelection(targets);
 }
 
 export function unhideSelected(path: string) {
   const targets = buildContextTargets(path);
   if (targets.length < 1) return;
-  const ui = useUI.getState();
-  getServerCache().openFiles[path]?.conn.send(
-    atRebase(ui.rebaseMarker, { type: "unhide.atoms", targets }, ui.journalMarkers)
-  );
+  sendFileCommand(path, { type: "unhide.atoms", targets });
   dropFromSelection(targets);
 }
 

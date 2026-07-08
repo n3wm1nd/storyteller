@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff } from "lucide-react";
 import { StickyNote } from "lucide-react";
 import { type WireTick } from "@/lib/serverCacheStore";
-import { type AnnotationMode, characterDisplayName } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
@@ -430,6 +430,9 @@ export function WireTickList({
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
 
   const atoms = ticks.filter((t) => t.kind === "atom");
+  // Maps each atom's own tickId to the id rebaseMarker should actually be
+  // set to if dropped in the gap right below it — see lib/utils.tailLeadTicks.
+  const leads = tailLeadTicks(ticks);
   const atomRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const contentRef = useRef<HTMLDivElement>(null);
   const [barRects, setBarRects] = useState<{ character: string; color: string; lane: number; top: number; height: number }[]>([]);
@@ -450,22 +453,29 @@ export function WireTickList({
   // anyway (nothing downstream to replay), so there's no reason to make the
   // user thread the needle between "select the last tick" and "release to
   // resume at the present" — dragging to the bottom just means the latter.
-  function nearestAtomId(clientY: number): string | null {
+  //
+  // The resolved value is what rebaseMarker should become — the tick right
+  // after the atom's whole block, including any trailing presence/note/
+  // prompt ticks (lib/utils.tailLeadTicks) — not the atom's own tickId, or
+  // "at" would treat that trailing history as part of the tail to rebase
+  // away instead of already-settled. No entry (dropped past the last real
+  // tick in the chain) means "clear the marker" — nothing left to be stuck to.
+  function nearestLeadId(clientY: number): string | null {
     if (atoms.length === 0) return null;
-    let candidate: string | null = null;
+    let candidateAtom: WireTick | null = null;
     for (const atom of atoms) {
       const el = atomRefs.current.get(atom.tickId);
       if (!el) continue;
-      if (clientY >= el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2) candidate = atom.tickId;
+      if (clientY >= el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2) candidateAtom = atom;
       else break;
     }
-    return candidate === atoms[atoms.length - 1].tickId ? null : candidate;
+    return candidateAtom ? (leads.get(candidateAtom.tickId) ?? null) : null;
   }
 
   function runDrag(initialClientY: number) {
     setDragging(true);
-    setCandidate(nearestAtomId(initialClientY));
-    const onMove = (ev: MouseEvent) => setCandidate(nearestAtomId(ev.clientY));
+    setCandidate(nearestLeadId(initialClientY));
+    const onMove = (ev: MouseEvent) => setCandidate(nearestLeadId(ev.clientY));
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -526,7 +536,7 @@ export function WireTickList({
     }
   }
 
-  const markerIdx = rebaseMarker ? atoms.findIndex((a) => a.tickId === rebaseMarker) : -1;
+  const markerIdx = rebaseMarker ? atoms.findIndex((a) => leads.get(a.tickId) === rebaseMarker) : -1;
 
   // Recompute presence-bar pixel spans whenever the set of runs to draw
   // changes, or the content reflows for any other reason (editing a
@@ -648,8 +658,8 @@ export function WireTickList({
                   ))}
                 </div>
                 <RebaseDropZone
-                  isMarker={!dragging && rebaseMarker === atom.tickId}
-                  isCandidate={dragging && candidate === atom.tickId}
+                  isMarker={!dragging && rebaseMarker !== null && rebaseMarker === leads.get(atom.tickId)}
+                  isCandidate={dragging && candidate !== null && candidate === leads.get(atom.tickId)}
                   onDragStart={startDragFromDivider}
                 />
               </div>

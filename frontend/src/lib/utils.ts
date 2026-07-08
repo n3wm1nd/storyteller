@@ -16,6 +16,64 @@ export function tickChain(ticks: Record<string, WireTick>, head: string | null):
   return chain.reverse();
 }
 
+// The rebase marker is stored (see uiStore.rebaseMarker) as the tickId of
+// the tick the bar is "stuck to" — the first tick of whatever's currently
+// suppressed after it — not the tick to append at. That's the one
+// definition that survives every write made through the marker for free:
+// the suppressed tick is always exactly one of the ids an 'at'-wrapped
+// command's own tick.remap reports as rebased (see wsHelpers.atRebase /
+// fileview.actions.ts's handleTickRemap), so keeping it current is a plain
+// table lookup — remapTickId(table, marker) — the same treatment
+// contextAtoms/contextAnnotations already get, no special-casing. The tick
+// to actually send as the 'at' command's own pivot is derived fresh at
+// send time as that tick's *parent* (see wsHelpers.atRebase) — which is
+// automatically wherever the most recent write landed, again with nothing
+// to track: a marker that never itself gets rebased (nothing written
+// through it yet) has a pivot equal to its original parent; the moment
+// something is written there, that same tick's parent has changed instead
+// (new commit, new parent) — no separate "did the tip move" bookkeping.
+//
+// A marker sitting at the very end (nothing suppressed) has no "first
+// suppressed tick" to be stuck to at all — that state is 'null', doubling
+// as "not rebasing", since the two are behaviorally identical (append
+// straight to head either way).
+//
+// The rebase marker only ever renders/drags at atom-row granularity (see
+// fileview.tsx's RebaseDropZone, one per atom) — but non-atom ticks
+// (presence, note, prompt) can sit between one atom and the next, and are
+// invisible in that view. A drop zone drawn *below* an atom's block visually
+// sits below those trailing ticks too, so what the marker resolves to has to
+// be the tick right after all of them, not the tick right after the atom
+// itself, or "at" would treat an already-settled tick (an existing
+// enter/leave, a note) as part of the tail, silently un-happening it.
+//
+// Returns, for each atom's tickId, the tickId that becomes the marker's
+// value if the bar is dropped right after that atom's trailing run — i.e.
+// the chain tick immediately following the last one anchored to it. No
+// entry means nothing follows that point at all (dropping there means
+// "clear the marker", same as dropping past the last atom always has).
+export function tailLeadTicks(chain: WireTick[]): Map<string, string> {
+  const pivots = new Map<string, string>(); // atom tickId -> last trailing tick anchored to it
+  let lastAtom: string | null = null;
+  let lastTick: string | null = null;
+  for (const t of chain) {
+    if (t.kind === "atom") {
+      if (lastAtom !== null) pivots.set(lastAtom, lastTick!);
+      lastAtom = t.tickId;
+    }
+    lastTick = t.tickId;
+  }
+  if (lastAtom !== null) pivots.set(lastAtom, lastTick!);
+
+  const indexOf = new Map(chain.map((t, i): [string, number] => [t.tickId, i]));
+  const leads = new Map<string, string>();
+  for (const [atomId, pivotId] of pivots) {
+    const next = chain[indexOf.get(pivotId)! + 1];
+    if (next) leads.set(atomId, next.tickId);
+  }
+  return leads;
+}
+
 export function tickPayload(msg: string): string {
   const nl = msg.indexOf("\n");
   return nl >= 0 ? msg.slice(nl + 1) : msg;

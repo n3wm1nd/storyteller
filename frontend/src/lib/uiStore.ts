@@ -42,7 +42,15 @@ interface UIState {
 
   // Rebase marker (CAD-style feature-tree rollback) — when set, mutating
   // file commands run rebased at this tick instead of at HEAD. Local UI
-  // state, cleared on branch/file change.
+  // state, cleared on branch/file change. A real tickId, not a depth: an
+  // independent write elsewhere on the same chain (another connection or
+  // background agent appending straight to HEAD, outside this marker
+  // entirely) must leave it pointing at the exact same tick — a
+  // depth-from-head count would silently drift in that case, since HEAD
+  // moved for a reason that has nothing to do with this marker. It only
+  // ever needs correcting when a command sent *through* this marker itself
+  // rebases the tail after it — see fileview.actions.ts's handling of
+  // 'tick.remap' — never in response to unrelated chain growth.
   rebaseMarker: string | null;
 
   // Agent log entries (ephemeral, capped ring buffer). Streamed from the
