@@ -86,7 +86,12 @@ export interface Update {
 
 export type SessionCommand =
   | { type: "create-branch"; id?: string; branch: string }
-  | { type: "delete-branch"; id?: string; branch: string };
+  | { type: "delete-branch"; id?: string; branch: string }
+  // Restore every tracked ref to the state recorded by 'entryId' (an
+  // UndoLog entry's own id) — see Storyteller.Core.Undo.resetToUndo.
+  // Symmetric: entryId can name any entry, earlier or later than the
+  // current one, so this doubles as both undo and redo.
+  | { type: "undo.reset"; id?: string; entryId: string };
 
 // One character branch's raw summary — sheet.md content, unprocessed (see
 // WS-PROTOCOL.md's "read is raw-but-complete" rule). The client is
@@ -98,16 +103,33 @@ export interface CharacterSummary {
   sheet: string | null;
 }
 
-// branch.list and character.list are always unprompted — pushed once right
-// after session.ready, and again whenever the underlying set changes (see
-// Server.Writer.Session.Connection's notifier). There is no request for
-// either: a session only ever listens.
+// One entry in the shared, session-wide undo log (Storyteller.Core.Undo) —
+// a whole-repo snapshot taken after every tracked ref write, anywhere. The
+// log itself is a flat, ever-growing chain, never a tree: 'revertsTo' is a
+// server-derived hint (Server.Writer.Session.Dispatch.annotateReverts,
+// comparing snapshot content, not a stored pointer) set exactly when this
+// entry's snapshot exactly repeats an earlier entry's — i.e. this is where
+// an undo/reset landed. That's enough for the client to draw the run of
+// entries between the repeated one and this one as an abandoned offshoot,
+// without the server needing to persist any branching structure.
+export interface WireUndoEntry {
+  id: string;
+  time: string;
+  revertsTo: string | null;
+}
+
+// branch.list, character.list, and undo.log are always unprompted — pushed
+// once right after session.ready, and again whenever the underlying set
+// changes (see Server.Writer.Session.Connection's notifier). There is no
+// request for any of them: a session only ever listens. undo.log is
+// chronological, oldest first — the order a timeline renders in.
 export type SessionEvent =
   | { type: "session.ready" }
   | { type: "branch.list";     branches: string[] }
   | { type: "branch.created";  id?: string; branch: string }
   | { type: "branch.deleted";  id?: string; branch: string }
   | { type: "character.list";  characters: CharacterSummary[] }
+  | { type: "undo.log";        entries: WireUndoEntry[] }
   | ErrorEvent;
 
 // ── Branch protocol ───────────────────────────────────────────────────────────

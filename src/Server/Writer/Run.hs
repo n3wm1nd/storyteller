@@ -52,6 +52,7 @@ import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Storage (StoryStorage(..))
 import Storyteller.Core.Git (runStoryStorageGit)
 import Storyteller.Core.Types (TickId, unTickId)
+import Storyteller.Core.Undo (Undo)
 
 import Runix.LLM.Interpreter (interpretLLM, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..), RestAPI, restapiHTTP, llmRetry)
@@ -148,7 +149,7 @@ streamChunksWS conn = interpret $ \(EmitChunk event) ->
   maybe (return ()) (embed . WS.sendTextData conn . encode) (previewEvent event)
 
 actionStack :: (Member (Embed IO) r,
- Member (StreamChunk StreamEvent) r) => ServerEnv -> Sem      (Runix.LLM.LLM StoryModel         : Runix.Config.Config StreamingEnabled         : Storyteller.Core.Prompt.PromptStorage : StoryStorage         : Runix.Random.Random : Runix.HTTP.HTTP : Runix.HTTP.HTTPStreaming         : Runix.Time.Sleep : Runix.Time.Time : Runix.Git.Git         : Polysemy.Fail.Type.Fail : Logging : Error String : r)      a -> Sem r (Either String a)
+ Member (StreamChunk StreamEvent) r) => ServerEnv -> Sem      (Runix.LLM.LLM StoryModel         : Runix.Config.Config StreamingEnabled         : Storyteller.Core.Prompt.PromptStorage : StoryStorage : Undo         : Runix.Random.Random : Runix.HTTP.HTTP : Runix.HTTP.HTTPStreaming         : Runix.Time.Sleep : Runix.Time.Time : Runix.Git.Git         : Polysemy.Fail.Type.Fail : Logging : Error String : r)      a -> Sem r (Either String a)
 actionStack env action =
   let auth = ServerAuth (LlamaCppAuth (envLLMEndpoint env))
   in runError @String

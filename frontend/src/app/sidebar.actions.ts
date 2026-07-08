@@ -38,6 +38,8 @@ export async function connect(): Promise<void> {
       }));
     } else if (evt.type === "character.list") {
       mirrorServerEvent({ characterBranches: evt.characters });
+    } else if (evt.type === "undo.log") {
+      mirrorServerEvent({ undoEntries: evt.entries });
     } else if (evt.type === "error") {
       setError(evt.message);
     }
@@ -58,6 +60,12 @@ export function createBranch(name: string) {
 
 export function deleteBranch(name: string) {
   getServerCache()._session?.send({ type: "delete-branch", branch: name });
+}
+
+// Jump the whole session (every branch, shared across every connected
+// client) to a past or "abandoned" undo-log entry — see app/undo-timeline.tsx.
+export function resetToUndo(entryId: string) {
+  getServerCache()._session?.send({ type: "undo.reset", entryId });
 }
 
 export async function selectBranch(name: string): Promise<void> {

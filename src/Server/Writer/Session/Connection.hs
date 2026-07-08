@@ -8,18 +8,20 @@
 -- On connect: enter the storage-level scope exactly once for the
 -- connection's whole lifetime (no branch open — a session has no one
 -- branch's tick state to snapshot), push SessionReady followed immediately
--- by the current branch and character lists, then loop receiving commands
--- via 'embed'. A command that fails is caught locally with
+-- by the current branch, character, and undo-log lists, then loop receiving
+-- commands via 'embed'. A command that fails is caught locally with
 -- 'Polysemy.Error.catch' and reported as a SessionError without unwinding
 -- the stack or ending the connection.
 --
--- There is no list-branches/list-characters command: a session never has to
--- ask for either list, only listen. A second thread keeps both live:
--- 'Server.Writer.GitWorker' already broadcasts a 'RefMoved' on 'envNotifyChan'
--- for every branch ref creation/update, from any connection — the notifier
--- re-pushes 'BranchList' on every such move, and 'CharacterList' too when the
--- moved ref is a 'character/*' one, so live tracking needs no new plumbing
--- underneath it.
+-- There is no list-branches/list-characters/list-undo command: a session
+-- never has to ask for any of these, only listen. A second thread keeps all
+-- three live: 'Server.Writer.GitWorker' already broadcasts a 'RefMoved' on
+-- 'envNotifyChan' for every branch ref creation/update, from any connection
+-- (including 'undo.reset''s own ref restores) — the notifier re-pushes
+-- 'BranchList' on every such move, 'CharacterList' too when the moved ref is
+-- a 'character/*' one, and 'UndoLog' unconditionally, since every tracked
+-- write also grows the undo log (see 'Storyteller.Core.Undo'). No new
+-- plumbing needed underneath any of it.
 module Server.Writer.Session.Connection
   ( runSession
   ) where
@@ -41,7 +43,7 @@ import Server.Core.Logging (logCommand)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Notification (BranchNotification(..))
 import Server.Writer.Run (actionStack)
-import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames)
+import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames, undoLogEntries)
 import Server.Writer.Session.Protocol
 
 runSession :: ServerEnv -> WS.Connection -> IO ()
@@ -59,6 +61,7 @@ runCommands env conn = do
     embed $ WS.sendTextData conn (encode SessionReady')
     pushBranchList conn
     pushCharacterList conn
+    pushUndoLog conn
     commandLoop conn
   either (reportError conn) return result
 
@@ -88,6 +91,11 @@ onBranchMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> T.Te
 onBranchMove conn b = do
   pushBranchList conn
   if "character/" `T.isPrefixOf` b then pushCharacterList conn else return ()
+  -- Every real ref move is exactly when the undo log has grown (it's
+  -- appended to on every tracked write, see Storyteller.Core.Undo) — so
+  -- this reuses the same broadcast every other session-level list rides on,
+  -- no separate notification needed.
+  pushUndoLog conn
 
 pushBranchList :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 pushBranchList conn = do
@@ -98,6 +106,11 @@ pushCharacterList :: (SessionEffects r, Member (Embed IO) r) => WS.Connection ->
 pushCharacterList conn = do
   summaries <- characterSummaries
   embed $ WS.sendTextData conn (encode (CharacterList summaries))
+
+pushUndoLog :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
+pushUndoLog conn = do
+  entries <- undoLogEntries
+  embed $ WS.sendTextData conn (encode (UndoLog entries))
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (SessionError (T.pack err)))

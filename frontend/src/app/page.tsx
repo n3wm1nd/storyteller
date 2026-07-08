@@ -25,6 +25,7 @@ import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
 import { AgentsTab } from "./agentstab";
 import { isOutlineFile, isChatFile } from "@/lib/agents";
+import { UndoTimeline } from "./undo-timeline";
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,7 @@ function TopBar({ sessionStatus, branches, activeBranch }: {
           <span style={{ fontSize: 10, color: "var(--text-ghost)" }}>{activeBranch}</span>
         </>
       )}
+      <UndoTimeline />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16, fontSize: 10, color: "var(--text-dim)" }}>
         <span>{branches.length} branch{branches.length !== 1 ? "es" : ""}</span>
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>

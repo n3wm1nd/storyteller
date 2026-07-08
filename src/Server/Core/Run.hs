@@ -24,6 +24,7 @@ import Runix.Time (Time, Sleep)
 import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Prompt (PromptStorage)
+import Storyteller.Core.Undo (Undo)
 
 -- | Effects available at the session level (no branch open). Deliberately
 --   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
@@ -33,6 +34,7 @@ type SessionEffects r =
            , Sleep
            , Time
            , Git
+           , Undo
            , Fail
            , Logging
            , Error String

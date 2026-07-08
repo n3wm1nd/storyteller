@@ -48,7 +48,7 @@ import Runix.Git (Git, runGitIOPerCall, withGitCache)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import Storyteller.Core.Undo (withUndoLog)
+import Storyteller.Core.Undo (Undo, withUndoLog)
 
 import UniversalLLM (Model(..), ModelConfig, Routing(..))
 import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))
@@ -108,10 +108,21 @@ instance RestEndpoint StoryLlamaCppAuth where
 --   at each of those call sites; 'Storyteller.Core.Undo' itself stays
 --   completely unaware of the story ref convention ('isStoryRef'/
 --   'storyRefPrefix' are supplied here, from 'Storyteller.Core.Git').
+--
+--   @action@ carries 'Undo' in its own row (rather than being isolated from
+--   it) so a caller that wants the control API itself -- e.g. a server
+--   session handler exposing undo/reset over a WS connection -- can just
+--   use 'Storyteller.Core.Undo.listUndo'/'resetToUndo' directly, alongside
+--   getting every other write auto-snapshotted. A caller with no interest
+--   in it (every CLI executable today) can 'Polysemy.raise' a plain action
+--   into this row for free -- 'Undo' sits at the very front for exactly
+--   that reason: inserting a new effect under a plain, unqualified 'raise'
+--   only ever adds it at the head, not at some arbitrary position deeper in
+--   the row.
 runInfrastructureWith
   :: Members '[Fail, Embed IO] r
   => (Sem (Git : r) a -> Sem r a)
-  -> Sem (Random : HTTP : HTTPStreaming : Sleep : Time : Git : r) a
+  -> Sem (Undo : Random : HTTP : HTTPStreaming : Sleep : Time : Git : r) a
   -> Sem r a
 runInfrastructureWith runGit action =
     runGit
@@ -152,6 +163,9 @@ runInfrastructure repoPath _endpoint =
   . cmdsIO
   . interpretCmd @"git"
   . runInfrastructureWith (runGitIOPerCall repoPath . withGitCache)
+  -- No CLI executable needs 'Undo' in its own row -- 'raise' adds it at the
+  -- head for free, matching where 'runInfrastructureWith' now expects it.
+  . raise
 
 -- | One branch, storage, LLM. Creates the branch if it doesn't exist.
 runStoryGit

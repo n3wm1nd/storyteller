@@ -140,15 +140,22 @@ interceptGitUndoLog isTracked = intercept $ \case
   LookupPath tree path -> send (LookupPath tree path)
   IsAncestorOfAny targets hash -> send (IsAncestorOfAny targets hash)
 
--- | Self-contained: introduces 'Undo' and discharges it again around
---   @action@, so a caller never needs 'Undo' in its own effect row just to
---   get auto-snapshotting. @prefix@/@isTracked@ both describe the same set
---   of refs (@prefix@ for 'Runix.Git.listRefs', @isTracked@ for per-write
---   matching) — kept as two parameters since 'listRefs' and per-ref
---   predicates aren't always the same shape, but callers tracking one
---   simple prefix (as every caller today does) pass the matching pair.
-withUndoLog :: Members '[Git, Time, Fail] r => Text -> (RefName -> Bool) -> Sem r a -> Sem r a
-withUndoLog prefix isTracked = runUndoGit prefix . interceptGitUndoLog isTracked . raise
+-- | Discharges 'Undo' around @action@, so a caller doesn't need to install
+--   its own interpreter just to get auto-snapshotting. Unlike an earlier
+--   version of this function, @action@ keeps 'Undo' live in its own row
+--   (rather than being 'raise'd past it) — so a caller that also wants the
+--   control API ('snapshotUndo'\/'listUndo'\/'resetToUndo') for itself (e.g.
+--   a server session handler) can just use it directly, while every
+--   existing tracked-ref write still gets auto-snapshotted exactly as
+--   before. A caller with no use for the control API can still ignore it —
+--   an unused effect in the row costs nothing. @prefix@/@isTracked@ both
+--   describe the same set of refs (@prefix@ for 'Runix.Git.listRefs',
+--   @isTracked@ for per-write matching) — kept as two parameters since
+--   'listRefs' and per-ref predicates aren't always the same shape, but
+--   callers tracking one simple prefix (as every caller today does) pass
+--   the matching pair.
+withUndoLog :: Members '[Git, Time, Fail] r => Text -> (RefName -> Bool) -> Sem (Undo : r) a -> Sem r a
+withUndoLog prefix isTracked = runUndoGit prefix . interceptGitUndoLog isTracked
 
 -- | Snapshot every tracked ref's current target into a new commit appended
 --   to the undo log, parented on the log's previous entry (rootless for

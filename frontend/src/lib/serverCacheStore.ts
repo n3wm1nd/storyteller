@@ -29,6 +29,7 @@ import type {
   FileCommand,    FileEvent,
   CharacterEvent, CharacterSummary,
   LibraryCommand, LibraryEvent, LibraryNode, ChapterUnit,
+  WireUndoEntry,
 } from "./ws";
 
 export type { WireTick };
@@ -61,6 +62,11 @@ export interface ServerCacheState {
   // own create-branch/delete-branch commands. Sheet content is raw (see
   // WS-PROTOCOL.md); decode into a display name via lib/utils.characterDisplayName.
   characterBranches: CharacterSummary[];
+
+  // The shared, session-wide undo log (Storyteller.Core.Undo) — chronological,
+  // oldest first, kept live by the same session notifier as 'branches'/
+  // 'characterBranches' (see sidebar.actions.ts). See app/undo-timeline.tsx.
+  undoEntries: WireUndoEntry[];
 
   // Branch level
   activeBranch: string | null;
@@ -111,6 +117,7 @@ export interface ServerCacheState {
 const _store = create<ServerCacheState>(() => ({
   branches: [],
   characterBranches: [],
+  undoEntries: [],
   activeBranch: null,
   files: [],
   ticks: {},
