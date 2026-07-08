@@ -1,10 +1,8 @@
-{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
 
 -- | Does character context actually reach the model, and does it change
 --   what gets written? 'charSummaryAgent' reads a character branch's files
@@ -37,14 +35,12 @@ import Prelude hiding (readFile)
 import qualified Data.Text as T
 import Test.Hspec
 
-import Polysemy (Sem, Members, runM)
-import Polysemy.Fail (Fail, runFail)
+import Polysemy (runM)
+import Polysemy.Fail (runFail)
 import Runix.FileSystem (HasProjectPath(..), fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
-import Runix.LLM (LLM)
 
 import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
-import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Writer.Agent (CharContextBlock, CharLabel(..), ExistingContent(..), Instruction(..), Prose(..))
 import Storyteller.Writer.Agent.CharContext (readCharFiles, renderCharContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
@@ -102,23 +98,14 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
     resolvedCharDir <- resolveFixture charFixtureDir
     charBlocks      <- readCharFixture resolvedCharDir
 
-    -- 'action' needs its own standalone, explicitly rank-2-quantified
-    -- signature: 'runner' itself is rank-2 polymorphic in the effect row,
-    -- and GHC can't infer that row for a bare do-block passed directly as
-    -- its argument (nothing pins 'r' down without an expected type to
-    -- check against up front).
-    let action :: forall r. Members '[LLM storyModel, LLM judgeModel, PromptStorage, Fail] r
-               => Sem r (Prose, Verdict)
-        action = do
-          -- Empty config list: the model's own defaults (from
-          -- 'Agent.Integration.Harness.knownModels') already came baked
-          -- into the interpreter 'runner' wraps, so there's nothing to
-          -- add per-call here.
-          prose@(Prose text) <- writeAgent @storyModel [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
-          verdict <- judge @judgeModel text judgeQuestion
-          pure (prose, verdict)
-
-    result <- runner action
+    -- Empty config list: the model's own defaults (from
+    -- 'Agent.Integration.Harness.knownModels') already came baked into
+    -- the interpreter 'runner' wraps, so there's nothing to add per-call
+    -- here.
+    result <- runner $ do
+      prose@(Prose text) <- writeAgent @storyModel [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
+      verdict <- judge @judgeModel text judgeQuestion
+      pure (prose, verdict)
 
     case result of
       Left err -> expectationFailure err
