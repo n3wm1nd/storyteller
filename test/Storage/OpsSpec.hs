@@ -177,7 +177,7 @@ spec = do
     it "finds the most recent creation, not the original one, after a delete-and-recreate" $ do
       let result = fst <$> runChain (do
             _   <- addAtom "scene.md" "old life\n"
-            _   <- removeFile "scene.md"
+            _   <- deleteFile "scene.md"
             t2  <- addAtom "scene.md" "new life\n"
             found <- findCreationTick "scene.md"
             return (found == t2))
@@ -210,7 +210,7 @@ spec = do
     it "does not touch an earlier, already-deleted life of the same path" $ do
       let result = fst <$> runChain (do
             _ <- addAtom "scene.md" "old life\n"
-            _ <- removeFile "scene.md"
+            _ <- deleteFile "scene.md"
             _ <- addAtom "scene.md" "new life\n"
             renameFile "scene.md" "chapter1.md"
             old     <- Storage.Ops.exists "scene.md"

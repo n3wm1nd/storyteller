@@ -118,7 +118,7 @@ createFile path = do
       info $ "creating file: " <> T.pack path
       void $ runStorage @Main (Create.createFile path)
 
--- | Commit @path@'s deletion -- see 'Storyteller.Core.Create.deleteFile'.
+-- | Commit @path@'s deletion -- see 'Storage.Ops.deleteFile'.
 -- Fails on a path that isn't currently present -- this is deletion, not a
 -- no-op on something already absent. Checked against the tree, same
 -- reasoning as 'createFile's own guard.
@@ -129,7 +129,7 @@ deleteFile path = do
     then fail ("deleteFile: no such file: " <> path)
     else do
       info $ "deleting file: " <> T.pack path
-      void $ runStorage @Main (Create.deleteFile path)
+      void $ runStorage @Main (Ops.deleteFile path)
 
 -- | Append content to a file as a single atom — the caller (someone typing
 --   and appending their own text) already chose exactly what they wanted

@@ -26,7 +26,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types
-import Storyteller.Core.Create (createFile, deleteFile)
+import Storyteller.Core.Create (createFile)
 
 runTestFS
   :: (forall n. Core.StoreM n => Core.StoreT n a)
@@ -96,12 +96,12 @@ spec = describe "createFile" $ do
         exists `shouldBe` True
         content `shouldBe` Just ""
 
-  describe "deleteFile" $ do
+  describe "Storage.Ops.deleteFile" $ do
 
     -- 'Opaque' is reserved for content this module never introduced itself
     -- (an external git commit, a hand-adopted repo) -- see 'Storage.Core's
-    -- own Haddock on 'Storage.Core.Tick'. 'deleteFile' commits one ordinary,
-    -- tagged 'Atom' (see 'Storage.Ops.removeFile') -- it never goes near
+    -- own Haddock on 'Storage.Core.Tick'. 'Storage.Ops.deleteFile' commits
+    -- one ordinary, tagged 'Atom' -- it never goes near
     -- 'Storage.Ops.commitFile'/'commitWorktree's reconciliation at all, so
     -- there's no path to an 'Opaque' fallback here regardless of whether
     -- the file had content.
@@ -109,7 +109,7 @@ spec = describe "createFile" $ do
       let result = runTestFS $ do
             _ <- createFile "scene.md"
             _ <- Ops.append "scene.md" "hello\n"
-            deleteFile "scene.md"
+            Ops.deleteFile "scene.md"
             Core.follow [] (\acc _ t -> (t : acc, True))
       case result of
         Left err    -> expectationFailure err
@@ -124,7 +124,7 @@ spec = describe "createFile" $ do
     it "removes the path from the tree, but keeps its own tick history intact" $ do
       let result = runTestFS $ do
             _        <- createFile "scene.md"
-            deleteFile "scene.md"
+            Ops.deleteFile "scene.md"
             present  <- Ops.exists "scene.md"
             ticks    <- Tick.fileTicksOf "scene.md"
             return (present, ticks)
@@ -145,7 +145,7 @@ spec = describe "createFile" $ do
       let result = runTestFS $ do
             tid0 <- createFile "scene.md"
             _    <- Ops.append "scene.md" "hello\n"
-            deleteFile "scene.md"
+            Ops.deleteFile "scene.md"
             Core.readAt tid0 (Core.inWorktree (Ops.exists "scene.md"))
       case result of
         Left err         -> expectationFailure err
@@ -163,7 +163,7 @@ spec = describe "createFile" $ do
       let result = runTestFS $ do
             _ <- createFile "scene.md"
             _ <- Ops.append "scene.md" "old content\n"
-            deleteFile "scene.md"
+            Ops.deleteFile "scene.md"
             _ <- createFile "scene.md"
             Ops.atomHistory "scene.md"
       case result of
@@ -180,7 +180,7 @@ spec = describe "createFile" $ do
       let result = runTestFS $ do
             _      <- createFile "scene.md"
             _      <- Ops.append "scene.md" "hello\n"
-            delTid <- deleteFile "scene.md"
+            delTid <- Ops.deleteFile "scene.md"
             Ops.deleteTick delTid
             -- 'deleteTick' only moves head -- the ambient tree (what
             -- 'exists'\/'readFile' actually check) needs an explicit

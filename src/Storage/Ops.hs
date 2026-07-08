@@ -8,7 +8,7 @@
 module Storage.Ops
   ( addAtom
   , addAtomWithRefs
-  , removeFile
+  , deleteFile
   , append
   , findAtom
   , editAtom
@@ -89,13 +89,17 @@ addAtomWithRefs refs path content = do
 --   reader is @path@ dropping out of the tree, same as any other content
 --   change; the tag itself only exists to give a content fold (see
 --   'atomHistory') an efficient place to stop, not to be read as the
---   signal on its own. Also removes @path@ from the ambient tree, so a
---   caller doing further ambient 'Runix.FileSystem' operations
---   immediately afterward (in the same branch scope) sees it gone there
---   too -- same convention 'addAtom' already follows for its own ambient
---   sync.
-removeFile :: StoreM m => FilePath -> StoreT m ObjectHash
-removeFile path = do
+--   signal on its own.
+--
+--   Named to match the chain-level "delete" vocabulary
+--   ('deleteTick'\/'deleteFileAtom'\/'Server.Core.File.deleteFile'), not
+--   "Storage.FS"'s 'Storage.FS.remove' -- despite calling that internally
+--   (to keep the ambient tree in sync, same convention 'addAtom' already
+--   follows), the two are separate things: 'Storage.FS.remove' just drops
+--   an entry from the ambient/scratch tree, with no chain effect of its
+--   own; this commits a real, permanent tick.
+deleteFile :: StoreM m => FilePath -> StoreT m ObjectHash
+deleteFile path = do
   newHead <- store (Atom [] path [(removedTagKey, "true")] "")
   FS.remove path
   return newHead
@@ -832,7 +836,7 @@ findCreationTick path = headHash >>= go
 --   there is no "later" lifetime left to accidentally catch.
 --
 --   Also moves @oldPath@'s content in the ambient tree to @newPath@, same
---   convention 'addAtom'\/'removeFile' already follow: a caller doing
+--   convention 'addAtom'\/'deleteFile' already follow: a caller doing
 --   further ambient 'Runix.FileSystem' operations immediately afterward
 --   (in the same branch scope) sees the rename there too. Targeted, not a
 --   whole 'Storage.Core.reset' -- this must not clobber some other file's

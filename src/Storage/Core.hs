@@ -324,7 +324,7 @@ atomTag = "type:atom\n"
 --   otherwise ordinary, empty 'Atom', not a distinct 'Tick' constructor.
 --   'store' reads it to *remove* 'atomPath' from the tree instead of
 --   splicing content into it. This is what 'store' actually persists of
---   'Storage.Ops.removeFile's own action -- it doesn't inspect any
+--   'Storage.Ops.deleteFile's own action -- it doesn't inspect any
 --   ambient/ephemeral filesystem state to decide the tree, it commits the
 --   one fact that already happened. That's also what makes replay correct:
 --   popping this tick and re-'store'-ing it (any rebase elsewhere in the

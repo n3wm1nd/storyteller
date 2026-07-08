@@ -148,7 +148,7 @@ spec runner = do
           wtTickId (last (updateTicks upd)) `shouldBe` updateHead upd
 
     -- Deleting one file must not disturb another file's own chain —
-    -- 'Storage.Ops.removeFile' commits a single tick scoped to its own
+    -- 'Storage.Ops.deleteFile' commits a single tick scoped to its own
     -- path.
     it "does not affect another file's ticks" $ do
       let result = withFile_ runner (BranchName "b") $ do
