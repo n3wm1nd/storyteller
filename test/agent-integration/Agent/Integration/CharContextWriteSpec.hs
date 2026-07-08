@@ -35,17 +35,18 @@ import Prelude hiding (readFile)
 import qualified Data.Text as T
 import Test.Hspec
 
-import Polysemy (runM)
+import Polysemy (embed, runM)
 import Polysemy.Fail (runFail)
 import Runix.FileSystem (HasProjectPath(..), fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 
+import Runix.Logging (info)
 import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 import Storyteller.Writer.Agent (CharContextBlock, CharLabel(..), ExistingContent(..), Instruction(..), Prose(..))
 import Storyteller.Writer.Agent.CharContext (readCharFiles, renderCharContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, resolveFixture)
+import Agent.Integration.Harness (Runner, resolveFixture, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 -- | Chroot marker for the character-branch fixture directory, used only
@@ -102,20 +103,13 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
     -- 'Agent.Integration.Harness.knownModels') already came baked into
     -- the interpreter 'runner' wraps, so there's nothing to add per-call
     -- here.
-    result <- runner $ do
-      prose@(Prose text) <- writeAgent @storyModel [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
-      verdict <- judge @judgeModel text judgeQuestion
-      pure (prose, verdict)
-
-    case result of
-      Left err -> expectationFailure err
-      Right (Prose text, Verdict pass reason) -> do
-        putStrLn "\n=== writeAgent output ==="
-        putStrLn (T.unpack text)
-        putStrLn "\n=== judge verdict ==="
-        putStrLn (show pass <> " -- " <> T.unpack reason)
-
-        let ExistingContent existingText = existingContent
+    runExpect @storyModel @judgeModel runner $ do
+      Prose text <- writeAgent @storyModel [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
+      info ("writeAgent output:\n" <> text)
+      Verdict pass reason <- judge @judgeModel text judgeQuestion
+      info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)
+      let ExistingContent existingText = existingContent
+      embed $ do
         text `shouldNotBe` ""
         text `shouldNotBe` existingText
         pass `shouldBe` True

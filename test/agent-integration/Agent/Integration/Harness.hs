@@ -30,6 +30,7 @@ module Agent.Integration.Harness
   , modelInterpreter
   , resolveFixture
   , resolveKnownModel
+  , runExpect
   , withKnownModel
   ) where
 
@@ -39,11 +40,13 @@ import Data.Maybe (fromMaybe)
 import Polysemy
 import Polysemy.Fail (Fail)
 import System.Environment (lookupEnv)
+import Test.Hspec (expectationFailure)
 
 import Paths_storyteller (getDataFileName)
 import Runix.FileSystem (HasProjectPath(..))
 import Runix.HTTP (HTTP)
 import Runix.LLM (LLM)
+import Runix.Logging (Logging)
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..), OpenRouterAuth(..))
 import Runix.Time (Time, Sleep)
 import UniversalLLM
@@ -180,4 +183,18 @@ resolveFixture = getDataFileName
 --   (ambiguous -- GHC has nothing to pin it to), since nothing in
 --   @IO (Either String a)@ mentions @r@ at all.
 type Runner storyModel judgeModel
-  = forall a. (forall r. Members '[LLM storyModel, LLM judgeModel, PromptStorage, Fail] r => Sem r a) -> IO (Either String a)
+  = forall a. (forall r. Members '[LLM storyModel, LLM judgeModel, PromptStorage, Logging, Fail, Embed IO] r => Sem r a) -> IO (Either String a)
+
+-- | Run a scenario and turn a 'Fail' into an hspec failure -- the
+--   @result <- runner (...); case result of Left err -> expectationFailure
+--   err; Right () -> pure ()@ dance every @it@ block otherwise repeats
+--   verbatim, since every scenario's assertions already run via 'embed'
+--   inside the action itself (see @Agent.Integration.CharContextWriteSpec@\/
+--   @Agent.Integration.ReworkAtomSpec@) and so end in @()@.
+runExpect
+  :: forall storyModel judgeModel
+  .  Runner storyModel judgeModel
+  -> (forall r. Members '[LLM storyModel, LLM judgeModel, PromptStorage, Logging, Fail, Embed IO] r => Sem r ())
+  -> IO ()
+runExpect runner action = runner action >>= either expectationFailure pure
+

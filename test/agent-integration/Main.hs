@@ -12,6 +12,7 @@ import Runix.FileSystem (fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 import Runix.HTTP (httpIO)
 import Runix.LLM.Cache (cacheLLM, fileSystemLookup, fileSystemStore)
+import Runix.Logging (loggingIO)
 import Runix.Runner (withRequestTimeout)
 import Runix.Time (timeIO, sleepIO)
 import Test.Hspec
@@ -44,6 +45,7 @@ main = do
       let runner =
             runM
             . runFail
+            . loggingIO
             . filesystemIO
             . fileSystemLocal (CacheProject agentCacheDir)
             . timeIO
