@@ -11,16 +11,19 @@
 // pane gives that room instead of squeezing it behind a click. Below it,
 // which of that agent's prompts currently have an override committed on the
 // "prompts" branch vs. falling back to the compiled-in default
-// (Storyteller.Core.Prompt) — read-only, low priority by design.
+// (Storyteller.Core.Prompt) — an overridden prompt's text is expandable and
+// editable in place (see PromptEditor); a default one isn't, because its
+// text only exists as a literal in Haskell source, unreachable over the
+// wire — there's nothing to fetch or fall back to showing.
 
 import { useEffect, useState } from "react";
 import {
-  FileText, Layers,
+  ChevronRight, FileText, Layers,
   PenLine, Wrench, RefreshCw, Split, MessageSquare, Bot,
 } from "lucide-react";
 import { AGENTS, promptKeyToPath, contextModeDescription, type AgentDef } from "@/lib/agents";
-import { branchConn } from "@/lib/ws";
-import { setConnStatus, removeConn, bumpActivity } from "@/lib/uiStore";
+import { branchConn, branchFileUrl, uploadBranchFile } from "@/lib/ws";
+import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { ContextSourceConfig } from "./context-source";
 
 const AGENT_ICONS: Record<string, typeof PenLine> = {
@@ -75,29 +78,146 @@ function SectionLabel({ icon: Icon, children }: { icon: typeof Layers; children:
   );
 }
 
+// Fetches an overridden prompt's text on expand (raw GET against the
+// "prompts" branch — same HTTP endpoint the file-embed/download path uses,
+// see lib/ws.ts's branchFileUrl) and saves edits back with a plain PUT
+// (uploadBranchFile), i.e. a full-content replace, not the atom
+// chain-editing pipeline — appropriate here since a prompt override is a
+// single opaque blob, not chain-tracked prose (see
+// Server.Writer.Branch.hs's "deposit, not a claim" doc comment).
+function PromptEditor({ path }: { path: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent(null);
+    setLoadError(null);
+    fetch(branchFileUrl("prompts", path))
+      .then((res) => {
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        return res.text();
+      })
+      .then((text) => {
+        if (cancelled) return;
+        setContent(text);
+        setDraft(text);
+      })
+      .catch((err) => { if (!cancelled) setLoadError(String(err)); });
+    return () => { cancelled = true; };
+  }, [path]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await uploadBranchFile("prompts", path, new Blob([draft], { type: "text/markdown" }));
+      setContent(draft);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loadError) {
+    return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "oklch(0.65 0.18 25)" }}>failed to load: {loadError}</div>;
+  }
+  if (content === null) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", fontSize: 10.5, color: "var(--text-ghost)" }}>
+        <RefreshCw style={{ width: 10, height: 10 }} className="animate-spin" /> loading…
+      </div>
+    );
+  }
+
+  const dirty = draft !== content;
+  return (
+    <div style={{ padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={10}
+        style={{
+          width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5,
+          padding: 8, borderRadius: 5, border: "1px solid var(--border-subtle)",
+          background: "var(--card)", color: "var(--foreground)",
+        }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          style={{
+            fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border-subtle)",
+            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "var(--surface)",
+            color: dirty ? "var(--amber)" : "var(--text-ghost)",
+            cursor: dirty && !saving ? "pointer" : "default",
+          }}
+        >
+          {saving ? "saving…" : dirty ? "save" : "saved"}
+        </button>
+        {dirty && !saving && (
+          <button
+            onClick={() => setDraft(content)}
+            style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
+          >
+            revert
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PromptOverrides({ promptKeys, files }: { promptKeys: string[]; files: string[] | null }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
   if (promptKeys.length === 0) {
     return <div style={{ padding: "0 16px 12px", fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic" }}>Instant, non-LLM action — no prompts.</div>;
   }
+
+  function toggle(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
   return (
     <div style={{ padding: "0 14px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
       {promptKeys.map((key) => {
         const active = files?.includes(promptKeyToPath(key)) ?? false;
+        const open = active && expanded.has(key);
         return (
-          <div key={key} style={{
-            display: "flex", alignItems: "center", gap: 6, fontSize: 10.5,
-            padding: "5px 8px", borderRadius: 5, background: "var(--surface)",
-          }}>
-            <FileText style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0 }} />
-            <span style={{ fontFamily: "monospace", color: "var(--text-secondary)" }}>{key}</span>
-            <span style={{
-              marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8,
-              background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
-              color: active ? "var(--amber)" : "var(--text-ghost)",
-              border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
-            }}>
-              {active ? "override" : "default"}
-            </span>
+          <div key={key} style={{ borderRadius: 5, background: "var(--surface)", overflow: "hidden" }}>
+            <button
+              onClick={() => active && toggle(key)}
+              disabled={!active}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, width: "100%",
+                padding: "5px 8px", border: "none", background: "none", textAlign: "left",
+                cursor: active ? "pointer" : "default",
+              }}
+            >
+              {active ? (
+                <ChevronRight style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+              ) : (
+                <FileText style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0 }} />
+              )}
+              <span style={{ fontFamily: "monospace", color: "var(--text-secondary)" }}>{key}</span>
+              <span style={{
+                marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
+                color: active ? "var(--amber)" : "var(--text-ghost)",
+                border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
+              }}>
+                {active ? "override" : "default"}
+              </span>
+            </button>
+            {open && <PromptEditor path={promptKeyToPath(key)} />}
           </div>
         );
       })}

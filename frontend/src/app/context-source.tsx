@@ -12,15 +12,19 @@
 // what this widget previews is exactly what generation would see, not an
 // approximation of it.
 //
-// Two layers of control, most users only ever touch the first:
-//   - "Show only these, hide everything else" (the `invert` toggle) picks
-//     each tag's *default* bucket — trash for untouched tags in the normal
-//     (hide these) mode, bucket 1 in the inverted (show only these) mode.
-//     This alone reproduces the old include/exclude-only behaviour exactly.
-//   - A tag's bucket badge lets a user promote it to its own numbered
-//     group, overriding that default — click cycles trash -> 1 -> 2 -> 3 ->
-//     back to trash. Untouched tags keep tracking the mode default even as
-//     `invert` is flipped; touched tags don't (see toContextLayout).
+// One layer of control: a tag's bucket badge lets a user promote it from
+// trash (the default for an untouched tag) to its own numbered group —
+// click cycles trash -> 1 -> 2 -> 3 -> back to trash. Buckets are assembled
+// into the final prompt in ascending order (bucket 1's files come first),
+// so a lower number means "earlier in the prompt", not "higher priority".
+//
+// Patterns are matched in the order the tags list is in (first match wins,
+// see toContextLayout/settingsStore.ts) — this is also what used to need a
+// separate include/exclude-only toggle: put a broad `**/*` tag *after*
+// specific ones to reproduce "hide these" (specific patterns claim their
+// bucket or trash first, `**/*` mops up whatever's left); leave it out
+// entirely to reproduce "show only these" (anything not explicitly claimed
+// stays trashed, no catch-all needed).
 //
 // Layout is a single column, not the old side-by-side split: the pattern bar
 // only takes the height its content needs (wraps, never scrolls). The tree
@@ -56,7 +60,7 @@ import {
 } from "@/lib/settingsStore";
 import { buildTree, type TreeNode } from "./filetree";
 
-const DEFAULT_FILTER: ContextFilter = { tags: [], invert: false };
+const DEFAULT_FILTER: ContextFilter = { tags: [] };
 
 // Cycle order for a tag badge click: trash, then bucket 1..MAX_BUCKET, then
 // back to trash. Small on purpose — this is for "a handful of named
@@ -199,7 +203,7 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
   const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
   const [draft, setDraft] = useState("");
 
-  const { tags, invert } = filter;
+  const { tags } = filter;
 
   function send(conn: ReturnType<typeof contextViewConn>, f: ContextFilter) {
     conn.send({
@@ -254,11 +258,11 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
 
   function addPattern(val: string) {
     if (!val || tags.some((t) => t.pattern === val)) return;
-    commitFilter({ tags: [...tags, { pattern: val }], invert });
+    commitFilter({ tags: [...tags, { pattern: val }] });
   }
 
   function removeTag(pattern: string) {
-    commitFilter({ tags: tags.filter((t) => t.pattern !== pattern), invert });
+    commitFilter({ tags: tags.filter((t) => t.pattern !== pattern) });
   }
 
   function togglePattern(val: string) {
@@ -269,15 +273,10 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
     commitFilter({
       tags: tags.map((t) => {
         if (t.pattern !== pattern) return t;
-        const current = t.bucket !== undefined ? t.bucket : defaultBucket(invert);
+        const current = t.bucket !== undefined ? t.bucket : defaultBucket();
         return { ...t, bucket: nextBucket(current) };
       }),
-      invert,
     });
-  }
-
-  function commitInvert(next: boolean) {
-    commitFilter({ tags, invert: next });
   }
 
   function addDraft() {
@@ -316,7 +315,7 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
           border: "1px solid var(--border-subtle)", borderRadius: 5,
         }}>
           {tags.map((tag) => {
-            const effective = tag.bucket !== undefined ? tag.bucket : defaultBucket(invert);
+            const effective = tag.bucket !== undefined ? tag.bucket : defaultBucket();
             return (
               <span key={tag.pattern} style={{
                 display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, fontFamily: "monospace",
@@ -343,7 +342,7 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onDraftKeyDown}
             onBlur={addDraft}
-            placeholder={tags.length === 0 ? (invert ? "pattern to show, enter to add" : "pattern to hide, enter to add") : "add another…"}
+            placeholder={tags.length === 0 ? "pattern to claim, enter to add" : "add another…"}
             style={{
               flex: 1, minWidth: 100, border: "none", outline: "none", background: "transparent",
               fontSize: 11, fontFamily: "monospace", color: "var(--foreground)", padding: "3px 2px",
@@ -351,15 +350,10 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
           />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--text-muted)", cursor: "pointer" }}>
-            <input
-              type="checkbox" checked={invert} onChange={(e) => commitInvert(e.target.checked)}
-              style={{ accentColor: "var(--amber)", colorScheme: "dark" }}
-            />
-            Show only these, hide everything else
-          </label>
-          <span style={{ fontSize: 9.5, color: "var(--text-ghost)" }}>
-            use <code>**/*</code> to reach files at any depth · click a tag&apos;s badge to give it its own bucket
+          <span style={{ fontSize: 9.5, color: "var(--text-ghost)", lineHeight: 1.5 }}>
+            use <code>**/*</code> to reach files at any depth · click a tag&apos;s badge to give it its own bucket ·
+            patterns are checked top-to-bottom, first match wins, so put a broad <code>**/*</code> catch-all after
+            specific patterns, not before · lower bucket numbers come earlier in the assembled prompt
           </span>
         </div>
         {preview && (sortedBuckets.length > 0 || hiddenCount > 0) && (
