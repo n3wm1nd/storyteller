@@ -123,7 +123,7 @@ uploadFiles files = do
 --   against. Opens the branch's scope itself and wraps the write in its own
 --   'withStorage' transaction, same as a WS command's per-command 'handle'
 --   does (see 'Server.Writer.File.Connection'); that transaction's ref update
---   is what 'gitNotify'/'storageNotify' (wired into every
+--   is what 'Server.Writer.GitWorker'/'storageNotify' (wired into every
 --   'runAction'/'wsAction' call, including this endpoint's) pick up to notify
 --   any connections watching this branch — nothing extra needed here to
 --   "poke" them.

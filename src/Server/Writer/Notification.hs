@@ -5,7 +5,7 @@
 -- rebase/replace/move rewrites tick ids and updates cross-branch references
 -- accordingly.
 --
--- 'RefMoved' is posted by 'Server.Writer.Run.gitNotify' whenever a story
+-- 'RefMoved' is posted by 'Server.Writer.GitWorker' whenever a story
 -- branch ref is created or updated; connections filter it to their own
 -- branch, then refetch and re-push their state. 'TicksRemapped' is posted by
 -- 'Server.Writer.Run.storageNotify' whenever 'Storyteller.Core.Storage.updateReferences'

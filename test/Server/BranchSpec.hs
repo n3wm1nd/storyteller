@@ -114,9 +114,9 @@ headIsIn :: Update -> Bool
 headIsIn upd = updateHead upd `elem` tickIds upd
 
 -- | Counts every real 'CreateRef'/'UpdateRef' that reaches git — the same
---   observation point 'Server.Writer.Run.gitNotify' uses to decide when to
---   broadcast a ref-move notification. Mirrors gitNotify's shape (see
---   Server.Writer.Run) so it sits in the stack the same way: above the real git
+--   observation point 'Server.Writer.GitWorker' uses to decide when to
+--   broadcast a ref-move notification. Mirrors its shape (see
+--   Server.Writer.GitWorker) so it sits in the stack the same way: above the real git
 --   backend, below 'runStoryStorageGit'.
 countRefWrites :: Members '[Git, State Int] r => Sem (Git : r) a -> Sem r a
 countRefWrites = interpret $ \case

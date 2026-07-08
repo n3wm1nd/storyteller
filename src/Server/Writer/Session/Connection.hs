@@ -14,8 +14,8 @@
 -- the stack or ending the connection.
 --
 -- There is no list-branches/list-characters command: a session never has to
--- ask for either list, only listen. A second thread keeps both live: 'gitNotify'
--- (see 'Server.Writer.Run') already broadcasts a 'RefMoved' on 'envNotifyChan'
+-- ask for either list, only listen. A second thread keeps both live:
+-- 'Server.Writer.GitWorker' already broadcasts a 'RefMoved' on 'envNotifyChan'
 -- for every branch ref creation/update, from any connection — the notifier
 -- re-pushes 'BranchList' on every such move, and 'CharacterList' too when the
 -- moved ref is a 'character/*' one, so live tracking needs no new plumbing
@@ -65,7 +65,7 @@ runCommands env conn = do
 -- | Re-push the branch (and, when relevant, character) list whenever any
 --   branch ref moves — covers creation and deletion alike, since both go
 --   through 'Storyteller.Core.Storage.createBranch'/'deleteBranch', which
---   (like any other ref write) reaches 'gitNotify'. Only 'RefMoved' is
+--   (like any other ref write) reaches 'Server.Writer.GitWorker'. Only 'RefMoved' is
 --   relevant here; 'TicksRemapped' is about tick-id remapping within a
 --   branch's own chain, not the existence of branches, so it's ignored.
 runNotifier :: ServerEnv -> WS.Connection -> TChan BranchNotification -> IO ()
