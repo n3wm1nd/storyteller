@@ -77,6 +77,10 @@ data JourneyResult = JourneyResult
   { jrOutline  :: T.Text            -- ^ full contents of @outline.md@
   , jrChapters :: [ChapterBeats]    -- ^ beat sheets 'splitOutlineAgent' emitted, reading order
   , jrProse    :: [(FilePath, T.Text)] -- ^ (chapter path, generated prose) per beat sheet, same order
+  , jrFiles    :: [FilePath]        -- ^ every path actually in the branch once the session is done,
+                                     --   sorted -- read straight off the filesystem, independent of
+                                     --   'jrChapters'\/'jrProse' above, so a caller can check what
+                                     --   landed on disk rather than trusting what the agents claimed
   } deriving Show
 
 -- | The pitch a user types to kick off a brand new story. Fixed, so a
@@ -115,20 +119,21 @@ runJourney configs = do
     prose <- writeChat @storyModel configs chapterPath (chapterInstruction sheetPath)
     return (chapterPath, prose)
 
-  logFileTree @(BranchTag Main)
-  return (JourneyResult outline sheets chapters)
+  files <- logFileTree @(BranchTag Main)
+  return (JourneyResult outline sheets chapters files)
 
--- | Log every path in the branch, sorted -- a plain filesystem listing, no
---   LLM call, just visibility into what the three requests above actually
---   left behind. Run once at the end of 'runJourney' rather than after each
---   step, so a caller sees the finished tree in one place.
+-- | List every path in the branch, sorted, and log it -- a plain filesystem
+--   listing, no LLM call, just visibility into what the three requests above
+--   actually left behind. Run once at the end of 'runJourney' rather than
+--   after each step, so a caller sees the finished tree in one place.
 logFileTree
   :: forall project r
   .  Members '[FileSystem project, Logging, Fail] r
-  => Sem r ()
+  => Sem r [FilePath]
 logFileTree = do
   paths <- sort <$> listAllFiles @project "/"
   info $ T.unlines ("journey: final file tree:" : map T.pack paths)
+  return paths
 
 -- | Replica of 'Server.Writer.File.chatWriter'\'s no-flow-tick branch:
 --   store the prompt as a tick, gather the target file's existing content

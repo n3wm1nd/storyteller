@@ -44,6 +44,13 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
       embed $ do
         jrOutline result `shouldNotBe` ""
 
+        -- Reasonably short: it's a chapter-heading-plus-a-few-sentences
+        -- planning document, not prose -- 'storyPremise' asks for one
+        -- heading per chapter with a few sentences under each, so even at
+        -- eight chapters this should stay well under a single chapter's
+        -- own word budget (below).
+        wordCount (jrOutline result) `shouldSatisfy` (<= 900)
+
         -- Asked for five chapters; models don't always land on the exact
         -- count, but wildly off means the split step ignored the outline
         -- rather than dividing it.
@@ -57,12 +64,29 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
 
         -- One chapter of prose per beat sheet, each with content distinct
         -- from its own outline -- catches a chapter step that just echoed
-        -- the beat sheet back instead of writing prose from it.
+        -- the beat sheet back instead of writing prose from it. Length is
+        -- checked against 'writeAgent'\'s own length hint (WordCount 300,
+        -- via 'Storyteller.Writer.Agent.Write.writeAgent') with generous
+        -- slack either side -- models routinely miss a word-count hint by
+        -- 2-3x, so this is a sanity bound (catches a one-line non-answer or
+        -- a runaway multi-chapter wall of text), not a precision check.
         length (jrProse result) `shouldBe` length (jrChapters result)
         mapM_ (\((_, BeatSheet sheet), (_, prose)) -> do
                  prose `shouldNotBe` ""
-                 prose `shouldNotBe` sheet)
+                 prose `shouldNotBe` sheet
+                 wordCount prose `shouldSatisfy` \n -> n >= 100 && n <= 1200)
               (zip (map (\cb -> (cbPath cb, cbSheet cb)) (jrChapters result)) (jrProse result))
+
+        -- Every beat sheet and its chapter file both actually landed on
+        -- disk -- reads 'jrFiles' (a plain filesystem listing) rather than
+        -- trusting 'jrChapters'\/'jrProse', so this would catch e.g. a write
+        -- silently landing at the wrong path even if the agents' own return
+        -- values looked fine. 'jrProse'\'s paths are the actual chapter
+        -- paths 'runJourney' wrote to, in the same order as 'jrChapters'.
+        mapM_ (\(ChapterBeats sheetPath _, (chapterPath, _)) -> do
+                 sheetPath   `shouldSatisfy` (`elem` jrFiles result)
+                 chapterPath `shouldSatisfy` (`elem` jrFiles result))
+              (zip (jrChapters result) (jrProse result))
 
       case (jrChapters result, jrProse result) of
         ((ChapterBeats _ (BeatSheet sheet1)) : _, (_, prose1) : _) -> do
@@ -88,3 +112,6 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
           info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)
           embed $ pass `shouldBe` True
         _ -> embed $ expectationFailure "journey produced no chapters to check"
+
+wordCount :: T.Text -> Int
+wordCount = length . T.words
