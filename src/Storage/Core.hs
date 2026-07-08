@@ -76,6 +76,8 @@ module Storage.Core
     -- * Chain contents
   , Tick(..)
   , readTick
+  , removedTagKey
+  , isRemoval
 
     -- * Core operations
   , store
@@ -315,6 +317,29 @@ data Tick
 atomTag :: Text
 atomTag = "type:atom\n"
 
+-- | The 'atomTags' key marking an atom as a whole-file deletion event,
+--   same convention as the existing @"hide"@ tag: metadata carried on an
+--   otherwise ordinary, empty 'Atom', not a distinct 'Tick' constructor.
+--   'store' reads it to *remove* 'atomPath' from the tree instead of
+--   splicing content into it. This is what 'store' actually persists of
+--   'Storage.Ops.removeFile's own action -- it doesn't inspect any
+--   ambient/ephemeral filesystem state to decide the tree, it commits the
+--   one fact that already happened. That's also what makes replay correct:
+--   popping this tick and re-'store'-ing it (any rebase elsewhere in the
+--   branch's single linear chain can do that, since ticks interleave
+--   across every file) must reproduce the same deletion every time, the
+--   same way replaying an ordinary atom reproduces the same appended
+--   content every time -- an edit made earlier in the timeline, replayed
+--   forward past this tick, correctly deletes the file again, exactly as
+--   it did in the original history. Kept alongside
+--   'atomTag'\/'binaryTag'\/'opaqueTag' since, like them, it's part of the
+--   wire encoding this module owns.
+removedTagKey :: Text
+removedTagKey = "removed"
+
+isRemoval :: [(Text, Text)] -> Bool
+isRemoval tags = lookup removedTagKey tags == Just "true"
+
 binaryTag :: Text
 binaryTag = "type:binary\n"
 
@@ -506,12 +531,32 @@ composeMapping table new =
 --   gets *used* (baked into the new commit as an extra parent) -- rather
 --   than trusting whatever a caller happened to read earlier; see
 --   'resolveId'.
+--
+--   'Atom' is the one constructor whose commit actually splices the tree,
+--   in one of two directions depending on 'atomTags': ordinarily it
+--   inserts (its own current fold-of-atoms content, extended by this
+--   tick's own suffix); when tagged with 'removedTagKey' (see
+--   'isRemoval'), it deletes 'atomPath' from the tree instead. Both are
+--   plain forward commits -- head only ever moves to a new tick built on
+--   top of the current one, nothing upstream is read back and rewritten --
+--   which is what makes a whole-file delete safe to record as an ordinary
+--   tick rather than a rebase: every earlier atom for that path is
+--   untouched, so a 'Storage.Core.at'/'readAt' to any tick before the
+--   deletion still sees the file exactly as it was. A rebase-based delete
+--   (physically dropping those earlier ticks from the chain, as this
+--   module's own chain-editing primitives like 'Storage.Ops.deleteTick' do
+--   for correcting a single misplaced atom) would instead erase that
+--   history outright -- fine for "this atom was a mistake," wrong for "the
+--   file existed and was later deleted."
 store :: StoreM m => Tick -> StoreT m ObjectHash
 store t = do
   h    <- headHash
   refs <- mapM resolveId (tickRefs t)
   treeHash <- case t of
     NonAtom {} -> commitTree <$> liftG (readCommit h)
+    Atom { atomPath = path, atomTags = tags } | isRemoval tags -> do
+      parentWt <- liftG (loadWorkingTree h)
+      liftG (flushWorkingTree (Map.delete path parentWt))
     Atom { atomPath = path, atomContent = suffix } -> do
       parentWt   <- liftG (loadWorkingTree h)
       oldContent <- liftG $ case Map.lookup path parentWt of

@@ -25,6 +25,7 @@ module Server.Core.File
   , fileState
   , fileStateSince
   , createFile
+  , deleteFile
   , appendToFile
   , editFileAtom
   , deleteFileAtom
@@ -46,7 +47,7 @@ import Polysemy (Member, Members, Sem)
 import Polysemy.Error (Error)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
-import Runix.Logging (info)
+import Runix.Logging (Logging, info)
 
 import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
@@ -102,15 +103,33 @@ fileStateSince path since = fileUpdateSince since . fst <$> runStorage @Main (Ti
 
 -- | Introduce @path@ into the tree, empty, as its own tick — distinct from
 -- whatever content 'appendToFile' (or an agent) lands on it afterward.
--- Fails on a path that already has ticks — this is creation, not truncation.
-createFile :: (FileOpen r, SessionEffects r) => FilePath -> Sem r ()
+-- Fails on a path that's currently present -- this is creation, not
+-- truncation. Checked against the *tree* ('Storage.Ops.exists'), not tick
+-- history ('Storyteller.Core.StorageMonad.Tick.fileTicksOf'): a deleted
+-- path still has ticks (deletion is a forward event, not a rebase -- see
+-- 'Storyteller.Core.Create's Haddock), so it must still be creatable
+-- again.
+createFile :: (FileOpen r, Member Logging r) => FilePath -> Sem r ()
 createFile path = do
-  (existing, _) <- runStorage @Main (Tick.fileTicksOf path)
-  case existing of
-    [] -> do
+  (already, _) <- runStorage @Main (Ops.exists path)
+  if already
+    then fail ("createFile: already exists: " <> path)
+    else do
       info $ "creating file: " <> T.pack path
       void $ runStorage @Main (Create.createFile path)
-    _  -> fail ("createFile: already exists: " <> path)
+
+-- | Commit @path@'s deletion -- see 'Storyteller.Core.Create.deleteFile'.
+-- Fails on a path that isn't currently present -- this is deletion, not a
+-- no-op on something already absent. Checked against the tree, same
+-- reasoning as 'createFile's own guard.
+deleteFile :: (FileOpen r, Member Logging r) => FilePath -> Sem r ()
+deleteFile path = do
+  (present, _) <- runStorage @Main (Ops.exists path)
+  if not present
+    then fail ("deleteFile: no such file: " <> path)
+    else do
+      info $ "deleting file: " <> T.pack path
+      void $ runStorage @Main (Create.deleteFile path)
 
 -- | Append content to a file as a single atom — the caller (someone typing
 --   and appending their own text) already chose exactly what they wanted

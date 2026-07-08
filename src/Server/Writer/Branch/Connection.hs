@@ -145,16 +145,15 @@ commandLoop conn branch = loop
           >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
 
--- | Push updated tick state, plus a 'FileAdded' for every path that appeared
---   in the working tree since the last push we saw. This is what makes a
---   brand-new path show up live for every other connection already open on
---   this branch, regardless of which connection introduced it — a
---   chat.append/file.create on a file connection, an upload, or a
---   Track/CharGen command (whose own dispatch already returns its own
---   'FileAdded's directly; this is a second, redundant-but-harmless path for
---   those, and the *only* path for everything else). Only additions are
---   tracked — no removal/rename event exists yet, see the FIXME on
---   'BranchEvent'.
+-- | Push updated tick state, plus a 'FileAdded'/'FileRemoved' for every path
+--   that appeared or disappeared from the working tree since the last push
+--   we saw. This is what makes a brand-new (or deleted) path show up live
+--   for every other connection already open on this branch, regardless of
+--   which connection caused it — a chat.append/file.create/delete on a file
+--   connection, an upload, or a Track/CharGen command (whose own dispatch
+--   already returns its own 'FileAdded's directly; this is a second,
+--   redundant-but-harmless path for those, and the *only* path for
+--   everything else).
 pushIncremental
   :: (BranchOpen r, Member (Embed IO) r, Member (Error String) r)
   => WS.Connection -> Maybe T.Text -> Set FilePath -> Sem r (Maybe T.Text, Set FilePath)
@@ -162,9 +161,11 @@ pushIncremental conn since knownFiles =
   catch @String
     (do
       (files, upd) <- branchStateSince (TickId <$> since)
-      let fileSet  = Set.fromList files
-          newFiles = Set.toList (Set.difference fileSet knownFiles)
+      let fileSet      = Set.fromList files
+          newFiles     = Set.toList (Set.difference fileSet knownFiles)
+          removedFiles = Set.toList (Set.difference knownFiles fileSet)
       mapM_ (\f -> embed $ WS.sendTextData conn (encode (FileAdded Nothing f))) newFiles
+      mapM_ (\f -> embed $ WS.sendTextData conn (encode (FileRemoved Nothing f))) removedFiles
       embed $ WS.sendTextData conn (encode (BranchUpdate upd))
       return (Just (updateHead upd), fileSet))
     (\err -> embed (reportError conn err) >> return (since, knownFiles))

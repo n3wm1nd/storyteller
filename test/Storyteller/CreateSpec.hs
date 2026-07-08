@@ -26,7 +26,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types
-import Storyteller.Core.Create (createFile)
+import Storyteller.Core.Create (createFile, deleteFile)
 
 runTestFS
   :: (forall n. Core.StoreM n => Core.StoreT n a)
@@ -95,3 +95,102 @@ spec = describe "createFile" $ do
       Right (exists, content) -> do
         exists `shouldBe` True
         content `shouldBe` Just ""
+
+  describe "deleteFile" $ do
+
+    -- 'Opaque' is reserved for content this module never introduced itself
+    -- (an external git commit, a hand-adopted repo) -- see 'Storage.Core's
+    -- own Haddock on 'Storage.Core.Tick'. 'deleteFile' commits one ordinary,
+    -- tagged 'Atom' (see 'Storage.Ops.removeFile') -- it never goes near
+    -- 'Storage.Ops.commitFile'/'commitWorktree's reconciliation at all, so
+    -- there's no path to an 'Opaque' fallback here regardless of whether
+    -- the file had content.
+    it "never synthesizes an Opaque commit, whether the file had content or not" $ do
+      let result = runTestFS $ do
+            _ <- createFile "scene.md"
+            _ <- Ops.append "scene.md" "hello\n"
+            deleteFile "scene.md"
+            Core.follow [] (\acc _ t -> (t : acc, True))
+      case result of
+        Left err    -> expectationFailure err
+        Right ticks -> ticks `shouldSatisfy` all (not . isOpaque)
+
+    -- Deletion is a forward event, not a rebase: the path disappears from
+    -- the *tree*, but every earlier tick -- including the one that
+    -- introduced it -- stays exactly where it was in history. Contrast
+    -- with the old (wrong) rebase-based implementation, which made
+    -- 'Tick.fileTicksOf' come back empty by physically excising those
+    -- ticks from the chain.
+    it "removes the path from the tree, but keeps its own tick history intact" $ do
+      let result = runTestFS $ do
+            _        <- createFile "scene.md"
+            deleteFile "scene.md"
+            present  <- Ops.exists "scene.md"
+            ticks    <- Tick.fileTicksOf "scene.md"
+            return (present, ticks)
+      case result of
+        Left err               -> expectationFailure err
+        Right (present, ticks) -> do
+          present `shouldBe` False
+          map Tick.ftKind ticks `shouldBe` ["atom", "atom"]
+          lookup "removed" (Tick.ftFields (last ticks)) `shouldBe` Just "true"
+
+    -- The whole point of a forward-event delete: rebasing at a tick from
+    -- before the deletion must still see the file exactly as it was then
+    -- -- a rebase-based delete would have erased that history outright.
+    -- 'readAt' only moves head, not the ambient tree (that's what
+    -- 'inWorktree' is for), so checking historical presence needs both:
+    -- jump there, then reset the ambient tree to match before reading it.
+    it "a rebase to a tick before the deletion still sees the file present" $ do
+      let result = runTestFS $ do
+            tid0 <- createFile "scene.md"
+            _    <- Ops.append "scene.md" "hello\n"
+            deleteFile "scene.md"
+            Core.readAt tid0 (Core.inWorktree (Ops.exists "scene.md"))
+      case result of
+        Left err         -> expectationFailure err
+        Right stillThere -> stillThere `shouldBe` True
+
+    -- 'atomHistory' (the content-fold 'Storage.Ops.commitFile'/
+    -- 'commitWorktree' reconcile against) must stop at the most recent
+    -- deletion marker, not fold pre-deletion content back in -- otherwise
+    -- a path recreated after being deleted would appear to already
+    -- contain its old content. The truncated history still includes the
+    -- deletion marker itself (as the oldest entry of this "life") and the
+    -- fresh creation marker after it -- both empty, so the fold's total
+    -- content is what actually matters here, not the entry count.
+    it "a path recreated after deletion starts genuinely empty, not carrying old content forward" $ do
+      let result = runTestFS $ do
+            _ <- createFile "scene.md"
+            _ <- Ops.append "scene.md" "old content\n"
+            deleteFile "scene.md"
+            _ <- createFile "scene.md"
+            Ops.atomHistory "scene.md"
+      case result of
+        Left err      -> expectationFailure err
+        Right history -> mconcat (map snd history) `shouldBe` ""
+
+    -- A fun consequence of deletion being an ordinary tick rather than a
+    -- bespoke mechanism: the *existing* single-tick rebase this codebase
+    -- already offers for correcting any misplaced tick (see
+    -- 'Server.Core.File.deleteFileAtom'/'Storage.Ops.deleteTick') works on
+    -- a removal tick for free -- removing it from history restores the
+    -- file, with no dedicated "undo delete" feature needed anywhere.
+    it "removing the deletion tick itself (via the ordinary single-tick rebase) restores the file" $ do
+      let result = runTestFS $ do
+            _      <- createFile "scene.md"
+            _      <- Ops.append "scene.md" "hello\n"
+            delTid <- deleteFile "scene.md"
+            Ops.deleteTick delTid
+            present <- Ops.exists "scene.md"
+            content <- Core.readFile "scene.md"
+            return (present, content)
+      case result of
+        Left err                 -> expectationFailure err
+        Right (present, content) -> do
+          present `shouldBe` True
+          content `shouldBe` "hello\n"
+
+isOpaque :: Core.Tick -> Bool
+isOpaque Core.Opaque {} = True
+isOpaque _              = False

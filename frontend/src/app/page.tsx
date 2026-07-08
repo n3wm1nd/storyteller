@@ -6,7 +6,7 @@ import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
 import {
-  openFile, createFile, closeFile, enterScene, leaveScene,
+  openFile, createFile, deleteFile, closeFile, enterScene, leaveScene,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
@@ -262,6 +262,13 @@ export default function Home() {
     pushPath(activeBranch, path);
   }
 
+  function handleDeleteFile(path: string) {
+    deleteFile(path);
+    closeFile(path);
+    if (selectedFile === path) setSelectedFile(null);
+    pushPath(activeBranch, null);
+  }
+
   function handleCloseFile() {
     if (selectedFile) closeFile(selectedFile);
     setSelectedFile(null);
@@ -343,6 +350,7 @@ export default function Home() {
               onSelectBranch={handleSelectBranch}
               onSelectFile={handleSelectFile}
               onCreateFile={handleCreateFile}
+              onDeleteFile={handleDeleteFile}
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
               onCreateChapter={createChapter}

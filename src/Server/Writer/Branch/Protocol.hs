@@ -83,22 +83,20 @@ commandKind = \case
 --
 --   BranchReady:  sent once on connect with the branch name and current file list.
 --   FileAdded:    a new file appeared in the branch tree.
+--   FileRemoved:  a file dropped out of the branch tree (e.g. a whole-file
+--                 delete — see Server.Core.File.deleteFile).
 --   BranchUpdate: tick state push — upsert all ticks, set head to updateHead.
 --   AgentLog:     progress message from a running agent.
 --   BranchError:  something went wrong; message is human-readable.
 --
--- FIXME: file tree changes are only tracked one-directionally — FileAdded
--- now covers any path appearing in the working tree, from any source
--- (Track/CharGen's own dispatch push it directly; every other connection's
--- 'pushIncremental' diffs the file list on each notify and pushes one too —
--- see Connection.hs), but there's still no FileRemoved/FileRenamed (or any
--- push at all) for a file disappearing or being renamed/moved from the
--- tree. Once delete/rename/move-file commands exist (see TODO.md), a
--- connected client's cached file list can silently drift from the real
--- tree with no event to correct it.
+-- File tree changes still have no rename event -- a rename is observed here
+-- as a 'FileRemoved' plus a 'FileAdded', not a single move. Nothing today
+-- needs the distinction; add one if a client ever needs to preserve
+-- per-file UI state (e.g. an open editor) across a rename.
 data BranchEvent
   = BranchReady  { beId :: Maybe T.Text, beBranch :: T.Text, beFiles :: [FilePath] }
   | FileAdded    { beId :: Maybe T.Text, bePath :: FilePath }
+  | FileRemoved  { beId :: Maybe T.Text, bePath :: FilePath }
   | BranchUpdate Update
   | AgentLog     { beLevel :: T.Text, beMessage :: T.Text }
   | BranchError  T.Text
@@ -114,6 +112,10 @@ instance ToJSON BranchEvent where
     FileAdded mid path ->
       object $ withId mid
         [ "type" .= ("file.added" :: T.Text)
+        , "path" .= path ]
+    FileRemoved mid path ->
+      object $ withId mid
+        [ "type" .= ("file.removed" :: T.Text)
         , "path" .= path ]
     BranchUpdate u -> toJSON u
     AgentLog level msg ->

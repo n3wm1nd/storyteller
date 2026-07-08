@@ -87,6 +87,14 @@ export async function createFile(path: string): Promise<void> {
   getServerCache().openFiles[path]?.conn.send({ type: "file.create" });
 }
 
+// Whole-file delete: every atom on path's chain is rebased out. The
+// server pushes file.absent once this lands (see Server.Writer.File.
+// Connection's pushIncremental) — same absent-state handling openFiles
+// already renders for a not-yet-created path.
+export function deleteFile(path: string) {
+  sendFileCommand(path, { type: "delete" });
+}
+
 export function closeFile(path: string) {
   getServerCache().openFiles[path]?.conn.close();
   mirrorServerEvent((s) => {

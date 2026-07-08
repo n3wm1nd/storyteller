@@ -114,6 +114,8 @@ export async function selectBranch(name: string): Promise<void> {
       mirrorServerEvent((s) => ({
         files: s.files.includes(evt.path) ? s.files : [...s.files, evt.path].sort(),
       }));
+    } else if (evt.type === "file.removed") {
+      mirrorServerEvent((s) => ({ files: s.files.filter((f) => f !== evt.path) }));
     } else if (evt.type === "update") {
       clearPreviewDelayTimer();
       mirrorServerEvent((s) => ({ ticks: applyUpdate(s.ticks, evt), branchHead: evt.head, preview: null }));

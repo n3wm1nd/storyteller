@@ -27,9 +27,8 @@ module Server.Writer.File.Dispatch
   ) where
 
 import Polysemy (Member, Sem)
-import Polysemy.Error (throw)
 
-import Server.Core.File (FileOpen, createFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote)
+import Server.Core.File (FileOpen, createFile, deleteFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote)
 import Server.Writer.File (chatWriter, chatFixer, chatConverse, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
@@ -49,7 +48,7 @@ runCommand path cmd = case cmd of
     appendToFile path content
 
   Delete _mid ->
-    throw @String "file delete not yet implemented"
+    deleteFile path
 
   EditAtom _mid tid content ->
     editFileAtom path (TickId tid) content

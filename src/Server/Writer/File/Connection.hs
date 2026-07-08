@@ -147,7 +147,11 @@ commandLoop branch conn path = loop
 -- mirror 'pushInitial' exactly, so it transitions to present the moment
 -- the file gets its first tick. 'since = Just tid' means we already have
 -- a HEAD to diff against; skip the push entirely if this write didn't
--- touch this file's chain.
+-- touch this file's chain at all (head unchanged) — but a HEAD that moved
+-- to "" (every atom rebased away, e.g. a whole-file delete) is a real
+-- transition back to absent, not "nothing new since last push":
+-- 'updateTicks' alone can't tell those two states apart, since both leave
+-- it empty, so 'updateHead' is checked first.
 pushIncremental
   :: (FileOpen r, Member (Embed IO) r, Member (Error String) r)
   => WS.Connection -> FilePath -> Maybe T.Text -> Sem r (Maybe T.Text)
@@ -161,9 +165,13 @@ pushIncremental conn path since =
                     embed $ WS.sendTextData conn (encode (FilePresent Nothing))
                     embed $ WS.sendTextData conn (encode (FileUpdate upd))
                     return (Just (updateHead upd))
-        Just _  | null (updateTicks upd) -> return since
-                | otherwise -> do
-                    embed $ WS.sendTextData conn (encode (FileUpdate upd))
-                    return (Just (updateHead upd))
+        Just knownHead
+          | updateHead upd == knownHead -> return since
+          | null (updateTicks upd) -> do
+              embed $ WS.sendTextData conn (encode (FileAbsent Nothing))
+              return Nothing
+          | otherwise -> do
+              embed $ WS.sendTextData conn (encode (FileUpdate upd))
+              return (Just (updateHead upd))
     )
     (\err -> embed (reportError conn err) >> return since)

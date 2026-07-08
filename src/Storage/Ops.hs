@@ -8,6 +8,7 @@
 module Storage.Ops
   ( addAtom
   , addAtomWithRefs
+  , removeFile
   , append
   , findAtom
   , editAtom
@@ -33,16 +34,19 @@ module Storage.Ops
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, filterM)
 import Control.Monad.State.Strict (lift)
 import Data.Array (Array, listArray, (!))
 import qualified Data.ByteString as BS
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 
 import Storage.Core
+import qualified Storage.FS as FS
 import Storage.FS (list)
 
 -- | Whether @path@ currently has any content in the ambient tree.
@@ -74,6 +78,24 @@ addAtomWithRefs :: StoreM m => [ObjectHash] -> FilePath -> Text -> StoreT m Obje
 addAtomWithRefs refs path content = do
   newHead <- store (Atom refs path [] content)
   appendFile path content
+  return newHead
+
+-- | Commit a whole-file deletion: an ordinary, empty 'Atom' tagged with
+--   'removedTagKey' -- a forward event, not a rebase, so every earlier
+--   atom on @path@ stays exactly where it was (see 'Storage.Core.store's
+--   own Haddock). What actually communicates "this file is gone" to a
+--   reader is @path@ dropping out of the tree, same as any other content
+--   change; the tag itself only exists to give a content fold (see
+--   'atomHistory') an efficient place to stop, not to be read as the
+--   signal on its own. Also removes @path@ from the ambient tree, so a
+--   caller doing further ambient 'Runix.FileSystem' operations
+--   immediately afterward (in the same branch scope) sees it gone there
+--   too -- same convention 'addAtom' already follows for its own ambient
+--   sync.
+removeFile :: StoreM m => FilePath -> StoreT m ObjectHash
+removeFile path = do
+  newHead <- store (Atom [] path [(removedTagKey, "true")] "")
+  FS.remove path
   return newHead
 
 -- | The nearest atom at or before @start@, walking backward through
@@ -203,15 +225,44 @@ commitWorktree = do
 --   than trying to track them individually (see its own Haddock, and the
 --   'Tick' module Haddock's 'Opaque' case: we don't know, and don't need
 --   to know, how many paths that covers). By now every atom-tracked path
---   already matches what its own reconciliation just committed, so if the
---   ambient tree's overall content still differs from head's, the
---   difference can only be exactly that untracked content -- one opaque
---   commit adopts all of it at once, no per-path enumeration needed.
+--   *should* already match what its own reconciliation just committed, so
+--   in the ordinary case any remaining difference is exactly that
+--   untracked content -- one opaque commit adopts all of it at once, no
+--   per-path enumeration needed.
+--
+--   But "should" is exactly the word an actual reconciliation bug breaks:
+--   'Opaque' means "content our own system didn't introduce" (see 'Tick's
+--   own Haddock), so it must never become the accidental fallback for
+--   content that *is* ours, just still unreconciled because something
+--   upstream of here has a bug. Rather than trust that every atom-tracked
+--   path was already handled, this explicitly re-checks: if any leftover
+--   difference still belongs to an atom-tracked path, that's a defect in
+--   the per-path reconciliation above, not adoptable external content, and
+--   it fails loudly instead of silently laundering the mismatch into an
+--   anonymous commit that would otherwise look exactly like a legitimate
+--   external change.
 syncOpaqueContent :: StoreM m => StoreT m ()
 syncOpaqueContent = do
   current   <- getAmbientTree
   committed <- inWorktree getAmbientTree
-  if current == committed then return () else () <$ store (Opaque [])
+  case divergentPaths current committed of
+    []    -> return ()
+    diffs -> do
+      tracked <- filterM hasAnyAtom diffs
+      case tracked of
+        [] -> () <$ store (Opaque [])
+        _  -> fail
+          (  "syncOpaqueContent: refusing to fold already atom-tracked path(s) into an "
+          <> "opaque commit -- this means their own reconciliation left them unresolved, "
+          <> "which is a bug, not external content: " <> List.intercalate ", " tracked
+          )
+
+-- | Every path where two working trees disagree -- present in only one,
+--   or present in both with different content.
+divergentPaths :: WorkingTree -> WorkingTree -> [FilePath]
+divergentPaths a b =
+  [ p | p <- Set.toList (Map.keysSet a `Set.union` Map.keysSet b)
+      , Map.lookup p a /= Map.lookup p b ]
 
 -- | Reconcile one file's ambient content against its committed atom
 --   history -- see the section Haddock for the classification rule. A
@@ -276,23 +327,32 @@ hasAnyAtom path = headHash >>= go
             []      -> return False
             (p : _) -> go p
 
--- | This file's own committed history: each atom tick's own contribution
---   to @path@, oldest first. Walks the whole chain from head to root --
---   the same cost 'findAtom' or any other history walk here pays. Only
---   worth paying once 'hasAnyAtom' has already confirmed there's
---   something to collect.
+-- | This file's own committed history, oldest first, back to whichever is
+--   closer: root, or @path@'s own most recent deletion event (see
+--   'Storage.Core.removedTagKey'). A deletion marker is a real, permanent
+--   tick -- 'Tick.fileTicksOf' still walks straight past it for a client
+--   wanting the full timeline -- but it's also a fold boundary: content
+--   from before it belongs to a previous life of this path, not to
+--   whatever's there now (possibly nothing, possibly a fresh
+--   'Storyteller.Core.Create.createFile' after it), so reconciliation here
+--   must not fold it back in. The marker itself is included, at empty
+--   content, so it costs nothing to fold over one more time; only what's
+--   *before* it is excluded.
 atomHistory :: StoreM m => FilePath -> StoreT m [(ObjectHash, Text)]
 atomHistory path = headHash >>= \h -> go h []
   where
     go h acc = do
-      t  <- lift (readTick h)
+      t <- lift (readTick h)
+      case t of
+        Atom _ p tags content | p == path ->
+          let acc' = (h, content) : acc
+          in if isRemoval tags then return acc' else continue h acc'
+        _ -> continue h acc
+    continue h acc = do
       cd <- lift (readCommit h)
-      let acc' = case t of
-            Atom _ p _ content | p == path -> (h, content) : acc
-            _                            -> acc
       case commitParents cd of
-        []      -> return acc'
-        (p : _) -> go p acc'
+        []      -> return acc
+        (p : _) -> go p acc
 
 -- | @path@'s current ambient content as text -- empty if the path
 --   doesn't exist there at all. Fails loudly on invalid UTF-8 rather
@@ -431,8 +491,16 @@ matchAtoms origs target = go 0 origs
           cursor'        = coreStart + len
       in AtomMatch (T.length orig) coreStart len : go cursor' rest
 
+-- | A zero-length original atom (e.g. 'Storyteller.Core.Create.createFile's
+--   own empty introduction atom, on a path nothing was ever appended to)
+--   always has 'amCoreLen' == 'amOriginalLen' == 0, since
+--   'longestCommonSubstring' short-circuits to @(0, 0, 0)@ whenever either
+--   input is empty -- regardless of what the target actually says. Without
+--   the 'amOriginalLen m > 0' guard, such an atom would read as "fully
+--   recovered, unchanged" against *any* target, including one where the
+--   whole file is gone, making it permanently undroppable.
 isKept :: AtomMatch -> Bool
-isKept m = amCoreLen m == amOriginalLen m
+isKept m = amOriginalLen m > 0 && amCoreLen m == amOriginalLen m
 
 coreOf :: Text -> AtomMatch -> Text
 coreOf target m = T.take (amCoreLen m) (T.drop (amCoreStart m) target)

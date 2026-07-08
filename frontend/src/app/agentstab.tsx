@@ -45,6 +45,7 @@ function usePromptFiles() {
       bumpActivity(label);
       if (evt.type === "branch.ready") setFiles(evt.files);
       else if (evt.type === "file.added") setFiles((fs) => (fs ? [...fs, evt.path] : fs));
+      else if (evt.type === "file.removed") setFiles((fs) => (fs ? fs.filter((f) => f !== evt.path) : fs));
     });
 
     (async () => {

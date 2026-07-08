@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, FileWarning, ChevronRight, Plus } from "lucide-react";
+import { Folder, FolderOpen, FileText, FileWarning, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { branchFileUrl } from "@/lib/ws";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ function FileTreeNode({ node, depth, selectedFile, onSelectFile, onDropFiles, ac
 // structure or file-level operations of their own.
 
 export function FileTree({
-  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onUploadFiles,
+  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onDeleteFile, onUploadFiles,
 }: {
   activeBranch: string | null;
   files: string[];
@@ -160,6 +160,7 @@ export function FileTree({
   selectedFile: string | null;
   onSelectFile: (f: string) => void;
   onCreateFile: (path: string) => void;
+  onDeleteFile: (path: string) => void;
   onUploadFiles: (files: { path: string; content: File }[]) => void;
 }) {
   const [rootDragOver, setRootDragOver] = useState(false);
@@ -207,6 +208,19 @@ export function FileTree({
           {activeBranch ?? "no branch"}
         </span>
         {activeBranch && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>{files.length} files</span>}
+        {activeBranch && selectedFile && (
+          <button
+            onClick={() => onDeleteFile(selectedFile)}
+            title={`Delete ${decodeURIComponent(selectedFile)}`}
+            style={{
+              width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "transparent", border: "none", borderRadius: 4,
+              color: "var(--text-dim)", cursor: "pointer", flexShrink: 0, padding: 0,
+            }}
+          >
+            <Trash2 style={{ width: 11, height: 11 }} />
+          </button>
+        )}
       </div>
 
       {!activeBranch ? (

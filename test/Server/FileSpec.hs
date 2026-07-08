@@ -127,6 +127,65 @@ spec runner = do
         Left err  -> expectationFailure err
         Right upd -> updateTicks upd `shouldBe` []
 
+  describe "deleteFile" $ do
+
+    -- Deletion is a forward event (see 'Storyteller.Core.Create's module
+    -- Haddock), not a rebase: the deletion itself lands as one more tick,
+    -- on top of whatever was already there -- 'fileState' keeps showing
+    -- the file's whole history, ending in that tick, rather than coming
+    -- back empty the way a rebase-based delete would have left it.
+    it "deletion lands as one more tick on top of the file's existing history" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- appendAtom "f.md" "first"
+            _ <- appendAtom "f.md" "second"
+            deleteFile "f.md"
+            fileState "f.md"
+      case result of
+        Left err  -> expectationFailure err
+        Right upd -> do
+          length (updateTicks upd) `shouldBe` 3
+          updateHead upd `shouldNotBe` ""
+          wtTickId (last (updateTicks upd)) `shouldBe` updateHead upd
+
+    -- Deleting one file must not disturb another file's own chain —
+    -- 'Storage.Ops.removeFile' commits a single tick scoped to its own
+    -- path.
+    it "does not affect another file's ticks" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _   <- appendAtom "keep.md" "kept content"
+            _   <- appendAtom "gone.md" "doomed content"
+            deleteFile "gone.md"
+            fileState "keep.md"
+      case result of
+        Left err  -> expectationFailure err
+        Right upd -> length (updateTicks upd) `shouldBe` 1
+
+    it "fails when the file isn't currently present" $
+      (run $ runner $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (deleteFile "nope.md"))
+        `shouldSatisfy` \case
+          Left _  -> True
+          Right _ -> False
+
+    -- End-to-end reproduction of the original bug report: deleting a file
+    -- appeared to succeed but left it uncreatable at the same path
+    -- afterward. Now that both 'createFile' and 'deleteFile' guard on tree
+    -- presence ('Storage.Ops.exists'), not tick history -- a deleted path
+    -- genuinely has no ticks of its own excised, they're kept for history,
+    -- see 'Storyteller.CreateSpec' -- recreating it succeeds, and the
+    -- recreated file's history (from 'atomHistory', which stops folding at
+    -- the deletion marker) doesn't carry any of the old content forward.
+    it "a path can be recreated after being deleted, with no leftover tick blocking it" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            createFile "f.md"
+            deleteFile "f.md"
+            createFile "f.md"
+            (,) <$> fileState "f.md" <*> runStorage @Main (Ops.atomHistory "f.md")
+      case result of
+        Left err -> expectationFailure err
+        Right (upd, (history, _)) -> do
+          length (updateTicks upd) `shouldBe` 3
+          mconcat (map snd history) `shouldBe` ""
+
   describe "moveFileAtom" $ do
 
     it "moving a single atom to front is a no-op on chain length" $ do

@@ -125,6 +125,7 @@ export type BranchCommand =
 export type BranchEvent =
   | { type: "branch.ready"; id?: string; branch: string; files: string[] }
   | { type: "file.added";   id?: string; path: string }
+  | { type: "file.removed"; id?: string; path: string }
   | Update
   | AgentLogEvent
   | ChatPreviewEvent

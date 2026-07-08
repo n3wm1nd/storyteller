@@ -361,6 +361,66 @@ spec = do
         Left err -> expectationFailure err
         Right ((stillPresent, _ids), _finalState) -> stillPresent `shouldBe` False
 
+    -- Reproduces a whole-file-delete bug: a file introduced via
+    -- 'Storyteller.Core.Create.createFile' has exactly one atom, with
+    -- empty content (the path's own introduction — see its Haddock).
+    -- 'longestCommonSubstring' short-circuits to (0,0,0) whenever either
+    -- input is empty, so a zero-length original atom always has
+    -- 'amCoreLen == amOriginalLen == 0' regardless of the target — 'isKept'
+    -- read that as "fully recovered, unchanged" unconditionally, so this
+    -- one atom could never be dropped no matter what the target said,
+    -- and a file that was created but never appended to could never be
+    -- deleted at all.
+    it "a file whose only atom has empty content is still fully dropped when removed" $ do
+      let result = runChain (do
+            _ <- addAtom "gone.md" ""
+            remove "gone.md"
+            commitWorktree
+            stillPresent <- elem "gone.md" <$> inWorktree list
+            ids          <- chainIds
+            return (stillPresent, ids))
+      case result of
+        Left err -> expectationFailure err
+        Right ((stillPresent, _ids), _finalState) -> stillPresent `shouldBe` False
+
+    -- The exact shape 'Storyteller.Core.Create.deleteFile' reconciles: a
+    -- 'createFile'-style empty introduction atom followed by real appended
+    -- content, all removed via 'commitFiles' (the scoped reconciler
+    -- 'deleteFile' actually calls, not the whole-tree 'commitWorktree').
+    -- Reproduces the original bug report exactly: content vanished from the
+    -- tree, but the file's empty "creation" atom stuck around in the chain
+    -- -- 'atomHistory' (unlike a plain tree-presence check) still walks
+    -- past it regardless of what the final tree looks like, so a stray
+    -- "kept" atom here would leave the path permanently un-recreatable
+    -- ('Server.Core.File.createFile's own "already exists" guard reads
+    -- exactly this). Fixed at the root in 'isKept' -- see its own Haddock
+    -- -- so plain 'commitFile' now drops it too, not just 'commitFiles'.
+    it "commitFiles drops a created-then-appended file's empty creation atom too, not just its content" $ do
+      let result = runChain (do
+            _ <- addAtom "gone.md" ""
+            _ <- addAtom "gone.md" "real content"
+            remove "gone.md"
+            commitFiles ["gone.md"]
+            stillPresent <- elem "gone.md" <$> inWorktree list
+            history      <- atomHistory "gone.md"
+            return (stillPresent, history))
+      case result of
+        Left err -> expectationFailure err
+        Right ((stillPresent, history), _finalState) -> do
+          stillPresent `shouldBe` False
+          history `shouldBe` []
+
+    it "commitFile alone (the bare, unscoped reconciler) also fully drops an emptied file's creation atom" $ do
+      let result = runChain (do
+            _ <- addAtom "gone.md" ""
+            _ <- addAtom "gone.md" "real content"
+            remove "gone.md"
+            commitFile "gone.md"
+            atomHistory "gone.md")
+      case result of
+        Left err -> expectationFailure err
+        Right (history, _finalState) -> history `shouldBe` []
+
   -- Non-UTF8 ambient content — see the "one small can of worms" design
   -- conversation: a path that was *never* atom-tracked (dropped in by
   -- hand, e.g. via the git CLI, or part of a whole pre-existing repo
