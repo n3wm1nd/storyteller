@@ -29,6 +29,7 @@ import qualified Server.FileSpec
 import qualified Server.CharacterSpec
 import qualified Server.LibrarySpec
 import qualified Server.NotificationSpec
+import qualified Server.StorageNotifySpec
 import qualified Server.Writer.GitWorkerSpec
 import Server.TestStack (testStack, testStackTransactional)
 
@@ -71,4 +72,5 @@ main = hspec $ do
   describe "Server.Writer.Character"            Server.CharacterSpec.spec
   describe "Server.Writer.Library"               Server.LibrarySpec.spec
   describe "Server.Writer.Notification"         Server.NotificationSpec.spec
+  describe "Server.Writer.Run (storageNotify)"  Server.StorageNotifySpec.spec
   describe "Server.Writer.GitWorker"            Server.Writer.GitWorkerSpec.spec

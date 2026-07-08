@@ -7,8 +7,7 @@
 import type { ChatPreviewEvent } from "./ws";
 import { getServerCache, mirrorServerEvent } from "./serverCacheStore";
 import { useUI } from "./uiStore";
-import { atRebase, stashMarkerFixup } from "./wsHelpers";
-import { tickChain } from "./utils";
+import { atRebase } from "./wsHelpers";
 
 // Shows the preview strip (as a "Generating…" placeholder) a beat after a
 // chat.prompt is sent, in case the real chat.preview.start takes a while to
@@ -65,7 +64,5 @@ function flushPendingSubmit() {
   useUI.setState({ pendingSubmit: null });
   const fc = getServerCache().openFiles[pending.path];
   if (!fc) return;
-  const marker = useUI.getState().rebaseMarker;
-  stashMarkerFixup(pending.path, tickChain(fc.ticks, fc.head), marker);
-  fc.conn.send(atRebase(marker, fc.ticks, pending.cmd, useUI.getState().journalMarkers));
+  fc.conn.send(atRebase(useUI.getState().rebaseMarker, fc.ticks, pending.cmd, useUI.getState().journalMarkers));
 }

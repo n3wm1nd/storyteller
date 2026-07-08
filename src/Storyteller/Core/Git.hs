@@ -78,8 +78,7 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 import Data.Maybe (fromMaybe, isJust)
-import Data.Tuple (swap)
-import Polysemy.State (State, get, put, modify, evalState, runState)
+import Polysemy.State (State, get, put, modify, evalState, execState, runState)
 
 -- 'readCommit'\/'writeCommit'\/'readObject'\/'writeObject' hidden and
 -- re-imported qualified as @RG.@ below -- "Storage.Core"'s own
@@ -138,6 +137,16 @@ emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 --   'DeleteBranch', 'SetRef', or a cascade triggered by 'UpdateReferences'.
 type RefWrite = (BranchName, Maybe TickId)
 
+-- | Everything one run of 'withStorageWithCallback' buffers: pending ref
+--   writes (last write per branch wins — see 'overlayRefs') and every
+--   tick id 'UpdateReferences' has renamed so far, oldest first. Kept as a
+--   single overlay (rather than two stacked 'State' effects) so 'handle'
+--   only ever has one thing to thread through 'get'/'modify'.
+data Overlay = Overlay
+  { ovRefs  :: [RefWrite]
+  , ovRemap :: [(TickId, TickId)]
+  }
+
 -- | The one real implementation of 'StoryStorage'. Every ref mutation calls
 --   the supplied @onRef@ callback (in order) and is recorded into the
 --   returned overlay, last write per branch wins. Reads ('ListBranches')
@@ -150,16 +159,28 @@ type RefWrite = (BranchName, Maybe TickId)
 --   'withStorage' instantiates it with a no-op callback and replays the
 --   overlay into the parent 'StoryStorage' only once the wrapped action has
 --   fully succeeded — nothing is written anywhere if it fails.
+--
+--   The returned tick-id remap is every rename 'UpdateReferences' was ever
+--   called with here, in order, *plus* everything 'cascadeReplace'
+--   separately discovers while rewriting other branches' ancestry (a
+--   descendant reparented onto a renamed commit, which isn't itself a key
+--   of the mapping it was called with — see 'cascadeReplace's own doc).
+--   Both pieces matter: dropping the input mapping loses the direct
+--   renames (a cascade that touches no other branch never calls
+--   'rewriteChain' on them at all — see its short-circuit for exactly this
+--   case), and dropping cascadeReplace's own discoveries loses everything
+--   it found *beyond* what it was told.
 withStorageWithCallback
   :: forall r a
   .  Members '[Git, Fail] r
   => (BranchName -> Maybe TickId -> Sem r ())
   -> Sem (StoryStorage : r) a
-  -> Sem r (a, [RefWrite])
-withStorageWithCallback onRef action =
-  swap <$> runState [] (reinterpret handle action)
+  -> Sem r (a, [RefWrite], [(TickId, TickId)])
+withStorageWithCallback onRef action = do
+  (Overlay refs remap, a) <- runState (Overlay [] []) (reinterpret handle action)
+  return (a, refs, remap)
   where
-    handle :: StoryStorage m x -> Sem (State [RefWrite] : r) x
+    handle :: StoryStorage m x -> Sem (State Overlay : r) x
     handle = \case
       CreateBranch name -> do
         let ref = storyRef name
@@ -180,7 +201,7 @@ withStorageWithCallback onRef action =
 
       ListBranches -> do
         pairs   <- raise $ listRefs storyRefPrefix
-        pending <- get
+        pending <- ovRefs <$> get
         return $ overlayRefs (map resolveToHead pairs) pending
 
       -- Reads each branch's *current* head — real git overlaid with this
@@ -198,21 +219,32 @@ withStorageWithCallback onRef action =
       -- tick's sibling to be duplicated in the chain.
       UpdateReferences mapping -> do
         pairs   <- raise $ listRefs storyRefPrefix
-        pending <- get
+        pending <- ovRefs <$> get
         let current = [ (storyRef (branchName b), ObjectHash (unTickId (branchHead b)))
                       | b <- overlayRefs (map resolveToHead pairs) pending ]
             hashMapping = Map.fromList
               [ (ObjectHash (unTickId o), ObjectHash (unTickId n)) | (o, n) <- mapping ]
-        cascadeReplace current applyRef hashMapping
+        discovered <- cascadeReplace current applyRef hashMapping
+        let extra = [ (TickId (unObjectHash o), TickId (unObjectHash n))
+                    | (o, n) <- Map.toList discovered, o /= n ]
+        modify (\ov -> ov { ovRemap = ovRemap ov ++ mapping ++ extra })
 
       SetRef name mtid -> applyRef name mtid
 
+      -- No cascade, no ref writes — 'AnnounceRemap' names a rename that
+      -- already happened. Under 'runStoryStorageGit' (nothing further
+      -- listening) that's simply nothing to do; under a *nested*
+      -- 'withStorage' it still has to be deferred like everything else
+      -- here, so it's folded into this scope's own accumulator rather than
+      -- forwarded immediately.
+      AnnounceRemap mapping -> modify (\ov -> ov { ovRemap = ovRemap ov ++ mapping })
+
     -- Appended, not prepended: 'overlayRefs' and 'withStorage's replay both
     -- rely on later entries for the same branch winning over earlier ones.
-    applyRef :: BranchName -> Maybe TickId -> Sem (State [RefWrite] : r) ()
+    applyRef :: BranchName -> Maybe TickId -> Sem (State Overlay : r) ()
     applyRef name mtid = do
       raise $ onRef name mtid
-      modify (++ [(name, mtid)])
+      modify (\ov -> ov { ovRefs = ovRefs ov ++ [(name, mtid)] })
 
     resolveToHead (RefName ref, hash) =
       Branch { branchName = BranchName (T.drop (T.length storyRefPrefix) ref)
@@ -236,35 +268,47 @@ runStoryStorageGit
   :: Members '[Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
-runStoryStorageGit = fmap fst . withStorageWithCallback applyToGit
+runStoryStorageGit = fmap (\(a, _, _) -> a) . withStorageWithCallback applyToGit
   where
     applyToGit name (Just tid) = updateRef (storyRef name) (ObjectHash (unTickId tid))
     applyToGit name Nothing    = deleteRef (storyRef name)
 
 -- | Transactional 'StoryStorage': ref mutations made by the wrapped action
 --   are buffered in memory (never touch git) and, only once the action
---   succeeds, replayed as a single batch of 'setRef' calls into the parent
---   'StoryStorage'. If the action fails, nothing is replayed and nothing
---   was ever written — same effect as if the action never ran.
+--   succeeds, replayed into the parent 'StoryStorage' as a single batch of
+--   'setRef' calls plus (if anything was renamed) one combined
+--   'updateReferences' call. If the action fails, nothing is replayed and
+--   nothing was ever written — same effect as if the action never ran.
 --
---   Replayed as at most one 'setRef' per branch, keeping only each
---   branch's last buffered write ('lastPerBranch') — the same last-write-
---   wins collapse 'overlayRefs' already applies for reads. A single
---   logical mutation (e.g. a chain move that rebases a whole tail, which
---   nests two 'at' calls and a multi-entry 'updateReferences' cascade)
---   buffers several intermediate writes to the same branch; replaying
---   every one of them individually into the parent 'StoryStorage' would
---   make each intermediate state real and independently observable — one
---   eager ref write, and one 'RefMoved' notification, per intermediate
---   step instead of one for the whole transaction. Collapsing first
---   ensures only the final, coherent state is ever published.
+--   Refs are replayed as at most one 'setRef' per branch, keeping only
+--   each branch's last buffered write ('lastPerBranch') — the same last-
+--   write-wins collapse 'overlayRefs' already applies for reads. Renames
+--   are replayed as every one accumulated (see 'withStorageWithCallback's
+--   'ovRemap' — no analogous collapse: unlike a ref position, an id rename
+--   isn't superseded by a later one for the *same* id in the way two
+--   writes to the same branch are, so nothing here should be dropped). A
+--   single logical mutation (e.g. a chain move that rebases a whole tail,
+--   which nests two 'at' calls and a multi-entry 'updateReferences'
+--   cascade) buffers several intermediate writes; replaying every one of
+--   them individually into the parent 'StoryStorage' would make each
+--   intermediate state real and independently observable — one eager ref
+--   write (and one rename notification), per intermediate step instead of
+--   one for the whole transaction. Collapsing first ensures only the
+--   final, coherent state is ever published — and gives a client tracking
+--   an id through this rebase exactly the mapping it needs, no more.
 withStorage
   :: Members '[StoryStorage, Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
 withStorage action = do
-  (a, refs) <- withStorageWithCallback (\_ _ -> pure ()) action
+  (a, refs, remap) <- withStorageWithCallback (\_ _ -> pure ()) action
   mapM_ (uncurry setRef) (lastPerBranch refs)
+  -- 'announceRemap', not 'updateReferences' — every rename here was already
+  -- cascaded (or already known, for direct 'UpdateReferences' calls) while
+  -- buffered; re-running 'UpdateReferences' against the parent StoryStorage
+  -- would cascade the very same, already-correct refs a second time. See
+  -- 'AnnounceRemap's own doc.
+  when (not (null remap)) $ announceRemap remap
   return a
 
 -- | Keep only the last buffered write per branch — see 'withStorage'.
@@ -284,7 +328,7 @@ withStorageDiscard
   :: Members '[Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
-withStorageDiscard = fmap fst . withStorageWithCallback (\_ _ -> pure ())
+withStorageDiscard = fmap (\(a, _, _) -> a) . withStorageWithCallback (\_ _ -> pure ())
 
 -- ---------------------------------------------------------------------------
 -- Cross-branch reference cascade
@@ -344,14 +388,25 @@ withStorageDiscard = fmap fst . withStorageWithCallback (\_ _ -> pure ())
 --   walk 'rewriteChain' was trying to avoid in the first place. See
 --   [[project_git_write_batching]] / PLAN-storage-monad.md's real-repo
 --   bench (@bench/RealGitPerf.hs@) for the measurement this addresses.
+-- | Returns every hash 'rewriteChain' actually resolved while walking the
+--   given branches — its full memo, not just @mapping@ echoed back. That's
+--   strictly *more* than @mapping@ alone in general (a descendant
+--   reparented onto a renamed commit isn't itself one of @mapping@'s keys)
+--   and generally disjoint from it (a hash that already appears as a key
+--   short-circuits before ever touching the memo — see 'rewriteChain') —
+--   this is deliberately the caller's job to combine with its own input
+--   mapping if it wants the complete picture (see 'withStorageWithCallback'
+--   /'ovRemap', which is exactly the seam this exists for: knowing what a
+--   rebase renamed beyond what it was told to rename is what lets a client
+--   tracking one of those descendant ids learn where it went).
 cascadeReplace
   :: Members '[Git, Fail] r
   => [(RefName, ObjectHash)]      -- ^ each branch's current head
   -> (BranchName -> Maybe TickId -> Sem r ())
   -> Map ObjectHash ObjectHash    -- ^ old commit hash -> new commit hash, for every superseded tick
-  -> Sem r ()
+  -> Sem r (Map ObjectHash ObjectHash)
 cascadeReplace pairs applyRef mapping =
-  evalState (Map.empty :: Map ObjectHash ObjectHash) $
+  execState (Map.empty :: Map ObjectHash ObjectHash) $
     mapM_ (rewriteRef (\n t -> raise (applyRef n t)) mapping) pairs
 
 rewriteRef

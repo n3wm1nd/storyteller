@@ -257,6 +257,7 @@ test-suite storyteller-test
                   , Server.CharacterSpec
                   , Server.LibrarySpec
                   , Server.NotificationSpec
+                  , Server.StorageNotifySpec
                   , Server.Writer.GitWorkerSpec
   autogen-modules:  Paths_storyteller
   build-depends:    base >=4.18 && <5

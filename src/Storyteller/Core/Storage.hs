@@ -19,6 +19,7 @@ module Storyteller.Core.Storage
   , listBranches
   , updateReferences
   , setRef
+  , announceRemap
 
     -- * File tick projection helper
   , ticksSince
@@ -43,6 +44,22 @@ data StoryStorage m a where
   --   TickId@, with no git vocabulary involved.
   SetRef :: BranchName -> Maybe TickId -> StoryStorage m ()
 
+  -- | A rename that has *already happened* — every real interpreter treats
+  --   this as a no-op, unlike 'UpdateReferences', which actually cascades.
+  --   Exists purely so 'Storyteller.Core.Git.withStorage' has something to
+  --   call once, at the end of a buffered scope, to make the *full*
+  --   accumulated rename (its own 'UpdateReferences' calls plus everything
+  --   'cascadeReplace' separately discovered while satisfying them) visible
+  --   to whatever's watching for it — 'Server.Writer.Run.storageNotify', in
+  --   production — without re-running the cascade a second time against
+  --   refs that are already correctly rewritten. Sending the *already*-
+  --   processed mapping back through 'UpdateReferences' instead would work
+  --   for the notification, but would also re-cascade every affected
+  --   branch a second time for nothing — exactly the repeated-work class of
+  --   bug 'Storyteller.AtGenericSpec's "cascade fires exactly once" test
+  --   exists to catch.
+  AnnounceRemap :: [(TickId, TickId)] -> StoryStorage m ()
+
 createBranch :: Member StoryStorage r => BranchName -> Sem r Branch
 createBranch name = send (CreateBranch name)
 
@@ -60,6 +77,9 @@ updateReferences mapping = send (UpdateReferences mapping)
 
 setRef :: Member StoryStorage r => BranchName -> Maybe TickId -> Sem r ()
 setRef name mtid = send (SetRef name mtid)
+
+announceRemap :: Member StoryStorage r => [(TickId, TickId)] -> Sem r ()
+announceRemap mapping = send (AnnounceRemap mapping)
 
 -- | Drop everything up to and including the tick named by @since@. If it
 --   isn't found (e.g. rewritten away by a move/replace), return everything —

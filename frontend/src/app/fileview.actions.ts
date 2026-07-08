@@ -6,10 +6,10 @@
 // see lib/serverCacheStore.ts's header for the write-access convention.
 
 import { fileConn } from "@/lib/ws";
-import type { FileCommand, ContextItem, WireTick } from "@/lib/ws";
+import type { FileCommand, ContextItem } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase, stashMarkerFixup, consumeMarkerFixup } from "@/lib/wsHelpers";
+import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain } from "@/lib/utils";
 
@@ -42,25 +42,17 @@ export async function openFile(path: string): Promise<void> {
       setConnStatus(label, "connected");
     } else if (evt.type === "update") {
       clearPreviewDelayTimer();
-      let nextTicks: Record<string, WireTick> = {};
       mirrorServerEvent((s) => {
         const prev = s.openFiles[path];
         if (!prev) return {};
-        nextTicks = applyUpdate(prev.ticks, evt);
         return {
           openFiles: {
             ...s.openFiles,
-            [path]: { ...prev, ticks: nextTicks, head: evt.head, absent: false },
+            [path]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
           },
           preview: null,
         };
       });
-      // See wsHelpers.consumeMarkerFixup: an at-wrapped command's own reply
-      // is just this one plain 'update', with no accompanying 'tick.remap'
-      // to look an old->new id up in — relocating the marker has to happen
-      // here, from the tail-length invariant stashed at send time.
-      const fixup = consumeMarkerFixup(path, tickChain(nextTicks, evt.head));
-      if (fixup !== undefined) useUI.setState({ rebaseMarker: fixup });
     } else if (evt.type === "tick.remap") {
       handleTickRemap(evt.mapping);
     } else if (evt.type === "agent.log") {
@@ -176,15 +168,11 @@ function buildContextTargets(path: string): string[] {
 // if one's set (see wsHelpers.atRebase) — the one place that reads
 // 'rebaseMarker'/'journalMarkers' and this file's own live 'ticks' to
 // resolve the actual 'at' pivot, so every mutating command below gets that
-// resolution identically instead of repeating it. Also stashes the tail
-// length (wsHelpers.stashMarkerFixup) right before sending, so whatever
-// 'update' comes back can relocate the marker with nothing else to go on
-// — see openFile's 'update' handler.
+// resolution identically instead of repeating it.
 function sendFileCommand(path: string, cmd: FileCommand) {
   const fc = getServerCache().openFiles[path];
   if (!fc) return;
   const ui = useUI.getState();
-  stashMarkerFixup(path, tickChain(fc.ticks, fc.head), ui.rebaseMarker);
   fc.conn.send(atRebase(ui.rebaseMarker, fc.ticks, cmd, ui.journalMarkers));
 }
 

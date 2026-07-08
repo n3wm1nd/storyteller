@@ -4,6 +4,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE GADTs #-}
@@ -26,6 +27,7 @@ module Server.Writer.Run
   , actionStack
   , loggingWS
   , wsAction
+  , storageNotify
   ) where
 
 import Control.Concurrent.STM (TChan, atomically, writeTChan)
@@ -49,7 +51,7 @@ import Storyteller.Core.Runtime (runInfrastructureWith, StoryModel, storyModel)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Storage (StoryStorage(..))
 import Storyteller.Core.Git (runStoryStorageGit)
-import Storyteller.Core.Types (unTickId)
+import Storyteller.Core.Types (TickId, unTickId)
 
 import Runix.LLM.Interpreter (interpretLLM, LlamaCppAuth(..))
 import Runix.RestAPI (RestEndpoint(..), RestAPI, restapiHTTP, llmRetry)
@@ -61,14 +63,21 @@ import qualified Runix.Time
 import qualified Runix.Git
 import qualified Polysemy.Fail.Type
 
--- | Intercept 'StoryStorage' and notify whenever 'UpdateReferences' rewrites
--- a non-empty batch of tick ids — the point at which any client tracking one
--- of those ids (a rebase marker, a context selection) needs to move it.
--- Doesn't consume the effect ('intercept', not 'interpret'): 'runStoryStorageGit'
--- still does the real work: this only observes the one call site that
--- already carries the mapping every rebase/replace/move computes internally.
+-- | Intercept 'StoryStorage' and notify whenever a non-empty batch of tick
+-- ids gets renamed — the point at which any client tracking one of those
+-- ids (a rebase marker, a context selection) needs to move it. Two call
+-- sites carry that: a direct 'UpdateReferences' (a rename reaching this
+-- layer without ever passing through a buffering 'Storyteller.Core.Git.
+-- withStorage'), and 'AnnounceRemap' ('withStorage's own end-of-scope
+-- announcement of everything it accumulated — see its doc for why that's a
+-- distinct, no-op-everywhere-else effect rather than reusing
+-- 'UpdateReferences' for it: replaying an already-cascaded mapping through
+-- 'UpdateReferences' would cascade it a second time). Doesn't consume the
+-- effect ('intercept', not 'interpret'): 'runStoryStorageGit' still does
+-- the real work (a real cascade for 'UpdateReferences', nothing at all for
+-- 'AnnounceRemap') — this only observes the mapping either one carries.
 storageNotify
-  :: Members '[StoryStorage, Embed IO] r
+  :: forall r a. Members '[StoryStorage, Embed IO] r
   => TChan BranchNotification
   -> Sem r a
   -> Sem r a
@@ -79,10 +88,17 @@ storageNotify chan = intercept $ \case
   SetRef name mtid  -> send (SetRef name mtid)
   UpdateReferences mapping -> do
     result <- send (UpdateReferences mapping)
-    if null mapping then return () else
+    announce mapping
+    return result
+  AnnounceRemap mapping -> do
+    result <- send (AnnounceRemap mapping)
+    announce mapping
+    return result
+  where
+    announce :: [(TickId, TickId)] -> Sem r ()
+    announce mapping = if null mapping then return () else
       embed $ atomically $ writeTChan chan $
         TicksRemapped (map (\(o, n) -> (unTickId o, unTickId n)) mapping)
-    return result
 
 newtype ServerAuth = ServerAuth LlamaCppAuth
 
