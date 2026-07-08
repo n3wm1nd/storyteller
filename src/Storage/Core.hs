@@ -63,6 +63,7 @@ module Storage.Core
   , FSNode(..)
   , WorkingTree
   , emptyWorkingTree
+  , loadWorkingTree
 
     -- * The monad
   , StoreT
@@ -84,6 +85,7 @@ module Storage.Core
   , drop
   , readAt
   , at
+  , atWith
   , editTick
   , replaceTick
   , resolveId
@@ -752,8 +754,29 @@ syncTo target0 = do
 --
 --   Fails (via 'MonadFail') if @target@ isn't actually in head's history,
 --   same as 'readAt'.
+--
+--   @'at' = 'atWith' 'id'@ -- see 'atWith' for the one caller
+--   (@'Storage.Ops.renameFile'@) that needs the tail's own replay to do
+--   more than reproduce each tick verbatim.
 at :: StoreM m => ObjectHash -> StoreT m a -> StoreT m a
-at target0 action = do
+at = atWith id
+
+-- | 'at', generalized with @onReplay@: applied to every tail tick just
+--   before it's re-stored on the way back up, instead of replaying it
+--   verbatim. @action@ itself (typically 'editTick') is still the only
+--   thing that touches @target@ -- @onReplay@ only ever sees ticks
+--   strictly after it, the same scope 'at's own Haddock already describes
+--   for the tail.
+--
+--   The one caller that needs this: 'Storage.Ops.renameFile' renames a
+--   file by editing just its creation tick's own @atomPath@ via @action@,
+--   then needs every later atom on the old path -- still carrying the old
+--   name in its own recorded data -- to pick up the same new name as it
+--   replays, or the rename would only ever take effect for that one tick.
+--   Plain 'at' has no hook for that; every other caller here still gets
+--   exactly 'at's own behavior by passing 'id'.
+atWith :: StoreM m => (Tick -> Tick) -> ObjectHash -> StoreT m a -> StoreT m a
+atWith onReplay target0 action = do
   target <- resolveId target0
   go target
   where
@@ -801,7 +824,7 @@ at target0 action = do
             (_ : _) -> do
               t   <- drop
               a   <- go target
-              new <- store t
+              new <- store (onReplay t)
               logRemap current new
               return a
 

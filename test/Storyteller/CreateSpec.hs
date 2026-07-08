@@ -182,6 +182,10 @@ spec = describe "createFile" $ do
             _      <- Ops.append "scene.md" "hello\n"
             delTid <- deleteFile "scene.md"
             Ops.deleteTick delTid
+            -- 'deleteTick' only moves head -- the ambient tree (what
+            -- 'exists'\/'readFile' actually check) needs an explicit
+            -- 'reset' to catch up, same as any other chain rebase.
+            Core.reset
             present <- Ops.exists "scene.md"
             content <- Core.readFile "scene.md"
             return (present, content)

@@ -162,3 +162,67 @@ spec = do
             _ <- addBinary "portrait.png" (BS.pack [0xFF])
             hasAnyAtom "portrait.png")
       result `shouldBe` Right False
+
+  describe "findCreationTick" $ do
+    it "finds the file's only atom when it was never deleted" $ do
+      let result = fst <$> runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- addAtom "scene.md" "p2\n"
+            found <- findCreationTick "scene.md"
+            return (found == t1))
+      result `shouldBe` Right True
+
+    -- The file's *current* lifetime -- not its very first one -- is what
+    -- a caller renaming "the file as it stands" actually wants.
+    it "finds the most recent creation, not the original one, after a delete-and-recreate" $ do
+      let result = fst <$> runChain (do
+            _   <- addAtom "scene.md" "old life\n"
+            _   <- removeFile "scene.md"
+            t2  <- addAtom "scene.md" "new life\n"
+            found <- findCreationTick "scene.md"
+            return (found == t2))
+      result `shouldBe` Right True
+
+  describe "renameFile" $ do
+    it "moves a single atom's content to the new path, nothing left at the old one" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            renameFile "scene.md" "chapter1.md"
+            old <- Storage.Ops.exists "scene.md"
+            new <- committedContent "chapter1.md"
+            return (old, new))
+      result `shouldBe` Right (False, "p1\n")
+
+    -- The whole point: a rename at the creation tick propagates through
+    -- every later atom on the old path as it replays, not just the first.
+    it "propagates through every atom appended after creation" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- addAtom "scene.md" "p2\n"
+            _ <- addAtom "scene.md" "p3\n"
+            renameFile "scene.md" "chapter1.md"
+            committedContent "chapter1.md")
+      result `shouldBe` Right "p1\np2\np3\n"
+
+    -- Disambiguation: an earlier, already-deleted life of the same path
+    -- must be left alone -- 'findCreationTick' targets the *current*
+    -- lifetime, so the rename never even reaches the old one's ticks.
+    it "does not touch an earlier, already-deleted life of the same path" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "old life\n"
+            _ <- removeFile "scene.md"
+            _ <- addAtom "scene.md" "new life\n"
+            renameFile "scene.md" "chapter1.md"
+            old     <- Storage.Ops.exists "scene.md"
+            renamed <- committedContent "chapter1.md"
+            return (old, renamed))
+      result `shouldBe` Right (False, "new life\n")
+
+    it "an atom edited (not just appended) after creation is also renamed correctly" $ do
+      let result = fst <$> runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- addAtom "scene.md" "p2\n"
+            _  <- editAtomAt t1 "p1-revised\n"
+            renameFile "scene.md" "chapter1.md"
+            committedContent "chapter1.md")
+      result `shouldBe` Right "p1-revised\np2\n"

@@ -30,6 +30,8 @@ module Storage.Ops
   , moveTick
   , mergeAtoms
   , splitTick
+  , findCreationTick
+  , renameFile
   ) where
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)
@@ -786,3 +788,65 @@ splitTick tid pieces = at tid $ do
       newId <- store (Atom refs path tags p)
       rest  <- storePieces [] path tags ps
       return (newId : rest)
+
+-- | Where @path@'s *current* lifetime began: the atom, walking back from
+--   head, whose own parent commit did *not* have @path@ in its tree --
+--   the definition of "created" ('renameFile' rebases here). Tree-based,
+--   not tag-based: it doesn't consult 'removedTagKey' at all, so it finds
+--   the right tick even for content that was never atom-tracked with any
+--   tag, as long as the tree itself changed presence at that point. A
+--   path that was deleted and later reused at the same path has two (or
+--   more) such ticks in its history; this always finds the one closest to
+--   head, i.e. the file as it currently stands.
+findCreationTick :: StoreM m => FilePath -> StoreT m ObjectHash
+findCreationTick path = headHash >>= go
+  where
+    go h = do
+      t  <- lift (readTick h)
+      cd <- lift (readCommit h)
+      case t of
+        Atom _ p _ _ | p == path -> case commitParents cd of
+          []        -> return h
+          (par : _) -> do
+            parentTree <- lift (loadWorkingTree par)
+            if Map.member path parentTree
+              then descend cd
+              else return h
+        _ -> descend cd
+      where
+        descend cd = case commitParents cd of
+          []        -> fail ("findCreationTick: no atom found for " <> path)
+          (par : _) -> go par
+
+-- | Rename @path@'s current lifetime (see 'findCreationTick') to
+--   @newPath@: one rebase, via "Storage.Core"'s 'atWith', at the creation
+--   tick -- @action@ ('editTick') renames that one tick; @onReplay@ then
+--   applies the exact same substitution to every later tail tick as it
+--   replays, so the whole lifetime picks up the new name in a single pass,
+--   with no separate call (or id bookkeeping) per atom. Safe to apply
+--   unconditionally to every tick whose recorded path is still @oldPath@,
+--   with no tree check needed at replay time the way 'findCreationTick'
+--   itself needs one: 'findCreationTick' already finds the *current*
+--   (most recent) lifetime, so by construction nothing between it and
+--   head can belong to some later, unrelated reuse of the same path --
+--   there is no "later" lifetime left to accidentally catch.
+--
+--   Also moves @oldPath@'s content in the ambient tree to @newPath@, same
+--   convention 'addAtom'\/'removeFile' already follow: a caller doing
+--   further ambient 'Runix.FileSystem' operations immediately afterward
+--   (in the same branch scope) sees the rename there too. Targeted, not a
+--   whole 'Storage.Core.reset' -- this must not clobber some other file's
+--   own pending ambient edit sitting in the same scope.
+renameFile :: StoreM m => FilePath -> FilePath -> StoreT m ()
+renameFile oldPath newPath = do
+  creationTid <- findCreationTick oldPath
+  () <$ atWith renameTo creationTid (editTick (fmap renameTo . requireAtom))
+  finalContent <- inWorktree (readFile newPath)
+  FS.remove oldPath
+  writeFile newPath finalContent
+  where
+    renameTo t = case t of
+      Atom refs p tags content | p == oldPath -> Atom refs newPath tags content
+      _                                       -> t
+    requireAtom t@Atom {} = return t
+    requireAtom _         = fail "renameFile: creation tick is not an atom"
