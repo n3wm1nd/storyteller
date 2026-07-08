@@ -26,23 +26,29 @@ import Data.Maybe (mapMaybe)
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.LLM (LLM)
+import UniversalLLM (ModelConfig, HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Storyteller.Writer.Agent (Instruction)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Git (BranchOp, runStorage)
-import Storyteller.Core.Runtime (StoryModel)
 import Storage.Tick (FileTick(..), fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
+-- | Generic over @fixerModel@ -- see 'Storyteller.Writer.Agent.ReplaceTool.reworkAtom'.
+--   Every production call site instantiates it at
+--   'Storyteller.Core.Runtime.StoryModel' (see 'Server.Writer.File.chatFixer').
 fixAgent
-  :: forall branch r
-  .  Members '[LLM StoryModel, PromptStorage, BranchOp branch, Fail] r
-  => FilePath
+  :: forall fixerModel branch r
+  .  ( HasTools fixerModel
+     , SupportsSystemPrompt (ProviderOf fixerModel)
+     , Members '[LLM fixerModel, PromptStorage, BranchOp branch, Fail] r )
+  => [ModelConfig fixerModel]
+  -> FilePath
   -> [TickId]                -- ^ targets: atoms flagged for fixing (non-empty)
   -> Instruction
   -> Sem r [TickId]
-fixAgent path targets instruction = do
+fixAgent configs path targets instruction = do
   (ticks0, _) <- runStorage @branch (fileTicksOf path)
   let idxs = mapMaybe (\t -> elemIndex (unTickId t) (map ftTickId ticks0)) targets
-  reworkAtomsAt @branch path instruction idxs
+  reworkAtomsAt @fixerModel @branch configs path instruction idxs

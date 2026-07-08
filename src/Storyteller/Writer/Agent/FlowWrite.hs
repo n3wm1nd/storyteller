@@ -28,38 +28,51 @@ module Storyteller.Writer.Agent.FlowWrite
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.LLM (LLM)
+import UniversalLLM (ModelConfig, HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Git (BranchOp, runStorage)
-import Storyteller.Core.Runtime (StoryModel)
 import Storyteller.Core.Storage (ticksSince)
 import Storage.Tick (fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. @charBlocks@ is the same @(label, resolved summary
 --   blocks)@ shape 'writeAgent' takes.
+--
+--   Generic over @proseModel@ (the new continuation) and @fixerModel@ (the
+--   in-flight revision) independently -- this function is the one place in
+--   production where both roles genuinely run side by side in a single
+--   call, so it's a real example of why they're separate type variables
+--   rather than one shared model. Every production call site instantiates
+--   both at 'Storyteller.Core.Runtime.StoryModel' today (see
+--   'Server.Writer.File.chatWriter') -- a choice made at the call site,
+--   not baked in here.
 flowWriteAgent
-  :: forall branch r
-  .  Members '[LLM StoryModel, PromptStorage, BranchOp branch, Fail] r
-  => FilePath                                       -- ^ file being continued
+  :: forall proseModel fixerModel branch r
+  .  ( SupportsSystemPrompt (ProviderOf proseModel)
+     , HasTools fixerModel, SupportsSystemPrompt (ProviderOf fixerModel)
+     , Members '[LLM proseModel, LLM fixerModel, PromptStorage, BranchOp branch, Fail] r )
+  => [ModelConfig proseModel]
+  -> [ModelConfig fixerModel]
+  -> FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
   -> ExistingContent
   -> [ContextBlock]                                  -- ^ extra context (e.g. user's pinned selection)
   -> Instruction
   -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
   -> Sem r ([TickId], Prose)
-flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
+flowWriteAgent proseConfigs fixerConfigs path flowTid existing extraContext instruction charBlocks = do
   (allTicks, _) <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0
     then return []
-    else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
+    else reworkAtomsAt @fixerModel @branch fixerConfigs path (flowInstruction instruction) inFlightIdxs
 
-  generated <- writeAgent existing extraContext instruction charBlocks
+  generated <- writeAgent @proseModel proseConfigs existing extraContext instruction charBlocks
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

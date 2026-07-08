@@ -78,12 +78,12 @@ chatWriter path prompt context mFlowTid = do
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid existing extraContext instruction []
+      (_reworked, Prose generated) <- flowWriteAgent @StoryModel @StoryModel @Main modelConfigs modelConfigs path flowTid existing extraContext instruction []
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
-      Prose generated <- writeAgent existing extraContext instruction []
+      Prose generated <- writeAgent @StoryModel modelConfigs existing extraContext instruction []
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
@@ -97,7 +97,7 @@ chatFixer path prompt context [] = chatWriter path prompt context Nothing
 chatFixer path prompt _context targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
-  _ <- fixAgent @Main path targets (Instruction prompt)
+  _ <- fixAgent @StoryModel @Main modelConfigs path targets (Instruction prompt)
   info $ "fixer agent done: " <> T.pack path
 
 -- | Discuss, don't write: run the chat agent against this file's own
