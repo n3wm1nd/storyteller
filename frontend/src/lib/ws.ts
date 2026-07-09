@@ -133,8 +133,6 @@ export interface WireUndoEntry {
 export type SessionEvent =
   | { type: "session.ready" }
   | { type: "branch.list";     branches: string[] }
-  | { type: "branch.created";  id?: string; branch: string }
-  | { type: "branch.deleted";  id?: string; branch: string }
   | { type: "character.list";  characters: CharacterSummary[] }
   | { type: "undo.log";        entries: WireUndoEntry[] }
   | ErrorEvent;

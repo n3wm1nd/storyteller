@@ -19,8 +19,6 @@ import Data.Aeson.Types (Parser)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
 
-import Server.Core.Protocol (withId)
-
 data SessionCommand
   = CreateBranch   { scId :: Maybe T.Text, scBranch :: T.Text }
   | DeleteBranch   { scId :: Maybe T.Text, scBranch :: T.Text }
@@ -84,12 +82,14 @@ instance ToJSON WireUndoEntry where
 data SessionEvent
   = SessionReady'
   -- | Always unprompted: pushed once right after 'SessionReady'' with the
-  -- current list, and again whenever any branch ref moves anywhere (see
-  -- 'Server.Writer.Session.Connection's notifier) — a session never has to
-  -- ask for this, only listen for it.
+  -- current list, again whenever any branch ref moves anywhere (see
+  -- 'Server.Writer.Session.Connection's notifier), and once more, directly,
+  -- to the connection that just sent 'CreateBranch'/'DeleteBranch' (see
+  -- 'Dispatch.runCommand') so it doesn't have to wait on the 'RefMoved'
+  -- round trip it triggered itself — same one-list-no-confirmation-event
+  -- shape either way, so a client never has to reconcile an incremental
+  -- create/delete notice against this list.
   | BranchList     { seBranches :: [T.Text] }
-  | BranchCreated  { seId :: Maybe T.Text, seBranch :: T.Text }
-  | BranchDeleted  { seId :: Maybe T.Text, seBranch :: T.Text }
   -- | Same "unprompted only" shape as 'BranchList', scoped to 'character/*'
   -- branches — see 'Server.Writer.Session.Connection's notifier.
   | CharacterList  { seCharacters :: [CharacterSummary] }
@@ -109,10 +109,6 @@ instance ToJSON SessionEvent where
       object [ "type" .= ("session.ready" :: T.Text) ]
     BranchList branches ->
       object [ "type" .= ("branch.list"    :: T.Text), "branches" .= branches ]
-    BranchCreated mid branch ->
-      object $ withId mid [ "type" .= ("branch.created" :: T.Text), "branch"   .= branch ]
-    BranchDeleted mid branch ->
-      object $ withId mid [ "type" .= ("branch.deleted" :: T.Text), "branch"   .= branch ]
     CharacterList characters ->
       object [ "type" .= ("character.list" :: T.Text), "characters" .= characters ]
     UndoLog entries ->

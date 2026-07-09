@@ -28,13 +28,14 @@ export async function connect(): Promise<void> {
     if (evt.type === "session.ready") {
       setConnStatus("session", "connected");
     } else if (evt.type === "branch.list") {
-      mirrorServerEvent({ branches: evt.branches });
-    } else if (evt.type === "branch.created") {
-      mirrorServerEvent((s) => ({ branches: [...s.branches, evt.branch].sort() }));
-    } else if (evt.type === "branch.deleted") {
+      // The one source of truth for which branches exist — pushed complete
+      // on every create/delete (see Server.Writer.Session.Protocol), so
+      // there's no separate incremental event to reconcile against it. Only
+      // extra bit the client derives locally: if the active branch fell out
+      // of this list, it was the one just deleted.
       mirrorServerEvent((s) => ({
-        branches: s.branches.filter((b) => b !== evt.branch),
-        activeBranch: s.activeBranch === evt.branch ? null : s.activeBranch,
+        branches: evt.branches,
+        activeBranch: s.activeBranch !== null && !evt.branches.includes(s.activeBranch) ? null : s.activeBranch,
       }));
     } else if (evt.type === "character.list") {
       mirrorServerEvent({ characterBranches: evt.characters });

@@ -31,7 +31,7 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Session.Protocol
 import Storyteller.Core.Git (BranchTag, runBranchAndFS)
 import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
-import Storyteller.Core.Types (BranchName(..), Branch(..))
+import Storyteller.Core.Types (BranchName(..), branchName)
 import Storyteller.Core.Undo (UndoEntry(..), listUndo, resetToUndo)
 
 import Prelude hiding (readFile)
@@ -39,19 +39,29 @@ import Prelude hiding (readFile)
 runCommand :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> SessionCommand -> Sem r ()
 runCommand conn cmd = case cmd of
 
-  CreateBranch mid branch -> do
+  -- No direct branch.created/branch.deleted confirmation: same
+  -- one-list-no-round-trip shape as 'UndoReset' below — the ref write also
+  -- reaches the notifier (see Server.Writer.Session.Connection), which
+  -- re-pushes the same 'BranchList' to every connection including this one;
+  -- pushing it here too just spares the initiator that round trip, with no
+  -- separate incremental event for a client to reconcile against it.
+  CreateBranch _mid branch -> do
     let name = BranchName branch
     getBranch name >>= \case
       Just _  -> throw @String ("branch already exists: " <> T.unpack branch)
       Nothing -> do
-        b <- createBranch name
-        push (BranchCreated mid (unBranchName (branchName b)))
+        _ <- createBranch name
+        branchNames >>= push . BranchList
+        if "character/" `T.isPrefixOf` branch then characterSummaries >>= push . CharacterList else return ()
 
-  DeleteBranch mid branch -> do
+  DeleteBranch _mid branch -> do
     let name = BranchName branch
     getBranch name >>= \case
       Nothing -> throw @String ("branch not found: " <> T.unpack branch)
-      Just _  -> deleteBranch name >> push (BranchDeleted mid branch)
+      Just _  -> do
+        deleteBranch name
+        branchNames >>= push . BranchList
+        if "character/" `T.isPrefixOf` branch then characterSummaries >>= push . CharacterList else return ()
 
   -- No direct confirmation event: restoring refs re-triggers the same
   -- RefMoved-driven notifier every other write does (see
