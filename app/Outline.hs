@@ -33,10 +33,10 @@ import System.IO (hPutStrLn, stderr)
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
-import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
+import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
@@ -68,8 +68,7 @@ main = do
     Right text -> TIO.putStrLn text
 
 outlineAction
-  :: Members '[ LLM StoryModel
-              , PromptStorage
+  :: (LLMs r, Members '[ PromptStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -77,7 +76,7 @@ outlineAction
               , StoryStorage
               , Splitter
               , Git
-              , Logging, Fail] r
+              , Logging, Fail] r)
   => FilePath -> T.Text -> Sem r T.Text
 outlineAction outFile guidance = do
   -- @outline.md@ is the document being expanded; every other branch file goes
@@ -87,6 +86,6 @@ outlineAction outFile guidance = do
   let source = OutlineDoc $ case guidance of
         "" -> outline
         g  -> g <> "\n\n" <> outline
-  beatSheet <- expandAgent @StoryModel modelConfigs ToBeatSheet fileCtx source
+  beatSheet <- expandAgent modelConfigs ToBeatSheet fileCtx source
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms beatSheet
   return beatSheet

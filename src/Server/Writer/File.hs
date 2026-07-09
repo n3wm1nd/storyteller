@@ -53,7 +53,6 @@ import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.CLI.Env (modelConfigs)
 import Storyteller.Core.Runtime (Main)
-import Storyteller.Core.LLM.Role (ProseModel, FixerModel)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
@@ -79,12 +78,12 @@ chatWriter path prompt context layout mFlowTid = do
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @ProseModel @FixerModel @Main modelConfigs modelConfigs path flowTid existing extraContext instruction []
+      (_reworked, Prose generated) <- flowWriteAgent @Main modelConfigs modelConfigs path flowTid existing extraContext instruction []
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
-      Prose generated <- writeAgent @ProseModel modelConfigs existing extraContext instruction []
+      Prose generated <- writeAgent modelConfigs existing extraContext instruction []
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
@@ -98,7 +97,7 @@ chatFixer path prompt context [] = chatWriter path prompt context [] Nothing
 chatFixer path prompt _context targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
-  _ <- fixAgent @FixerModel @Main modelConfigs path targets (Instruction prompt)
+  _ <- fixAgent @Main modelConfigs path targets (Instruction prompt)
   info $ "fixer agent done: " <> T.pack path
 
 -- | Discuss, don't write: run the chat agent against this file's own
@@ -126,7 +125,7 @@ chatConverse path prompt = do
   let history = historyFromFileTicks ticks
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "chat agent starting: " <> T.pack path
-  added <- chatAgent @(BranchTag Main) @ProseModel modelConfigs (history ++ [UserText prompt])
+  added <- chatAgent @(BranchTag Main) modelConfigs (history ++ [UserText prompt])
   let reply = mconcat [t | AssistantText t <- added]
   _ <- runStorage @Main (Ops.append path reply)
   info $ "chat agent done: " <> T.pack path
@@ -178,9 +177,9 @@ chatChapterRegen mode path prompt context = do
           noChars      = [] :: [CharContextBlock]
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path
       Prose regenerated <- case mode of
-        RegenWhole  -> reconcileChapter @ProseModel modelConfigs (Just (WordCount 1200))
+        RegenWhole  -> reconcileChapter modelConfigs (Just (WordCount 1200))
                          noChars extraContext current instruction sheet
-        RegenByBeat -> reconcileChapterByBeat @ProseModel modelConfigs (Just (WordCount 300))
+        RegenByBeat -> reconcileChapterByBeat modelConfigs (Just (WordCount 300))
                          noChars extraContext current instruction sheet maxBeats
       -- Overwrite the file in the working tree, then reconcile against the
       -- chain: unchanged atoms keep their ids, changed atoms replace in place,
@@ -204,7 +203,7 @@ chatSplitOutline path = do
   outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
   (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
   info $ "outline split starting: " <> T.pack path
-  sheets <- splitOutlineAgent @ProseModel modelConfigs fileCtx outline
+  sheets <- splitOutlineAgent modelConfigs fileCtx outline
   mapM_ writeSheet sheets
   info $ "outline split done: " <> T.pack path <> " (" <> T.pack (show (length sheets)) <> " chapters)"
   where

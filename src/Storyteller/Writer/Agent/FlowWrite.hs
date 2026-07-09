@@ -27,9 +27,9 @@ module Storyteller.Writer.Agent.FlowWrite
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.LLM (LLM)
-import UniversalLLM (ModelConfig, HasTools, ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (ModelConfig)
 
+import Storyteller.Core.LLM.Role (LLMs, ProseModel, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
@@ -42,21 +42,14 @@ import Storyteller.Core.Types (TickId(..))
 -- | See module header. @charBlocks@ is the same @(label, resolved summary
 --   blocks)@ shape 'writeAgent' takes.
 --
---   Generic over @proseModel@ (the new continuation) and @fixerModel@ (the
---   in-flight revision) independently -- this function is the one place in
---   production where both roles genuinely run side by side in a single
---   call, which is exactly why 'Storyteller.Core.LLM.Role' needs two
---   distinct role proxy types rather than one shared model. The production
---   call site (see 'Server.Writer.File.chatWriter') instantiates them at
---   'Storyteller.Core.LLM.Role.ProseModel'\/'Storyteller.Core.LLM.Role.FixerModel'
---   -- a choice made at the call site, not baked in here.
+--   The one place in production where 'ProseModel' (the new continuation)
+--   and 'AgentModel' (the in-flight revision) genuinely run side by side in
+--   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
-  :: forall proseModel fixerModel branch r
-  .  ( SupportsSystemPrompt (ProviderOf proseModel)
-     , HasTools fixerModel, SupportsSystemPrompt (ProviderOf fixerModel)
-     , Members '[LLM proseModel, LLM fixerModel, PromptStorage, BranchOp branch, Fail] r )
-  => [ModelConfig proseModel]
-  -> [ModelConfig fixerModel]
+  :: forall branch r
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
+  => [ModelConfig ProseModel]
+  -> [ModelConfig AgentModel]
   -> FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
   -> ExistingContent
@@ -70,9 +63,9 @@ flowWriteAgent proseConfigs fixerConfigs path flowTid existing extraContext inst
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0
     then return []
-    else reworkAtomsAt @fixerModel @branch fixerConfigs path (flowInstruction instruction) inFlightIdxs
+    else reworkAtomsAt @branch fixerConfigs path (flowInstruction instruction) inFlightIdxs
 
-  generated <- writeAgent @proseModel proseConfigs existing extraContext instruction charBlocks
+  generated <- writeAgent proseConfigs existing extraContext instruction charBlocks
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

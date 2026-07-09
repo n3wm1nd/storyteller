@@ -77,7 +77,7 @@ data KnownModel where
              => ModelID -> m -> [ModelConfig m] -> KnownModel
 
 -- | Every model Storyteller can wire up to a role, keyed by the name used in
---   e.g. @ROLE_PROSE_MODEL@\/@ROLE_FIXER_MODEL@. Add a model by adding one
+--   e.g. @ROLE_PROSE_MODEL@\/@ROLE_AGENT_MODEL@. Add a model by adding one
 --   entry here (and, if it's new to @universal-llm@, the capability
 --   instances 'KnownModel' requires) -- nothing else changes.
 knownModels :: [(String, KnownModel)]

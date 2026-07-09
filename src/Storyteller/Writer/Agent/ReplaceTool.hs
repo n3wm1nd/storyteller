@@ -46,14 +46,15 @@ import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.LLM (LLM, queryLLM)
+import Runix.LLM (queryLLM)
 import Runix.LLM.ToolInstances ()
-import UniversalLLM (Message(..), ModelConfig(..), HasTools, ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
   , executeToolCallFromList, ToolResult(..)
   )
 
+import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
 import Storyteller.Core.Git (BranchOp, runStorage)
@@ -104,19 +105,11 @@ proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newTe
 --   The pure decision core: only 'LLM'/'Fail', no filesystem or storage
 --   access — applying a proposal is 'reworkAtomsAt's job.
 --
---   Generic over @fixerModel@ -- the fixer role is independent of whatever
---   plays the prose-generation role (see
---   'Storyteller.Writer.Agent.Write.writeAgent'); a caller like
---   'Storyteller.Writer.Agent.FlowWrite.flowWriteAgent' can genuinely use
---   different models for the two. The server call site instantiates
---   @fixerModel@ at 'Storyteller.Core.LLM.Role.FixerModel' -- a choice made
---   at the call site, not baked in here.
+--   Always the 'AgentModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
 reworkAtom
-  :: forall fixerModel r
-  .  ( HasTools fixerModel
-     , SupportsSystemPrompt (ProviderOf fixerModel)
-     , Members '[LLM fixerModel, PromptStorage, Fail] r )
-  => [ModelConfig fixerModel] -> T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig AgentModel] -> T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
 reworkAtom configs content (Instruction instr) = do
   Prompt systemPrompt <- getPrompt "agent.fixer.system" defaultFixerSystemPrompt
   Prompt template     <- getPrompt "agent.fixer.template" defaultFixerTemplate
@@ -131,7 +124,7 @@ reworkAtom configs content (Instruction instr) = do
       Prompt prompt = applyTemplate (Prompt template)
         [ ("content", Prompt content), ("instruction", Prompt instr) ]
 
-  response <- queryLLM @fixerModel
+  response <- queryLLM
     (SystemPrompt systemPrompt : Tools (map llmToolToDefinition tools) : configs)
     [UserText prompt]
   case [tc | AssistantTool tc <- response] of
@@ -166,18 +159,16 @@ defaultFixerTemplate =
 --   started — this is the one place ids and content genuinely can't be
 --   gathered upfront and handed to a pure core.
 reworkAtomsAt
-  :: forall fixerModel branch r
-  .  ( HasTools fixerModel
-     , SupportsSystemPrompt (ProviderOf fixerModel)
-     , Members '[LLM fixerModel, PromptStorage, BranchOp branch, Fail] r )
-  => [ModelConfig fixerModel] -> FilePath -> Instruction -> [Int] -> Sem r [TickId]
+  :: forall branch r
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
+  => [ModelConfig AgentModel] -> FilePath -> Instruction -> [Int] -> Sem r [TickId]
 reworkAtomsAt configs path instruction idxs = catMaybes <$> mapM oneAt idxs
   where
     oneAt idx = do
       (ticks, _) <- runStorage @branch (Tick.fileTicksOf path)
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
-          mProposal <- reworkAtom @fixerModel configs content instruction
+          mProposal <- reworkAtom configs content instruction
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do

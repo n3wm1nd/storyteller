@@ -45,15 +45,14 @@ rightEyeColor :: T.Text
 rightEyeColor = "Her eyes were a deep green, the same shade as her mother's."
 
 spec
-  :: forall storyModel judgeModel
-  .  ( HasTools storyModel, SupportsSystemPrompt (ProviderOf storyModel)
-     , HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel) )
-  => Runner storyModel judgeModel -> Spec
+  :: forall judgeModel
+  .  (HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel))
+  => Runner judgeModel -> Spec
 spec runner = describe "reworkAtom (real LLM, cached)" $ do
 
   it "corrects a planted continuity error without rewriting the rest of the sentence" $
-    runExpect @storyModel @judgeModel runner $ do
-      mProposal <- reworkAtom @storyModel [] wrongEyeColor instruction
+    runExpect @judgeModel runner $ do
+      mProposal <- reworkAtom [] wrongEyeColor instruction
       info ("reworkAtom proposal: " <> T.pack (show mProposal))
       case mProposal of
         Nothing -> embed $ expectationFailure
@@ -72,8 +71,8 @@ spec runner = describe "reworkAtom (real LLM, cached)" $ do
             pass `shouldBe` True
 
   it "declines to change an atom that's already consistent with the instruction" $
-    runExpect @storyModel @judgeModel runner $ do
-      mProposal <- reworkAtom @storyModel [] rightEyeColor instruction
+    runExpect @judgeModel runner $ do
+      mProposal <- reworkAtom [] rightEyeColor instruction
       info ("reworkAtom proposal: " <> T.pack (show mProposal))
       embed $ mProposal `shouldSatisfy` \case
         Nothing -> True

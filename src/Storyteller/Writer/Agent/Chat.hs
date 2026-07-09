@@ -77,11 +77,12 @@ import Polysemy
 import Polysemy.Fail
 
 import Runix.FileSystem (FileSystem, FileSystemRead)
-import Runix.LLM (LLM, queryLLM)
+import Runix.LLM (queryLLM)
 import qualified Runix.Tools as Tools
-import UniversalLLM (HasTools, Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFromList)
 
+import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
 import Storage.Tick (FileTick(..))
 
@@ -96,17 +97,16 @@ import Storage.Tick (FileTick(..))
 --   there's nothing worth the extra shape (and the loss of "the recursive
 --   call looks exactly like the original one") to save it.
 chatAgent
-  :: forall branch model r
-  .  ( SupportsSystemPrompt (ProviderOf model), HasTools model
-     , Members '[LLM model, PromptStorage, FileSystem branch, FileSystemRead branch, Fail] r )
-  => [ModelConfig model]
-  -> [Message model]        -- ^ context to send: history plus this turn's new message(s) so far
-  -> Sem r [Message model]  -- ^ everything this call added on top of the given context
+  :: forall branch r
+  .  (LLMs r, Members '[PromptStorage, FileSystem branch, FileSystemRead branch, Fail] r)
+  => [ModelConfig AgentModel]
+  -> [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
+  -> Sem r [Message AgentModel]  -- ^ everything this call added on top of the given context
 chatAgent configs context = do
   Prompt sys <- getPrompt "agent.chat.system" defaultChatSystemPrompt
   let tools = chatTools @branch @r
       configsWithTools = SystemPrompt sys : Tools (map llmToolToDefinition tools) : configs
-  response <- queryLLM @model configsWithTools context
+  response <- queryLLM configsWithTools context
   case [tc | AssistantTool tc <- response] of
     [] -> return response
     calls -> do

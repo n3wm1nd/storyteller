@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -53,6 +54,7 @@ import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.LLM.Registry
   ( KnownModel(..), LLMRunner(..), ModelID(..)
   , knownModels, modelInterpreter, resolveKnownModel, withKnownModel )
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
@@ -88,17 +90,24 @@ resolveFixture = getDataFileName
 mainBranch :: BranchName
 mainBranch = BranchName "main"
 
--- | Every effect a scenario runs in: both models, prompt overrides,
---   logging, and (see 'mainBranch') git-backed storage -- 'Git'\/
---   'StoryStorage' directly, plus 'mainBranch''s own already-open
+-- | Every effect a scenario runs in: 'LLMs' (both agent roles -- see
+--   'Storyteller.Core.LLM.Role' -- rather than one free @storyModel@
+--   variable, since production agents ('writeAgent', 'reworkAtom',
+--   'splitOutlineAgent', ...) now hardcode their role internally instead of
+--   staying generic), the judge's own independent @judgeModel@, prompt
+--   overrides, logging, and (see 'mainBranch') git-backed storage --
+--   'Git'\/'StoryStorage' directly, plus 'mainBranch''s own already-open
 --   'BranchOp'\/'FileSystem' trio. Shared between 'Runner' and 'runExpect'
 --   so the two can't drift apart.
-type ScenarioEffects storyModel judgeModel =
-  '[ LLM storyModel, LLM judgeModel, PromptStorage, Logging
-   , Git, StoryStorage, BranchOp Main, Splitter
-   , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
-   , Fail, Embed IO
-   ]
+type ScenarioEffects judgeModel r =
+  ( LLMs r
+  , Members
+      '[ LLM judgeModel, PromptStorage, Logging
+       , Git, StoryStorage, BranchOp Main, Splitter
+       , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
+       , Fail, Embed IO
+       ] r
+  )
 
 -- | The fully-built interpreter every spec runs its scenarios through --
 --   built exactly once by @Main.hs@ (inside a pair of nested
@@ -117,8 +126,8 @@ type ScenarioEffects storyModel judgeModel =
 --   makes it a fresh, unconstrained metavariable at every call site
 --   (ambiguous -- GHC has nothing to pin it to), since nothing in
 --   @IO (Either String a)@ mentions @r@ at all.
-type Runner storyModel judgeModel
-  = forall a. (forall r. Members (ScenarioEffects storyModel judgeModel) r => Sem r a) -> IO (Either String a)
+type Runner judgeModel
+  = forall a. (forall r. ScenarioEffects judgeModel r => Sem r a) -> IO (Either String a)
 
 -- | Run a scenario and turn a 'Fail' into an hspec failure -- the
 --   @result <- runner (...); case result of Left err -> expectationFailure
@@ -127,8 +136,8 @@ type Runner storyModel judgeModel
 --   inside the action itself (see @Agent.Integration.CharContextWriteSpec@\/
 --   @Agent.Integration.ReworkAtomSpec@) and so end in @()@.
 runExpect
-  :: forall storyModel judgeModel
-  .  Runner storyModel judgeModel
-  -> (forall r. Members (ScenarioEffects storyModel judgeModel) r => Sem r ())
+  :: forall judgeModel
+  .  Runner judgeModel
+  -> (forall r. ScenarioEffects judgeModel r => Sem r ())
   -> IO ()
 runExpect runner action = runner action >>= either expectationFailure pure

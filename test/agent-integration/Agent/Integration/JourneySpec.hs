@@ -12,10 +12,11 @@
 --   first chapter's prose actually realizes its own beat sheet, not some
 --   other one) via 'Agent.Integration.Judge.judge'.
 --
---   Three real 'Storyteller.Core.Runtime.StoryModel'-shaped calls at
---   minimum (outline, split, one chapter per emitted beat sheet), all
---   cached under test/fixtures/llm-agent-cache/agent/ like every other spec
---   in this suite.
+--   Three real calls at minimum (outline, split, one chapter per emitted
+--   beat sheet), against whichever models 'Agent.Integration.Harness' routed
+--   'Storyteller.Core.LLM.Role.ProseModel'\/'Storyteller.Core.LLM.Role.AgentModel'
+--   to, all cached under test/fixtures/llm-agent-cache/agent/ like every
+--   other spec in this suite.
 module Agent.Integration.JourneySpec (spec) where
 
 import Data.List (isPrefixOf)
@@ -32,14 +33,13 @@ import Agent.Integration.Judge (Verdict(..), judge)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..))
 
 spec
-  :: forall storyModel judgeModel
-  .  ( HasTools storyModel, SupportsSystemPrompt (ProviderOf storyModel)
-     , HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel) )
-  => Runner storyModel judgeModel -> Spec
+  :: forall judgeModel
+  .  (HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel))
+  => Runner judgeModel -> Spec
 spec runner = describe "a full outline -> beat sheets -> chapters session (real LLM, cached)" $
   it "produces a coherent chapter-by-chapter draft from a one-line pitch" $
-    runExpect @storyModel @judgeModel runner $ do
-      result <- runJourney @storyModel []
+    runExpect @judgeModel runner $ do
+      result <- runJourney []
       info $ "journey outline:\n" <> jrOutline result
       embed $ do
         jrOutline result `shouldNotBe` ""

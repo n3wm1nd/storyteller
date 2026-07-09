@@ -38,7 +38,7 @@ data ServerEnv = ServerEnv
   , envNotifyChan  :: TChan BranchNotification    -- ^ broadcast channel; connections dupTChan to subscribe
   , envGitWorker   :: GitWorkerQueue              -- ^ the process's one git-storage worker; see PLAN-git-storage-worker.md
   , envProseRunner :: SomeLLMRunner                -- ^ ROLE_PROSE_MODEL, resolved once at startup — see Storyteller.Core.LLM.Role
-  , envFixerRunner :: SomeLLMRunner                -- ^ ROLE_FIXER_MODEL, resolved once at startup
+  , envAgentRunner :: SomeLLMRunner                -- ^ ROLE_AGENT_MODEL, resolved once at startup
   }
 
 loadServerEnv :: IO ServerEnv
@@ -51,9 +51,9 @@ loadServerEnv = do
   notify    <- newBroadcastTChanIO
   worker    <- startGitWorker repo notify
   proseKnown  <- resolveKnownModel "ROLE_PROSE_MODEL" "qwen35-40b"
-  fixerKnown  <- resolveKnownModel "ROLE_FIXER_MODEL" "qwen35-40b"
+  agentKnown  <- resolveKnownModel "ROLE_AGENT_MODEL" "qwen35-40b"
   proseRunner <- resolveRoleRunner proseKnown
-  fixerRunner <- resolveRoleRunner fixerKnown
+  agentRunner <- resolveRoleRunner agentKnown
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint
@@ -63,7 +63,7 @@ loadServerEnv = do
     , envNotifyChan  = notify
     , envGitWorker   = worker
     , envProseRunner = proseRunner
-    , envFixerRunner = fixerRunner
+    , envAgentRunner = agentRunner
     }
 
 requireEnv :: String -> IO String

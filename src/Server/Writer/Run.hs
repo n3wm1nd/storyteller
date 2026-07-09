@@ -53,7 +53,7 @@ import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.LLM.Registry (SomeLLMRunner(..))
-import Storyteller.Core.LLM.Role (ProseRole, ProseModel, FixerRole, FixerModel, reinterpretRole)
+import Storyteller.Core.LLM.Role (ProseRole, ProseModel, AgentRole, AgentModel, reinterpretRole)
 import Storyteller.Core.Runtime (runInfrastructureWith)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Storage (StoryStorage(..))
@@ -150,19 +150,19 @@ streamChunksWS conn = interpret $ \(EmitChunk event) ->
 actionStack
   :: (Member (Embed IO) r, Member (StreamChunk StreamEvent) r)
   => ServerEnv
-  -> Sem ( LLM ProseModel : LLM FixerModel
+  -> Sem ( LLM ProseModel : LLM AgentModel
          : Config StreamingEnabled : PromptStorage : StoryStorage : Undo
          : Random : HTTP : HTTPStreaming : Sleep : Time : Git
          : Fail : Logging : Error String : r) a
   -> Sem r (Either String a)
 actionStack env action =
-  case (envProseRunner env, envFixerRunner env) of
+  case (envProseRunner env, envAgentRunner env) of
     ( SomeLLMRunner (proseRunner :: forall r' a'. Members
         '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r'
         => Sem (LLM proseChosen : r') a' -> Sem r' a')
-      , SomeLLMRunner (fixerRunner :: forall r' a'. Members
+      , SomeLLMRunner (agentRunner :: forall r' a'. Members
         '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r'
-        => Sem (LLM fixerChosen : r') a' -> Sem r' a')
+        => Sem (LLM agentChosen : r') a' -> Sem r' a')
       ) ->
         runError @String
       . loggingIO
@@ -172,9 +172,9 @@ actionStack env action =
       . storageNotify (envNotifyChan env)
       . interpretPromptStorageFS
       . runConfig (StreamingEnabled True)
-      . fixerRunner
-      . reinterpretRole @FixerRole @fixerChosen
-      . raiseUnder @(LLM fixerChosen)
+      . agentRunner
+      . reinterpretRole @AgentRole @agentChosen
+      . raiseUnder @(LLM agentChosen)
       . proseRunner
       . reinterpretRole @ProseRole @proseChosen
       . raiseUnder @(LLM proseChosen)

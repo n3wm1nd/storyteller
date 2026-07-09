@@ -48,14 +48,15 @@ import Autodocodec (HasCodec(..), dimapCodec, object, requiredField, parseJSONVi
 import Data.Aeson.Types (parseEither)
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.LLM (LLM, queryLLM)
+import Runix.LLM (queryLLM)
 import Runix.LLM.ToolInstances ()
-import UniversalLLM (HasTools, Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
   , executeToolCallFromList, ToolResult(..)
   )
 
+import Storyteller.Core.LLM.Role (LLMs, ProseModel, AgentModel)
 import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock, ContextBlock(..)
   , ExistingContent(..), WordCount(..) )
@@ -97,10 +98,9 @@ data ExpandGoal
 --   overridable via 'PromptStorage' with a working default per goal, exactly
 --   like 'proseAgent'.
 expandAgent
-  :: forall model r
-  .  ( SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> ExpandGoal
   -> [ContextBlock]        -- ^ surrounding context (other chapters' outlines, world files, ...)
   -> OutlineDoc            -- ^ the document being expanded
@@ -121,7 +121,7 @@ expandAgent configs goal contextBlocks (OutlineDoc doc) = do
         , ("source",  Prompt doc)
         ]
 
-  response <- queryLLM @model (SystemPrompt systemPrompt : configs) [UserText userMsg]
+  response <- queryLLM (SystemPrompt systemPrompt : configs) [UserText userMsg]
   return $ mconcat [ t | AssistantText t <- response ]
 
 -- | One chapter's beat sheet plus the file it should be written to. Produced
@@ -164,10 +164,9 @@ instance ToolParameter BeatSheetBody where
 --   'Server.Writer.File.chatSplitOutline'). A malformed call is dropped
 --   rather than failing the whole batch.
 splitOutlineAgent
-  :: forall model r
-  .  ( HasTools model, SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig AgentModel]
   -> [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
@@ -209,7 +208,7 @@ splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
     -- rather than caring what the model does with the result message.
     loop _ _ 0 _ = return []
     loop tools allConfigs budget history = do
-      response <- queryLLM @model allConfigs history
+      response <- queryLLM allConfigs history
       let calls = [tc | AssistantTool tc <- response]
       if null calls
         then return []
@@ -248,10 +247,9 @@ instance ToolParameter ChapterBeats where
 --   instruction context. Thin wrapper over 'proseAgent' — the beat sheet is
 --   the instruction source, everything else is ordinary prose generation.
 chapterProse
-  :: forall model r
-  .  ( SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -259,7 +257,7 @@ chapterProse
   -> BeatSheet
   -> Sem r Prose
 chapterProse configs outputHint charContexts contextBlocks existing (BeatSheet sheet) =
-  proseAgent @model configs outputHint charContexts contextBlocks existing
+  proseAgent configs outputHint charContexts contextBlocks existing
     (beatSheetInstruction sheet)
 
 -- | Generate a chapter beat by beat: repeatedly ask the model for the prose
@@ -272,10 +270,9 @@ chapterProse configs outputHint charContexts contextBlocks existing (BeatSheet s
 --   interchangeable at the call site. @maxBeats@ bounds the loop so a model
 --   that never emits the done sentinel can't run away.
 chapterProseByBeat
-  :: forall model r
-  .  ( SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> Maybe WordCount       -- ^ approximate length hint, per beat
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -292,7 +289,7 @@ chapterProseByBeat configs outputHint charContexts contextBlocks (ExistingConten
     -- off the pre-existing prefix so the caller only gets the new prose.
     go soFar 0      = return soFar
     go soFar budget = do
-      Prose piece <- proseAgent @model configs outputHint charContexts contextBlocks
+      Prose piece <- proseAgent configs outputHint charContexts contextBlocks
         (ExistingContent soFar)
         (nextBeatInstruction sheet)
       let trimmed = T.strip piece
@@ -315,10 +312,9 @@ chapterProseByBeat configs outputHint charContexts contextBlocks (ExistingConten
 --   chapter, not an extension. The caller reconciles it against the chain
 --   ('commitFiles'), so unchanged prose keeps its atom ids.
 reconcileChapter
-  :: forall model r
-  .  ( SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -327,7 +323,7 @@ reconcileChapter
   -> BeatSheet
   -> Sem r Prose
 reconcileChapter configs outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) =
-  proseAgent @model configs outputHint charContexts contextBlocks (ExistingContent "")
+  proseAgent configs outputHint charContexts contextBlocks (ExistingContent "")
     (reconcileInstruction current userInstr sheet)
 
 -- | Regenerate a chapter to fit its beat sheet, beat by beat. Same
@@ -336,10 +332,9 @@ reconcileChapter configs outputHint charContexts contextBlocks current userInstr
 --   current prose and the user's steer folded into each beat's instruction so
 --   every beat is reconciled against the outline rather than continued.
 reconcileChapterByBeat
-  :: forall model r
-  .  ( SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -353,7 +348,7 @@ reconcileChapterByBeat configs outputHint charContexts contextBlocks current use
   where
     go soFar 0      = return soFar
     go soFar budget = do
-      Prose piece <- proseAgent @model configs outputHint charContexts contextBlocks
+      Prose piece <- proseAgent configs outputHint charContexts contextBlocks
         (ExistingContent soFar)
         (reconcileNextBeatInstruction current userInstr sheet)
       let trimmed = T.strip piece

@@ -17,11 +17,10 @@ import Polysemy.Error (Error)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 import Runix.Logging (Logging)
-import Runix.LLM (LLM)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
-import Storyteller.Core.LLM.Role (ProseModel, FixerModel)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Undo (Undo)
@@ -30,23 +29,24 @@ import Storyteller.Core.Undo (Undo)
 --   excludes 'HTTP'/'HTTPStreaming' — handler code must only reach the
 --   network through an 'LLM' effect, never directly.
 --
---   Two closed, concrete 'LLM' members (not one, and not a type variable) —
---   one per role. See 'Storyteller.Core.LLM.Role': each role's model is
---   chosen independently at server startup, but that choice never surfaces
---   here or in any handler/dispatch module that merely threads 'r' through —
---   only the leaf call sites that actually invoke an agent
---   (e.g. 'Server.Writer.File') need to know which role they're using.
+--   Includes every role's 'LLM' effect via 'LLMs' unconditionally, not just
+--   the roles a given handler happens to use — see 'LLMs'' Haddock for why.
+--   Each role's model is chosen independently at server startup, but that
+--   choice never surfaces here or in any handler/dispatch module that
+--   merely threads 'r' through — only the leaf call sites that actually
+--   invoke an agent (e.g. 'Server.Writer.File') need to know which role
+--   they're using.
 type SessionEffects r =
-  Members '[ Random
-           , Sleep
-           , Time
-           , Git
-           , Undo
-           , Fail
-           , Logging
-           , Error String
-           , StoryStorage
-           , LLM ProseModel
-           , LLM FixerModel
-           , PromptStorage
-           ] r
+  ( LLMs r
+  , Members '[ Random
+             , Sleep
+             , Time
+             , Git
+             , Undo
+             , Fail
+             , Logging
+             , Error String
+             , StoryStorage
+             , PromptStorage
+             ] r
+  )

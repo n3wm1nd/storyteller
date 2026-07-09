@@ -15,18 +15,19 @@
 --   below is fixed.
 --
 --   Deliberately doesn't call through 'Server.Writer.File' -- that module's
---   @chatWriter@\/@chatSplitOutline@ are pinned to
---   'Storyteller.Core.Runtime.StoryModel' via 'Server.Core.Run.SessionEffects'
---   (the app has exactly one configured model in production), which would
---   defeat this suite's whole point of swapping @STORY_MODEL@ per run (see
---   'Agent.Integration.Harness'). Instead this replicates the same two
---   moves those handlers make -- store the prompt tick, gather context,
---   call the agent, split and append the result -- generically over
---   @storyModel@. 'writeChat' is that replica of
---   'Server.Writer.File.chatWriter'\'s no-flow-tick branch; the outline
---   split and chapter-generation steps below call it directly rather than
---   going through 'Server.Writer.File.chatSplitOutline', which differs from
---   'writeChat' only in swapping 'splitOutlineAgent' for 'writeAgent'.
+--   @chatWriter@\/@chatSplitOutline@ are pinned to whatever's assigned to
+--   'Storyteller.Core.LLM.Role.ProseModel'\/'Storyteller.Core.LLM.Role.AgentModel'
+--   in production, which would defeat this suite's whole point of swapping
+--   @STORY_MODEL@ per run (see 'Agent.Integration.Harness', which routes
+--   both roles to that one chosen model via 'Storyteller.Core.LLM.Role.reinterpretRole',
+--   the same mechanism 'Storyteller.Core.Runtime.runStoryGit' uses for the
+--   CLI). Instead this replicates the same two moves those handlers make --
+--   store the prompt tick, gather context, call the agent, split and append
+--   the result. 'writeChat' is that replica of 'Server.Writer.File.chatWriter'\'s
+--   no-flow-tick branch; the outline split and chapter-generation steps
+--   below call it directly rather than going through
+--   'Server.Writer.File.chatSplitOutline', which differs from 'writeChat'
+--   only in swapping 'splitOutlineAgent' for 'writeAgent'.
 module Agent.Integration.Journey
   ( JourneyResult(..)
   , storyPremise
@@ -40,14 +41,14 @@ import qualified Data.Text as T
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
-import Runix.LLM (LLM)
 import Runix.Logging (Logging, info)
-import UniversalLLM (HasTools, ModelConfig, ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (ModelConfig)
 
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
+import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
@@ -58,12 +59,11 @@ import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), Outlin
 import Storyteller.Writer.Agent.Write (writeAgent)
 
 -- | Every effect one journey step needs -- exactly 'Server.Writer.File'\'s
---   own imports, minus 'Server.Core.Run.SessionEffects'\' fixed
---   @LLM StoryModel@ (generalised to @LLM storyModel@ here) and minus
---   @Random@\/@Error String@, neither of which any step below touches.
-type JourneyEffects storyModel r =
-  ( HasTools storyModel, SupportsSystemPrompt (ProviderOf storyModel)
-  , Members '[ LLM storyModel, PromptStorage, Splitter, Logging
+--   own imports, minus 'Server.Core.Run.SessionEffects'\' @Random@\/
+--   @Error String@, neither of which any step below touches.
+type JourneyEffects r =
+  ( LLMs r
+  , Members '[ PromptStorage, Splitter, Logging
              , StoryStorage, BranchOp Main
              , FileSystem      (BranchTag Main)
              , FileSystemRead  (BranchTag Main)
@@ -99,24 +99,24 @@ storyPremise = T.unwords
 --   the module Haddock for why this doesn't call through
 --   'Server.Writer.File'.
 runJourney
-  :: forall storyModel r
-  .  JourneyEffects storyModel r
-  => [ModelConfig storyModel]
+  :: forall r
+  .  JourneyEffects r
+  => [ModelConfig ProseModel]
   -> Sem r JourneyResult
 runJourney configs = do
   info "journey: generating outline.md"
-  outline <- writeChat @storyModel configs "outline.md" storyPremise
+  outline <- writeChat configs "outline.md" storyPremise
 
   info "journey: splitting outline into chapter beat sheets"
   (_, outlineCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
-  sheets <- splitOutlineAgent @storyModel configs outlineCtx (OutlineDoc outline)
+  sheets <- splitOutlineAgent [] outlineCtx (OutlineDoc outline)
   mapM_ (\(ChapterBeats path (BeatSheet body)) -> appendGenerated path body) sheets
   info $ "journey: got " <> T.pack (show (length sheets)) <> " beat sheet(s)"
 
   info "journey: writing each chapter from its beat sheet"
   chapters <- forM sheets $ \(ChapterBeats sheetPath _) -> do
     let chapterPath = chapterPathFor sheetPath
-    prose <- writeChat @storyModel configs chapterPath (chapterInstruction sheetPath)
+    prose <- writeChat configs chapterPath (chapterInstruction sheetPath)
     return (chapterPath, prose)
 
   files <- logFileTree @(BranchTag Main)
@@ -142,13 +142,13 @@ logFileTree = do
 --   pinned character branches or extra context items -- neither journey
 --   step here has any.
 writeChat
-  :: forall storyModel r
-  .  JourneyEffects storyModel r
-  => [ModelConfig storyModel] -> FilePath -> T.Text -> Sem r T.Text
+  :: forall r
+  .  JourneyEffects r
+  => [ModelConfig ProseModel] -> FilePath -> T.Text -> Sem r T.Text
 writeChat configs path prompt = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
-  Prose generated <- writeAgent @storyModel configs existing fileCtx (Instruction prompt) []
+  Prose generated <- writeAgent configs existing fileCtx (Instruction prompt) []
   appendGenerated path generated
   return generated
 

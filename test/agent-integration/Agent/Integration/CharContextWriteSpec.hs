@@ -90,10 +90,9 @@ judgeQuestion = T.unwords
   ]
 
 spec
-  :: forall storyModel judgeModel
-  .  ( SupportsSystemPrompt (ProviderOf storyModel)
-     , HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel) )
-  => Runner storyModel judgeModel -> Spec
+  :: forall judgeModel
+  .  (HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel))
+  => Runner judgeModel -> Spec
 spec runner = describe "writeAgent with character context (real LLM, cached)" $
   it "reflects Mira's aversion to fish from her character sheet" $ do
     resolvedCharDir <- resolveFixture charFixtureDir
@@ -103,8 +102,8 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
     -- 'Agent.Integration.Harness.knownModels') already came baked into
     -- the interpreter 'runner' wraps, so there's nothing to add per-call
     -- here.
-    runExpect @storyModel @judgeModel runner $ do
-      Prose text <- writeAgent @storyModel [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
+    runExpect @judgeModel runner $ do
+      Prose text <- writeAgent [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

@@ -37,10 +37,10 @@ import System.IO (hPutStrLn, stderr)
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists, readFile)
-import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Runtime (Main, StoryModel, runStoryGit, BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage)
+import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
@@ -85,8 +85,7 @@ main = do
     Right text -> TIO.putStrLn text
 
 chapterAction
-  :: Members '[ LLM StoryModel
-              , PromptStorage
+  :: (LLMs r, Members '[ PromptStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -94,7 +93,7 @@ chapterAction
               , StoryStorage
               , Splitter
               , Git
-              , Logging, Fail] r
+              , Logging, Fail] r)
   => Mode -> FilePath -> FilePath -> [T.Text] -> Sem r T.Text
 chapterAction mode sheetPath outFile activeChars = do
   sheet <- fileExists @(BranchTag Main) sheetPath >>= \case
@@ -112,9 +111,9 @@ chapterAction mode sheetPath outFile activeChars = do
         charBlocks
 
   Prose generated <- case mode of
-    Whole  -> chapterProse @StoryModel modelConfigs (Just (WordCount 1200))
+    Whole  -> chapterProse modelConfigs (Just (WordCount 1200))
                 charContexts fileCtx existing sheet
-    ByBeat -> chapterProseByBeat @StoryModel modelConfigs (Just (WordCount 300))
+    ByBeat -> chapterProseByBeat modelConfigs (Just (WordCount 300))
                 charContexts fileCtx existing sheet maxBeats
 
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated

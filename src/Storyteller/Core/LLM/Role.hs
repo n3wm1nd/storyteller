@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -23,7 +24,7 @@
 --   ('Storyteller.Core.LLM.Registry.KnownModel') must clear to be assignable
 --   to any role.
 --
---   Each role gets its own phantom "tag" type (`ProseRole`, `FixerRole`, ...)
+--   Each role gets its own phantom "tag" type (`ProseRole`, `AgentRole`, ...)
 --   paired with 'ProxyProvider' into an ullm @Model roleTag ProxyProvider@ --
 --   structurally identical to a real model (e.g. today's
 --   @Storyteller.Core.Runtime.StoryModel@), just never actually serialized:
@@ -33,7 +34,7 @@
 --   all (rather than everyone sharing one proxy) is so two roles can be
 --   simultaneously live in one Polysemy effect row without ambiguity --
 --   see e.g. 'Storyteller.Writer.Agent.FlowWrite', which already needs a
---   prose model and a fixer model side by side. Adding a new role is one
+--   prose model and an agent model side by side. Adding a new role is one
 --   @data XRole@ + one @type XModel@ line; the instances below are already
 --   generic over the tag.
 module Storyteller.Core.LLM.Role
@@ -44,11 +45,12 @@ module Storyteller.Core.LLM.Role
     -- * Roles
   , ProseRole
   , ProseModel
-  , FixerRole
-  , FixerModel
+  , AgentRole
+  , AgentModel
+  , LLMs
   ) where
 
-import Polysemy (Member, Sem, interpret, send)
+import Polysemy (Member, Members, Sem, interpret, send)
 
 import Runix.LLM (LLM(..), Message(..), ModelConfig(..))
 import UniversalLLM
@@ -78,14 +80,38 @@ instance HasTools (Model roleTag ProxyProvider) where
 -- Roles
 -- ---------------------------------------------------------------------------
 
+-- | For agents whose main output is prose text -- no tool calls, judged on
+--   how good the writing is. 'Storyteller.Writer.Agent.Continuation.proseAgent'
+--   and everything built on it ('Write', 'Outline'\'s prose drivers).
 data ProseRole
 type ProseModel = Model ProseRole ProxyProvider
 
--- | Split off from 'ProseModel' to prove a second role is cheap to add, and
---   because 'Storyteller.Writer.Agent.FlowWrite' already needs a prose model
---   and a fixer model simultaneously live -- see this module's Haddock.
-data FixerRole
-type FixerModel = Model FixerRole ProxyProvider
+-- | For agents whose main activity is calling tools rather than producing
+--   prose -- the fixer ('Storyteller.Writer.Agent.ReplaceTool', via its
+--   @replace_atom@ tool), the chat agent ('Storyteller.Writer.Agent.Chat',
+--   via @glob@\/@read_file@\/@sed_print@), and the outline splitter
+--   ('Storyteller.Writer.Agent.Outline.splitOutlineAgent', via
+--   @emit_beat_sheet@): none of these are judged on prose quality the way
+--   'ProseModel' is, and a model tuned for reliable tool use over one tuned
+--   for prose is a genuinely different selection criterion, which is what
+--   this role exists to let an operator route independently. Split off from
+--   'ProseModel' also proves a second role is cheap to add, and
+--   'Storyteller.Writer.Agent.FlowWrite' already needs a prose model and an
+--   agent model simultaneously live -- see this module's Haddock.
+data AgentRole
+type AgentModel = Model AgentRole ProxyProvider
+
+-- | Every role's 'LLM' effect, bundled. Agents require this in full rather
+--   than picking out just the one role they use (see
+--   'Storyteller.Writer.Agent.Write.writeAgent', which only ever queries
+--   'ProseModel') -- deliberately: once an agent calls an LLM at all it's
+--   already Storyteller-specific (its role's proxy types aren't reusable
+--   elsewhere), so precisely tracking "this agent needs Prose but not
+--   Agent" buys nothing except one more type variable per agent to plumb.
+--   Extra unused members in a 'Members' constraint cost nothing at
+--   runtime -- this is exactly the "not from the ullm library, just
+--   routing to one of them" set described in this module's Haddock.
+type LLMs r = Members '[LLM ProseModel, LLM AgentModel] r
 
 -- ---------------------------------------------------------------------------
 -- Reinterpretation

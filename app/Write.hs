@@ -30,11 +30,11 @@ import System.IO (hPutStrLn, stderr)
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
-import Runix.LLM (LLM)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Runtime ( Main, StoryModel, runStoryGit
+import Storyteller.Core.Runtime ( Main, runStoryGit
                            , BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage )
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
@@ -70,8 +70,7 @@ main = do
     Right text -> TIO.putStrLn text
 
 writeAction
-  :: Members '[ LLM StoryModel
-              , PromptStorage
+  :: (LLMs r, Members '[ PromptStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -79,7 +78,7 @@ writeAction
               , StoryStorage
               , Splitter
               , Git
-              , Logging, Fail] r
+              , Logging, Fail] r)
   => FilePath -> Instruction -> [T.Text] -> Sem r T.Text
 writeAction outFile instruction activeChars = do
   charBlocks <- forM activeChars $ \charBranch -> do
@@ -89,6 +88,6 @@ writeAction outFile instruction activeChars = do
     return (CharLabel charBranch, blocks)
 
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
-  Prose generated <- writeAgent @StoryModel modelConfigs existing fileCtx instruction charBlocks
+  Prose generated <- writeAgent modelConfigs existing fileCtx instruction charBlocks
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated

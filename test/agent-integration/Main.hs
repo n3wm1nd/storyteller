@@ -22,12 +22,13 @@ import Test.Hspec
 import Git.Mock (emptyGitState, runGitMock)
 import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (runBranchAndFS, runStoryStorageGit)
+import Storyteller.Core.LLM.Role (ProseRole, AgentRole, reinterpretRole)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Storage (createBranch)
 
 import Agent.Integration.Harness
-  ( CacheProject(..), LLMRunner(..), Main
-  , mainBranch, resolveFixture, resolveKnownModel, withKnownModel
+  ( CacheProject(..), KnownModel(..), LLMRunner(..), Main, Runner
+  , mainBranch, modelInterpreter, resolveFixture, resolveKnownModel
   )
 import qualified Agent.Integration.CharContextWriteSpec
 import qualified Agent.Integration.ReworkAtomSpec
@@ -41,6 +42,28 @@ import qualified Agent.Integration.JourneySpec
 --   calls are what pin @storyModel@\/@judgeModel@ to concrete types for
 --   the rest of this scope, including the 'hspec' call below -- every
 --   spec runs against whichever models were actually resolved this run.
+--   @storyModel@ backs *both* 'Storyteller.Core.LLM.Role.ProseModel' and
+--   'Storyteller.Core.LLM.Role.AgentModel' -- production agents now
+--   hardcode their role rather than staying generic (see
+--   'Storyteller.Core.LLM.Role.LLMs'), so this suite routes both role
+--   proxies to @STORY_MODEL@ via 'reinterpretRole', same mechanism
+--   'Storyteller.Core.Runtime.runStoryGit' uses for the CLI -- rather than
+--   picking two independent models for the two roles the way production
+--   does, since @STORY_MODEL@\/@JUDGE_MODEL@ is this suite's own axis of
+--   variation (agent-under-test vs. judge), not per-role model choice.
+--   @storyKnown@ is unpacked once, via a direct 'KnownModel' pattern match,
+--   giving one genuinely fresh existential model type scoped over the whole
+--   @do@ block -- then 'modelInterpreter' is called on it twice (once per
+--   role) to build two independent 'LLMRunner's. That's the fix for a
+--   structural trap the equivalent nested-'withKnownModel'-CPS version fell
+--   into: an 'LLMRunner'\'s own effect row is fixed the moment it's built,
+--   so one value can't satisfy two different residual rows the way a fresh
+--   'Runix.LLM.Interpreter.interpretLLMWith' call (as
+--   'Storyteller.Core.Runtime.runStoryGit' uses) can when called twice --
+--   and CPS-bound skolems from two separate 'withKnownModel' calls turned
+--   out not to stay usefully distinct across this many nested nested
+--   lambdas either. A plain pattern match sidesteps both: one scope, one
+--   named existential, called from twice.
 --
 --   Git storage is an in-memory 'Git.Mock' per scenario -- this suite
 --   evaluates whether agents get the LLM to do the right thing, not
@@ -55,35 +78,45 @@ main = do
   judgeKnown <- resolveKnownModel "JUDGE_MODEL" "deepseek-v4-flash"
   agentCacheDir <- resolveFixture "test/fixtures/llm-agent-cache"
 
-  withKnownModel storyKnown $ \runStory ->
-    withKnownModel judgeKnown $ \runJudge -> do
-      let runner action =
-            runM
-            . runFail
-            . loggingIO
-            . splitMarkdownAware
-            . filesystemIO
-            . fileSystemLocal (CacheProject agentCacheDir)
-            . timeIO
-            . sleepIO
-            . httpIO (withRequestTimeout 600)
-            . interpretPromptStorageMap mempty
-            . runLLMRunner runStory
-            -- '.' -- 'fileSystemLocal' above already chroots to its own
-            -- cache dir, so the cache's own lookup/store path is just the
-            -- chroot root, per 'Runix.LLM.Cache.fileSystemLookup''s
-            -- Haddock.
-            . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStory)
-            . runLLMRunner runJudge
-            . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runJudge)
-            . evalState emptyGitState
-            . runGitMock
-            . runStoryStorageGit
-            $ do
-                _ <- createBranch mainBranch
-                runBranchAndFS @Main mainBranch action
+  case (storyKnown, judgeKnown) of
+    (KnownModel storyID (story :: storyTy) storyConfigs, KnownModel judgeID (judgeVal :: judgeTy) judgeConfigs) -> do
+      runStoryProse <- modelInterpreter storyID story storyConfigs
+      runStoryAgent <- modelInterpreter storyID story storyConfigs
+      runJudge      <- modelInterpreter judgeID judgeVal judgeConfigs
+      let runner :: Runner judgeTy
+          runner action =
+              runM
+              . runFail
+              . loggingIO
+              . splitMarkdownAware
+              . filesystemIO
+              . fileSystemLocal (CacheProject agentCacheDir)
+              . timeIO
+              . sleepIO
+              . httpIO (withRequestTimeout 600)
+              . interpretPromptStorageMap mempty
+              . runLLMRunner runStoryAgent
+              -- '.' -- 'fileSystemLocal' above already chroots to its own
+              -- cache dir, so the cache's own lookup/store path is just the
+              -- chroot root, per 'Runix.LLM.Cache.fileSystemLookup''s
+              -- Haddock.
+              . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryAgent)
+              . reinterpretRole @AgentRole @storyTy
+              . raiseUnder
+              . runLLMRunner runStoryProse
+              . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryProse)
+              . reinterpretRole @ProseRole @storyTy
+              . raiseUnder
+              . runLLMRunner runJudge
+              . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runJudge)
+              . evalState emptyGitState
+              . runGitMock
+              . runStoryStorageGit
+              $ do
+                  _ <- createBranch mainBranch
+                  runBranchAndFS @Main mainBranch action
 
       hspec $ do
-        describe "Agent.Integration.CharContextWriteSpec" (Agent.Integration.CharContextWriteSpec.spec runner)
-        describe "Agent.Integration.ReworkAtomSpec"        (Agent.Integration.ReworkAtomSpec.spec runner)
-        describe "Agent.Integration.JourneySpec"           (Agent.Integration.JourneySpec.spec runner)
+        describe "Agent.Integration.CharContextWriteSpec" (Agent.Integration.CharContextWriteSpec.spec @judgeTy runner)
+        describe "Agent.Integration.ReworkAtomSpec"        (Agent.Integration.ReworkAtomSpec.spec @judgeTy runner)
+        describe "Agent.Integration.JourneySpec"           (Agent.Integration.JourneySpec.spec @judgeTy runner)

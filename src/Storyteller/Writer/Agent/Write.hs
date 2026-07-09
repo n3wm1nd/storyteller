@@ -18,24 +18,18 @@ module Storyteller.Writer.Agent.Write
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.LLM (LLM)
-import UniversalLLM (ModelConfig, ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (ModelConfig)
 
+import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Writer.Agent (Instruction, Prose, CharContextBlock(..), CharLabel(..), ContextBlock, ExistingContent, WordCount(..))
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.Prompt (PromptStorage)
 
 -- | Generate prose given already-gathered context.
 --
---   Generic over @proseModel@ -- the caller picks which model plays the
---   prose-generation role (and its configs) explicitly, the same way
---   'Storyteller.Writer.Agent.Continuation.proseAgent' itself already does;
---   this is a thin wrapper adding character-context formatting on top, not
---   a place that should itself commit to one model. The server call site
---   instantiates @proseModel@ at 'Storyteller.Core.LLM.Role.ProseModel'
---   (see 'Server.Writer.File.chatWriter'); @app/Write.hs@'s CLI path still
---   uses 'Storyteller.Core.Runtime.StoryModel' -- that's a choice made at
---   each call site, not baked in here.
+--   Always the 'ProseModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
+--   This is a thin wrapper adding character-context formatting on top of
+--   'Storyteller.Writer.Agent.Continuation.proseAgent'.
 --
 --   @charBlocks@ is @(label, resolved summary blocks)@ per active character
 --   branch — already read, not a deferred action: the caller has already
@@ -43,10 +37,9 @@ import Storyteller.Core.Prompt (PromptStorage)
 --   'Storyteller.Writer.Agent.CharContext.charSummaryAgent' (or an
 --   equivalent) by the time this is called.
 writeAgent
-  :: forall proseModel r
-  .  ( SupportsSystemPrompt (ProviderOf proseModel)
-     , Members '[LLM proseModel, PromptStorage, Fail] r )
-  => [ModelConfig proseModel]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> ExistingContent
   -> [ContextBlock]                              -- ^ extra context (e.g. user's pinned selection)
   -> Instruction
@@ -56,4 +49,4 @@ writeAgent configs existing extraContext instruction charBlocks = do
   let charContexts = concatMap
         (\(CharLabel name, blocks) -> CharContextBlock ("## Character: " <> name) : blocks)
         charBlocks
-  proseAgent @proseModel configs (Just (WordCount 300)) charContexts extraContext existing instruction
+  proseAgent configs (Just (WordCount 300)) charContexts extraContext existing instruction

@@ -31,9 +31,10 @@ import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, listAllFiles, readFile)
-import Runix.LLM (LLM, queryLLM)
-import UniversalLLM (Message(..), ModelConfig(..), ProviderOf, SupportsSystemPrompt)
+import Runix.LLM (queryLLM)
+import UniversalLLM (Message(..), ModelConfig(..))
 
+import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, applyContextLayout)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
@@ -44,11 +45,12 @@ import Prelude hiding (readFile)
 --   No filesystem access — all inputs are explicit.
 --   This is the composition point for cross-cutting concerns: style guides,
 --   persona, tone constraints, etc. can be added here as new effects.
+--
+--   Always the 'ProseModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
 proseAgent
-  :: forall model r
-  .  ( SupportsSystemPrompt (ProviderOf model)
-     , Members '[LLM model, PromptStorage, Fail] r )
-  => [ModelConfig model]
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  => [ModelConfig ProseModel]
   -> Maybe WordCount        -- ^ approximate desired output length
   -> [CharContextBlock]     -- ^ character context blocks
   -> [ContextBlock]         -- ^ branch context file blocks
@@ -61,7 +63,7 @@ proseAgent configs outputHint charContexts contextBlocks (ExistingContent existi
 
   let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
 
-  response <- queryLLM @model (SystemPrompt systemPrompt : configs) [UserText userMsg]
+  response <- queryLLM (SystemPrompt systemPrompt : configs) [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
 -- | Fallback for @agent.writer.system@, used until an override is committed
