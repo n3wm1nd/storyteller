@@ -19,19 +19,36 @@
 //     "the last one" again, which is now the fresh write, same as if
 //     nothing had ever been undone. The stashed dots aren't lost — they're
 //     still real entries in the flat list, they just go back to rendering
-//     in their own chronological slot instead of the trailing group.
+//     in their own chronological slot instead of the trailing group —
+//     'motion.div's 'layout' prop animates that repositioning for free,
+//     same key and everything, no special-casing the transition.
 //
 // No separate "redo" concept needed beyond that: the stash *is* the redo
 // target (its own last entry is exactly where the jump came from), and it
 // naturally answers "can I still get back" by simply being non-empty.
 //
-// Right-aligned by default, scrolled to the active dot otherwise: the log
-// can run to hundreds of entries (this is a real, ever-growing history,
-// not a capped ring buffer), far more than the top bar has room for, and
-// the active dot isn't always the last one once something's been undone.
-// Both edges fade out (mask-image) instead of hard-cutting a dot mid-shape.
+// Animation is delegated to framer-motion rather than hand-rolled: a
+// dot appearing (a fresh write) or moving (a stash entry returning to its
+// normal slot, or the whole row reflowing around either) is exactly the
+// FLIP-style layout animation 'layout'/'AnimatePresence' exist to handle,
+// and — critically — its animations are interruptible by construction: if
+// a fresh 'undo.log' push lands mid-animation (a real write, or another
+// client's), framer retargets smoothly from wherever the element currently
+// is instead of restarting from a stale computed start point. Several
+// earlier attempts at this used plain CSS transitions/manual
+// requestAnimationFrame loops instead, and kept breaking exactly there —
+// racing React's own render/commit/paint timing, or getting stomped by a
+// re-render arriving mid-flight, neither of which framer's motion-value
+// model is vulnerable to.
+//
+// Scrolled to the active dot, not pinned to the newest: the log can run to
+// hundreds of entries (a real, ever-growing history, not a capped ring
+// buffer), far more than the top bar has room for, and the active dot isn't
+// always the last one once something's been undone. Both edges fade out
+// (mask-image) instead of hard-cutting a dot mid-shape.
 
 import { useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence, animate } from "framer-motion";
 import { Undo2, Redo2 } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { resetToUndo } from "./sidebar.actions";
@@ -45,6 +62,13 @@ const DOT = 7;
 // connecting-line width) — only the visible dot shrinks, centered in its slot.
 const DOT_SMALL = 5.6;
 const DOT_GAP = 18;
+
+// The scroll pan (see UndoTimeline's active-dot effect) plays first; a
+// dot's own mount-in fade/slide is delayed to start right after, so the two
+// read as one staged motion — "the bar settles, then the new dot appears"
+// — instead of both firing at once.
+const SCROLL_DURATION = 0.2;
+const DOT_FADE_DELAY = SCROLL_DURATION;
 
 // Every dot stays the same brownish-amber base (BASE_L/BASE_C/BASE_H, the
 // timeline's existing default) — 'kind' only nudges the *hue* a fraction of
@@ -81,10 +105,9 @@ function kindColor(kind: string | null, alpha?: number): string {
   return alpha === undefined ? `oklch(${triple})` : `oklch(${triple} / ${alpha})`;
 }
 
-function Dot({ filled, faded, pulse, color, title, onClick }: {
+function Dot({ filled, faded, color, title, onClick }: {
   filled?: boolean;
   faded?: boolean;
-  pulse?: boolean;
   color?: string;
   title: string;
   onClick: () => void;
@@ -92,31 +115,38 @@ function Dot({ filled, faded, pulse, color, title, onClick }: {
   const size = filled ? DOT : DOT_SMALL;
   const c = color ?? kindColor(null);
   return (
-    <span style={{
-      position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center",
-      width: DOT, height: DOT, flexShrink: 0,
-    }}>
-      {pulse && (
-        <span
-          className="animate-ping"
-          style={{
-            position: "absolute", inset: -4, borderRadius: "50%",
-            background: c, opacity: 0.35,
-          }}
-        />
-      )}
-      <button
-        onClick={onClick}
-        title={title}
-        style={{
-          width: size, height: size, borderRadius: "50%", padding: 0, cursor: "pointer",
-          border: filled ? "none" : `1.5px solid ${c}`,
-          background: filled ? c : "transparent",
-          opacity: faded ? 0.55 : filled ? 1 : 0.7,
-          boxShadow: filled ? `0 0 3px ${c.replace(")", " / 40%)")}` : "none",
-        }}
-      />
-    </span>
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        width: size, height: size, borderRadius: "50%", padding: 0, cursor: "pointer",
+        border: filled ? "none" : `1.5px solid ${c}`,
+        background: filled ? c : "transparent",
+        opacity: faded ? 0.55 : filled ? 1 : 0.7,
+        boxShadow: filled ? `0 0 3px ${c.replace(")", " / 40%)")}` : "none",
+      }}
+    />
+  );
+}
+
+// A one-shot ping ring for a jump landing on an already-existing dot (as
+// opposed to a fresh write's dot, which gets its own mount animation via
+// 'layout'/'initial' below instead — see the module doc). Framer's own
+// mount/unmount lifecycle ('AnimatePresence' below) is what plays this
+// exactly once: rendered only while 'justJumpedTo' names this entry,
+// cleared via 'onAnimationComplete' once framer finishes it, not a timer.
+function PulseRing({ color, onDone }: { color: string; onDone: () => void }) {
+  return (
+    <motion.span
+      initial={{ opacity: 0.5, scale: 1 }}
+      animate={{ opacity: 0, scale: 2.4 }}
+      transition={{ duration: 0.6, ease: "easeOut" }}
+      onAnimationComplete={onDone}
+      style={{
+        position: "absolute", inset: -4, borderRadius: "50%",
+        background: color, pointerEvents: "none",
+      }}
+    />
   );
 }
 
@@ -156,33 +186,44 @@ export function UndoTimeline() {
   const stashedIds = new Set(stash.map((e) => e.id));
   const main = entries.filter((e) => !stashedIds.has(e.id));
 
-  const [pulsing, setPulsing] = useState(false);
-  const prevIdRef = useRef<string | undefined>(undefined);
+  // Set directly by 'jump()' at the moment a jump happens, rather than
+  // inferred after the fact by diffing renders — 'jump()' already knows
+  // it's a jump right when it's called, so there's nothing to infer.
+  const [justJumpedTo, setJustJumpedTo] = useState<string | null>(null);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeDotRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(false);
 
-  // Scroll the active dot into view (centered, not flush against the
-  // fade-out edge — see the manual scrollLeft math) and pulse it whenever
-  // it changes, including on mount so a reload right after an undo still
-  // shows the right dot.
+  // Keep the active dot in view whenever it changes — centered, not flush
+  // against the fade-out edge, so it never lands in the masked zone. Panned
+  // via framer's own imperative 'animate()' rather than raw scrollLeft math
+  // in a requestAnimationFrame loop — same interruptible, well-tested engine
+  // 'layout'/'motion.div' already use elsewhere in this component, instead
+  // of a second, hand-rolled one with its own timing edge cases. Staged
+  // *before* a freshly-appended dot's own fade-in (see 'SCROLL_DURATION'/
+  // 'FADE_DELAY' below and the dot's own 'transition' prop) — the bar
+  // settles into position first, then the new dot appears, rather than both
+  // happening at once. Instant, not panned, on first mount — nothing to
+  // animate *from* yet.
   useEffect(() => {
-    const prevId = prevIdRef.current;
-    prevIdRef.current = activeId;
-    if (activeId === undefined) return;
-
-    const raf = requestAnimationFrame(() => {
-      const container = scrollRef.current;
-      const dot = activeDotRef.current;
-      if (!container || !dot) return;
-      const target = dot.offsetLeft + dot.offsetWidth / 2 - container.clientWidth / 2;
-      const max = Math.max(0, container.scrollWidth - container.clientWidth);
-      container.scrollTo({ left: Math.max(0, Math.min(target, max)), behavior: prevId === undefined ? "auto" : "smooth" });
+    const container = scrollRef.current;
+    const dot = activeDotRef.current;
+    if (!container || !dot) return;
+    const target = dot.offsetLeft + dot.offsetWidth / 2 - container.clientWidth / 2;
+    const max = Math.max(0, container.scrollWidth - container.clientWidth);
+    const clamped = Math.max(0, Math.min(target, max));
+    if (!mountedRef.current) {
+      container.scrollLeft = clamped;
+      mountedRef.current = true;
+      return;
+    }
+    const controls = animate(container.scrollLeft, clamped, {
+      duration: SCROLL_DURATION,
+      ease: "easeOut",
+      onUpdate: (v) => { container.scrollLeft = v; },
     });
-
-    if (prevId === undefined || prevId === activeId) return () => cancelAnimationFrame(raf);
-    setPulsing(true);
-    const t = setTimeout(() => setPulsing(false), 700);
-    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+    return () => controls.stop();
   }, [activeId]);
 
   if (entries.length === 0) return null;
@@ -190,6 +231,7 @@ export function UndoTimeline() {
   function jump(entry: WireUndoEntry) {
     const idx = entries.findIndex((e) => e.id === entry.id);
     setOverride({ activeId: entry.id, stash: entries.slice(idx + 1), countAtJump: entries.length });
+    setJustJumpedTo(entry.id);
     resetToUndo(entry.id);
   }
 
@@ -238,41 +280,64 @@ export function UndoTimeline() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: DOT_GAP }}>
-          {main.flatMap((entry, i) => {
-            const isActive = entry.id === activeId;
-            const dots = [
-              <div key={entry.id} ref={isActive ? activeDotRef : undefined} style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                {i > 0 && (
-                  <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)" }} />
-                )}
-                <Dot
-                  filled={isActive}
-                  pulse={isActive && pulsing}
-                  color={kindColor(entry.kind)}
-                  title={`${new Date(entry.time).toLocaleString()}${entry.kind ? ` — ${entry.kind}` : ""}`}
-                  onClick={() => jump(entry)}
-                />
-              </div>,
-            ];
-            // The stash — dots that were "ahead" at the moment of the jump
-            // that made 'entry' active — renders as a trailing run right
-            // after it, still real, still clickable (jumping to one just
-            // resumes further along the same abandoned run).
-            if (isActive) {
-              stash.forEach((s) => dots.push(
-                <div key={s.id} style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                  <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)", opacity: 0.5 }} />
+          <AnimatePresence initial={false}>
+            {main.flatMap((entry, i) => {
+              const isActive = entry.id === activeId;
+              const dots = [
+                <motion.div
+                  key={entry.id}
+                  layout
+                  initial={{ opacity: 0, x: 6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{
+                    layout: { duration: SCROLL_DURATION, ease: "easeOut" },
+                    opacity: { duration: 0.18, delay: DOT_FADE_DELAY },
+                    x: { duration: 0.18, delay: DOT_FADE_DELAY },
+                  }}
+                  ref={isActive ? activeDotRef : undefined}
+                  style={{ position: "relative", display: "flex", alignItems: "center" }}
+                >
+                  {i > 0 && (
+                    <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)" }} />
+                  )}
+                  {isActive && entry.id === justJumpedTo && (
+                    <PulseRing color={kindColor(entry.kind)} onDone={() => setJustJumpedTo(null)} />
+                  )}
                   <Dot
-                    faded
-                    color={kindColor(s.kind)}
-                    title={`Undone — ${new Date(s.time).toLocaleString()}${s.kind ? ` — ${s.kind}` : ""}. Click to jump back here.`}
-                    onClick={() => jump(s)}
+                    filled={isActive}
+                    color={kindColor(entry.kind)}
+                    title={`${new Date(entry.time).toLocaleString()}${entry.kind ? ` — ${entry.kind}` : ""}`}
+                    onClick={() => jump(entry)}
                   />
-                </div>,
-              ));
-            }
-            return dots;
-          })}
+                </motion.div>,
+              ];
+              // The stash — dots that were "ahead" at the moment of the jump
+              // that made 'entry' active — renders as a trailing run right
+              // after it, still real, still clickable (jumping to one just
+              // resumes further along the same abandoned run). Same keys as
+              // when they're back in 'main', so returning there later is a
+              // layout move, not a fresh mount.
+              if (isActive) {
+                stash.forEach((s) => dots.push(
+                  <motion.div
+                    key={s.id}
+                    layout
+                    style={{ position: "relative", display: "flex", alignItems: "center" }}
+                  >
+                    <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)", opacity: 0.5 }} />
+                    <Dot
+                      faded
+                      color={kindColor(s.kind)}
+                      title={`Undone — ${new Date(s.time).toLocaleString()}${s.kind ? ` — ${s.kind}` : ""}. Click to jump back here.`}
+                      onClick={() => jump(s)}
+                    />
+                  </motion.div>,
+                ));
+              }
+              return dots;
+            })}
+          </AnimatePresence>
         </div>
       </div>
     </div>
