@@ -514,12 +514,15 @@ instance Members '[Git, Fail] r => Core.MonadStore (Sem r) where
 --   still there for the next one on the same scope, and the remap table
 --   accumulates across the whole scope's lifetime too, not just one
 --   dispatch. Publishes the final head via 'setRef' whenever a dispatch
---   actually advanced it, and always broadcasts whatever the dispatch's
---   own remap table picked up via @updateReferences@ (a no-op when it's
---   empty) — re-resolving from 'StoryStorage' afterward, since that
---   cascade can rewrite *this* branch's own ref a second time (e.g. a
---   tick between a merged run and the original head carrying a ref into
---   the merged range).
+--   actually advanced it, and broadcasts via @updateReferences@ exactly
+--   what the dispatch itself added to the remap table — the *delta*
+--   against the table as it stood before, never the accumulated whole,
+--   which would re-announce every earlier dispatch's renames again on
+--   every dispatch that follows. When a broadcast did happen, the
+--   branch's head is re-resolved from 'StoryStorage' afterward, since
+--   that cascade can rewrite *this* branch's own ref a second time (e.g.
+--   a tick between a merged run and the original head carrying a ref
+--   into the merged range).
 runBranchOpGit
   :: forall branch r a
   .  Members '[Git, StoryStorage, Fail] r
@@ -534,34 +537,38 @@ runBranchOpGit branch action = do
   evalState seed0 $ interpret
     (\case
         RunStorage comp -> do
-          scope@(h, _, _) <- get @Core.ScopeState
-          (result, scope'@(h', _, table)) <- Core.runStoreTFrom scope comp
+          scope@(h, _, tableBefore) <- get @Core.ScopeState
+          (result, scope'@(h', wt', table)) <- Core.runStoreTFrom scope comp
           put @Core.ScopeState scope'
-          let mapping = [ (TickId (Core.unObjectHash o), TickId (Core.unObjectHash n))
-                        | (o, n) <- Map.toList table ]
+          -- Only what this dispatch itself added or redirected. The table
+          -- accumulates for the scope's whole lifetime (deliberately --
+          -- see 'Core.runStoreTFrom'), so gating or broadcasting on the
+          -- accumulated whole would re-announce every earlier dispatch's
+          -- renames -- and re-trigger the reload below -- on every
+          -- dispatch that follows, remap or not.
+          let newEntries = [ (o, n) | (o, n) <- Map.toList table
+                                    , Map.lookup o tableBefore /= Just n ]
+              mapping = [ (TickId (Core.unObjectHash o), TickId (Core.unObjectHash n))
+                        | (o, n) <- newEntries ]
           -- Publish the ref whenever this dispatch actually advanced head
           -- -- unconditionally, regardless of whether any remap happened.
           when (h' /= h) $ setRef branch (Just (TickId (Core.unObjectHash h')))
-          -- Only broadcast/reload when a real cross-branch remap
-          -- happened (a non-empty table) -- a plain append or edit with
-          -- nothing to cascade has no reason to distrust its own,
-          -- already-correct 'scope''; reloading unconditionally on every
-          -- head move would discard legitimate pending ambient-tree state
-          -- for files 'comp' never touched (e.g. another file's own
-          -- not-yet-committed edit sitting in the same scope).
-          when (not (Map.null table)) $ do
+          -- Only broadcast/reload when *this dispatch* produced a remap --
+          -- a plain append or edit with nothing to cascade has no reason
+          -- to distrust its own, already-correct 'scope''.
+          when (not (null newEntries)) $ do
             updateReferences mapping
             -- The cascade just broadcast may have rewritten *this*
-            -- branch's ref a second time -- re-resolve and reload fresh
-            -- rather than trust 'h'' itself. Keeps the remap table
-            -- accumulated so far -- 'Core.freshScope's own table is always
-            -- empty, only its (head, tree) pair is wanted here.
+            -- branch's ref a second time -- re-resolve rather than trust
+            -- 'h'' itself. Only head needs re-reading: the cascade
+            -- rewrites parent links, never trees, so the scope's own
+            -- ambient tree -- including any pending, uncommitted edits
+            -- for files 'comp' never touched -- is exactly as valid for
+            -- the re-resolved head as it was for 'h''.
             mB <- getBranch branch
             case mB of
-              Just b' -> do
-                let newHash = Core.ObjectHash (unTickId (branchHead b'))
-                (_, wt, _) <- Core.freshScope newHash
-                put @Core.ScopeState (newHash, wt, table)
+              Just b' -> put @Core.ScopeState
+                (Core.ObjectHash (unTickId (branchHead b')), wt', table)
               Nothing -> return ()
           return (result, mapping)
     )
@@ -715,8 +722,19 @@ atGeneric tid inner = goDown []
       (current, _) <- runStorage @branch Core.headHash
       if current == target
         then do
+          -- "As if @target@ were HEAD" includes the plain ambient file
+          -- reads 'inner' (arbitrary command code, agents assembling
+          -- context) actually performs -- not just the chain position.
+          -- Sync the ambient tree to the target before 'inner' runs, and
+          -- to the replayed head once the tail is back -- the same
+          -- convention 'Core.syncTo' sets for any other jump: wherever
+          -- the scope lands, its ambient tree reflects that position's
+          -- committed content. Uncommitted ambient edits from before the
+          -- rebase do not survive it, exactly as with 'Core.syncTo'.
+          _ <- runStorage @branch Core.reset
           a <- inner
           replayBack poppedRev
+          _ <- runStorage @branch Core.reset
           return a
         else do
           (t, _) <- runStorage @branch $ do

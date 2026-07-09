@@ -155,10 +155,9 @@ spec = describe "createFile" $ do
     -- 'commitWorktree' reconcile against) must stop at the most recent
     -- deletion marker, not fold pre-deletion content back in -- otherwise
     -- a path recreated after being deleted would appear to already
-    -- contain its old content. The truncated history still includes the
-    -- deletion marker itself (as the oldest entry of this "life") and the
-    -- fresh creation marker after it -- both empty, so the fold's total
-    -- content is what actually matters here, not the entry count.
+    -- contain its old content. The marker itself is a boundary, not
+    -- content, and is excluded from the history entirely (see its own
+    -- Haddock); the fresh creation atom after it is included, empty.
     it "a path recreated after deletion starts genuinely empty, not carrying old content forward" $ do
       let result = runTestFS $ do
             _ <- createFile "scene.md"

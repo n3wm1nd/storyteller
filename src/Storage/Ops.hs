@@ -203,6 +203,17 @@ append path content = addAtom path (ensureTrailingNewline content)
 --   * New content that isn't absorbed by an adjacent trimmed atom ->
 --     a standalone new atom, inserted after whatever currently precedes
 --     it.
+--   * Zero-length atoms (a 'Storyteller.Core.Create.createFile'
+--     introduction, the empty atom a fully-emptied file keeps) record
+--     *presence*, not content -- content matching can't recover anything
+--     measurable from them, so their fate follows the file's instead:
+--     kept while the file exists, dropped only once it's gone.
+--
+-- A deletion marker ('Storage.Core.removedTagKey') is not part of any of
+-- this: 'atomHistory' hands reconciliation only the path's *current
+-- lifetime* -- everything after its most recent marker -- so a marker is
+-- never classified, never dropped, and the previous lifetime it seals
+-- off is never touched.
 --
 -- Only 'store'\/'drop'\/'at' ever run; the ambient tree itself is never
 -- written to here -- this only changes what the chain, from here on,
@@ -298,7 +309,7 @@ commitFile path = do
       history <- atomHistory path
       present <- exists path
       target  <- readWorking path
-      reconcileFile path history target
+      reconcileFile path present history target
       remaining <- atomHistory path
       -- A target that reconciles down to nothing collapses every gap to
       -- empty too (gaps are substrings of target, so if it's empty they
@@ -333,17 +344,16 @@ hasAnyAtom path = headHash >>= go
             []      -> return False
             (p : _) -> go p
 
--- | This file's own committed history, oldest first, back to whichever is
---   closer: root, or @path@'s own most recent deletion event (see
---   'Storage.Core.removedTagKey'). A deletion marker is a real, permanent
---   tick -- 'Tick.fileTicksOf' still walks straight past it for a client
---   wanting the full timeline -- but it's also a fold boundary: content
---   from before it belongs to a previous life of this path, not to
---   whatever's there now (possibly nothing, possibly a fresh
---   'Storyteller.Core.Create.createFile' after it), so reconciliation here
---   must not fold it back in. The marker itself is included, at empty
---   content, so it costs nothing to fold over one more time; only what's
---   *before* it is excluded.
+-- | This file's own *current lifetime*, oldest first: every atom strictly
+--   after @path@'s most recent deletion event (see
+--   'Storage.Core.removedTagKey'), or its whole history if it has none.
+--   A deletion marker is a real, permanent tick -- 'Tick.fileTicksOf'
+--   still walks straight past it for a client wanting the full timeline
+--   -- but here it is a *boundary, not content*: what's before it belongs
+--   to a previous life of this path, and the marker itself is never part
+--   of the history handed back, so reconciliation can neither classify
+--   nor drop it. (Dropping a marker would splice the previous lifetime's
+--   content back into the tree underneath every atom after it.)
 atomHistory :: StoreM m => FilePath -> StoreT m [(ObjectHash, Text)]
 atomHistory path = headHash >>= \h -> go h []
   where
@@ -351,8 +361,9 @@ atomHistory path = headHash >>= \h -> go h []
       t <- lift (readTick h)
       case t of
         Atom _ p tags content | p == path ->
-          let acc' = (h, content) : acc
-          in if isRemoval tags then return acc' else continue h acc'
+          if isRemoval tags
+            then return acc
+            else continue h ((h, content) : acc)
         _ -> continue h acc
     continue h acc = do
       cd <- lift (readCommit h)
@@ -371,9 +382,9 @@ readWorking path = do
     Right t  -> return t
     Left err -> fail ("readWorking: " <> path <> " is not valid UTF-8: " <> show err)
 
--- | The chain's very first commit -- the anchor a leading standalone gap
---   (content that precedes this file's first surviving atom) gets
---   inserted right after.
+-- | The chain's very first commit -- the anchor for a 'moveTick' to the
+--   very front, and 'lifetimeAnchor''s fallback for a path that has never
+--   been deleted.
 rootHash :: StoreM m => StoreT m ObjectHash
 rootHash = headHash >>= go
   where
@@ -382,6 +393,25 @@ rootHash = headHash >>= go
       case commitParents cd of
         []      -> return h
         (p : _) -> go p
+
+-- | Where @path@'s current lifetime is anchored: its most recent deletion
+--   marker if it has one (the boundary 'atomHistory' stops at), else the
+--   chain's root. This is what a leading standalone gap (content that
+--   precedes the file's first surviving atom) gets inserted right after --
+--   inserting it after root when a marker exists would land it *before*
+--   the marker, in a lifetime the marker has already sealed off.
+lifetimeAnchor :: StoreM m => FilePath -> StoreT m ObjectHash
+lifetimeAnchor path = headHash >>= go
+  where
+    go h = do
+      t <- lift (readTick h)
+      case t of
+        Atom _ p tags _ | p == path, isRemoval tags -> return h
+        _ -> do
+          cd <- lift (readCommit h)
+          case commitParents cd of
+            []      -> return h
+            (p : _) -> go p
 
 -- | A file with no prior atom history at all: introduced as an empty
 --   atom (the path's own introduction -- its diff is recovered by the
@@ -400,15 +430,15 @@ storeNewFile path content = do
 --   before this loop started can already be stale by the time an earlier
 --   atom's own 'at' call has replayed the tail -- including atoms this
 --   loop hasn't gotten to yet, whether or not their own content changed.
-reconcileFile :: StoreM m => FilePath -> [(ObjectHash, Text)] -> Text -> StoreT m ()
-reconcileFile path history target = do
-  root <- rootHash
+reconcileFile :: StoreM m => FilePath -> Bool -> [(ObjectHash, Text)] -> Text -> StoreT m ()
+reconcileFile path present history target = do
+  anchor0 <- lifetimeAnchor path
   let matches  = matchAtoms (map snd history) target
       n        = length matches
       gaps     = gapContents matches target
       fates    = gapFates matches gaps
       contents = finalAtomContents matches target gaps fates
-      outs     = classify matches contents
+      outs     = classify present matches contents
       -- 'gaps'/'fates' carry one entry per atom (the gap immediately
       -- before it) plus one trailing entry for the gap after the last
       -- atom; pairing stops one short of that, leaving the trailing pair
@@ -417,7 +447,7 @@ reconcileFile path history target = do
       (tailGap, tailFate) = case (List.drop n gaps, List.drop n fates) of
         (g : _, f : _) -> (g, f)
         _              -> (T.empty, Standalone)
-  (anchor, _) <- foldM (step path) (root, 0) perAtom
+  (anchor, _) <- foldM (step path) (anchor0, 0) perAtom
   () <$ emitStandaloneGap path anchor tailGap tailFate
   where
     -- @liveIdx@ tracks this atom's own position in @path@'s *live*
@@ -497,16 +527,13 @@ matchAtoms origs target = go 0 origs
           cursor'        = coreStart + len
       in AtomMatch (T.length orig) coreStart len : go cursor' rest
 
--- | A zero-length original atom (e.g. 'Storyteller.Core.Create.createFile's
---   own empty introduction atom, on a path nothing was ever appended to)
---   always has 'amCoreLen' == 'amOriginalLen' == 0, since
---   'longestCommonSubstring' short-circuits to @(0, 0, 0)@ whenever either
---   input is empty -- regardless of what the target actually says. Without
---   the 'amOriginalLen m > 0' guard, such an atom would read as "fully
---   recovered, unchanged" against *any* target, including one where the
---   whole file is gone, making it permanently undroppable.
+-- | Fully recovered, byte-for-byte. Only asked about atoms with nonempty
+--   originals -- a zero-length original recovers nothing measurable from
+--   *any* target ('longestCommonSubstring' short-circuits on empty input),
+--   so 'classify' decides its fate from the file's own presence before
+--   this question ever comes up.
 isKept :: AtomMatch -> Bool
-isKept m = amOriginalLen m > 0 && amCoreLen m == amOriginalLen m
+isKept m = amCoreLen m == amOriginalLen m
 
 coreOf :: Text -> AtomMatch -> Text
 coreOf target m = T.take (amCoreLen m) (T.drop (amCoreStart m) target)
@@ -553,11 +580,19 @@ finalAtomContents matches target gaps fates =
     backFold  fate gap = if fate == FoldBack  then gap else T.empty
 
 -- | Classify each atom given its already-computed final content (core
---   plus any folded-in gap text -- see 'finalAtomContents').
-classify :: [AtomMatch] -> [Text] -> [AtomOutcome]
-classify matches contents =
-  [ if isKept m then Kept else if T.null fc then Dropped else Changed
-  | (m, fc) <- zip matches contents ]
+--   plus any folded-in gap text -- see 'finalAtomContents'). A
+--   zero-length original records presence, not content (see the section
+--   Haddock): it is Kept -- same tick id, no churn -- as long as the file
+--   itself survives, and Dropped only when the whole file is gone.
+classify :: Bool -> [AtomMatch] -> [Text] -> [AtomOutcome]
+classify filePresent matches contents =
+  [ outcomeOf m fc | (m, fc) <- zip matches contents ]
+  where
+    outcomeOf m fc
+      | amOriginalLen m == 0 = if filePresent then Kept else Dropped
+      | isKept m             = Kept
+      | T.null fc            = Dropped
+      | otherwise            = Changed
 
 -- | Longest common substring of two texts: returns the offset into each
 --   (in characters) and the shared length. @(0, 0, 0)@ if either is empty

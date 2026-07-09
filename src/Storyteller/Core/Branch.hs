@@ -38,14 +38,13 @@ import qualified Storage.Core as Core
 --   plain monadic bind per level rather than one Polysemy effect
 --   interpretation per level.
 --
---   Always returns the old->new id mapping alongside the result —
---   'Storage.Core.ScopeState''s own remap table is populated by every
---   'Storage.Core.StoreT' computation regardless of what it did (empty
---   when nothing changed), so unlike the old @RunStorage@\/@RunStorageEdit@
---   split this replaces, there's no separate "editing" mode to opt into:
---   a caller that doesn't need the mapping just ignores it, and the
---   interpreter (see 'Storyteller.Core.Git.runBranchOpGit') always
---   broadcasts it via @updateReferences@ regardless.
+--   Always returns the old->new id mapping alongside the result — the
+--   renames *this* computation itself produced (empty when it changed
+--   nothing), so unlike the old @RunStorage@\/@RunStorageEdit@ split this
+--   replaces, there's no separate "editing" mode to opt into: a caller
+--   that doesn't need the mapping just ignores it, and the interpreter
+--   (see 'Storyteller.Core.Git.runBranchOpGit') broadcasts exactly that
+--   same delta via @updateReferences@ whenever it's non-empty.
 data BranchOp (branch :: k) m a where
   RunStorage :: (forall n. Core.StoreM n => Core.StoreT n a) -> BranchOp branch m (a, [(TickId, TickId)])
 
