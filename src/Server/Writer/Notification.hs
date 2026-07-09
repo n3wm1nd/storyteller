@@ -6,8 +6,15 @@
 -- accordingly, or when the undo log gets a new entry.
 --
 -- 'RefMoved' is posted by 'Server.Writer.GitWorker' whenever a story
--- branch ref is created or updated; connections filter it to their own
--- branch, then refetch and re-push their state. 'TicksRemapped' is posted by
+-- branch ref is created, updated, or deleted; connections filter it to
+-- their own branch, then refetch and re-push their state. Its 'Bool' is
+-- whether the branch's very *existence* changed (created or deleted) as
+-- opposed to an ordinary content edit moving an already-existing branch's
+-- head -- 'Server.Writer.Session.Connection' uses it to skip re-pushing the
+-- branch name list on writes that could not possibly have changed it (a
+-- content edit never adds or removes a name); nobody else needs the
+-- distinction, since every other consumer wants to know about *any* move.
+-- 'TicksRemapped' is posted by
 -- 'Server.Writer.Run.storageNotify' whenever 'Storyteller.Core.Storage.updateReferences'
 -- runs with a non-empty mapping; it is delivered to every connection
 -- regardless of branch, since applying a remap to ids you aren't tracking is
@@ -33,7 +40,7 @@ import Control.Concurrent.STM (TChan, atomically, readTChan)
 import Polysemy (Embed, Member, Sem, embed)
 
 data BranchNotification
-  = RefMoved      T.Text
+  = RefMoved      T.Text Bool
   | TicksRemapped [(T.Text, T.Text)]
   | UndoMoved
   deriving (Show, Eq)
@@ -55,6 +62,6 @@ watchBranch chan branch = loop
     loop state onMatch = do
       note <- embed $ atomically (readTChan chan)
       state' <- case note of
-        RefMoved b | b /= branch -> return state
-        _                        -> onMatch state note
+        RefMoved b _ | b /= branch -> return state
+        _                          -> onMatch state note
       loop state' onMatch

@@ -31,9 +31,9 @@ spec = describe "watchBranch" $ do
     seen <- newMVar []
     tid  <- forkIO $ runM $ void $ watchBranch chan "mine" () $ \() _ ->
       embed (modifyMVar_ seen (return . (() :))) >> return ()
-    atomically $ writeTChan chan (RefMoved "other")
-    atomically $ writeTChan chan (RefMoved "also-not-mine")
-    atomically $ writeTChan chan (RefMoved "mine")
+    atomically $ writeTChan chan (RefMoved "other" False)
+    atomically $ writeTChan chan (RefMoved "also-not-mine" False)
+    atomically $ writeTChan chan (RefMoved "mine" False)
     got <- waitFor seen 1
     killThread tid
     length got `shouldBe` 1
@@ -45,10 +45,10 @@ spec = describe "watchBranch" $ do
       let n' = n + 1
       embed $ modifyMVar_ seen (return . (++ [n']))
       return n'
-    atomically $ writeTChan chan (RefMoved "mine")
-    atomically $ writeTChan chan (RefMoved "other")
-    atomically $ writeTChan chan (RefMoved "mine")
-    atomically $ writeTChan chan (RefMoved "mine")
+    atomically $ writeTChan chan (RefMoved "mine" False)
+    atomically $ writeTChan chan (RefMoved "other" False)
+    atomically $ writeTChan chan (RefMoved "mine" False)
+    atomically $ writeTChan chan (RefMoved "mine" False)
     got <- waitFor seen 3
     killThread tid
     got `shouldBe` [1, 2, 3]
@@ -59,7 +59,7 @@ spec = describe "watchBranch" $ do
     tid  <- forkIO $ runM $ void $ watchBranch chan "mine" () $ \() _ ->
       embed (modifyMVar_ seen (return . (() :))) >> return ()
     atomically $ writeTChan chan (TicksRemapped [("old", "new")])
-    atomically $ writeTChan chan (RefMoved "other")
+    atomically $ writeTChan chan (RefMoved "other" False)
     got <- waitFor seen 1
     killThread tid
     length got `shouldBe` 1

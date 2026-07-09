@@ -112,9 +112,18 @@ gitWorkerLoop repo br notifyChan queue =
       embed (putMVar replyVar result)
       embed (notifyOnRefMove op result)
 
+    -- 'True'/'False' here is "did this write change the ref's *existence*"
+    -- (create or delete) vs. "just moved an already-existing ref to a new
+    -- target" (an ordinary content edit) -- see 'RefMoved's own haddock for
+    -- why that distinction matters to the one consumer that cares.
+    -- 'DeleteRef' now notifies too, not just 'CreateRef'\/'UpdateRef': a
+    -- deleted branch's disappearance is exactly as much an existence change
+    -- as its creation, and skipping it here meant no connection but the one
+    -- that issued the delete itself ever found out.
     notifyOnRefMove :: Git IO a -> Either String a -> IO ()
-    notifyOnRefMove (CreateRef ref _) (Right _) = notifyRef ref
-    notifyOnRefMove (UpdateRef ref _) (Right _) = notifyRef ref
+    notifyOnRefMove (CreateRef ref _) (Right _) = notifyRef ref True
+    notifyOnRefMove (UpdateRef ref _) (Right _) = notifyRef ref False
+    notifyOnRefMove (DeleteRef ref)   (Right _) = notifyRef ref True
     notifyOnRefMove _                 _         = return ()
 
     -- The undo log's own ref is checked first and specifically -- it isn't
@@ -125,12 +134,12 @@ gitWorkerLoop repo br notifyChan queue =
     -- 'RefMoved' already raced past -- 'Snapshot' always runs *after* the
     -- write it's recording, so by the time this fires, the branch's own
     -- notification (and any push it triggered) is already old news.
-    notifyRef :: RefName -> IO ()
-    notifyRef ref
+    notifyRef :: RefName -> Bool -> IO ()
+    notifyRef ref existenceChanged
       | ref == undoLogRef = atomically $ writeTChan notifyChan UndoMoved
       | otherwise = case refBranchName ref of
           Nothing     -> return ()
-          Just branch -> atomically $ writeTChan notifyChan (RefMoved (unBranchName branch))
+          Just branch -> atomically $ writeTChan notifyChan (RefMoved (unBranchName branch) existenceChanged)
 
 -- | Replay a 'Git' request through the 'Git' effect. Valid for any @m@ --
 -- none of 'Git's constructors mention it, so it's a phantom parameter, not

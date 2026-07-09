@@ -93,7 +93,7 @@ onNotify
   :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> Cache -> BranchNotification -> Sem r Cache
 onNotify branch conn cache = \case
-  RefMoved _      -> withBranch @Main branch (push conn cache)
+  RefMoved _ _    -> withBranch @Main branch (push conn cache)
   TicksRemapped _ -> return cache
   UndoMoved       -> return cache
 

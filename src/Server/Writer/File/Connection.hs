@@ -98,7 +98,7 @@ onNotify
   :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> FilePath -> Maybe T.Text -> BranchNotification -> Sem r (Maybe T.Text)
 onNotify branch conn path since note = case note of
-  RefMoved _ ->
+  RefMoved _ _ ->
     withBranch @Main branch (pushIncremental conn path since)
   TicksRemapped mapping -> do
     embed $ WS.sendTextData conn (encode (TickRemap mapping))

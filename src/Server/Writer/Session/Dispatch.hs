@@ -103,11 +103,21 @@ characterSummaries = do
 --   the connection's initial push and its notifier (see
 --   'Server.Writer.Session.Connection'), which re-pushes this same event
 --   whenever any branch ref moves (every real write grows it; a jump
---   doesn't touch it at all — see 'Storyteller.Core.Undo').
+--   doesn't touch it at all — see 'Storyteller.Core.Undo'). Capped to the
+--   most recent 'undoLogLimit' entries: the underlying log itself is never
+--   trimmed (it's still the full, real history, walked in full by every
+--   'Storyteller.Core.Undo.resetToUndo'), only what crosses the wire is —
+--   the timeline UI shows on the order of a couple dozen dots at once, so
+--   sending the other thousands a long session accumulates is pure waste
+--   with no consumer today. Revisit if a client ever wants to page back
+--   further than this covers.
 undoLog :: SessionEffects r => Sem r SessionEvent
 undoLog = do
-  entries <- reverse <$> listUndo
+  entries <- reverse . take undoLogLimit <$> listUndo
   return $ UndoLog
     [ WireUndoEntry { weId = unObjectHash (undoId e), weTime = undoTime e }
     | e <- entries
     ]
+
+undoLogLimit :: Int
+undoLogLimit = 50

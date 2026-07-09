@@ -103,7 +103,7 @@ onNotify
   :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> (Maybe T.Text, Set FilePath) -> BranchNotification -> Sem r (Maybe T.Text, Set FilePath)
 onNotify branch conn (since, knownFiles) note = case note of
-  RefMoved _      -> withBranch @Main branch (pushIncremental conn since knownFiles)
+  RefMoved _ _    -> withBranch @Main branch (pushIncremental conn since knownFiles)
   TicksRemapped _ -> return (since, knownFiles)
   UndoMoved       -> return (since, knownFiles)
 

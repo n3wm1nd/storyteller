@@ -67,7 +67,7 @@ onNotify
   :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> () -> BranchNotification -> Sem r ()
 onNotify branch conn () = \case
-  RefMoved _      -> withBranch @Main branch (push conn branch)
+  RefMoved _ _    -> withBranch @Main branch (push conn branch)
   TicksRemapped _ -> return ()
   UndoMoved       -> return ()
 

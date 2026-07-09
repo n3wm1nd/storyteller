@@ -17,11 +17,16 @@
 -- There is no list-branches/list-characters/list-undo command: a session
 -- never has to ask for any of these, only listen. A second thread keeps all
 -- three live: 'Server.Writer.GitWorker' broadcasts a 'RefMoved' on
--- 'envNotifyChan' for every branch ref creation/update (including
--- 'undo.reset''s own ref restores) and an 'UndoMoved' whenever
+-- 'envNotifyChan' for every branch ref creation, update, or deletion
+-- (including 'undo.reset''s own ref restores) and an 'UndoMoved' whenever
 -- 'Storyteller.Core.Undo's own log grows — the notifier re-pushes
--- 'BranchList' (and 'CharacterList' when a moved ref was a 'character/*'
--- one) on the former, and 'UndoLog' on the latter. Deliberately two
+-- 'UndoLog' on the latter, and, on the former, 'BranchList' only when a
+-- moved ref's very existence changed (created or deleted -- an ordinary
+-- content edit cannot possibly change which branches exist, so there's
+-- nothing for that push to ever show that wasn't already sent) and
+-- 'CharacterList' whenever any 'character/*' ref moved at all, existence or
+-- not (its payload carries live sheet content, which an ordinary edit can
+-- genuinely change). Undo log and branch existence are deliberately two
 -- independent triggers rather than one push doing both on every move: a
 -- reset restores several branches at once (each its own 'RefMoved') without
 -- growing the log at all, and conversely a single write's own log entry
@@ -73,13 +78,10 @@ runCommands env conn = do
     commandLoop conn
   either (reportError conn) return result
 
--- | Re-push the branch (and, when relevant, character) list on every
---   'RefMoved', and the undo log on every 'UndoMoved' — covers branch
---   creation/deletion alike, since both go through
---   'Storyteller.Core.Storage.createBranch'\/'deleteBranch', which (like
---   any other ref write) reaches 'Server.Writer.GitWorker'. 'TicksRemapped'
---   is about tick-id remapping within a branch's own chain, not the
---   existence of branches or the undo log, so it's ignored here.
+-- | Re-push the branch list only when some ref's existence actually
+--   changed, the character list whenever any 'character/*' ref moved at
+--   all, and the undo log on every 'UndoMoved' — see the module haddock for
+--   why each reacts to a different, precise subset of what's possible.
 runNotifier :: ServerEnv -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env conn chan = do
   result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
@@ -98,21 +100,23 @@ runNotifier env conn chan = do
 --   within the same burst both still get acted on -- reacting only to the
 --   one that triggered the wakeup risked silently dropping whichever kind
 --   didn't happen to be first. 'onRefs' folds a whole burst of 'RefMoved'
---   down to the one bit it actually needs (whether any moved ref was a
---   'character/*' one); a burst of 'UndoMoved' collapses to nothing but a
---   single 'onUndo' call, since every push reads live state fresh
---   regardless of how many entries just landed.
+--   down to the two bits it actually needs (did any existence change, did
+--   any character branch move at all); a burst of 'UndoMoved' collapses to
+--   nothing but a single 'onUndo' call, since every push reads live state
+--   fresh regardless of how many entries just landed.
 watchNotifications
   :: Member (Embed IO) r
-  => TChan BranchNotification -> (Bool -> Sem r ()) -> Sem r () -> Sem r ()
+  => TChan BranchNotification -> (Bool -> Bool -> Sem r ()) -> Sem r () -> Sem r ()
 watchNotifications chan onRefs onUndo = loop
   where
     loop = do
       first <- embed $ atomically (readTChan chan)
       rest  <- embed (drainAll chan)
-      let notes        = first : rest
-          movedBranches = [ b | RefMoved b <- notes ]
-      if null movedBranches then return () else onRefs (any isCharacterRef movedBranches)
+      let notes            = first : rest
+          moves             = [ (b, existed) | RefMoved b existed <- notes ]
+          branchesChanged   = any snd moves
+          characterTouched  = any (isCharacterRef . fst) moves
+      if null moves then return () else onRefs branchesChanged characterTouched
       if UndoMoved `elem` notes then onUndo else return ()
       loop
 
@@ -128,10 +132,10 @@ watchNotifications chan onRefs onUndo = loop
 
     isCharacterRef = T.isPrefixOf "character/"
 
-onRefMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Bool -> Sem r ()
-onRefMove conn hasCharacterMove = do
-  pushBranchList conn
-  if hasCharacterMove then pushCharacterList conn else return ()
+onRefMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Bool -> Bool -> Sem r ()
+onRefMove conn branchesChanged characterTouched = do
+  if branchesChanged  then pushBranchList conn    else return ()
+  if characterTouched then pushCharacterList conn else return ()
 
 pushBranchList :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 pushBranchList conn = do

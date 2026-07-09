@@ -107,7 +107,7 @@ onNotify
   :: (SessionEffects r, Member (Embed IO) r)
   => T.Text -> WS.Connection -> TVar [ContextSlot] -> () -> BranchNotification -> Sem r ()
 onNotify branch conn slotsVar () = \case
-  RefMoved _ -> do
+  RefMoved _ _ -> do
     slots <- embed (readTVarIO slotsVar)
     if null slots then return () else pushPreview branch conn Nothing slots
   TicksRemapped _ -> return ()
