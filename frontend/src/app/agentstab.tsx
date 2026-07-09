@@ -18,10 +18,10 @@
 
 import { useEffect, useState } from "react";
 import {
-  ChevronRight, FileText, Layers,
+  ChevronRight, FileText, Layers, Sliders,
   PenLine, Wrench, RefreshCw, Split, MessageSquare, Bot,
 } from "lucide-react";
-import { AGENTS, promptKeyToPath, contextModeDescription, type AgentDef } from "@/lib/agents";
+import { AGENTS, promptKeyToPath, configKeyToPath, configFieldsHint, contextModeDescription, type AgentDef } from "@/lib/agents";
 import { branchConn, branchFileUrl, uploadBranchFile } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { ContextSourceConfig } from "./context-source";
@@ -240,6 +240,165 @@ function PromptOverrides({ promptKeys, files, onJumpToPrompt }: {
   );
 }
 
+// Same fetch/edit/save shape as PromptEditor, against the config key's
+// .llmsettings.yaml sibling instead of its .md file — see
+// lib/agents.ts's configKeyToPath. A blank/missing file just means "no
+// overrides," same as a missing prompt file means "use the compiled-in
+// default" — Storyteller.Core.Prompt.getConfig falls back to the caller's
+// defaults on a missing or unparseable file.
+function ConfigEditor({ path, fieldsHint }: { path: string; fieldsHint: string[] }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent(null);
+    setLoadError(null);
+    fetch(branchFileUrl("prompts", path))
+      .then((res) => {
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        return res.text();
+      })
+      .then((text) => {
+        if (cancelled) return;
+        setContent(text);
+        setDraft(text);
+      })
+      .catch((err) => { if (!cancelled) setLoadError(String(err)); });
+    return () => { cancelled = true; };
+  }, [path]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await uploadBranchFile("prompts", path, new Blob([draft], { type: "application/yaml" }));
+      setContent(draft);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loadError) {
+    return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "oklch(0.65 0.18 25)" }}>failed to load: {loadError}</div>;
+  }
+  if (content === null) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", fontSize: 10.5, color: "var(--text-ghost)" }}>
+        <RefreshCw style={{ width: 10, height: 10 }} className="animate-spin" /> loading…
+      </div>
+    );
+  }
+
+  const dirty = draft !== content;
+  return (
+    <div style={{ padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
+      <div style={{ fontSize: 9.5, color: "var(--text-ghost)" }}>
+        Recognized keys: {fieldsHint.join(", ")}
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={`temperature: 0.8\nmaxTokens: 2048`}
+        rows={5}
+        style={{
+          width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5,
+          padding: 8, borderRadius: 5, border: "1px solid var(--border-subtle)",
+          background: "var(--card)", color: "var(--foreground)",
+        }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          style={{
+            fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border-subtle)",
+            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "var(--surface)",
+            color: dirty ? "var(--amber)" : "var(--text-ghost)",
+            cursor: dirty && !saving ? "pointer" : "default",
+          }}
+        >
+          {saving ? "saving…" : dirty ? "save" : "saved"}
+        </button>
+        {dirty && !saving && (
+          <button
+            onClick={() => setDraft(content)}
+            style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
+          >
+            revert
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// One row, not a list: unlike prompts (several independent keys per agent),
+// there is exactly one config override per agent, filed under its systemKey
+// (promptKeys[0] — the same key every agent already passes to
+// getConfigWithPrompt on the backend). No agent, no row.
+function ConfigOverride({ agent, files, onJumpToPrompt }: {
+  agent: AgentDef;
+  files: string[] | null;
+  onJumpToPrompt: (path: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const key = agent.promptKeys[0];
+
+  if (!key) {
+    return <div style={{ padding: "0 16px 12px", fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic" }}>Instant, non-LLM action — no sampling config.</div>;
+  }
+
+  const path = configKeyToPath(key);
+  const active = files?.includes(path) ?? false;
+  const fieldsHint = configFieldsHint(agent.configRole);
+
+  return (
+    <div style={{ padding: "0 14px 12px" }}>
+      <div style={{ borderRadius: 5, background: "var(--surface)", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          {active && (
+            <button
+              onClick={() => setOpen((o) => !o)}
+              title={open ? "Collapse" : "Expand to view/edit"}
+              style={{
+                display: "flex", alignItems: "center", flexShrink: 0,
+                padding: "5px 0 5px 8px", border: "none", background: "none", cursor: "pointer", color: "var(--text-dim)",
+              }}
+            >
+              <ChevronRight style={{ width: 10, height: 10, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+            </button>
+          )}
+          <button
+            onClick={() => onJumpToPrompt(path)}
+            title={`Open ${path} in the file view`}
+            style={{
+              display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, flex: 1, minWidth: 0,
+              padding: active ? "5px 8px 5px 4px" : "5px 8px", border: "none", background: "none", textAlign: "left",
+              cursor: "pointer",
+            }}
+          >
+            {!active && <FileText style={{ width: 10, height: 10, color: "var(--text-dim)", flexShrink: 0 }} />}
+            <span style={{ fontFamily: "monospace", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{key}</span>
+            <span style={{
+              marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8, flexShrink: 0,
+              background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
+              color: active ? "var(--amber)" : "var(--text-ghost)",
+              border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
+            }}>
+              {active ? "override" : "default"}
+            </span>
+          </button>
+        </div>
+        {open && <ConfigEditor path={path} fieldsHint={fieldsHint} />}
+      </div>
+    </div>
+  );
+}
+
 // Groups by first appearance, category-less agents form a leading, unlabeled
 // group — so a mix of categorized/uncategorized agents still renders
 // sensibly instead of requiring an all-or-nothing migration.
@@ -344,6 +503,9 @@ export function AgentsTab({ activeBranch, path, onJumpToPrompt }: {
 
         <SectionLabel icon={FileText}>Prompts</SectionLabel>
         <PromptOverrides promptKeys={selected.promptKeys} files={promptFiles} onJumpToPrompt={onJumpToPrompt} />
+
+        <SectionLabel icon={Sliders}>Sampling</SectionLabel>
+        <ConfigOverride agent={selected} files={promptFiles} onJumpToPrompt={onJumpToPrompt} />
       </div>
     </div>
   );

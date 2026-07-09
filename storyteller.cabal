@@ -57,6 +57,7 @@ library
                   , Storyteller.Core.CLI.Env
                   , Storyteller.Core.LLM.Registry
                   , Storyteller.Core.LLM.Role
+                  , Storyteller.Core.LLM.Settings
                   , Storyteller.Writer.Agent.Continuation
                   , Storyteller.Writer.Agent.ContextFilter
                   , Storyteller.Writer.Agent.Chat

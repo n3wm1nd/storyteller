@@ -51,6 +51,13 @@ export interface AgentDef {
   // — each doubles as a path on the "prompts" branch (dots -> slashes, ".md"
   // suffix). Empty for agents that never touch an LLM (append/note).
   promptKeys: string[];
+  // Which role's LLM this agent calls (see Storyteller.Core.LLM.Role) — only
+  // meaningful when promptKeys is non-empty. Determines which sampling keys
+  // are valid in this agent's config override (see configFieldsHint):
+  // ProseModel has no HasReasoning instance, so "reasoning" is silently
+  // ignored if written into a prose agent's override (Storyteller.Core.LLM.
+  // Settings.ProseSettings has no such field to decode into).
+  configRole?: "prose" | "agent";
   // Empty means the agent genuinely has no configurable context today (e.g.
   // Fixer's real path — 'reworkAtom' takes the selected atoms directly, no
   // FileSystem effect at all — see Storyteller.Writer.Agent.ReplaceTool).
@@ -66,6 +73,7 @@ export const AGENTS: AgentDef[] = [
     label: "Writer",
     description: "Continues prose from the selection or file end.",
     promptKeys: ["agent.writer.system", "agent.writer.instructions"],
+    configRole: "prose",
     contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
   },
@@ -74,6 +82,7 @@ export const AGENTS: AgentDef[] = [
     label: "Fixer",
     description: "Rewrites the selected atoms in place per an instruction.",
     promptKeys: ["agent.fixer.system", "agent.fixer.template"],
+    configRole: "agent",
     contextSources: [],
     appliesTo: (path) => !isChatFile(path),
   },
@@ -82,6 +91,7 @@ export const AGENTS: AgentDef[] = [
     label: "Regen · beat sheet",
     description: "Regenerates a chapter to fit its beat sheet.",
     promptKeys: ["agent.outline.beatsheet.system", "agent.outline.beatsheet.template"],
+    configRole: "prose",
     contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
   },
@@ -90,6 +100,7 @@ export const AGENTS: AgentDef[] = [
     label: "Outline split",
     description: "Splits the whole-story outline into per-chapter beat sheets.",
     promptKeys: ["agent.outline.split.system", "agent.outline.split.template"],
+    configRole: "agent",
     contextSources: [STORY_AMBIENT],
     appliesTo: isOutlineFile,
   },
@@ -98,6 +109,7 @@ export const AGENTS: AgentDef[] = [
     label: "Chat",
     description: "Conversational co-writing for chat/ files.",
     promptKeys: ["agent.chat.system"],
+    configRole: "agent",
     contextSources: [{ id: "story", label: "Story branch", mode: "on-demand" }],
     appliesTo: isChatFile,
   },
@@ -105,6 +117,26 @@ export const AGENTS: AgentDef[] = [
 
 export function promptKeyToPath(key: string): string {
   return key.split(".").join("/") + ".md";
+}
+
+// Same dotted key, same "prompts" branch, different suffix — a
+// $key.llmsettings.yaml sibling of $key.md that Storyteller.Core.Prompt's
+// getConfig/getConfigWithPrompt reads for sampling overrides (temperature/
+// maxTokens/reasoning), on top of a system prompt. Only ever meaningful for
+// an agent's first promptKey (its systemKey) — that's the one key every
+// agent already passes to getConfigWithPrompt on the backend.
+export function configKeyToPath(key: string): string {
+  return key.split(".").join("/") + ".llmsettings.yaml";
+}
+
+// Which top-level YAML keys an agent's config override actually does
+// anything with — for hint text only, not validation (an unrecognized key
+// is just silently ignored by the backend's decoder, see ProseSettings/
+// AgentSettings in Storyteller.Core.LLM.Settings).
+export function configFieldsHint(role: AgentDef["configRole"]): string[] {
+  if (role === "agent") return ["temperature", "maxTokens", "reasoning"];
+  if (role === "prose") return ["temperature", "maxTokens"];
+  return [];
 }
 
 // What a context source's mode actually means for the model, in plain
