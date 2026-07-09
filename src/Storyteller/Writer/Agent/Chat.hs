@@ -99,11 +99,10 @@ import Storage.Tick (FileTick(..))
 chatAgent
   :: forall branch r
   .  (LLMs r, Members '[PromptStorage, FileSystem branch, FileSystemRead branch, Fail] r)
-  => [ModelConfig AgentModel]
-  -> [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
+  => [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
   -> Sem r [Message AgentModel]  -- ^ everything this call added on top of the given context
-chatAgent configs context = do
-  configsWithPrompt <- getConfigWithPrompt "agent.chat" defaultChatSystemPrompt configs
+chatAgent context = do
+  configsWithPrompt <- getConfigWithPrompt "agent.chat" defaultChatSystemPrompt defaultChatConfig
   let tools = chatTools @branch @r
       configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
   response <- queryLLM configsWithTools context
@@ -112,7 +111,7 @@ chatAgent configs context = do
     calls -> do
       results <- mapM (executeToolCallFromList tools) calls
       let added = response ++ map ToolResultMsg results
-      rest <- chatAgent @branch configs (context ++ added)
+      rest <- chatAgent @branch (context ++ added)
       return (added ++ rest)
 
 -- | Fallback for @agent.chat@ (the namespace root -- see
@@ -129,6 +128,13 @@ defaultChatSystemPrompt =
   \line range out of a long file) to look at the rest of the project \
   \whenever you need to, rather than assuming or guessing at their \
   \contents."
+
+-- | Compiled-in sampling default for @agent.chat@ -- see @$key.llmsettings.
+--   yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'. A conversational
+--   reply, not a whole chapter or a single-atom edit -- middling budget,
+--   middling temperature (natural, but not creative-writing-varied).
+defaultChatConfig :: [ModelConfig AgentModel]
+defaultChatConfig = [MaxTokens 2048, Temperature 0.8]
 
 -- | The model's window into the branch: find paths by pattern, read one
 --   back by exact path, or pull just a line range out of a long one.

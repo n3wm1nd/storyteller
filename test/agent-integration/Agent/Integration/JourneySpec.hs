@@ -39,7 +39,7 @@ spec
 spec runner = describe "a full outline -> beat sheets -> chapters session (real LLM, cached)" $
   it "produces a coherent chapter-by-chapter draft from a one-line pitch" $
     runExpect @judgeModel runner $ do
-      result <- runJourney []
+      result <- runJourney
       info $ "journey outline:\n" <> jrOutline result
       embed $ do
         jrOutline result `shouldNotBe` ""

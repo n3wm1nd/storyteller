@@ -18,9 +18,8 @@ module Storyteller.Writer.Agent.Write
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import UniversalLLM (ModelConfig)
 
-import Storyteller.Core.LLM.Role (LLMs, ProseModel)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction, Prose, CharContextBlock(..), CharLabel(..), ContextBlock, ExistingContent, WordCount(..))
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -39,14 +38,13 @@ import Storyteller.Core.Prompt (PromptStorage)
 writeAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> ExistingContent
+  => ExistingContent
   -> [ContextBlock]                              -- ^ extra context (e.g. user's pinned selection)
   -> Instruction
   -> [(CharLabel, [CharContextBlock])]            -- ^ (label, resolved blocks) per active char branch
   -> Sem r Prose
-writeAgent configs existing extraContext instruction charBlocks = do
+writeAgent existing extraContext instruction charBlocks = do
   let charContexts = concatMap
         (\(CharLabel name, blocks) -> CharContextBlock ("## Character: " <> name) : blocks)
         charBlocks
-  proseAgent configs (Just (WordCount 300)) charContexts extraContext existing instruction
+  proseAgent (Just (WordCount 300)) charContexts extraContext existing instruction

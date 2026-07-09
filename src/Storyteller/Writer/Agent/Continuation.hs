@@ -50,15 +50,14 @@ import Prelude hiding (readFile)
 proseAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> Maybe WordCount        -- ^ approximate desired output length
+  => Maybe WordCount        -- ^ approximate desired output length
   -> [CharContextBlock]     -- ^ character context blocks
   -> [ContextBlock]         -- ^ branch context file blocks
   -> ExistingContent        -- ^ current content of the file being continued
   -> Instruction
   -> Sem r Prose
-proseAgent configs outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
-  configsWithPrompt <- getConfigWithPrompt "agent.writer" defaultWriterSystemPrompt configs
+proseAgent outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
+  configsWithPrompt <- getConfigWithPrompt "agent.writer" defaultWriterSystemPrompt defaultWriterConfig
   Prompt extraInstructions <- getPrompt "agent.writer.instructions" defaultWriterInstructions
 
   let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
@@ -72,6 +71,18 @@ proseAgent configs outputHint charContexts contextBlocks (ExistingContent existi
 defaultWriterSystemPrompt :: Prompt
 defaultWriterSystemPrompt =
   "You are a creative writing assistant. Write only what is asked. Output only prose, nothing else."
+
+-- | Compiled-in sampling default for @agent.writer@ (also backing
+--   'Storyteller.Writer.Agent.Outline.chapterProse'\/'chapterProseByBeat'\/
+--   'reconcileChapter'\/'reconcileChapterByBeat', all thin wrappers over this
+--   same 'proseAgent') -- see @$key.llmsettings.yaml@ overrides via
+--   'getConfig'. Prose generation is the one call that can run to a whole
+--   chapter (up to ~1200 words, see 'Storyteller.Writer.Agent.Outline.
+--   chapterProse'), so it gets the most headroom of any agent's default, and
+--   a higher temperature than the tool-calling roles: creative variation is
+--   wanted here, not a liability.
+defaultWriterConfig :: [ModelConfig ProseModel]
+defaultWriterConfig = [MaxTokens 3000, Temperature 0.9]
 
 -- | Fallback for @agent.writer.instructions@: standing instructions appended
 --   to every writer prompt (house style, voice, recurring constraints), on
@@ -135,7 +146,7 @@ writerUserMessage contextBlocks charContexts existing extraInstructions instruct
 --   as plain data — no LLM involved. Requires the target branch's
 --   filesystem to be in scope. This is the machinery 'proseAgent' needs fed
 --   in; composing the two is the caller's job, e.g.
---   @gatherFileContext layout path >>= \\(existing, ctx) -> proseAgent configs hint chars (extra <> ctx) existing instr@.
+--   @gatherFileContext layout path >>= \\(existing, ctx) -> proseAgent hint chars (extra <> ctx) existing instr@.
 --
 --   @layout@ is the user-facing bucket-picker ordering
 --   ('Storyteller.Writer.Agent.ContextFilter.applyContextLayout') a client

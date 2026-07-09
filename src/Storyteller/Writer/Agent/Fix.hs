@@ -25,9 +25,8 @@ import Data.List (elemIndex)
 import Data.Maybe (mapMaybe)
 import Polysemy
 import Polysemy.Fail (Fail)
-import UniversalLLM (ModelConfig)
 
-import Storyteller.Core.LLM.Role (LLMs, AgentModel)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -39,12 +38,11 @@ import Storyteller.Core.Types (TickId(..))
 fixAgent
   :: forall branch r
   .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
-  => [ModelConfig AgentModel]
-  -> FilePath
+  => FilePath
   -> [TickId]                -- ^ targets: atoms flagged for fixing (non-empty)
   -> Instruction
   -> Sem r [TickId]
-fixAgent configs path targets instruction = do
+fixAgent path targets instruction = do
   (ticks0, _) <- runStorage @branch (fileTicksOf path)
   let idxs = mapMaybe (\t -> elemIndex (unTickId t) (map ftTickId ticks0)) targets
-  reworkAtomsAt @branch configs path instruction idxs
+  reworkAtomsAt @branch path instruction idxs

@@ -86,6 +86,6 @@ outlineAction outFile guidance = do
   let source = OutlineDoc $ case guidance of
         "" -> outline
         g  -> g <> "\n\n" <> outline
-  beatSheet <- expandAgent modelConfigs ToBeatSheet fileCtx source
+  beatSheet <- expandAgent ToBeatSheet fileCtx source
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms beatSheet
   return beatSheet

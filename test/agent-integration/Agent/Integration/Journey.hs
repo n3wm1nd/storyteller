@@ -42,13 +42,12 @@ import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
 import Runix.Logging (Logging, info)
-import UniversalLLM (ModelConfig)
 
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
-import Storyteller.Core.LLM.Role (LLMs, ProseModel)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
@@ -101,22 +100,21 @@ storyPremise = T.unwords
 runJourney
   :: forall r
   .  JourneyEffects r
-  => [ModelConfig ProseModel]
-  -> Sem r JourneyResult
-runJourney configs = do
+  => Sem r JourneyResult
+runJourney = do
   info "journey: generating outline.md"
-  outline <- writeChat configs "outline.md" storyPremise
+  outline <- writeChat "outline.md" storyPremise
 
   info "journey: splitting outline into chapter beat sheets"
   (_, outlineCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
-  sheets <- splitOutlineAgent [] outlineCtx (OutlineDoc outline)
+  sheets <- splitOutlineAgent outlineCtx (OutlineDoc outline)
   mapM_ (\(ChapterBeats path (BeatSheet body)) -> appendGenerated path body) sheets
   info $ "journey: got " <> T.pack (show (length sheets)) <> " beat sheet(s)"
 
   info "journey: writing each chapter from its beat sheet"
   chapters <- forM sheets $ \(ChapterBeats sheetPath _) -> do
     let chapterPath = chapterPathFor sheetPath
-    prose <- writeChat configs chapterPath (chapterInstruction sheetPath)
+    prose <- writeChat chapterPath (chapterInstruction sheetPath)
     return (chapterPath, prose)
 
   files <- logFileTree @(BranchTag Main)
@@ -144,11 +142,11 @@ logFileTree = do
 writeChat
   :: forall r
   .  JourneyEffects r
-  => [ModelConfig ProseModel] -> FilePath -> T.Text -> Sem r T.Text
-writeChat configs path prompt = do
+  => FilePath -> T.Text -> Sem r T.Text
+writeChat path prompt = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
-  Prose generated <- writeAgent configs existing fileCtx (Instruction prompt) []
+  Prose generated <- writeAgent existing fileCtx (Instruction prompt) []
   appendGenerated path generated
   return generated
 

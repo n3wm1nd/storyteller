@@ -54,10 +54,16 @@ requireEnv var = do
       hPutStrLn stderr $ "Error: " <> var <> " is not set"
       exitFailure
 
--- | Sampling defaults shared by every agent. System prompts are agent-owned
---   (see 'Storyteller.Core.Prompt') and layered on top of this by each
---   agent, rather than baked in here. Polymorphic in @model@ (rather than
---   pinned to one type) so the same defaults work for every role's proxy
+-- | Base config for 'Storyteller.Core.Runtime.runStoryGit'\'s one real,
+--   physically-resolved @StoryModel@ (the concrete model every proxy role
+--   delegates to in the CLI, unlike the server's independently-chosen
+--   per-role models) -- an interpreter-level setting, not a per-agent one.
+--   Each agent's own sampling default (what actually reaches the model on a
+--   given call) is owned by that agent, right alongside its system prompt --
+--   see e.g. 'Storyteller.Writer.Agent.Continuation.defaultWriterConfig' --
+--   and layered on top of whatever this sets up, via
+--   'Storyteller.Core.Prompt.getConfig'. Polymorphic in @model@ (rather than
+--   pinned to one type) so the same base config works for every role's proxy
 --   model -- see 'Storyteller.Core.LLM.Role'.
 modelConfigs :: (SupportsMaxTokens (ProviderOf model), SupportsTemperature (ProviderOf model)) => [ModelConfig model]
 modelConfigs =

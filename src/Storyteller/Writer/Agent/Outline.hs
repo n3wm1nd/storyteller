@@ -100,13 +100,12 @@ data ExpandGoal
 expandAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> ExpandGoal
+  => ExpandGoal
   -> [ContextBlock]        -- ^ surrounding context (other chapters' outlines, world files, ...)
   -> OutlineDoc            -- ^ the document being expanded
   -> Sem r Text
-expandAgent configs goal contextBlocks (OutlineDoc doc) = do
-  configsWithPrompt <- getConfigWithPrompt (systemKey goal) (defaultExpandSystem goal) configs
+expandAgent goal contextBlocks (OutlineDoc doc) = do
+  configsWithPrompt <- getConfigWithPrompt (systemKey goal) (defaultExpandSystem goal) (defaultExpandConfig goal)
   Prompt closing    <- getPrompt (instructionsKey goal) (defaultExpandInstructions goal)
 
   let contextSection
@@ -163,12 +162,11 @@ instance ToolParameter BeatSheetBody where
 splitOutlineAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig AgentModel]
-  -> [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
+  => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
-splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
-  configsWithPrompt <- getConfigWithPrompt "agent.outline.split" defaultSplitSystem configs
+splitOutlineAgent contextBlocks (OutlineDoc doc) = do
+  configsWithPrompt <- getConfigWithPrompt "agent.outline.split" defaultSplitSystem defaultSplitConfig
   Prompt closing    <- getPrompt "agent.outline.split.instructions" defaultSplitInstructions
 
   let tool = mkToolWithMeta
@@ -243,15 +241,14 @@ instance ToolParameter ChapterBeats where
 chapterProse
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> Maybe WordCount
+  => Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
   -> ExistingContent       -- ^ prose already written for this chapter (empty for a fresh chapter)
   -> BeatSheet
   -> Sem r Prose
-chapterProse configs outputHint charContexts contextBlocks existing (BeatSheet sheet) =
-  proseAgent configs outputHint charContexts contextBlocks existing
+chapterProse outputHint charContexts contextBlocks existing (BeatSheet sheet) =
+  proseAgent outputHint charContexts contextBlocks existing
     (beatSheetInstruction sheet)
 
 -- | Generate a chapter beat by beat: repeatedly ask the model for the prose
@@ -266,15 +263,14 @@ chapterProse configs outputHint charContexts contextBlocks existing (BeatSheet s
 chapterProseByBeat
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> Maybe WordCount       -- ^ approximate length hint, per beat
+  => Maybe WordCount       -- ^ approximate length hint, per beat
   -> [CharContextBlock]
   -> [ContextBlock]
   -> ExistingContent       -- ^ prose already written for this chapter
   -> BeatSheet
   -> Int                   -- ^ maxBeats: hard cap on iterations
   -> Sem r Prose
-chapterProseByBeat configs outputHint charContexts contextBlocks (ExistingContent existing0) (BeatSheet sheet) maxBeats =
+chapterProseByBeat outputHint charContexts contextBlocks (ExistingContent existing0) (BeatSheet sheet) maxBeats =
   Prose . dropWritten <$> go existing0 maxBeats
   where
     -- Loop until the model signals done (or the budget runs out), carrying
@@ -283,7 +279,7 @@ chapterProseByBeat configs outputHint charContexts contextBlocks (ExistingConten
     -- off the pre-existing prefix so the caller only gets the new prose.
     go soFar 0      = return soFar
     go soFar budget = do
-      Prose piece <- proseAgent configs outputHint charContexts contextBlocks
+      Prose piece <- proseAgent outputHint charContexts contextBlocks
         (ExistingContent soFar)
         (nextBeatInstruction sheet)
       let trimmed = T.strip piece
@@ -308,16 +304,15 @@ chapterProseByBeat configs outputHint charContexts contextBlocks (ExistingConten
 reconcileChapter
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> Maybe WordCount
+  => Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
   -> CurrentProse          -- ^ the chapter's current prose (reference, to be revised)
   -> Instruction           -- ^ the user's additional steer
   -> BeatSheet
   -> Sem r Prose
-reconcileChapter configs outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) =
-  proseAgent configs outputHint charContexts contextBlocks (ExistingContent "")
+reconcileChapter outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) =
+  proseAgent outputHint charContexts contextBlocks (ExistingContent "")
     (reconcileInstruction current userInstr sheet)
 
 -- | Regenerate a chapter to fit its beat sheet, beat by beat. Same
@@ -328,8 +323,7 @@ reconcileChapter configs outputHint charContexts contextBlocks current userInstr
 reconcileChapterByBeat
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig ProseModel]
-  -> Maybe WordCount
+  => Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
   -> CurrentProse
@@ -337,12 +331,12 @@ reconcileChapterByBeat
   -> BeatSheet
   -> Int                   -- ^ maxBeats: hard cap on iterations
   -> Sem r Prose
-reconcileChapterByBeat configs outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) maxBeats =
+reconcileChapterByBeat outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) maxBeats =
   Prose <$> go "" maxBeats
   where
     go soFar 0      = return soFar
     go soFar budget = do
-      Prose piece <- proseAgent configs outputHint charContexts contextBlocks
+      Prose piece <- proseAgent outputHint charContexts contextBlocks
         (ExistingContent soFar)
         (reconcileNextBeatInstruction current userInstr sheet)
       let trimmed = T.strip piece
@@ -435,6 +429,14 @@ defaultExpandInstructions :: ExpandGoal -> Prompt
 defaultExpandInstructions ToBeatSheet =
   "Write the beat sheet now. Output only the beat sheet, no commentary."
 
+-- | Compiled-in sampling default for @agent.outline.beatsheet@ -- see
+--   @$key.llmsettings.yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'.
+--   A beat sheet is skeletal planning notes for one chapter, not full prose
+--   -- shorter than 'defaultWriterConfig's budget, and a touch cooler since
+--   this is closer to structured planning than free composition.
+defaultExpandConfig :: ExpandGoal -> [ModelConfig ProseModel]
+defaultExpandConfig ToBeatSheet = [MaxTokens 1536, Temperature 0.8]
+
 defaultSplitSystem :: Prompt
 defaultSplitSystem =
   "You are a story planner. Given a whole-story outline, divide it into \
@@ -451,3 +453,13 @@ defaultSplitSystem =
 defaultSplitInstructions :: Prompt
 defaultSplitInstructions =
   "Call emit_beat_sheet once per chapter, in reading order."
+
+-- | Compiled-in sampling default for @agent.outline.split@ -- see
+--   @$key.llmsettings.yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'.
+--   Per-turn budget in the same range as 'defaultExpandConfig' (one chapter's
+--   beat sheet per @emit_beat_sheet@ call), with a slightly cooler
+--   temperature: this is a judgement call about chapter boundaries, not
+--   creative composition, so consistency matters a little more than
+--   variation -- but the beat sheet text itself still needs some.
+defaultSplitConfig :: [ModelConfig AgentModel]
+defaultSplitConfig = [MaxTokens 1536, Temperature 0.7]

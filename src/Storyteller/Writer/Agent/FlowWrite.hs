@@ -27,9 +27,8 @@ module Storyteller.Writer.Agent.FlowWrite
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import UniversalLLM (ModelConfig)
 
-import Storyteller.Core.LLM.Role (LLMs, ProseModel, AgentModel)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
@@ -48,24 +47,22 @@ import Storyteller.Core.Types (TickId(..))
 flowWriteAgent
   :: forall branch r
   .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
-  => [ModelConfig ProseModel]
-  -> [ModelConfig AgentModel]
-  -> FilePath                                       -- ^ file being continued
+  => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
   -> ExistingContent
   -> [ContextBlock]                                  -- ^ extra context (e.g. user's pinned selection)
   -> Instruction
   -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
   -> Sem r ([TickId], Prose)
-flowWriteAgent proseConfigs fixerConfigs path flowTid existing extraContext instruction charBlocks = do
+flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
   (allTicks, _) <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0
     then return []
-    else reworkAtomsAt @branch fixerConfigs path (flowInstruction instruction) inFlightIdxs
+    else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
 
-  generated <- writeAgent proseConfigs existing extraContext instruction charBlocks
+  generated <- writeAgent existing extraContext instruction charBlocks
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

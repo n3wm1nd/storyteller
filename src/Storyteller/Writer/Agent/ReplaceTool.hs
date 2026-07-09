@@ -109,9 +109,9 @@ proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newTe
 reworkAtom
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => [ModelConfig AgentModel] -> T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
-reworkAtom configs content (Instruction instr) = do
-  configsWithPrompt <- getConfigWithPrompt "agent.fixer" defaultFixerSystemPrompt configs
+  => T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
+reworkAtom content (Instruction instr) = do
+  configsWithPrompt <- getConfigWithPrompt "agent.fixer" defaultFixerSystemPrompt defaultFixerConfig
   Prompt guidance   <- getPrompt "agent.fixer.instructions" defaultFixerInstructions
 
   let tool = mkToolWithMeta
@@ -155,6 +155,17 @@ defaultFixerInstructions =
   \with the corrected text and a brief reason why. If it is already fine as-is, just \
   \reply briefly and do not call the tool."
 
+-- | Compiled-in sampling default for @agent.fixer@ -- see @$key.llmsettings.
+--   yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'. Deciding
+--   whether one atom needs to change (and, if so, replacing it with a
+--   corrected version via a tool call) is a small, precise edit, not open
+--   creative writing -- hence a below-'defaultWriterConfig' temperature
+--   (favor a reliable, literal correction over a creatively-varied rewrite,
+--   without going so low the replacement text itself gets stilted) and a
+--   modest token budget (one atom's worth of text, not a whole chapter).
+defaultFixerConfig :: [ModelConfig AgentModel]
+defaultFixerConfig = [MaxTokens 1024, Temperature 0.5]
+
 -- | Apply 'reworkAtom' at each of the given (oldest-first) positions in the
 --   file's tick chain, committing every proposed replacement as it's made.
 --   Positions, not tick ids: replacing one atom rebases every atom after it
@@ -165,14 +176,14 @@ defaultFixerInstructions =
 reworkAtomsAt
   :: forall branch r
   .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
-  => [ModelConfig AgentModel] -> FilePath -> Instruction -> [Int] -> Sem r [TickId]
-reworkAtomsAt configs path instruction idxs = catMaybes <$> mapM oneAt idxs
+  => FilePath -> Instruction -> [Int] -> Sem r [TickId]
+reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
   where
     oneAt idx = do
       (ticks, _) <- runStorage @branch (Tick.fileTicksOf path)
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
-          mProposal <- reworkAtom configs content instruction
+          mProposal <- reworkAtom content instruction
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do

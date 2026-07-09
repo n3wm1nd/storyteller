@@ -98,12 +98,8 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
     resolvedCharDir <- resolveFixture charFixtureDir
     charBlocks      <- readCharFixture resolvedCharDir
 
-    -- Empty config list: the model's own defaults (from
-    -- 'Agent.Integration.Harness.knownModels') already came baked into
-    -- the interpreter 'runner' wraps, so there's nothing to add per-call
-    -- here.
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] existingContent [] instruction [(CharLabel "Mira", charBlocks)]
+      Prose text <- writeAgent existingContent [] instruction [(CharLabel "Mira", charBlocks)]
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

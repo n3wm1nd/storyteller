@@ -111,9 +111,9 @@ chapterAction mode sheetPath outFile activeChars = do
         charBlocks
 
   Prose generated <- case mode of
-    Whole  -> chapterProse modelConfigs (Just (WordCount 1200))
+    Whole  -> chapterProse (Just (WordCount 1200))
                 charContexts fileCtx existing sheet
-    ByBeat -> chapterProseByBeat modelConfigs (Just (WordCount 300))
+    ByBeat -> chapterProseByBeat (Just (WordCount 300))
                 charContexts fileCtx existing sheet maxBeats
 
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
