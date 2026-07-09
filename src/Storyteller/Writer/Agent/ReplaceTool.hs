@@ -56,7 +56,7 @@ import UniversalLLM.Tools
 
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..))
-import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt, applyTemplate)
+import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 import Storyteller.Core.Git (BranchOp, runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -111,8 +111,8 @@ reworkAtom
   .  (LLMs r, Members '[PromptStorage, Fail] r)
   => [ModelConfig AgentModel] -> T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
 reworkAtom configs content (Instruction instr) = do
-  configsWithPrompt <- getConfigWithPrompt "agent.fixer.system" defaultFixerSystemPrompt configs
-  Prompt template   <- getPrompt "agent.fixer.template" defaultFixerTemplate
+  configsWithPrompt <- getConfigWithPrompt "agent.fixer" defaultFixerSystemPrompt configs
+  Prompt guidance   <- getPrompt "agent.fixer.instructions" defaultFixerInstructions
 
   let tool = mkToolWithMeta
                "replace_atom"
@@ -121,8 +121,7 @@ reworkAtom configs content (Instruction instr) = do
                "new_text" "The full corrected replacement text for this atom, replacing it entirely"
                "reason"   "Brief explanation of why this atom needed to change, for later tracing"
       tools = [LLMTool tool]
-      Prompt prompt = applyTemplate (Prompt template)
-        [ ("content", Prompt content), ("instruction", Prompt instr) ]
+      prompt = "Atom under review:\n\n" <> content <> "\n\nInstruction: " <> instr <> "\n\n" <> guidance
 
   response <- queryLLM
     (Tools (map llmToolToDefinition tools) : configsWithPrompt)
@@ -137,17 +136,22 @@ reworkAtom configs content (Instruction instr) = do
         Left _ -> return Nothing
     [] -> return Nothing
 
--- | Fallback for @agent.fixer.system@, used until an override is committed
+-- | Fallback for @agent.fixer@ (the namespace root is implicitly the system
+--   prompt/config -- see 'Storyteller.Core.Prompt'), used until an override is committed
 --   to the 'Storyteller.Core.Runtime.Prompts' branch.
 defaultFixerSystemPrompt :: Prompt
 defaultFixerSystemPrompt = "You are a careful copy editor."
 
--- | Fallback for @agent.fixer.template@. Slots: {{content}}, {{instruction}}.
-defaultFixerTemplate :: Prompt
-defaultFixerTemplate =
-  "Atom under review:\n\n{{content}}\n\n\
-  \Instruction: {{instruction}}\n\n\
-  \If this atom needs to change because of the instruction, call replace_atom \
+-- | Fallback for @agent.fixer.instructions@ -- the one free-text part of this
+--   agent's user message a prompt override can actually change. Everything
+--   else (the "Atom under review"/"Instruction" framing and where @content@/
+--   @instr@ land in it) is fixed Haskell structure, not a slotted template --
+--   see 'Storyteller.Core.Prompt' on why user-facing overrides never expose
+--   template slots: there'd be nothing telling an editor which slot names
+--   are even valid.
+defaultFixerInstructions :: Prompt
+defaultFixerInstructions =
+  "If this atom needs to change because of the instruction, call replace_atom \
   \with the corrected text and a brief reason why. If it is already fine as-is, just \
   \reply briefly and do not call the tool."
 

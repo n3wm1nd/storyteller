@@ -103,7 +103,7 @@ chatAgent
   -> [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
   -> Sem r [Message AgentModel]  -- ^ everything this call added on top of the given context
 chatAgent configs context = do
-  configsWithPrompt <- getConfigWithPrompt "agent.chat.system" defaultChatSystemPrompt configs
+  configsWithPrompt <- getConfigWithPrompt "agent.chat" defaultChatSystemPrompt configs
   let tools = chatTools @branch @r
       configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
   response <- queryLLM configsWithTools context
@@ -115,7 +115,9 @@ chatAgent configs context = do
       rest <- chatAgent @branch configs (context ++ added)
       return (added ++ rest)
 
--- | Fallback for @agent.chat.system@, used until an override is committed
+-- | Fallback for @agent.chat@ (the namespace root -- see
+--   'Storyteller.Core.Prompt' on why the root is implicitly the system
+--   prompt/config, not @agent.chat.system@), used until an override is committed
 --   to the 'Storyteller.Core.Runtime.Prompts' branch. Deliberately static —
 --   see the module header on why nothing gets templated into this per call.
 defaultChatSystemPrompt :: Prompt

@@ -22,15 +22,30 @@
 -- Storage is a single, dedicated 'Prompts' branch — project-scoped, not tied
 -- to any content or character branch (a "text.summarization" prompt might be
 -- read by several unrelated agents, so it can't live under any one of them).
--- A key like @"agent.writer.system"@ doubles as a file path
--- (@/agent/writer/system.md@) in that branch, so overriding a prompt is just
--- committing a markdown file there — the same versioned-git-data model as
--- everything else in this project.
+-- A key like @"agent.writer"@ doubles as a file path (@/agent/writer.md@) in
+-- that branch, so overriding a prompt is just committing a markdown file
+-- there — the same versioned-git-data model as everything else in this
+-- project.
 --
--- Template substitution ('applyTemplate') is deliberately kept out of the
--- effect: there is no global namespace of slots for it to resolve against,
--- so it is a plain pure function over whatever slot values the caller
--- already has in hand.
+-- A key's namespace root is implicitly /the/ system prompt and its sampling
+-- config — there is no separate @.system@ leaf. So @"agent.writer"@ is the
+-- writer's system prompt (@/agent/writer.md@) and config
+-- (@/agent/writer.llmsettings.yaml@ — see 'getConfig'), while a secondary
+-- prompt like standing instructions gets its own nested key,
+-- @"agent.writer.instructions"@ (@/agent/writer/instructions.md@) — a file
+-- and a same-named subdirectory coexisting under @/agent/@ is ordinary git,
+-- not a conflict.
+--
+-- User-facing overrides are never slotted templates: an override is either
+-- the whole system prompt, or one plain free-text piece an agent splices
+-- into a message it otherwise builds itself (e.g.
+-- 'Storyteller.Writer.Agent.Continuation.proseAgent's @agent.writer.
+-- instructions@, or 'Storyteller.Writer.Agent.ReplaceTool.reworkAtom's
+-- @agent.fixer.instructions@) — never a string with @{{slot}}@ placeholders
+-- an editor would have to know the names of. The structure around that text
+-- (where it sits relative to the file's content, an instruction, retrieved
+-- context, ...) stays fixed Haskell code, typechecked against whatever
+-- values the agent actually has in hand.
 module Storyteller.Core.Prompt
   ( PromptKey(..)
   , Prompt(..)
@@ -38,7 +53,6 @@ module Storyteller.Core.Prompt
   , getPrompt
   , getConfig
   , getConfigWithPrompt
-  , applyTemplate
   , interpretPromptStorageFS
   , interpretPromptStorageMap
   ) where
@@ -68,8 +82,10 @@ import Storyteller.Core.Types (BranchName(..))
 import UniversalLLM (ModelConfig(..), ProviderOf, SupportsSystemPrompt)
 import UniversalLLM.Settings (GApplySettings, toModelConfigs)
 
--- | A dotted lookup key, e.g. @"agent.writer.system"@. Doubles as a file
---   path in the 'Prompts' branch: dots become path separators. Detached from
+-- | A dotted lookup key, e.g. @"agent.writer"@ (a namespace root, implicitly
+--   the system prompt/config) or @"agent.writer.instructions"@ (a secondary
+--   prompt nested under it). Doubles as a file path in the 'Prompts' branch:
+--   dots become path separators. Detached from
 --   any one agent's name on purpose — a shared key like
 --   @"text.summarization"@ is just as valid as an agent-specific one.
 newtype PromptKey = PromptKey Text
@@ -120,13 +136,6 @@ getConfigWithPrompt key defaultPrompt defaultConfigs = do
   Prompt sys <- getPrompt key defaultPrompt
   configs    <- getConfig key defaultConfigs
   pure (SystemPrompt sys : configs)
-
--- | Fill @"{{slot}}"@ placeholders in a template with the given values.
---   Plain text substitution — no lookup or namespace involved, the caller
---   supplies every slot it wants filled.
-applyTemplate :: Prompt -> [(Text, Prompt)] -> Prompt
-applyTemplate (Prompt template) slots =
-  Prompt $ foldl (\acc (name, Prompt v) -> T.replace ("{{" <> name <> "}}") v acc) template slots
 
 promptsBranchName :: BranchName
 promptsBranchName = BranchName "prompts"

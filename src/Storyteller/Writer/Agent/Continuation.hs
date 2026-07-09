@@ -58,7 +58,7 @@ proseAgent
   -> Instruction
   -> Sem r Prose
 proseAgent configs outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
-  configsWithPrompt <- getConfigWithPrompt "agent.writer.system" defaultWriterSystemPrompt configs
+  configsWithPrompt <- getConfigWithPrompt "agent.writer" defaultWriterSystemPrompt configs
   Prompt extraInstructions <- getPrompt "agent.writer.instructions" defaultWriterInstructions
 
   let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
@@ -66,7 +66,8 @@ proseAgent configs outputHint charContexts contextBlocks (ExistingContent existi
   response <- queryLLM configsWithPrompt [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
--- | Fallback for @agent.writer.system@, used until an override is committed
+-- | Fallback for @agent.writer@ (the namespace root is implicitly the system
+--   prompt/config -- see 'Storyteller.Core.Prompt'), used until an override is committed
 --   to the 'Storyteller.Core.Runtime.Prompts' branch.
 defaultWriterSystemPrompt :: Prompt
 defaultWriterSystemPrompt =

@@ -49,7 +49,11 @@ export interface AgentDef {
   category?: string;
   // Dotted Prompt.hs lookup keys this agent reads (see Storyteller.Core.Prompt)
   // — each doubles as a path on the "prompts" branch (dots -> slashes, ".md"
-  // suffix). Empty for agents that never touch an LLM (append/note).
+  // suffix). The first entry is always the namespace root, which is
+  // implicitly the system prompt (and, via configKeyToPath, the sampling
+  // config) — there's no separate ".system" leaf; any other entries are
+  // secondary prompts (templates, standing instructions) nested under it.
+  // Empty for agents that never touch an LLM (append/note).
   promptKeys: string[];
   // Which role's LLM this agent calls (see Storyteller.Core.LLM.Role) — only
   // meaningful when promptKeys is non-empty. Determines which sampling keys
@@ -72,7 +76,7 @@ export const AGENTS: AgentDef[] = [
     id: "writer",
     label: "Writer",
     description: "Continues prose from the selection or file end.",
-    promptKeys: ["agent.writer.system", "agent.writer.instructions"],
+    promptKeys: ["agent.writer", "agent.writer.instructions"],
     configRole: "prose",
     contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
@@ -81,7 +85,7 @@ export const AGENTS: AgentDef[] = [
     id: "fixer",
     label: "Fixer",
     description: "Rewrites the selected atoms in place per an instruction.",
-    promptKeys: ["agent.fixer.system", "agent.fixer.template"],
+    promptKeys: ["agent.fixer", "agent.fixer.template"],
     configRole: "agent",
     contextSources: [],
     appliesTo: (path) => !isChatFile(path),
@@ -90,7 +94,7 @@ export const AGENTS: AgentDef[] = [
     id: "regenBeatSheet",
     label: "Regen · beat sheet",
     description: "Regenerates a chapter to fit its beat sheet.",
-    promptKeys: ["agent.outline.beatsheet.system", "agent.outline.beatsheet.template"],
+    promptKeys: ["agent.outline.beatsheet", "agent.outline.beatsheet.template"],
     configRole: "prose",
     contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
@@ -99,7 +103,7 @@ export const AGENTS: AgentDef[] = [
     id: "outlineSplit",
     label: "Outline split",
     description: "Splits the whole-story outline into per-chapter beat sheets.",
-    promptKeys: ["agent.outline.split.system", "agent.outline.split.template"],
+    promptKeys: ["agent.outline.split", "agent.outline.split.template"],
     configRole: "agent",
     contextSources: [STORY_AMBIENT],
     appliesTo: isOutlineFile,
@@ -108,7 +112,7 @@ export const AGENTS: AgentDef[] = [
     id: "chat",
     label: "Chat",
     description: "Conversational co-writing for chat/ files.",
-    promptKeys: ["agent.chat.system"],
+    promptKeys: ["agent.chat"],
     configRole: "agent",
     contextSources: [{ id: "story", label: "Story branch", mode: "on-demand" }],
     appliesTo: isChatFile,

@@ -61,7 +61,7 @@ import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock, ContextBlock(..)
   , ExistingContent(..), WordCount(..) )
 import Storyteller.Writer.Agent.Continuation (proseAgent)
-import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, getConfigWithPrompt, applyTemplate)
+import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, getConfigWithPrompt)
 
 -- | A coarse planning document — the source of an expansion. Usually the
 --   contents of @outline.md@ (whole story) or the slice of it covering one
@@ -107,7 +107,7 @@ expandAgent
   -> Sem r Text
 expandAgent configs goal contextBlocks (OutlineDoc doc) = do
   configsWithPrompt <- getConfigWithPrompt (systemKey goal) (defaultExpandSystem goal) configs
-  Prompt template   <- getPrompt (templateKey goal) defaultExpandTemplate
+  Prompt closing    <- getPrompt (instructionsKey goal) (defaultExpandInstructions goal)
 
   let contextSection
         | null contextBlocks = ""
@@ -116,10 +116,7 @@ expandAgent configs goal contextBlocks (OutlineDoc doc) = do
             <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
             <> "\n\n"
 
-      Prompt userMsg = applyTemplate (Prompt template)
-        [ ("context", Prompt contextSection)
-        , ("source",  Prompt doc)
-        ]
+      userMsg = contextSection <> "Outline to expand:\n\n" <> doc <> "\n\n" <> closing
 
   response <- queryLLM configsWithPrompt [UserText userMsg]
   return $ mconcat [ t | AssistantText t <- response ]
@@ -171,8 +168,8 @@ splitOutlineAgent
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
 splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
-  configsWithPrompt <- getConfigWithPrompt "agent.outline.split.system" defaultSplitSystem configs
-  Prompt template   <- getPrompt "agent.outline.split.template" defaultSplitTemplate
+  configsWithPrompt <- getConfigWithPrompt "agent.outline.split" defaultSplitSystem configs
+  Prompt closing    <- getPrompt "agent.outline.split.instructions" defaultSplitInstructions
 
   let tool = mkToolWithMeta
                "emit_beat_sheet"
@@ -189,10 +186,7 @@ splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
             <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
             <> "\n\n"
 
-      Prompt userMsg = applyTemplate (Prompt template)
-        [ ("context", Prompt contextSection)
-        , ("source",  Prompt doc)
-        ]
+      userMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> closing
 
   let allConfigs = Tools (map llmToolToDefinition tools) : configsWithPrompt
   loop tools allConfigs maxTurns [UserText userMsg]
@@ -417,11 +411,17 @@ nextBeatInstruction sheet = Instruction $
 
 -- Prompt keys / defaults --------------------------------------------------
 
+-- | The namespace root -- see 'Storyteller.Core.Prompt' on why that's
+--   implicitly the system prompt/config, not a @.system@ leaf.
 systemKey :: ExpandGoal -> PromptKey
-systemKey ToBeatSheet = "agent.outline.beatsheet.system"
+systemKey ToBeatSheet = "agent.outline.beatsheet"
 
-templateKey :: ExpandGoal -> PromptKey
-templateKey ToBeatSheet = "agent.outline.beatsheet.template"
+-- | The one free-text part of 'expandAgent's user message a prompt override
+--   can actually change -- the "Outline to expand:"/@doc@ framing is fixed
+--   Haskell structure, not a slotted template (see 'Storyteller.Core.Prompt'
+--   on why user-facing overrides never expose template slots).
+instructionsKey :: ExpandGoal -> PromptKey
+instructionsKey ToBeatSheet = "agent.outline.beatsheet.instructions"
 
 defaultExpandSystem :: ExpandGoal -> Prompt
 defaultExpandSystem ToBeatSheet =
@@ -431,11 +431,9 @@ defaultExpandSystem ToBeatSheet =
   \true), the emotional turn, and a rough target length in words. Write \
   \sensible, skimmable Markdown — not rigid fields. Output only the beat sheet."
 
--- | Slots: {{context}}, {{source}}.
-defaultExpandTemplate :: Prompt
-defaultExpandTemplate =
-  "{{context}}Outline to expand:\n\n{{source}}\n\n\
-  \Write the beat sheet now. Output only the beat sheet, no commentary."
+defaultExpandInstructions :: ExpandGoal -> Prompt
+defaultExpandInstructions ToBeatSheet =
+  "Write the beat sheet now. Output only the beat sheet, no commentary."
 
 defaultSplitSystem :: Prompt
 defaultSplitSystem =
@@ -448,8 +446,8 @@ defaultSplitSystem =
   \covering what happens, logistics, the emotional turn, and a rough length. \
   \Call the tool once per chapter and emit nothing else."
 
--- | Slots: {{context}}, {{source}}.
-defaultSplitTemplate :: Prompt
-defaultSplitTemplate =
-  "{{context}}Story outline to divide into chapter beat sheets:\n\n{{source}}\n\n\
-  \Call emit_beat_sheet once per chapter, in reading order."
+-- | The one free-text part of 'splitOutlineAgent's user message a prompt
+--   override can actually change -- see 'instructionsKey'.
+defaultSplitInstructions :: Prompt
+defaultSplitInstructions =
+  "Call emit_beat_sheet once per chapter, in reading order."
