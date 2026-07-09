@@ -105,6 +105,7 @@ onNotify
 onNotify branch conn (since, knownFiles) note = case note of
   RefMoved _      -> withBranch @Main branch (pushIncremental conn since knownFiles)
   TicksRemapped _ -> return (since, knownFiles)
+  UndoMoved       -> return (since, knownFiles)
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (BranchError (T.pack err)))

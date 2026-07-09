@@ -8,14 +8,19 @@
 -- matters here is queue-sharing behaviour a mock 'Git' can't exercise --
 -- real correctness of 'Git' itself is already covered by @gitlib-effect-test@.
 --
--- Two things to pin down (see PLAN-git-storage-worker.md's step 5): a
+-- Three things to pin down (see PLAN-git-storage-worker.md's step 5): a
 -- second client submitting to the same 'GitWorkerQueue' sees a ref a first
--- client created (the whole point of centralizing on one worker), and one
+-- client created (the whole point of centralizing on one worker), one
 -- job's ordinary 'Fail' doesn't wedge or poison the worker loop for
--- whatever is submitted next.
+-- whatever is submitted next, and every ref write posts the right
+-- notification -- a story branch ref gets 'RefMoved', but
+-- 'Storyteller.Core.Undo''s own log ref gets 'UndoMoved' instead (not
+-- 'RefMoved', and not silence -- see 'Server.Writer.Session.Connection's
+-- notifier, which relies on this to know precisely when the undo log itself
+-- grew, independent of whichever branch ref write the entry is recording).
 module Server.Writer.GitWorkerSpec (spec) where
 
-import Control.Concurrent.STM (newBroadcastTChanIO)
+import Control.Concurrent.STM (newBroadcastTChanIO, atomically, dupTChan, tryReadTChan)
 import Polysemy (Embed, Sem, runM)
 import Polysemy.Fail (Fail, runFail)
 import System.IO.Temp (withSystemTempDirectory)
@@ -24,6 +29,9 @@ import Test.Hspec
 
 import Runix.Git
 import Server.Writer.GitWorker (GitWorkerQueue, runGitViaWorker, startGitWorker)
+import Server.Writer.Notification (BranchNotification(..))
+import Storyteller.Core.Git (storyRefPrefix)
+import Storyteller.Core.Undo (undoLogRef)
 
 withTempRepo :: (FilePath -> IO a) -> IO a
 withTempRepo action = withSystemTempDirectory "git-worker-spec" $ \dir -> do
@@ -63,3 +71,20 @@ spec = around withTempRepo $ describe "runGitViaWorker" $ do
     ok `shouldSatisfy` \case
       Right _ -> True
       Left _ -> False
+
+  it "posts RefMoved for a story branch ref, but UndoMoved (not RefMoved) for the undo log's own ref" $ \repo -> do
+    notifyChan <- newBroadcastTChanIO
+    queue <- startGitWorker repo notifyChan
+    reader <- atomically (dupTChan notifyChan)
+
+    _ <- runViaWorker queue $ do
+      h <- writeBlob "hello"
+      createRef (RefName (storyRefPrefix <> "main")) h
+    branchNote <- atomically (tryReadTChan reader)
+    branchNote `shouldBe` Just (RefMoved "main")
+
+    _ <- runViaWorker queue $ do
+      h <- writeBlob "an undo-log entry commit"
+      createRef undoLogRef h
+    undoNote <- atomically (tryReadTChan reader)
+    undoNote `shouldBe` Just UndoMoved

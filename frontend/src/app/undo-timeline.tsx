@@ -88,18 +88,31 @@ export function UndoTimeline() {
 
   // The override + stash pair described in the module doc — 'null' means
   // "no undo pending, active is just the last entry." Set by clicking any
-  // dot that isn't already the last one; cleared the instant the entry
-  // count grows past what it was when the override was made (a real write
-  // happened — see the effect below), regardless of what caused it (this
-  // client's own edit, another client's, a background agent's).
+  // dot that isn't already the last one; stops applying the instant the
+  // entry count grows past what it was when the override was made (a real
+  // write happened, from this client or anywhere else).
+  //
+  // Whether it still applies is computed fresh every render ('effective'
+  // below) rather than cleared via a useEffect: an effect only runs after
+  // the render it was triggered by has already committed, so the very
+  // first render with the grown 'entries' would still show the stale
+  // override for one frame — invisible most of the time, but exactly what
+  // "the first change after an undo gets swallowed, the next one
+  // self-corrects" looks like when it isn't. Deriving it inline means the
+  // same render that first sees the longer list already shows the correct,
+  // un-overridden state — nothing to catch up on next time. The state
+  // itself is still cleared in an effect below, purely so a stale object
+  // isn't held onto indefinitely; that cleanup is never load-bearing for
+  // what's rendered.
   const [override, setOverride] = useState<{ activeId: string; stash: WireUndoEntry[]; countAtJump: number } | null>(null);
+  const effective = override && entries.length <= override.countAtJump ? override : null;
 
   useEffect(() => {
     if (override && entries.length > override.countAtJump) setOverride(null);
   }, [entries.length, override]);
 
-  const activeId = override?.activeId ?? entries[entries.length - 1]?.id;
-  const stash = override?.stash ?? [];
+  const activeId = effective?.activeId ?? entries[entries.length - 1]?.id;
+  const stash = effective?.stash ?? [];
   // Only the non-stashed entries render in the main row — the stashed ones
   // (still just ordinary entries, unmodified) get their own trailing group
   // right after the active dot instead of their natural chronological slot.

@@ -56,6 +56,7 @@ import qualified Runix.Git.Batch as Batch
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.Git (refBranchName)
 import Storyteller.Core.Types (unBranchName)
+import Storyteller.Core.Undo (undoLogRef)
 
 -- | One request for the worker: a 'Git' operation (inert data -- its @m@
 -- parameter is phantom, see 'toIOGitOp') and where to deliver the answer.
@@ -116,10 +117,20 @@ gitWorkerLoop repo br notifyChan queue =
     notifyOnRefMove (UpdateRef ref _) (Right _) = notifyRef ref
     notifyOnRefMove _                 _         = return ()
 
+    -- The undo log's own ref is checked first and specifically -- it isn't
+    -- a story branch ref at all, so 'refBranchName' would just say
+    -- 'Nothing' and this write would go unnotified (as it silently did
+    -- before 'UndoMoved' existed), leaving the session connection unable to
+    -- ever independently discover a write that its own preceding branch
+    -- 'RefMoved' already raced past -- 'Snapshot' always runs *after* the
+    -- write it's recording, so by the time this fires, the branch's own
+    -- notification (and any push it triggered) is already old news.
     notifyRef :: RefName -> IO ()
-    notifyRef ref = case refBranchName ref of
-      Nothing     -> return ()
-      Just branch -> atomically $ writeTChan notifyChan (RefMoved (unBranchName branch))
+    notifyRef ref
+      | ref == undoLogRef = atomically $ writeTChan notifyChan UndoMoved
+      | otherwise = case refBranchName ref of
+          Nothing     -> return ()
+          Just branch -> atomically $ writeTChan notifyChan (RefMoved (unBranchName branch))
 
 -- | Replay a 'Git' request through the 'Git' effect. Valid for any @m@ --
 -- none of 'Git's constructors mention it, so it's a phantom parameter, not

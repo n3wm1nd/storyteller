@@ -69,6 +69,7 @@ onNotify
 onNotify branch conn () = \case
   RefMoved _      -> withBranch @Main branch (push conn branch)
   TicksRemapped _ -> return ()
+  UndoMoved       -> return ()
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (CharacterError (T.pack err)))

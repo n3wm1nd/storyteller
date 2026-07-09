@@ -111,6 +111,7 @@ onNotify branch conn slotsVar () = \case
     slots <- embed (readTVarIO slotsVar)
     if null slots then return () else pushPreview branch conn Nothing slots
   TicksRemapped _ -> return ()
+  UndoMoved       -> return ()
 
 pushPreview
   :: (SessionEffects r, Member (Embed IO) r)

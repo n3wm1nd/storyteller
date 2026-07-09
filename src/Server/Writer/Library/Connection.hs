@@ -95,6 +95,7 @@ onNotify
 onNotify branch conn cache = \case
   RefMoved _      -> withBranch @Main branch (push conn cache)
   TicksRemapped _ -> return cache
+  UndoMoved       -> return cache
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (LibraryError (T.pack err)))

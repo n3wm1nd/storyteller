@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -15,19 +16,26 @@
 --
 -- There is no list-branches/list-characters/list-undo command: a session
 -- never has to ask for any of these, only listen. A second thread keeps all
--- three live: 'Server.Writer.GitWorker' already broadcasts a 'RefMoved' on
--- 'envNotifyChan' for every branch ref creation/update, from any connection
--- (including 'undo.reset''s own ref restores) — the notifier re-pushes
--- 'BranchList' on every such move, 'CharacterList' too when the moved ref is
--- a 'character/*' one, and 'UndoLog' unconditionally, since every tracked
--- write also grows the undo log (see 'Storyteller.Core.Undo'). No new
--- plumbing needed underneath any of it.
+-- three live: 'Server.Writer.GitWorker' broadcasts a 'RefMoved' on
+-- 'envNotifyChan' for every branch ref creation/update (including
+-- 'undo.reset''s own ref restores) and an 'UndoMoved' whenever
+-- 'Storyteller.Core.Undo's own log grows — the notifier re-pushes
+-- 'BranchList' (and 'CharacterList' when a moved ref was a 'character/*'
+-- one) on the former, and 'UndoLog' on the latter. Deliberately two
+-- independent triggers rather than one push doing both on every move: a
+-- reset restores several branches at once (each its own 'RefMoved') without
+-- growing the log at all, and conversely a single write's own log entry
+-- lands (see 'Storyteller.Core.Undo.recordUndoSnapshot') strictly after the
+-- branch write it's recording, so treating 'RefMoved' as a proxy for "the
+-- log grew too" would either push stale undo-log data (read before the
+-- entry landed) or push extra unchanged copies of it (on a reset) — this
+-- reacts to each fact exactly when it's actually true instead.
 module Server.Writer.Session.Connection
   ( runSession
   ) where
 
 import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.STM (TChan, atomically, dupTChan, readTChan)
+import Control.Concurrent.STM (TChan, atomically, dupTChan, readTChan, tryReadTChan)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -65,37 +73,65 @@ runCommands env conn = do
     commandLoop conn
   either (reportError conn) return result
 
--- | Re-push the branch (and, when relevant, character) list whenever any
---   branch ref moves — covers creation and deletion alike, since both go
---   through 'Storyteller.Core.Storage.createBranch'/'deleteBranch', which
---   (like any other ref write) reaches 'Server.Writer.GitWorker'. Only 'RefMoved' is
---   relevant here; 'TicksRemapped' is about tick-id remapping within a
---   branch's own chain, not the existence of branches, so it's ignored.
+-- | Re-push the branch (and, when relevant, character) list on every
+--   'RefMoved', and the undo log on every 'UndoMoved' — covers branch
+--   creation/deletion alike, since both go through
+--   'Storyteller.Core.Storage.createBranch'\/'deleteBranch', which (like
+--   any other ref write) reaches 'Server.Writer.GitWorker'. 'TicksRemapped'
+--   is about tick-id remapping within a branch's own chain, not the
+--   existence of branches or the undo log, so it's ignored here.
 runNotifier :: ServerEnv -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ watchBranchMoves chan (onBranchMove conn)
+  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
+    watchNotifications chan (onRefMove conn) (pushUndoLog conn)
   either (reportError conn) return result
 
-watchBranchMoves
+-- | One "here's what moved" batch: several branches can move as a single
+--   logical action (e.g. 'Storyteller.Core.Undo.resetToUndo' restoring
+--   every tracked branch, one 'updateRef'\/'deleteRef' at a time, or a
+--   cross-branch rename touching several heads at once), each its own
+--   'RefMoved'; a multi-branch write similarly records one
+--   'Storyteller.Core.Undo.Snapshot' -- and so one 'UndoMoved' -- per branch
+--   it touches. Every notification currently sitting in the channel is
+--   drained up front (not just whichever kind happened to wake this
+--   thread), so a 'RefMoved' and an 'UndoMoved' arriving in either order
+--   within the same burst both still get acted on -- reacting only to the
+--   one that triggered the wakeup risked silently dropping whichever kind
+--   didn't happen to be first. 'onRefs' folds a whole burst of 'RefMoved'
+--   down to the one bit it actually needs (whether any moved ref was a
+--   'character/*' one); a burst of 'UndoMoved' collapses to nothing but a
+--   single 'onUndo' call, since every push reads live state fresh
+--   regardless of how many entries just landed.
+watchNotifications
   :: Member (Embed IO) r
-  => TChan BranchNotification -> (T.Text -> Sem r ()) -> Sem r ()
-watchBranchMoves chan onMove = loop
+  => TChan BranchNotification -> (Bool -> Sem r ()) -> Sem r () -> Sem r ()
+watchNotifications chan onRefs onUndo = loop
   where
     loop = do
-      note <- embed $ atomically (readTChan chan)
-      case note of
-        RefMoved b -> onMove b >> loop
-        _          -> loop
+      first <- embed $ atomically (readTChan chan)
+      rest  <- embed (drainAll chan)
+      let notes        = first : rest
+          movedBranches = [ b | RefMoved b <- notes ]
+      if null movedBranches then return () else onRefs (any isCharacterRef movedBranches)
+      if UndoMoved `elem` notes then onUndo else return ()
+      loop
 
-onBranchMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> T.Text -> Sem r ()
-onBranchMove conn b = do
+    -- Best-effort: only what's immediately available without waiting, so a
+    -- genuinely solitary notification isn't delayed at all. A multi-ref
+    -- action submits its writes in one tight loop with no yield in
+    -- between, so by the time this thread wakes for the first one, the
+    -- rest have essentially always already landed.
+    drainAll :: TChan BranchNotification -> IO [BranchNotification]
+    drainAll ch = atomically (tryReadTChan ch) >>= \case
+      Just n  -> (n :) <$> drainAll ch
+      Nothing -> return []
+
+    isCharacterRef = T.isPrefixOf "character/"
+
+onRefMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Bool -> Sem r ()
+onRefMove conn hasCharacterMove = do
   pushBranchList conn
-  if "character/" `T.isPrefixOf` b then pushCharacterList conn else return ()
-  -- Every real ref move is exactly when the undo log has grown (it's
-  -- appended to on every tracked write, see Storyteller.Core.Undo) — so
-  -- this reuses the same broadcast every other session-level list rides on,
-  -- no separate notification needed.
-  pushUndoLog conn
+  if hasCharacterMove then pushCharacterList conn else return ()
 
 pushBranchList :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 pushBranchList conn = do

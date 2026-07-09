@@ -103,6 +103,7 @@ onNotify branch conn path since note = case note of
   TicksRemapped mapping -> do
     embed $ WS.sendTextData conn (encode (TickRemap mapping))
     return since
+  UndoMoved -> return since
 
 -- | Push present/absent plus the initial update, mirroring the shape used
 --   throughout: presence is just "does this file have any ticks yet".

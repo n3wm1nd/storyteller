@@ -45,6 +45,10 @@ module Storyteller.Core.Undo
   , runUndoGit
   , interceptGitUndoLog
   , withUndoLog
+
+    -- * Ref naming (for recognizing the log's own writes elsewhere --
+    -- see 'Server.Writer.GitWorker's undo-log notification)
+  , undoLogRef
   ) where
 
 import Data.Kind (Type)
