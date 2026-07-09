@@ -83,7 +83,7 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFromList)
 
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
-import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
+import Storyteller.Core.Prompt (Prompt, PromptStorage, getConfigWithPrompt)
 import Storage.Tick (FileTick(..))
 
 -- | Continue a conversation: given everything the model should see so far
@@ -103,9 +103,9 @@ chatAgent
   -> [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
   -> Sem r [Message AgentModel]  -- ^ everything this call added on top of the given context
 chatAgent configs context = do
-  Prompt sys <- getPrompt "agent.chat.system" defaultChatSystemPrompt
+  configsWithPrompt <- getConfigWithPrompt "agent.chat.system" defaultChatSystemPrompt configs
   let tools = chatTools @branch @r
-      configsWithTools = SystemPrompt sys : Tools (map llmToolToDefinition tools) : configs
+      configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
   response <- queryLLM configsWithTools context
   case [tc | AssistantTool tc <- response] of
     [] -> return response

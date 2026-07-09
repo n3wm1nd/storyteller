@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- | Prompt storage: lets agent-facing text (system prompts, templates) be
@@ -35,6 +36,8 @@ module Storyteller.Core.Prompt
   , Prompt(..)
   , PromptStorage(..)
   , getPrompt
+  , getConfig
+  , getConfigWithPrompt
   , applyTemplate
   , interpretPromptStorageFS
   , interpretPromptStorageMap
@@ -48,17 +51,22 @@ import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.Yaml as Yaml
+import GHC.Generics (Generic, Rep)
 
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 
 import Storyteller.Core.Git (runBranchOpGit, runStorage)
+import Storyteller.Core.LLM.Settings (RoleSettings)
 import Storyteller.Core.Runtime (Prompts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
+import UniversalLLM (ModelConfig(..), ProviderOf, SupportsSystemPrompt)
+import UniversalLLM.Settings (GApplySettings, toModelConfigs)
 
 -- | A dotted lookup key, e.g. @"agent.writer.system"@. Doubles as a file
 --   path in the 'Prompts' branch: dots become path separators. Detached from
@@ -75,8 +83,43 @@ newtype Prompt = Prompt Text
 
 data PromptStorage (m :: Type -> Type) a where
   GetPrompt :: PromptKey -> Prompt -> PromptStorage m Prompt
+  -- | Same key convention as 'GetPrompt', resolved against
+  --   @/\<dots-as-slashes\>.llmsettings.yaml@ instead of @.md@: a sparse
+  --   'RoleSettings' record decoded from that file is turned into
+  --   @['ModelConfig' model]@ and placed ahead of the caller's defaults, so
+  --   an override wins (every provider's config fold is first-match-wins --
+  --   see 'UniversalLLM.Providers.OpenAI.handleBase') without needing any
+  --   merge logic here. @model@ (and therefore which settings fields are
+  --   even expressible) is pinned by the type of @defaults@ at the call
+  --   site, exactly like every agent already threads @['ModelConfig'
+  --   ProseModel]@\/@['ModelConfig' AgentModel]@ through today.
+  GetConfig
+    :: ( Generic (RoleSettings model)
+       , GApplySettings (Rep (RoleSettings model)) model
+       , Yaml.FromJSON (RoleSettings model) )
+    => PromptKey -> [ModelConfig model] -> PromptStorage m [ModelConfig model]
 
 makeSem ''PromptStorage
+
+-- | Fetch both the system prompt and the config overrides filed under the
+--   same key, and fold the prompt in as the config list's leading
+--   'SystemPrompt' -- the one config field 'getConfig' itself can't cover,
+--   since it isn't 'RoleSettings'-overridable Text-under-a-YAML-key the way
+--   sampling knobs are, but is still logically "this call's config." Trivial
+--   composition of 'getPrompt' and 'getConfig', nothing else: every agent
+--   that currently does @SystemPrompt sys : configs@ by hand after its own
+--   'getPrompt' call is exactly this, written out.
+getConfigWithPrompt
+  :: ( Member PromptStorage r
+     , SupportsSystemPrompt (ProviderOf model)
+     , Generic (RoleSettings model)
+     , GApplySettings (Rep (RoleSettings model)) model
+     , Yaml.FromJSON (RoleSettings model) )
+  => PromptKey -> Prompt -> [ModelConfig model] -> Sem r [ModelConfig model]
+getConfigWithPrompt key defaultPrompt defaultConfigs = do
+  Prompt sys <- getPrompt key defaultPrompt
+  configs    <- getConfig key defaultConfigs
+  pure (SystemPrompt sys : configs)
 
 -- | Fill @"{{slot}}"@ placeholders in a template with the given values.
 --   Plain text substitution — no lookup or namespace involved, the caller
@@ -108,6 +151,17 @@ interpretPromptStorageFS action = do
         if exists
           then Prompt . TE.decodeUtf8 <$> Core.readFile path
           else return def)
+    GetConfig (PromptKey key) (defaults :: [ModelConfig model]) -> runBranchOpGit @Prompts promptsBranchName $ do
+      let path = "/" <> T.unpack (T.replace "." "/" key) <> ".llmsettings.yaml"
+      fst <$> runStorage @Prompts (do
+        exists <- Ops.exists path
+        if exists
+          then do
+            bytes <- Core.readFile path
+            case Yaml.decodeEither' @(RoleSettings model) bytes of
+              Left _          -> return defaults
+              Right overrides -> return (toModelConfigs overrides ++ defaults)
+          else return defaults)
     ) action
 
 -- | Test/pure interpreter: resolves from a fixed map, falling back to the
@@ -118,3 +172,4 @@ interpretPromptStorageMap
   -> Sem r a
 interpretPromptStorageMap overrides = interpret $ \case
   GetPrompt key def -> return (Map.findWithDefault def key overrides)
+  GetConfig _key defaults -> return defaults

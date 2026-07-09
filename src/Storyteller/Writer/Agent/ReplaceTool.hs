@@ -56,7 +56,7 @@ import UniversalLLM.Tools
 
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..))
-import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, applyTemplate)
+import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt, applyTemplate)
 import Storyteller.Core.Git (BranchOp, runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -111,8 +111,8 @@ reworkAtom
   .  (LLMs r, Members '[PromptStorage, Fail] r)
   => [ModelConfig AgentModel] -> T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
 reworkAtom configs content (Instruction instr) = do
-  Prompt systemPrompt <- getPrompt "agent.fixer.system" defaultFixerSystemPrompt
-  Prompt template     <- getPrompt "agent.fixer.template" defaultFixerTemplate
+  configsWithPrompt <- getConfigWithPrompt "agent.fixer.system" defaultFixerSystemPrompt configs
+  Prompt template   <- getPrompt "agent.fixer.template" defaultFixerTemplate
 
   let tool = mkToolWithMeta
                "replace_atom"
@@ -125,7 +125,7 @@ reworkAtom configs content (Instruction instr) = do
         [ ("content", Prompt content), ("instruction", Prompt instr) ]
 
   response <- queryLLM
-    (SystemPrompt systemPrompt : Tools (map llmToolToDefinition tools) : configs)
+    (Tools (map llmToolToDefinition tools) : configsWithPrompt)
     [UserText prompt]
   case [tc | AssistantTool tc <- response] of
     (call : _) -> do

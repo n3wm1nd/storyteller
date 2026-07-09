@@ -61,7 +61,7 @@ import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock, ContextBlock(..)
   , ExistingContent(..), WordCount(..) )
 import Storyteller.Writer.Agent.Continuation (proseAgent)
-import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, applyTemplate)
+import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, getConfigWithPrompt, applyTemplate)
 
 -- | A coarse planning document — the source of an expansion. Usually the
 --   contents of @outline.md@ (whole story) or the slice of it covering one
@@ -106,8 +106,8 @@ expandAgent
   -> OutlineDoc            -- ^ the document being expanded
   -> Sem r Text
 expandAgent configs goal contextBlocks (OutlineDoc doc) = do
-  Prompt systemPrompt <- getPrompt (systemKey goal) (defaultExpandSystem goal)
-  Prompt template     <- getPrompt (templateKey goal) defaultExpandTemplate
+  configsWithPrompt <- getConfigWithPrompt (systemKey goal) (defaultExpandSystem goal) configs
+  Prompt template   <- getPrompt (templateKey goal) defaultExpandTemplate
 
   let contextSection
         | null contextBlocks = ""
@@ -121,7 +121,7 @@ expandAgent configs goal contextBlocks (OutlineDoc doc) = do
         , ("source",  Prompt doc)
         ]
 
-  response <- queryLLM (SystemPrompt systemPrompt : configs) [UserText userMsg]
+  response <- queryLLM configsWithPrompt [UserText userMsg]
   return $ mconcat [ t | AssistantText t <- response ]
 
 -- | One chapter's beat sheet plus the file it should be written to. Produced
@@ -171,8 +171,8 @@ splitOutlineAgent
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
 splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
-  Prompt systemPrompt <- getPrompt "agent.outline.split.system" defaultSplitSystem
-  Prompt template     <- getPrompt "agent.outline.split.template" defaultSplitTemplate
+  configsWithPrompt <- getConfigWithPrompt "agent.outline.split.system" defaultSplitSystem configs
+  Prompt template   <- getPrompt "agent.outline.split.template" defaultSplitTemplate
 
   let tool = mkToolWithMeta
                "emit_beat_sheet"
@@ -194,7 +194,7 @@ splitOutlineAgent configs contextBlocks (OutlineDoc doc) = do
         , ("source",  Prompt doc)
         ]
 
-  let allConfigs = SystemPrompt systemPrompt : Tools (map llmToolToDefinition tools) : configs
+  let allConfigs = Tools (map llmToolToDefinition tools) : configsWithPrompt
   loop tools allConfigs maxTurns [UserText userMsg]
   where
     -- The model emits its emit_beat_sheet calls across several turns — one (or

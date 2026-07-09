@@ -37,7 +37,7 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, applyContextLayout)
-import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt)
+import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 
 import Prelude hiding (readFile)
 
@@ -58,12 +58,12 @@ proseAgent
   -> Instruction
   -> Sem r Prose
 proseAgent configs outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
-  Prompt systemPrompt <- getPrompt "agent.writer.system"       defaultWriterSystemPrompt
+  configsWithPrompt <- getConfigWithPrompt "agent.writer.system" defaultWriterSystemPrompt configs
   Prompt extraInstructions <- getPrompt "agent.writer.instructions" defaultWriterInstructions
 
   let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
 
-  response <- queryLLM (SystemPrompt systemPrompt : configs) [UserText userMsg]
+  response <- queryLLM configsWithPrompt [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
 -- | Fallback for @agent.writer.system@, used until an override is committed
