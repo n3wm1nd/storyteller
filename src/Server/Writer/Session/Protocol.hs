@@ -64,20 +64,20 @@ instance ToJSON CharacterSummary where
   toJSON cs = object [ "branch" .= csBranch cs, "sheet" .= csSheet cs ]
 
 -- | One 'Storyteller.Core.Undo.UndoEntry', wire-shaped: just enough for a
--- client to render and jump to it, not the full per-ref snapshot ('undoRefs'
--- never crosses the wire — it's only used server-side to derive
--- 'weRevertsTo', see 'Server.Writer.Session.Dispatch.annotateReverts').
--- 'weRevertsTo' is set iff this entry's snapshot exactly repeats an earlier
--- entry's — i.e. this is where a reset landed — so a client can tell a
--- straight-line append from a jump back without ever seeing raw ref state.
+-- client to render and jump to it, not the full per-ref snapshot
+-- ('undoRefs' never crosses the wire). No "current"/"redo" marker here —
+-- deliberately: 'Storyteller.Core.Undo' only ever reports what real writes
+-- happened, not where any one viewer currently is (see its own haddock).
+-- A client derives "which dot is active right now" itself, from which
+-- entry it last jumped to and whether this list has grown since — see
+-- app/undo-timeline.tsx.
 data WireUndoEntry = WireUndoEntry
-  { weId        :: T.Text
-  , weTime      :: UTCTime
-  , weRevertsTo :: Maybe T.Text
+  { weId   :: T.Text
+  , weTime :: UTCTime
   } deriving (Show)
 
 instance ToJSON WireUndoEntry where
-  toJSON e = object [ "id" .= weId e, "time" .= weTime e, "revertsTo" .= weRevertsTo e ]
+  toJSON e = object [ "id" .= weId e, "time" .= weTime e ]
 
 data SessionEvent
   = SessionReady'

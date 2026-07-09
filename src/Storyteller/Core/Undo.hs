@@ -23,6 +23,17 @@
 -- self-contained wrapper that introduces and discharges 'Undo' internally,
 -- so a caller never needs 'Undo' in its own effect row unless it wants to
 -- expose the control API ('snapshotUndo'/'listUndo'/'resetToUndo') itself.
+--
+-- Deliberately minimal: this module only ever answers "what real writes
+-- happened, in order" and "reset to one of them." It has no notion of
+-- "current" or "redo" at all -- a client that wants to highlight where it
+-- currently is, or offer to jump back to wherever it jumped from, derives
+-- that itself from which entry it last reset to and whether the list has
+-- grown since (see app/undo-timeline.tsx). That's ephemeral per-viewer UI
+-- state, not a fact about the shared history this module is the source of
+-- truth for; keeping it out of here means there's no server-side "current
+-- pointer" that every client's local sense of "where am I" has to agree
+-- with, or resync against when it drifts.
 module Storyteller.Core.Undo
   ( UndoEntry(..)
   , Undo(..)
@@ -71,13 +82,9 @@ data Undo (m :: Type -> Type) a where
   -- | Restore every tracked ref to the state recorded by the given entry:
   --   any tracked ref that entry doesn't mention (created afterward) is
   --   deleted, and every ref it does mention is set back to that hash.
-  --   Appends its own new log entry afterward — undoing an undo is
-  --   recorded, not special-cased. (Done explicitly by the interpreter,
-  --   not by relying on 'interceptGitUndoLog' to notice these writes: an
-  --   interceptor only rewrites ops appearing in the computation it was
-  --   given, and 'runUndoGit' -- necessarily applied outside/after it, to
-  --   consume 'Undo' -- generates these ref writes itself while already
-  --   handling 'ResetTo', too late for that same interceptor to see them.)
+  --   Deliberately does *not* append a new log entry: a jump is a change
+  --   of what the tracked refs point at right now, not a new fact about
+  --   history that needs its own place in it -- see the module haddock.
   ResetTo :: ObjectHash -> Undo m ()
 
 snapshotUndo :: Member Undo r => Sem r ()
@@ -102,9 +109,10 @@ undoLogRef = RefName "refs/undo/log"
 emptyTreeHash :: ObjectHash
 emptyTreeHash = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
--- | Interpret 'Undo' against git: 'Snapshot' and 'ResetTo' write real
---   commits/refs; 'ListUndo' walks the chain back from 'undoLogRef'.
---   @prefix@ selects which refs ('Runix.Git.listRefs') a snapshot covers.
+-- | Interpret 'Undo' against git: 'Snapshot' writes a real commit;
+--   'ResetTo' writes no commit, it just restores the tracked refs;
+--   'ListUndo' walks the chain back from 'undoLogRef'. @prefix@ selects
+--   which refs ('Runix.Git.listRefs') a snapshot covers.
 runUndoGit :: Members '[Git, Time, Fail] r => Text -> Sem (Undo : r) a -> Sem r a
 runUndoGit prefix = interpret $ \case
   Snapshot -> recordUndoSnapshot prefix
@@ -115,7 +123,6 @@ runUndoGit prefix = interpret $ \case
     let restored = map fst (undoRefs entry)
     mapM_ deleteRef [ ref | (ref, _) <- current, ref `notElem` restored ]
     mapM_ (uncurry updateRef) (undoRefs entry)
-    recordUndoSnapshot prefix
 
 -- | Wrap a computation so every ref write matching @isTracked@ (create,
 --   update, or delete — via plain 'Runix.Git', from anywhere inside

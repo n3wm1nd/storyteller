@@ -121,26 +121,25 @@ export interface CharacterSummary {
   sheet: string | null;
 }
 
-// One entry in the shared, session-wide undo log (Storyteller.Core.Undo) —
-// a whole-repo snapshot taken after every tracked ref write, anywhere. The
-// log itself is a flat, ever-growing chain, never a tree: 'revertsTo' is a
-// server-derived hint (Server.Writer.Session.Dispatch.annotateReverts,
-// comparing snapshot content, not a stored pointer) set exactly when this
-// entry's snapshot exactly repeats an earlier entry's — i.e. this is where
-// an undo/reset landed. That's enough for the client to draw the run of
-// entries between the repeated one and this one as an abandoned offshoot,
-// without the server needing to persist any branching structure.
+// One entry in the shared, session-wide undo log (Storyteller.Core.Undo) --
+// a whole-repo snapshot taken after every real tracked ref write, anywhere.
+// The log itself is flat and append-only, never a tree (a real branching
+// history is a future project -- see Storyteller.Core.Undo's haddock), and
+// carries no notion of "current" -- a jump ("undo.reset") never adds to or
+// otherwise changes this list at all. "Which dot is active" and "what
+// would redo do" are purely local, ephemeral UI state derived from which
+// entry was last jumped to and whether this list has grown since -- see
+// app/undo-timeline.tsx.
 export interface WireUndoEntry {
   id: string;
   time: string;
-  revertsTo: string | null;
 }
 
-// branch.list, character.list, and undo.log are always unprompted — pushed
+// branch.list, character.list, and undo.log are always unprompted -- pushed
 // once right after session.ready, and again whenever the underlying set
 // changes (see Server.Writer.Session.Connection's notifier). There is no
 // request for any of them: a session only ever listens. undo.log is
-// chronological, oldest first — the order a timeline renders in.
+// chronological, oldest first -- the order a timeline renders in.
 export type SessionEvent =
   | { type: "session.ready" }
   | { type: "branch.list";     branches: string[] }

@@ -13,8 +13,11 @@
 --   * 'listUndo' walks newest-first, and each entry's 'undoRefs' matches
 --     the branch heads at the moment it was recorded;
 --   * 'resetToUndo' restores branch refs to a past entry -- including
---     dropping branches created after that point -- and that reset is
---     itself picked up as new entries rather than special-cased.
+--     dropping branches created after that point -- without itself
+--     appending a new log entry (a jump changes what the tracked refs
+--     point at, it isn't a new fact about history);
+--   * a real write made after a 'resetToUndo' still appends exactly one
+--     new entry, same as any other write.
 module Storyteller.UndoSpec (spec) where
 
 import Test.Hspec
@@ -103,7 +106,7 @@ spec = describe "Undo" $ do
         mainRef `shouldSatisfy` isJust
         otherRef `shouldBe` Nothing
 
-  it "resetToUndo's own ref writes are themselves recorded in the log" $ do
+  it "resetToUndo does not itself grow the log -- a jump is not a new fact" $ do
     let result = runUndoTest $ do
           _ <- createBranch (BranchName "main")
           firstEntryId : _ <- map undoId <$> listUndo
@@ -113,5 +116,20 @@ spec = describe "Undo" $ do
           countAfterReset <- length <$> listUndo
           return (countBeforeReset, countAfterReset)
     case result of
-      Left err                     -> expectationFailure err
-      Right (beforeCount, afterCount) -> afterCount `shouldSatisfy` (> beforeCount)
+      Left err                        -> expectationFailure err
+      Right (beforeCount, afterCount) -> afterCount `shouldBe` beforeCount
+
+  it "a real write made after resetToUndo still appends exactly one new entry" $ do
+    let result = runUndoTest $ do
+          _ <- createBranch (BranchName "main")
+          firstEntryId : _ <- map undoId <$> listUndo
+          _ <- createBranch (BranchName "other")
+          countBeforeReset <- length <$> listUndo
+          resetToUndo firstEntryId
+          _ <- createBranch (BranchName "third")
+          countAfterFreshWrite <- length <$> listUndo
+          return (countBeforeReset, countAfterFreshWrite)
+    case result of
+      Left err -> expectationFailure err
+      Right (countBeforeReset, countAfterFreshWrite) ->
+        countAfterFreshWrite `shouldBe` countBeforeReset + 1

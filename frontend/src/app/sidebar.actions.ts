@@ -64,7 +64,7 @@ export function deleteBranch(name: string) {
 }
 
 // Jump the whole session (every branch, shared across every connected
-// client) to a past or "abandoned" undo-log entry — see app/undo-timeline.tsx.
+// client) to any entry in the undo log — see app/undo-timeline.tsx.
 export function resetToUndo(entryId: string) {
   getServerCache()._session?.send({ type: "undo.reset", entryId });
 }

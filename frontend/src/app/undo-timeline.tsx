@@ -1,89 +1,41 @@
 "use client";
 
-// Top-bar undo timeline: a shared, live, session-wide history of every
-// point the story has passed through (Storyteller.Core.Undo), rendered as a
-// row of dots — click one to jump there (undo *or* redo, since resetToUndo
-// is symmetric; see sidebar.actions.ts's resetToUndo).
+// Top-bar undo timeline: a shared, live, session-wide history of every real
+// write the story has ever made (Storyteller.Core.Undo), rendered as a row
+// of dots — click one to jump there (undo *or* redo, since resetToUndo is
+// symmetric; see sidebar.actions.ts's resetToUndo).
 //
-// The server-side log is a plain, ever-growing chain (see lib/ws.ts's
-// WireUndoEntry doc) — there is no persisted tree. "Abandoned" branches are
-// a client-side rendering choice, not server state: a later entry whose
-// snapshot exactly repeats an earlier one's (server-flagged via
-// 'revertsTo') means every entry strictly between them was left behind when
-// that jump happened. This groups that run into a small, collapsed stub —
-// deliberately not spelled out entry-by-entry, since a single clickable
-// "go back down that path" dot is enough for a user to explore it further
-// if they ever want to (they'll land back on the main line at that point,
-// with the same grouping applied again from there).
+// The server-side log is flat, append-only, and carries no notion of
+// "current" at all (see lib/ws.ts's WireUndoEntry doc) — a jump doesn't
+// touch it. So "which dot is active" and "what would redo do" are both
+// purely local state, kept as simple as the actual rule:
 //
-// Right-aligned, not centered: the log can run to hundreds of entries (this
-// is a real, ever-growing history, not a capped ring buffer), far more than
-// the top bar has room for. Right-aligning means the newest/current entry
-// — the one anyone actually cares about at a glance — is always the one
-// still on screen once older entries clip off the left edge, rather than
-// an arbitrary window landing wherever centering happens to put it. The
-// clipped edge fades out (mask-image) instead of hard-cutting a dot mid-shape.
+//   - the active dot defaults to the last (newest) one.
+//   - clicking an earlier dot jumps there, makes *that* one active, and
+//     stashes every dot that was ahead of it (the ones between it and the
+//     old newest) into a list rendered right after the new active dot.
+//   - the moment a real write lands (the entry list grows), the stash and
+//     the override are both dropped — the active dot snaps back to being
+//     "the last one" again, which is now the fresh write, same as if
+//     nothing had ever been undone. The stashed dots aren't lost — they're
+//     still real entries in the flat list, they just go back to rendering
+//     in their own chronological slot instead of the trailing group.
 //
-// Click-the-current-dot-again toggles back to wherever the last jump came
-// from — a cheap "peek and return" gesture that needs no server-side tree
-// support: it's just local memory of the two ends of the last jump WE made,
-// invalidated the moment 'currentId' drifts away from that pair for any
-// other reason (someone edits from the position we jumped to, another
-// client moves the shared log, etc — seeing an unrecognized currentId is
-// exactly the signal that the remembered pair is stale). A real "explore
-// every branch" UI would need the log to carry actual tree structure
-// server-side; this is deliberately not that.
+// No separate "redo" concept needed beyond that: the stash *is* the redo
+// target (its own last entry is exactly where the jump came from), and it
+// naturally answers "can I still get back" by simply being non-empty.
 //
-// No color/shape-by-agent-type yet — WireUndoEntry carries no metadata
-// about what kind of change produced an entry (agent vs. manual edit vs.
-// import), so every dot looks the same today. Would need the undo log
-// itself to record more than a ref snapshot to support that.
+// Right-aligned by default, scrolled to the active dot otherwise: the log
+// can run to hundreds of entries (this is a real, ever-growing history,
+// not a capped ring buffer), far more than the top bar has room for, and
+// the active dot isn't always the last one once something's been undone.
+// Both edges fade out (mask-image) instead of hard-cutting a dot mid-shape.
 
 import { useEffect, useRef, useState } from "react";
+import { Undo2, Redo2 } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { resetToUndo } from "./sidebar.actions";
 import type { WireUndoEntry } from "@/lib/ws";
-
-interface TimelineGroups {
-  main: WireUndoEntry[];
-  // Keyed by the branch point's own entry id (the earlier entry a later one
-  // reverted to) — the abandoned run's own last entry is the clickable tip.
-  abandoned: Map<string, WireUndoEntry>;
-}
-
-// Walk chronologically, tracking which earlier entries are still "live"
-// (on the eventual main line) vs. left behind by a later revert. A revert
-// at index i back to index j buries every entry in (j, i) that isn't
-// already buried — the entries between them never lead anywhere further
-// forward, since the only continuation from that point on is entry i itself.
-function groupTimeline(entries: WireUndoEntry[]): TimelineGroups {
-  const idToIndex = new Map(entries.map((e, i) => [e.id, i]));
-  const buried = new Array(entries.length).fill(false);
-  const abandoned = new Map<string, WireUndoEntry>();
-
-  entries.forEach((entry, i) => {
-    if (entry.revertsTo === undefined || entry.revertsTo === null) return;
-    const j = idToIndex.get(entry.revertsTo);
-    if (j === undefined) return;
-    for (let k = j + 1; k < i; k++) {
-      if (!buried[k]) {
-        buried[k] = true;
-      }
-    }
-    // The abandoned run's tip is the last not-otherwise-buried entry right
-    // before the revert — i.e. whatever the timeline's "current" position
-    // was the instant before this jump.
-    for (let k = i - 1; k > j; k--) {
-      if (!buried[k] || k === i - 1) {
-        abandoned.set(entries[j].id, entries[k]);
-        break;
-      }
-    }
-  });
-
-  const main = entries.filter((_, i) => !buried[i]);
-  return { main, abandoned };
-}
 
 const DOT = 7;
 // Non-current dots render ~20% smaller than the current one — the size
@@ -94,11 +46,10 @@ const DOT = 7;
 const DOT_SMALL = 5.6;
 const DOT_GAP = 18;
 
-function Dot({ filled, faded, pulse, dim, title, onClick }: {
+function Dot({ filled, faded, pulse, title, onClick }: {
   filled?: boolean;
   faded?: boolean;
   pulse?: boolean;
-  dim?: boolean;
   title: string;
   onClick: () => void;
 }) {
@@ -124,124 +75,153 @@ function Dot({ filled, faded, pulse, dim, title, onClick }: {
           width: size, height: size, borderRadius: "50%", padding: 0, cursor: "pointer",
           border: filled ? "none" : "1.5px solid var(--text-dim)",
           background: filled ? "var(--amber)" : "transparent",
-          opacity: faded ? 0.45 : dim ? 0 : 1,
+          opacity: faded ? 0.45 : 1,
           boxShadow: filled ? "0 0 7px oklch(0.78 0.10 65 / 65%)" : "none",
-          // Delay matches the row's own slide transition (260ms, see
-          // UndoTimeline's 'sliding' transform) so the dot only starts
-          // fading in once the bar has actually finished moving, not
-          // partway through it.
-          transition: "opacity 200ms ease 260ms",
         }}
       />
     </span>
   );
 }
 
-// The two ends of the last jump this client made — enough to support
-// "click the current dot again to bounce back" without any server-side
-// tree. See the module doc for why this is intentionally not more than that.
-interface TogglePair { a: string; b: string }
-
 export function UndoTimeline() {
   const entries = useServerCache((s) => s.undoEntries);
-  const { main, abandoned } = groupTimeline(entries);
-  const currentId = main[main.length - 1]?.id;
 
-  const [toggle, setToggle] = useState<TogglePair | null>(null);
-  // Exactly one of these is ever active for a given change — never both, so
-  // the ping ring never overlaps the new dot's fade-in (that combination
-  // read as a smear rather than two distinct beats). A plain append (an
-  // edit, or a jump that lands past everything seen so far) gets the
-  // slide-then-fade; anything else that moves 'currentId' (a backward jump)
-  // gets the ping instead.
-  const [pulsing, setPulsing] = useState(false);
-  const [sliding, setSliding] = useState(false);
-  const prevIdRef = useRef<string | undefined>(undefined);
-  const prevMainIdsRef = useRef<string[]>([]);
+  // The override + stash pair described in the module doc — 'null' means
+  // "no undo pending, active is just the last entry." Set by clicking any
+  // dot that isn't already the last one; cleared the instant the entry
+  // count grows past what it was when the override was made (a real write
+  // happened — see the effect below), regardless of what caused it (this
+  // client's own edit, another client's, a background agent's).
+  const [override, setOverride] = useState<{ activeId: string; stash: WireUndoEntry[]; countAtJump: number } | null>(null);
 
   useEffect(() => {
-    const ids = main.map((e) => e.id);
-    const prevIds = prevMainIdsRef.current;
+    if (override && entries.length > override.countAtJump) setOverride(null);
+  }, [entries.length, override]);
+
+  const activeId = override?.activeId ?? entries[entries.length - 1]?.id;
+  const stash = override?.stash ?? [];
+  // Only the non-stashed entries render in the main row — the stashed ones
+  // (still just ordinary entries, unmodified) get their own trailing group
+  // right after the active dot instead of their natural chronological slot.
+  const stashedIds = new Set(stash.map((e) => e.id));
+  const main = entries.filter((e) => !stashedIds.has(e.id));
+
+  const [pulsing, setPulsing] = useState(false);
+  const prevIdRef = useRef<string | undefined>(undefined);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const activeDotRef = useRef<HTMLDivElement>(null);
+
+  // Scroll the active dot into view (centered, not flush against the
+  // fade-out edge — see the manual scrollLeft math) and pulse it whenever
+  // it changes, including on mount so a reload right after an undo still
+  // shows the right dot.
+  useEffect(() => {
     const prevId = prevIdRef.current;
-    prevMainIdsRef.current = ids;
-    prevIdRef.current = currentId;
+    prevIdRef.current = activeId;
+    if (activeId === undefined) return;
 
-    if (currentId === undefined || prevId === undefined || prevId === currentId) return;
+    const raf = requestAnimationFrame(() => {
+      const container = scrollRef.current;
+      const dot = activeDotRef.current;
+      if (!container || !dot) return;
+      const target = dot.offsetLeft + dot.offsetWidth / 2 - container.clientWidth / 2;
+      const max = Math.max(0, container.scrollWidth - container.clientWidth);
+      container.scrollTo({ left: Math.max(0, Math.min(target, max)), behavior: prevId === undefined ? "auto" : "smooth" });
+    });
 
-    // A currentId change we didn't just cause ourselves (e.g. another
-    // client edited, or someone reset from elsewhere) makes any remembered
-    // toggle pair stale — see the module doc.
-    setToggle((t) => (t && (currentId === t.a || currentId === t.b) ? t : null));
-
-    const isPlainAppend =
-      prevIds.length > 0 && ids.length === prevIds.length + 1 && prevIds.every((id, i) => id === ids[i]);
-
-    if (isPlainAppend) {
-      setSliding(true);
-      const raf = requestAnimationFrame(() => setSliding(false));
-      return () => cancelAnimationFrame(raf);
-    }
-
+    if (prevId === undefined || prevId === activeId) return () => cancelAnimationFrame(raf);
     setPulsing(true);
     const t = setTimeout(() => setPulsing(false), 700);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentId, main.length]);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [activeId]);
 
   if (entries.length === 0) return null;
 
-  function jump(targetId: string) {
-    if (toggle && currentId === targetId && (targetId === toggle.a || targetId === toggle.b)) {
-      const other = targetId === toggle.a ? toggle.b : toggle.a;
-      setToggle({ a: targetId, b: other });
-      resetToUndo(other);
-    } else {
-      if (currentId) setToggle({ a: currentId, b: targetId });
-      resetToUndo(targetId);
-    }
+  function jump(entry: WireUndoEntry) {
+    const idx = entries.findIndex((e) => e.id === entry.id);
+    setOverride({ activeId: entry.id, stash: entries.slice(idx + 1), countAtJump: entries.length });
+    resetToUndo(entry.id);
   }
 
+  const mainActiveIdx = main.findIndex((e) => e.id === activeId);
+  const undoTarget = mainActiveIdx > 0 ? main[mainActiveIdx - 1] : undefined;
+  const redoTarget = stash.length > 0 ? stash[stash.length - 1] : undefined;
+
   return (
-    <div style={{
-      display: "flex", alignItems: "center", padding: "0 14px",
-      flex: 1, justifyContent: "flex-end", minWidth: 0, overflow: "hidden",
-      WebkitMaskImage: "linear-gradient(to right, transparent, black 28px)",
-      maskImage: "linear-gradient(to right, transparent, black 28px)",
-    }}>
-      <div style={{
-        display: "flex", alignItems: "center", gap: DOT_GAP,
-        transform: sliding ? `translateX(${DOT_GAP + DOT}px)` : "translateX(0)",
-        transition: sliding ? "none" : "transform 260ms ease",
-      }}>
-        {main.map((entry, i) => {
-          const stub = abandoned.get(entry.id);
-          const isCurrent = entry.id === currentId;
-          const isNewTail = sliding && i === main.length - 1;
-          return (
-            <div key={entry.id} style={{ position: "relative", display: "flex", alignItems: "center" }}>
-              {i > 0 && (
-                <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)" }} />
-              )}
-              {stub && (
-                <div style={{ position: "absolute", bottom: DOT + 4, left: DOT / 2 - 0.75, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+    <div style={{ display: "flex", alignItems: "center", flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0, marginLeft: 8 }}>
+        <button
+          onClick={() => undoTarget && jump(undoTarget)}
+          disabled={!undoTarget}
+          title={undoTarget ? `Undo — back to ${new Date(undoTarget.time).toLocaleString()}` : "Nothing to undo"}
+          style={{
+            width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+            border: "none", background: "transparent", borderRadius: 4,
+            cursor: undoTarget ? "pointer" : "default",
+            color: undoTarget ? "var(--text-dim)" : "var(--text-ghost)", opacity: undoTarget ? 1 : 0.4,
+          }}
+        >
+          <Undo2 style={{ width: 12, height: 12 }} />
+        </button>
+        <button
+          onClick={() => redoTarget && jump(redoTarget)}
+          disabled={!redoTarget}
+          title={redoTarget ? `Redo — forward to ${new Date(redoTarget.time).toLocaleString()}` : "Nothing to redo"}
+          style={{
+            width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+            border: "none", background: "transparent", borderRadius: 4,
+            cursor: redoTarget ? "pointer" : "default",
+            color: redoTarget ? "var(--text-dim)" : "var(--text-ghost)", opacity: redoTarget ? 1 : 0.4,
+          }}
+        >
+          <Redo2 style={{ width: 12, height: 12 }} />
+        </button>
+      </div>
+      <div
+        ref={scrollRef}
+        style={{
+          display: "flex", alignItems: "center", padding: "0 14px",
+          flex: 1, minWidth: 0, overflowX: "auto", overflowY: "hidden",
+          scrollbarWidth: "none",
+          WebkitMaskImage: "linear-gradient(to right, transparent, black 20px, black calc(100% - 20px), transparent)",
+          maskImage: "linear-gradient(to right, transparent, black 20px, black calc(100% - 20px), transparent)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: DOT_GAP }}>
+          {main.flatMap((entry, i) => {
+            const isActive = entry.id === activeId;
+            const dots = [
+              <div key={entry.id} ref={isActive ? activeDotRef : undefined} style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                {i > 0 && (
+                  <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)" }} />
+                )}
+                <Dot
+                  filled={isActive}
+                  pulse={isActive && pulsing}
+                  title={new Date(entry.time).toLocaleString()}
+                  onClick={() => jump(entry)}
+                />
+              </div>,
+            ];
+            // The stash — dots that were "ahead" at the moment of the jump
+            // that made 'entry' active — renders as a trailing run right
+            // after it, still real, still clickable (jumping to one just
+            // resumes further along the same abandoned run).
+            if (isActive) {
+              stash.forEach((s) => dots.push(
+                <div key={s.id} style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                  <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)", opacity: 0.5 }} />
                   <Dot
                     faded
-                    title={`Abandoned — ${new Date(stub.time).toLocaleTimeString()}. Click to go back down this path.`}
-                    onClick={() => jump(stub.id)}
+                    title={`Undone — ${new Date(s.time).toLocaleString()}. Click to jump back here.`}
+                    onClick={() => jump(s)}
                   />
-                  <div style={{ width: 1, height: 6, background: "var(--border-subtle)" }} />
-                </div>
-              )}
-              <Dot
-                filled={isCurrent}
-                pulse={isCurrent && pulsing}
-                dim={isNewTail}
-                title={new Date(entry.time).toLocaleString()}
-                onClick={() => jump(entry.id)}
-              />
-            </div>
-          );
-        })}
+                </div>,
+              ));
+            }
+            return dots;
+          })}
+        </div>
       </div>
     </div>
   );

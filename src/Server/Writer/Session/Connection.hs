@@ -43,7 +43,7 @@ import Server.Core.Logging (logCommand)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Notification (BranchNotification(..))
 import Server.Writer.Run (actionStack)
-import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames, undoLogEntries)
+import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames, undoLog)
 import Server.Writer.Session.Protocol
 
 runSession :: ServerEnv -> WS.Connection -> IO ()
@@ -109,8 +109,8 @@ pushCharacterList conn = do
 
 pushUndoLog :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 pushUndoLog conn = do
-  entries <- undoLogEntries
-  embed $ WS.sendTextData conn (encode (UndoLog entries))
+  evt <- undoLog
+  embed $ WS.sendTextData conn (encode evt)
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (SessionError (T.pack err)))
