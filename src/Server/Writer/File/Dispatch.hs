@@ -29,8 +29,8 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem)
 import qualified Data.Text as T
 
-import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote)
-import Server.Writer.File (chatWriter, chatFixer, chatConverse, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
+import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
+import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
 import Server.Writer.File.Protocol (FileCommand(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -89,6 +89,12 @@ runCommand path cmd = case cmd of
 
   ChatConverse _mid prompt ->
     chatConverse path prompt
+
+  ChatConverseSwipe _mid promptTid atomTid prompt ->
+    chatConverseSwipe path (TickId promptTid) (TickId atomTid) prompt
+
+  CycleSwipe _mid tid ->
+    cycleAtomSwipe (TickId tid)
 
   ChatOutline _mid ->
     chatSplitOutline path

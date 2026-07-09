@@ -183,6 +183,13 @@ export function deleteJournalAtom(branch: string, tickId: string, marker: string
   dropFromSelection([tickId]);
 }
 
+// Cycle a journal atom forward through its own alternates — same generic
+// atom.swipe.cycle command the main file view sends (see fileview.actions.ts's
+// cycleSwipe), just addressed at the journal's own connection.
+export function cycleJournalSwipe(branch: string, tickId: string, marker: string | null) {
+  getServerCache().openJournals[branch]?.conn.send(atRebase(marker, { type: "atom.swipe.cycle", tickId }, {}));
+}
+
 // Fix, scoped to the journal itself — this is what "rewrite to exclude
 // knowledge of the gun" actually runs against: the character's own
 // account, not the scene prose. Targets are journal atom ids (see

@@ -14,9 +14,28 @@ import Storage.Tick
 import Storage.MockStore
 
 import Storyteller.Core.Types (BranchName(..), Root(..), TickId(..), fromTick, tickData, tickMessage, tickFields, tickPos, posParent, posRefs)
+import Storyteller.Common.Types (Note(..))
 
 spec :: Spec
 spec = do
+  describe "decodeTickData / a payload with its own blank line" $ do
+    -- Regression: the header/payload boundary used to be found by
+    -- scanning for the first *blank* line, which misfired the moment a
+    -- fieldless tick's own multi-paragraph payload contained one --
+    -- mistaking it for the header separator, corrupting the tick to
+    -- decode with no recognizable "type" at all. The boundary is now
+    -- unambiguous ('encodeDraft' always folds "type" into the header, so
+    -- there's always a real blank line before the payload, and it's
+    -- always the first one) regardless of how many more blank lines the
+    -- payload itself goes on to contain.
+    it "a multi-paragraph Note payload round-trips whole, and still decodes as a Note" $ do
+      let paragraphs = "First paragraph.\n\nSecond paragraph, after a blank line.\n\nThird."
+          result = fst <$> runChain (do
+            _ <- storeAs (Note [] paragraphs)
+            t <- getTypesTick
+            return (fromTick t :: Maybe Note))
+      result `shouldBe` Right (Just (Note [] paragraphs))
+
   describe "storeAs / getTypesTick round trip for a non-atom tick" $ do
     it "stores and decodes back to the original typed value" $ do
       let result = fst <$> runChain (do
@@ -27,28 +46,25 @@ spec = do
         Right (Just (Root (BranchName n))) -> n `shouldBe` "main"
         other -> expectationFailure ("expected a decoded Root, got " <> show (fmap (const ()) <$> other))
 
-    it "round-trips the raw message verbatim, unaffected by decodeTickData's field-line quirk" $ do
-      -- 'decodeTickData' (copied from 'Storyteller.Core.StorageMonad',
-      -- unchanged) only recognizes a real field block when it's followed
-      -- by a blank line; a message with no such separator can still have
-      -- its first line misparsed as a stray field if a later line happens
-      -- to lack its own colon (as "main" does here, no different from
-      -- StorageMonad's own pre-existing behavior) -- but the message text
-      -- itself always survives whole, which is what 'fromTick' actually
-      -- depends on.
+    it "round-trips the raw message as pure payload, with the type tag folded into fields" $ do
+      -- The type tag lives in 'tickFields' (as an ordinary @"type"@ entry,
+      -- always first -- see 'Storyteller.Core.Types.encodeDraft') rather
+      -- than embedded in 'tickMessage' itself, so the message decodes back
+      -- to exactly the payload that was stored, with nothing left to
+      -- strip off it.
       let result = fst <$> runChain (do
             _ <- storeAs (Root (BranchName "main"))
             t <- getTypesTick
-            return (tickMessage (tickData t)))
-      result `shouldBe` Right "type:root\nmain"
+            return (tickFields (tickData t), tickMessage (tickData t)))
+      result `shouldBe` Right ([("type", "root")], "main")
 
   describe "readTypesTick for an atom" $ do
-    it "reconstructs the \"file\" field and \"type:atom\" tag Storage.Core strips off" $ do
+    it "reconstructs the \"file\" field and folds in a \"type\":\"atom\" field, message as pure content" $ do
       let result = fst <$> runChain (do
             h <- addAtom "scene.md" "p1\n"
             t <- readTypesTick h
             return (tickFields (tickData t), tickMessage (tickData t)))
-      result `shouldBe` Right ([("file", "scene.md")], "type:atom\np1\n")
+      result `shouldBe` Right ([("type", "atom"), ("file", "scene.md")], "p1\n")
 
   describe "readTypesTick for Binary and Opaque" $ do
     -- Both are content-free at this layer by design (see Storage.Core's
@@ -61,14 +77,17 @@ spec = do
             h <- store (Binary [] "portrait.png")
             t <- readTypesTick h
             return (tickFields (tickData t), tickMessage (tickData t)))
-      result `shouldBe` Right ([("file", "portrait.png")], "type:binary\n")
+      result `shouldBe` Right ([("type", "binary"), ("file", "portrait.png")], "")
 
     it "decodes an Opaque tick without crashing, carrying no fields at all" $ do
+      -- No "type" field either -- 'Opaque' is the fallthrough for content
+      -- we don't own (an external edit, legacy data, ...), not a real
+      -- registered 'TickType', so nothing should claim it decodes as one.
       let result = fst <$> runChain (do
             h <- store (Opaque [])
             t <- readTypesTick h
             return (tickFields (tickData t), tickMessage (tickData t)))
-      result `shouldBe` Right ([], "type:opaque\n")
+      result `shouldBe` Right ([], "")
 
   describe "fileTicksOf alongside a Binary/Opaque tick" $ do
     it "walks past a Binary tick for an unrelated path without crashing" $ do
@@ -131,7 +150,7 @@ spec = do
     it "includes a note that references one of the file's own atoms" $ do
       let result = runChain $ do
             h <- addAtom "scene.md" "p1\n"
-            _ <- store (NonAtom [h] "type:note\nabout p1")
+            _ <- store (NonAtom [h] "type:note\n\nabout p1")
             fileTicksOf "scene.md"
       case result of
         Left err -> expectationFailure err

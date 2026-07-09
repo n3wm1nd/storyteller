@@ -20,6 +20,7 @@ import Storyteller.Core.Git
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Types
 
@@ -102,7 +103,7 @@ spec runner = do
     it "an unrelated tick with no refs and no file field does not break the parent chain" $ do
       let result = withFile_ runner (BranchName "b") $ do
             t1 <- appendAtom "story.md" "first"
-            _  <- runStorage @Main (Core.store (Core.NonAtom [] "type:presence\nunrelated standalone tick"))
+            _  <- runStorage @Main (Core.store (Core.NonAtom [] "type:presence\n\nunrelated standalone tick"))
             t2 <- appendAtom "story.md" " second"
             fileState "story.md" >>= \upd -> return (t1, t2, upd)
       case result of
@@ -256,3 +257,60 @@ spec runner = do
       case result of
         Left err  -> expectationFailure err
         Right upd -> length (updateTicks upd) `shouldBe` 2
+
+  describe "cycleAtomSwipe" $ do
+
+    it "fails when the atom has no alternates" $ do
+      (run $ runner $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (do
+        tid <- appendAtom "f.md" "only"
+        cycleAtomSwipe tid))
+        `shouldSatisfy` \case
+          Left _  -> True
+          Right _ -> False
+
+    it "rotates a pushed alternate into the atom, keeping the tick count the same" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            a <- appendAtom "f.md" "original"
+            _ <- runStorage @Main (Swipe.pushSwipe (Core.ObjectHash (unTickId a)) "fresh")
+            before <- fileState "f.md"
+            cycleAtomSwipe a
+            after <- fileState "f.md"
+            return (before, after)
+      case result of
+        Left err -> expectationFailure err
+        Right (before, after) -> do
+          -- Same total tick count -- the atom's content rotated in place,
+          -- the displaced content became the new swipe; nothing added or
+          -- removed.
+          length (updateTicks after) `shouldBe` length (updateTicks before)
+
+    -- Reproduces 'Server.Writer.File.chatConverseSwipe''s exact shape: a
+    -- prompt tick rebased in place (via a separate 'runStorage' dispatch,
+    -- same as 'editChatPrompt') *before* the atom that follows it is
+    -- pushed a swipe -- using the atom id captured *before* that rebase,
+    -- same as the caller (which only ever has the pre-rebase id the
+    -- client sent). The prompt's own rebase replays (and so re-hashes)
+    -- the atom sitting after it; pushSwipe must still land on the atom's
+    -- *current* position via 'resolveId', not silently miss and land a
+    -- stray new atom instead.
+    it "pushSwipe still finds the atom after an earlier rebase changed its id" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            promptTid <- runStorage @Main (Core.store (Core.NonAtom [] "type:prompt\n\nhi"))
+            atomTid   <- runStorage @Main (Ops.addAtom "chat/f.md" "first reply")
+            -- Rebase the prompt in place, exactly like 'editChatPrompt' --
+            -- this replays (re-hashes) the atom after it, even though the
+            -- atom's own content is untouched by this step.
+            _ <- runStorage @Main $ Core.at (fst promptTid) $ Core.editTick $ \case
+              Core.NonAtom refs _ -> return (Core.NonAtom refs "type:prompt\n\nhi (edited)")
+              other               -> return other
+            -- Use the *stale* (pre-rebase) atom id, same as the caller.
+            _ <- runStorage @Main (Swipe.pushSwipe (fst atomTid) "second reply")
+            fileState "chat/f.md"
+      case result of
+        Left err  -> expectationFailure err
+        Right upd -> do
+          let kinds = map wtKind (updateTicks upd)
+          -- Exactly one atom (edited in place) and one swipe holding the
+          -- displaced content -- not two atoms.
+          length (filter (== "atom") kinds) `shouldBe` 1
+          length (filter (== "swipe") kinds) `shouldBe` 1

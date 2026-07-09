@@ -95,6 +95,15 @@ data FileCommand
   --   splitter — chat turns aren't paragraph-split prose. No @context@/
   --   @targets@: a chat file has no atom-selection concept of its own.
   | ChatConverse { fcId :: Maybe T.Text, fcPromptText :: T.Text }
+  -- | Regenerate a chat exchange's reply, keeping the old reply as a
+  --   cycle-able alternate (see 'Storyteller.Common.Swipe') instead of
+  --   discarding it -- unlike 'ChatConverse', the prompt tick
+  --   ('fcPromptTickId') is edited in place rather than resent as a new
+  --   one. See 'Server.Writer.File.chatConverseSwipe'.
+  | ChatConverseSwipe { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcAtomTickId :: T.Text, fcPromptText :: T.Text }
+  -- | Rotate an atom's own alternates forward one step. Generic -- any
+  --   atom, chat or prose -- see 'Server.Core.File.cycleAtomSwipe'.
+  | CycleSwipe { fcId :: Maybe T.Text, fcTickId :: T.Text }
   -- | Regenerate the chapter (this file) to fit its beat sheet
   --   (@ch{N}.outline.md@ by convention), respecting 'fcPromptText' as the
   --   user's steer. 'fcByBeat' selects the beat-by-beat driver over the
@@ -154,6 +163,9 @@ instance FromJSON FileCommand where
         byBeat  <- fromMaybe False <$> o .:? "byBeat"
         ChatRegen i <$> o .: "text" <*> pure context <*> pure byBeat
       "chat.converse" -> ChatConverse i <$> o .: "text"
+      "chat.converse.regen" ->
+        ChatConverseSwipe i <$> o .: "promptTickId" <*> o .: "atomTickId" <*> o .: "text"
+      "atom.swipe.cycle" -> CycleSwipe i <$> o .: "tickId"
       "chat.outline" -> pure (ChatOutline i)
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
@@ -186,6 +198,8 @@ commandKind = \case
   ChatFixer {}    -> "chat.fixer"
   ChatRegen {}    -> "chat.regen"
   ChatConverse {} -> "chat.converse"
+  ChatConverseSwipe {} -> "chat.converse.regen"
+  CycleSwipe {}   -> "atom.swipe.cycle"
   ChatOutline {}  -> "chat.outline"
   ChatNote {}     -> "chat.note"
   EnterScene {}   -> "enter.scene"

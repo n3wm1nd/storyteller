@@ -239,6 +239,25 @@ spec = do
             return (old, renamed))
       result `shouldBe` Right (False, "new life\n")
 
+    -- Mirrors the delete-and-recreate case above, but the old path is
+    -- freed up by a *rename* instead of an explicit 'deleteFile': the old
+    -- atoms' own 'atomPath' becomes the new name, so nothing with the old
+    -- path is left in the chain at all, and a later reuse of that name is
+    -- an entirely fresh, unrelated lifetime.
+    it "a path freed by rename can be reused for an unrelated new file, and the new one renames independently" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "file1" "old life\n"
+            _ <- addAtom "file1" "old life 2\n"
+            renameFile "file1" "file2"
+            _ <- addAtom "file1" "new life\n"
+            _ <- addAtom "file1" "new life 2\n"
+            renameFile "file1" "file3"
+            oldGone <- Storage.Ops.exists "file1"
+            file2   <- committedContent "file2"
+            file3   <- committedContent "file3"
+            return (oldGone, file2, file3))
+      result `shouldBe` Right (False, "old life\nold life 2\n", "new life\nnew life 2\n")
+
     it "an atom edited (not just appended) after creation is also renamed correctly" $ do
       let result = fst <$> runChain (do
             t1 <- addAtom "scene.md" "p1\n"

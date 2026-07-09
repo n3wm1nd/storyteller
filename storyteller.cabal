@@ -74,6 +74,7 @@ library
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation
+                  , Storyteller.Common.Swipe
                   , Storyteller.Writer.Types
                   , Storyteller.Writer.Presence
                   , Storyteller.Writer.Library
@@ -255,9 +256,11 @@ test-suite storyteller-test
                   , Storyteller.LibrarySpec
                   , Storyteller.ContextFilterSpec
                   , Storyteller.ContextPreviewSpec
+                  , Storyteller.Common.SwipeSpec
                   , Server.TestStack
                   , Server.BranchSpec
                   , Server.Writer.BranchSpec
+                  , Server.Writer.FileSpec
                   , Server.FileSpec
                   , Server.CharacterSpec
                   , Server.LibrarySpec

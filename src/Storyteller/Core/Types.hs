@@ -22,7 +22,6 @@ module Storyteller.Core.Types
   , TickType(..)
   , encodeDraft
   , decodePayload
-  , decodeTaggedMessage
 
     -- * Built-in tick kinds
   , Root(..)
@@ -32,7 +31,6 @@ module Storyteller.Core.Types
   ) where
 
 import Data.Text (Text)
-import qualified Data.Text as T
 
 -- | Opaque identity of a tick — valid within the scope of an operation;
 --   rebases produce new ids.
@@ -93,8 +91,14 @@ draft msg = TickData { tickRefs = [], tickFields = [], tickMessage = msg }
 -- | Types that can be encoded into and decoded from a 'Tick'.
 --   Implement this to define a new tick kind.
 --
---   Message format: @"type:\<tickTypeName\>\n\<payload\>"@.
---   Use 'encodeDraft' and 'decodePayload' to handle this consistently.
+--   The type tag lives as an ordinary @"type"@ entry in 'tickFields'
+--   (always first, prepended by 'encodeDraft') — never embedded in
+--   'tickMessage' itself. 'tickMessage' is the payload, verbatim, with
+--   nothing to strip back off it: no fixed-offset assumption about where
+--   a tag "line" ends and payload begins can survive a payload that
+--   contains its own blank lines or colons, which is why the tag isn't
+--   folded into the same text as the payload the way an early version of
+--   this module did.
 --
 --   Law: fromTick t == Just a  whenever t was produced by storing (toDraft a)
 class TickType a where
@@ -109,44 +113,30 @@ class TickType a where
   --   Receives the full 'Tick' so types backed by a tree ref can use 'tickPos'.
   fromTick :: Tick -> Maybe a
 
--- | Build a 'TickData' with the type tag, refs, extra fields, and payload.
---   Use @encodeDraft \@MyType refs fields payload@ in 'toDraft' implementations.
+-- | Build a 'TickData' with the type tag (folded into 'tickFields' as an
+--   ordinary @"type"@ entry, always first), refs, extra fields, and the
+--   payload untouched. Use @encodeDraft \@MyType refs fields payload@ in
+--   'toDraft' implementations.
 encodeDraft :: forall a. TickType a => [TickId] -> [(Text, Text)] -> Text -> TickData
 encodeDraft refs fields payload = TickData
   { tickRefs    = refs
-  , tickFields  = fields
-  , tickMessage = "type:" <> tickTypeName @a <> "\n" <> payload
+  , tickFields  = ("type", tickTypeName @a) : fields
+  , tickMessage = payload
   }
 
--- | Extract the payload from a tick whose tag matches @a@'s 'tickTypeName'.
---   Returns 'Nothing' if the tag does not match.
---
---   Splits off only the first line (the tag) via 'T.breakOn', not
---   'T.lines'/'T.intercalate' — the latter treats every @"\n"@ as a
---   delimiter and so silently collapses any blank line or trailing newline
---   in the payload itself when rejoining. 'T.breakOn' touches nothing past
---   the first @"\n"@, so this is the exact inverse of 'encodeDraft' for any
---   payload, including ones with embedded blank lines or a trailing newline.
+-- | The payload of a tick whose @"type"@ field matches @a@'s
+--   'tickTypeName' — just 'tickMessage', unmodified; there's nothing left
+--   to strip once the tag lives in 'tickFields' rather than in the same
+--   text as the payload. 'Nothing' if the tag doesn't match.
 decodePayload :: forall a. TickType a => Tick -> Maybe Text
-decodePayload = decodeTaggedMessage @a . tickMessage . tickData
+decodePayload t
+  | tickTypeOf t == Just (tickTypeName @a) = Just (tickMessage (tickData t))
+  | otherwise                              = Nothing
 
--- | The 'decodePayload' logic, taking the raw tagged message text directly
---   rather than a full 'Tick' — for callers that already have a tick's
---   message in hand without a 'Tick' to wrap it in (e.g. a popped, not-yet
---   re-stored draft).
-decodeTaggedMessage :: forall a. TickType a => Text -> Maybe Text
-decodeTaggedMessage msg =
-  let (tag, afterTag) = T.breakOn "\n" msg
-  in if tag == "type:" <> tickTypeName @a
-       then Just (T.drop 1 afterTag)
-       else Nothing
-
--- | Extract the type tag from any tick, without knowing the type.
---   Returns 'Nothing' for untagged ticks.
+-- | The @"type"@ field of any tick, without knowing the type. 'Nothing'
+--   for an untagged tick.
 tickTypeOf :: Tick -> Maybe Text
-tickTypeOf t = case T.lines (tickMessage (tickData t)) of
-  (l : _) | "type:" `T.isPrefixOf` l -> Just (T.drop 5 l)
-  _                                    -> Nothing
+tickTypeOf t = lookup "type" (tickFields (tickData t))
 
 -- ---------------------------------------------------------------------------
 -- Built-in tick kinds

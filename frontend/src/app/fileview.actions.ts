@@ -321,12 +321,18 @@ export function chatConverse(path: string, text: string) {
   sendChatCommand(path, () => ({ type: "chat.converse", text }));
 }
 
-// Regenerate a chat exchange: drop the old prompt/reply tick pair and
-// resend the same text. Only ever called on the *last* exchange in a chat
-// file — delete+re-append always lands at the new HEAD, so redoing a
-// non-final turn would reorder it.
+// Regenerate a chat exchange's reply, keeping the old reply as a
+// cycle-able alternate (a "swipe") instead of discarding it. Only ever
+// called on the *last* exchange in a chat file — the prompt is edited in
+// place rather than resent, so redoing a non-final turn would leave a
+// later reply answering a prompt that no longer matches what's above it.
 export function chatConverseRegen(path: string, promptTickId: string, atomTickId: string, text: string) {
-  deleteAtom(path, atomTickId);
-  deleteAtom(path, promptTickId);
-  chatConverse(path, text);
+  sendChatCommand(path, () => ({ type: "chat.converse.regen", promptTickId, atomTickId, text }));
+}
+
+// Cycle an atom (chat reply or prose) forward through its own alternates —
+// see Storyteller.Common.Swipe. Forward-only: the backend rotates a ring,
+// there's no separate "previous."
+export function cycleSwipe(path: string, tickId: string) {
+  sendFileCommand(path, { type: "atom.swipe.cycle", tickId });
 }

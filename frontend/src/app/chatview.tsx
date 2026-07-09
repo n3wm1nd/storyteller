@@ -7,7 +7,7 @@
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
 import { useEffect, useRef, useState } from "react";
-import { Send, RotateCcw, EyeOff } from "lucide-react";
+import { Send, RotateCcw, EyeOff, RefreshCw } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
@@ -147,12 +147,16 @@ function EditableBubble({
 // state (can't be a plain inline div in ChatView's .map — the width cap
 // needs to react to EditableBubble's internal edit toggle, and hooks can't
 // live in a loop body) so the 72% display cap can lift only while editing.
-function AssistantReply({ atomTick, disabled, showRegen, onSave, onRegen }: {
+function AssistantReply({ atomTick, disabled, showRegen, swipeCount, onSave, onRegen, onCycle }: {
   atomTick: WireTick;
   disabled: boolean;
   showRegen: boolean;
+  // How many alternates (see Storyteller.Common.Swipe) currently sit in
+  // this atom's own carousel — 0 hides the cycle button entirely.
+  swipeCount: number;
   onSave: (text: string) => void;
   onRegen: () => void;
+  onCycle: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const hidden = atomTick.fields?.hide === "true";
@@ -172,26 +176,51 @@ function AssistantReply({ atomTick, disabled, showRegen, onSave, onRegen }: {
         bubbleStyle={{ ...bubbleBase, maxWidth: "100%", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)" }}
         onSave={onSave}
       />
-      {showRegen && !editing && (
-        <button
-          onClick={onRegen}
-          title="Regenerate this reply"
-          style={{
-            alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 4,
-            fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer",
-            background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)",
-          }}
-        >
-          <RotateCcw style={{ width: 10, height: 10 }} />
-          Regenerate
-        </button>
+      {!editing && (
+        <div style={{ display: "flex", gap: 6 }}>
+          {showRegen && (
+            <button
+              onClick={onRegen}
+              title="Regenerate this reply"
+              style={{
+                alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 4,
+                fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer",
+                background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)",
+              }}
+            >
+              <RotateCcw style={{ width: 10, height: 10 }} />
+              Regenerate
+            </button>
+          )}
+          {swipeCount > 0 && !disabled && (
+            <button
+              onClick={onCycle}
+              title="Cycle to the next alternate"
+              style={{
+                alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 4,
+                fontSize: 10, padding: "2px 6px", borderRadius: 4, cursor: "pointer",
+                background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)",
+              }}
+            >
+              <RefreshCw style={{ width: 10, height: 10 }} />
+              {swipeCount}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
+// How many alternates (see Storyteller.Common.Swipe) currently sit in
+// `atomTickId`'s own carousel — every "swipe"-kind tick in the chain that
+// references it.
+function swipeCount(chain: WireTick[], atomTickId: string): number {
+  return chain.filter(t => t.kind === "swipe" && t.refs.includes(atomTickId)).length;
+}
+
 export function ChatView({
-  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onNote, onRegen, onEditAtom, onEditPrompt,
+  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onNote, onRegen, onCycleSwipe, onEditAtom, onEditPrompt,
 }: {
   ticks: Record<string, WireTick>;
   head: string | null;
@@ -201,6 +230,7 @@ export function ChatView({
   onSend: (text: string) => void;
   onNote: (text: string) => void;
   onRegen: (promptTickId: string, atomTickId: string, text: string) => void;
+  onCycleSwipe: (atomTickId: string) => void;
   onEditAtom: (tickId: string, content: string) => void;
   onEditPrompt: (tickId: string, content: string) => void;
 }) {
@@ -276,8 +306,10 @@ export function ChatView({
                   atomTick={atomTick}
                   disabled={generating}
                   showRegen={i === lastIndex && !generating}
+                  swipeCount={swipeCount(chain, atomTick.tickId)}
                   onSave={(text) => onEditAtom(atomTick.tickId, text)}
                   onRegen={() => onRegen(ex.promptTick.tickId, atomTick.tickId, ex.promptTick.message)}
+                  onCycle={() => onCycleSwipe(atomTick.tickId)}
                 />
               ) : (
                 <div style={typingBubble}>…</div>

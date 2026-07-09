@@ -218,6 +218,14 @@ export type FileCommand =
   // WRITER.md's chat/ convention. No context/targets: a chat file has no
   // atom-selection concept of its own.
   | { type: "chat.converse"; id?: string; text: string }
+  // Regenerate a chat exchange's reply, keeping the old reply as a
+  // cycle-able alternate (a "swipe") instead of discarding it — unlike
+  // chat.converse, the prompt tick is edited in place rather than resent
+  // as a new one.
+  | { type: "chat.converse.regen"; id?: string; promptTickId: string; atomTickId: string; text: string }
+  // Rotate an atom's own alternates forward one step. Generic — any atom,
+  // chat or prose.
+  | { type: "atom.swipe.cycle"; id?: string; tickId: string }
   // Outline: split this file (a whole-story outline, outline.md by convention)
   // into per-chapter beat sheets. No prompt — the outline text is the whole
   // input; the model decides the chapter breakdown and writes each sheet.

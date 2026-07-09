@@ -77,12 +77,19 @@ const compactMdComponents: React.ComponentProps<typeof ReactMarkdown>["component
 
 // ── Atom block ────────────────────────────────────────────────────────────────
 
-const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onToggleContext, onHoverAtom, onHoverEnd, compact }: {
+const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount, onEdit, onToggleContext, onCycleSwipe, onHoverAtom, onHoverEnd, compact }: {
   atom: WireTick;
   isLast: boolean;
   inContext: boolean;
+  // How many alternates (see Storyteller.Common.Swipe) sit in this atom's
+  // own carousel — 0 hides the cycle control entirely. Display-only in
+  // this pass: there's no way yet to *generate* a fresh alternative for a
+  // plain prose atom (unlike chat's Regenerate), only to cycle through
+  // ones that already exist.
+  swipeCount: number;
   onEdit: (tickId: string, content: string) => void;
   onToggleContext: (tickId: string) => void;
+  onCycleSwipe: (tickId: string) => void;
   // Optional cross-component "glow" hook (see store.ts's 'hoverHighlight') —
   // unused by the main file view, wired up by the journal panel so hovering
   // a tracked entry highlights the scene atom it came from (via 'atom.refs').
@@ -193,6 +200,24 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, onEdit, onT
         </div>
       )}
 
+      {!compact && swipeCount > 0 && !editing && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCycleSwipe(atom.tickId); }}
+          title="Cycle to the next alternate"
+          style={{
+            position: "absolute", bottom: 0, right: 60,
+            display: "flex", alignItems: "center", gap: 3,
+            fontSize: 9, padding: "1px 5px", borderRadius: 3, cursor: "pointer",
+            background: "transparent",
+            border: hovered ? "1px solid var(--border-subtle)" : "1px solid transparent",
+            color: hovered ? "var(--text-dim)" : "transparent",
+            transition: "color 0.15s, border-color 0.15s",
+          }}
+        >
+          <RefreshCw style={{ width: 9, height: 9 }} />
+          {swipeCount}
+        </button>
+      )}
       {!compact && (
         <span style={{
           position: "absolute", bottom: 0, right: 0,
@@ -403,7 +428,7 @@ const RebaseDropZone = memo(function RebaseDropZone({ isMarker, isCandidate, onD
 export function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
   rebaseMarker, onSetRebaseMarker, presenceBars,
-  onEdit, onToggleContextAtom, onToggleContextAnnotation,
+  onEdit, onToggleContextAtom, onToggleContextAnnotation, onCycleSwipe,
   onHoverAtom, onHoverEnd, compact,
 }: {
   ticks: WireTick[];
@@ -419,6 +444,7 @@ export function WireTickList({
   onHoverEnd?: () => void;
   onToggleContextAtom: (tickId: string) => void;
   onToggleContextAnnotation: (tickId: string) => void;
+  onCycleSwipe: (tickId: string) => void;
   // Dense mode for embedding in a narrow, naturally-sized container (the
   // journal panel) instead of a full-page fill — see AtomBlock's own
   // 'compact' doc. Also drops the flex/overflow fill assumptions so the
@@ -430,6 +456,12 @@ export function WireTickList({
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
 
   const atoms = ticks.filter((t) => t.kind === "atom");
+  // How many alternates (see Storyteller.Common.Swipe) currently sit in a
+  // given atom's own carousel — every "swipe"-kind tick in the full list
+  // that references it.
+  function swipeCountOf(tickId: string): number {
+    return ticks.filter((t) => t.kind === "swipe" && t.refs.includes(tickId)).length;
+  }
   // Maps each atom's own tickId to the id rebaseMarker should actually be
   // set to if dropped in the gap right below it — see lib/utils.tailLeadTicks.
   const leads = tailLeadTicks(ticks);
@@ -640,8 +672,10 @@ export function WireTickList({
                   <AtomBlock
                     atom={atom} isLast={isLast}
                     inContext={contextAtoms.has(atom.tickId)}
+                    swipeCount={swipeCountOf(atom.tickId)}
                     onEdit={onEdit}
                     onToggleContext={onToggleContextAtom}
+                    onCycleSwipe={onCycleSwipe}
                     onHoverAtom={onHoverAtom}
                     onHoverEnd={onHoverEnd}
                     compact={compact}

@@ -10,6 +10,7 @@
 module Storyteller.Common.Types
   ( Note(..)
   , Fixup(..)
+  , Swipe(..)
   ) where
 
 import Data.Text (Text)
@@ -50,3 +51,25 @@ instance TickType Fixup where
   fromTick t = do
     reason <- decodePayload @Fixup t
     Just Fixup { fixupRefs = tickRefs (tickData t), fixupReason = reason }
+
+-- | An alternate generation for a single atom — the atom it's an alternate
+--   for is 'swipeOf', declared via 'tickRefs' like any other reference (so
+--   a rebase of that atom correctly cascades into this tick too). Not a
+--   chain-editing primitive on its own — see
+--   'Storyteller.Common.Swipe.pushSwipe'/'cycleSwipe' for how a swipe
+--   actually gets swapped into and out of its atom's own content.
+data Swipe = Swipe
+  { swipeOf      :: TickId
+  , swipeContent :: Text
+  } deriving (Show, Eq)
+
+instance TickType Swipe where
+  tickTypeName = "swipe"
+
+  toDraft (Swipe of_ content) = encodeDraft @Swipe [of_] [] content
+
+  fromTick t = do
+    content <- decodePayload @Swipe t
+    case tickRefs (tickData t) of
+      [of_] -> Just Swipe { swipeOf = of_, swipeContent = content }
+      _     -> Nothing

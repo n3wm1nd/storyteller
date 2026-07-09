@@ -21,7 +21,7 @@ import { WireTickList } from "./fileview";
 function JournalPanel({
   branch, journal, journalMarker, onSetJournalMarker,
   contextAtoms, contextAnnotations, onToggleContextAtom, onToggleContextAnnotation,
-  onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onAppend,
+  onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onCycleSwipe, onAppend,
 }: {
   branch: string;
   journal: FileConn | undefined;
@@ -38,6 +38,7 @@ function JournalPanel({
   onHoverAtoms: (tickIds: Set<string>, color: string) => void;
   onHoverEnd: () => void;
   onEditAtom: (tickId: string, content: string, marker: string | null) => void;
+  onCycleSwipe: (tickId: string, marker: string | null) => void;
   onAppend: (text: string, marker: string | null) => void;
 }) {
   const color = characterColor(branch);
@@ -99,6 +100,7 @@ function JournalPanel({
             onEdit={(tickId, content) => onEditAtom(tickId, content, journalMarker)}
             onToggleContextAtom={onToggleContextAtom}
             onToggleContextAnnotation={onToggleContextAnnotation}
+            onCycleSwipe={(tickId) => onCycleSwipe(tickId, journalMarker)}
             onHoverAtom={(tickIds) => onHoverAtoms(tickIds, color)}
             onHoverEnd={onHoverEnd}
             compact
@@ -133,7 +135,7 @@ function CharacterCard({
   branch, conn, journal, expanded, onToggleExpand, onLeave,
   journalMarker, onSetJournalMarker,
   contextAtoms, contextAnnotations, onToggleContextAtom, onToggleContextAnnotation,
-  onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onAppend,
+  onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onCycleSwipe, onAppend,
 }: {
   branch: string;
   conn: CharacterConn | undefined;
@@ -151,6 +153,7 @@ function CharacterCard({
   onHoverAtoms: (tickIds: Set<string>, color: string) => void;
   onHoverEnd: () => void;
   onEditAtom: (tickId: string, content: string, marker: string | null) => void;
+  onCycleSwipe: (tickId: string, marker: string | null) => void;
   onAppend: (text: string, marker: string | null) => void;
 }) {
   const connected = conn !== undefined;
@@ -200,7 +203,7 @@ function CharacterCard({
           contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
           onToggleContextAtom={onToggleContextAtom} onToggleContextAnnotation={onToggleContextAnnotation}
           onTrack={onTrack} onHoverAtoms={onHoverAtoms} onHoverEnd={onHoverEnd}
-          onEditAtom={onEditAtom} onAppend={onAppend}
+          onEditAtom={onEditAtom} onCycleSwipe={onCycleSwipe} onAppend={onAppend}
         />
       )}
     </div>
@@ -212,7 +215,7 @@ function CharacterCard({
 export function CharacterSidebar({
   selectedFile, characterBranches, ticks, head, rebaseMarker, openCharacters,
   openCharacter, closeCharacter, openJournals, openJournal, closeJournal,
-  journalMarkers, setJournalMarker, trackJournal, editJournalAtom, appendJournal,
+  journalMarkers, setJournalMarker, trackJournal, editJournalAtom, cycleJournalSwipe, appendJournal,
   contextAtoms, contextAnnotations, toggleContextAtom, toggleContextAnnotation,
   onHoverAtoms, onHoverEnd, enterScene, leaveScene,
 }: {
@@ -239,6 +242,7 @@ export function CharacterSidebar({
   setJournalMarker: (branch: string, tickId: string | null) => void;
   trackJournal: (characterBranch: string, fromPath: string) => void;
   editJournalAtom: (branch: string, tickId: string, content: string, marker: string | null) => void;
+  cycleJournalSwipe: (branch: string, tickId: string, marker: string | null) => void;
   appendJournal: (branch: string, content: string, marker: string | null) => void;
   // Shared, connection-agnostic tick selection — the same sets the main file
   // view uses. Delete/Fix on this selection are driven from the main view's
@@ -341,6 +345,7 @@ export function CharacterSidebar({
               onTrack={() => selectedFile && trackJournal(b, selectedFile)}
               onHoverAtoms={onHoverAtoms} onHoverEnd={onHoverEnd}
               onEditAtom={(tickId, content, marker) => editJournalAtom(b, tickId, content, marker)}
+              onCycleSwipe={(tickId, marker) => cycleJournalSwipe(b, tickId, marker)}
               onAppend={(text, marker) => appendJournal(b, text, marker)}
             />
           ))

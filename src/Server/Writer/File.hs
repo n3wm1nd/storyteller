@@ -17,6 +17,7 @@ module Server.Writer.File
   ( chatWriter
   , chatFixer
   , chatConverse
+  , chatConverseSwipe
   , editChatPrompt
   , chatChapterRegen
   , chatSplitOutline
@@ -56,7 +57,8 @@ import Storyteller.Core.Runtime (Main)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
-import Storyteller.Core.Types (BranchName, TickId(..))
+import qualified Storyteller.Common.Swipe as Swipe
+import Storyteller.Core.Types (BranchName, TickId(..), fromTick, toDraft)
 import Storyteller.Core.Git (BranchTag, runStorage)
 
 import Prelude hiding (readFile, writeFile)
@@ -130,17 +132,70 @@ chatConverse path prompt = do
   _ <- runStorage @Main (Ops.append path reply)
   info $ "chat agent done: " <> T.pack path
 
+-- | Regenerate the reply to a chat exchange, keeping the old reply as a
+--   swipe (a cycle-able alternate, see 'Storyteller.Common.Swipe') instead
+--   of discarding it — unlike 'chatConverse', this never stores a new
+--   'Prompt' tick: the prompt is edited in place ('editChatPrompt', a
+--   no-op rebase when the text is unchanged, which is the common case —
+--   the plain Regenerate button always resends the current text) and the
+--   history handed to the agent is everything strictly before it, so
+--   re-running the same prompt (or an edited one) reproduces exactly what
+--   'chatConverse' would have seen the first time.
+--
+--   Only ever meaningful for the *last* exchange — regenerating an
+--   earlier one would leave a later reply answering a prompt that no
+--   longer matches what's above it. Enforcing that is the caller's job
+--   (see 'frontend/src/app/fileview.actions.ts''s 'chatConverseRegen').
+--
+--   History is read *before* 'editChatPrompt' runs, same discipline as
+--   'chatConverse' ("History is read before the new prompt tick is
+--   stored, so it never includes the message currently being answered") —
+--   'editChatPrompt' rebases the prompt tick, giving it a new id, so
+--   finding the history boundary by @promptTid@ only works against the
+--   tick list fetched before that rebase; fetching it after would never
+--   find a match (the id it's searching for is already gone) and silently
+--   fall back to "everything", including the very reply this call exists
+--   to replace.
+chatConverseSwipe :: (FileOpen r, SessionEffects r) => FilePath -> TickId -> TickId -> T.Text -> Sem r ()
+chatConverseSwipe path promptTid atomTid newPromptText = do
+  (ticks, _) <- runStorage @Main (Tick.fileTicksOf path)
+  let (before, _fromPrompt) = span ((/= unTickId promptTid) . Tick.ftTickId) ticks
+      history = historyFromFileTicks before
+  editChatPrompt promptTid newPromptText
+  info $ "chat agent regenerating (swipe): " <> T.pack path
+  added <- chatAgent @(BranchTag Main) modelConfigs (history ++ [UserText newPromptText])
+  let reply = mconcat [t | AssistantText t <- added]
+  _ <- runStorage @Main (Swipe.pushSwipe (Core.ObjectHash (unTickId atomTid)) reply)
+  info $ "chat agent regen (swipe) done: " <> T.pack path
+
 -- | Edit a chat prompt's text in place. A 'Prompt' is not an atom — its
 --   message carries no filesystem footprint -- so this edits the raw
---   'NonAtom' message directly (keeping its own @"type:<tag>\n"@ line)
---   rather than going through 'editFileAtom'.
+--   'NonAtom' message directly rather than going through 'editFileAtom'.
+--
+--   Goes through 'Prompt's own 'TickType' instance to rebuild the message —
+--   decode the current one back into a 'Prompt' (recovering its "file"
+--   field), substitute the new text, then 'toDraft'\/'Tick.encodeTickData'
+--   it fresh — rather than hand-editing the raw tagged string in place.
+--   That used to seem like the smaller change (find the tag, keep it,
+--   splice in new text) but "the tag" isn't reliably at a fixed offset:
+--   whether it's on the first line at all depends on whether the tick
+--   carries fields (a 'Prompt' always does, via its own "file" field), so a
+--   fixed-offset splice silently corrupted the header the moment that
+--   assumption didn't hold — dropping the "type:prompt" tag entirely and
+--   leaving the tick undecodable as anything but "unknown" kind ever after.
+--   Round-tripping through the same encode\/decode the tick kind's own
+--   'TickType' instance already defines doesn't have that failure mode:
+--   whatever it puts in the header is exactly what it'll expect back out.
 editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
-editChatPrompt (TickId tid) content =
-  void $ runStorage @Main $ Core.at (Core.ObjectHash tid) $ Core.editTick $ \case
-    Core.NonAtom refs msg -> return (Core.NonAtom refs (setPayload msg))
-    _                      -> fail "editChatPrompt: not a chat prompt (it's an atom)"
-  where
-    setPayload msg = let (tag, _) = T.breakOn "\n" msg in tag <> "\n" <> content
+editChatPrompt (TickId tid) content = do
+  (typed, _) <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash tid))
+  case fromTick @Prompt typed of
+    Nothing -> fail "editChatPrompt: not a chat prompt"
+    Just (Prompt file _) -> do
+      let newMsg = Tick.encodeTickData (toDraft (Prompt file content))
+      void $ runStorage @Main $ Core.at (Core.ObjectHash tid) $ Core.editTick $ \case
+        Core.NonAtom refs _ -> return (Core.NonAtom refs newMsg)
+        _                    -> fail "editChatPrompt: not a chat prompt (it's an atom)"
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
 --   single call or the beat-by-beat loop (see

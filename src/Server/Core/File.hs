@@ -36,6 +36,7 @@ module Server.Core.File
   , hideFileAtoms
   , unhideFileAtoms
   , chatNote
+  , cycleAtomSwipe
   , readFileContent
   ) where
 
@@ -56,6 +57,7 @@ import Server.Core.Util (withBranch)
 
 import qualified Storyteller.Core.Create as Create
 import qualified Storyteller.Common.Annotation as Annotation
+import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Runtime (Main)
@@ -216,6 +218,14 @@ hideFileAtoms tids = setFileAtomsHidden tids True
 -- | The inverse of 'hideFileAtoms'.
 unhideFileAtoms :: FileOpen r => [TickId] -> Sem r ()
 unhideFileAtoms tids = setFileAtomsHidden tids False
+
+-- | Rotate an atom's own alternates forward one step — see
+--   'Storyteller.Common.Swipe.cycleSwipe'. App-agnostic (any atom, any
+--   app), unlike landing a *new* alternate: that always comes from
+--   whichever agent generated it, so it's Writer-specific business logic
+--   (see 'Server.Writer.File.chatConverseSwipe').
+cycleAtomSwipe :: FileOpen r => TickId -> Sem r ()
+cycleAtomSwipe tid = void $ runStorage @Main (Swipe.cycleSwipe (toHash tid))
 
 toHash :: TickId -> Core.ObjectHash
 toHash (TickId t) = Core.ObjectHash t

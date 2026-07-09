@@ -40,33 +40,45 @@ import qualified Storyteller.Core.Types as ST
 -- share one commit message string.
 -- ---------------------------------------------------------------------------
 
+-- | @fieldLines@ is never empty — 'Storyteller.Core.Types.encodeDraft'
+--   always folds a @"type"@ entry into 'ST.tickFields' first — so a blank
+--   line separating the header block from the payload is always both
+--   present and correctly placed: it's the first one 'decodeTickData'
+--   finds scanning forward, full stop, with nothing upstream of it to
+--   produce a false match. (An earlier version of this convention only
+--   inserted that blank line when *other* fields were also present,
+--   collapsing tag and payload onto adjacent lines with no separator at
+--   all whenever a tick had none — see 'decodeTickData's own Haddock for
+--   what that made possible to get wrong.)
 encodeTickData :: ST.TickData -> Text
 encodeTickData td =
   let fieldLines = map (\(k, v) -> k <> ":" <> v) (ST.tickFields td)
-      body       = ST.tickMessage td
-  in if null fieldLines then body else T.intercalate "\n" fieldLines <> "\n\n" <> body
+  in T.intercalate "\n" fieldLines <> "\n\n" <> ST.tickMessage td
 
+-- | Split @raw@ at its header\/payload boundary: the first blank line,
+--   full stop ('T.breakOn "\n\n"', not 'T.lines'\/'break T.null' — the
+--   difference matters for a payload with a trailing newline or blank
+--   line of its own, which the latter would silently reshape on
+--   rejoining). Every header line is parsed as a @key:value@ field
+--   (including @"type"@ — see 'encodeTickData's Haddock for why this
+--   boundary is always the right one to use), and the payload — after it,
+--   untouched — becomes 'ST.tickMessage' verbatim, no tag left embedded
+--   in it to strip back off.
+--
+--   A message with no blank line at all is malformed input this
+--   convention never produces itself (kept as a defensive fallback, not a
+--   case any real caller should hit): treated as an untagged, fieldless
+--   message rather than failing outright.
 decodeTickData :: Text -> ST.TickData
 decodeTickData raw =
-  let (headers, remainder) = break T.null (T.lines raw)
-      fields = [ (k, T.drop 1 rest)
-               | l <- headers
-               , let (k, rest) = T.breakOn ":" l
-               , not (T.null rest) ]
-      msg = case remainder of
-        []      -> raw
-        (_ : _) -> T.drop (headerByteLen headers) raw
-  in ST.TickData { ST.tickRefs = [], ST.tickFields = fields, ST.tickMessage = msg }
-  where
-    headerByteLen hs = sum (map ((+ 1) . T.length) hs) + 1
-
-tagOf :: Text -> Maybe Text
-tagOf msg = case T.lines msg of
-  (l : _) | "type:" `T.isPrefixOf` l -> Just (T.drop 5 l)
-  _                                    -> Nothing
-
-stripTypeTag :: Text -> Text -> Text
-stripTypeTag kind msg = fromMaybe msg (T.stripPrefix ("type:" <> kind <> "\n") msg)
+  let (headerBlock, rest0) = T.breakOn "\n\n" raw
+      fields = [ (k, T.drop 1 v)
+               | l <- T.lines headerBlock
+               , let (k, v) = T.breakOn ":" l
+               , not (T.null v) ]
+  in if T.null rest0
+       then ST.TickData { ST.tickRefs = [], ST.tickFields = [], ST.tickMessage = raw }
+       else ST.TickData { ST.tickRefs = [], ST.tickFields = fields, ST.tickMessage = T.drop 2 rest0 }
 
 coerceRef :: TickId -> ObjectHash
 coerceRef (TickId t) = ObjectHash t
@@ -92,13 +104,21 @@ storeAs a = store (NonAtom (map coerceRef (ST.tickRefs td)) (encodeTickData td))
 -- Reading
 -- ---------------------------------------------------------------------------
 
--- | @h@'s own commit, decoded as a typed 'Tick' -- an 'Atom'\'s "type:atom\n"
---   tag and "file" field are reconstructed ('Storage.Core' strips both off
---   into 'atomPath'\/'atomContent' directly on the way in, and any other
---   header field into 'atomTags' -- e.g. a "hide" tag); a 'Binary'\/'Opaque'
---   marker gets a matching, content-free 'ST.TickData' (see their own
---   'Storage.Core.Tick' Haddock -- neither carries prose content this layer
---   would ever show); anything else is decoded via 'decodeTickData'.
+-- | @h@'s own commit, decoded as a typed 'Tick' -- an 'Atom'\'s @"file"@
+--   field is reconstructed ('Storage.Core' strips it off into 'atomPath'
+--   directly on the way in, along with any other header field into
+--   'atomTags' -- e.g. a "hide" tag) alongside a @"type":"atom"@ entry, so
+--   it decodes via 'Storyteller.Core.Atom.Atom's own 'TickType' instance
+--   the same way any other tick kind does; 'Binary' (a deliberately
+--   introduced, recognized kind) gets the same @"type"@ treatment.
+--   'Opaque' does not: it's the fallthrough for content we didn't
+--   introduce at all (an external edit, legacy data, ...) and make no
+--   decoding guarantees about, not a real registered kind -- giving it a
+--   @"type"@ entry would falsely claim it's decodable the way an actual
+--   'TickType' is, so it gets an empty, content-free 'ST.TickData'
+--   instead (see 'Storage.Core.Tick's own Haddock for why neither this nor
+--   'Binary' carries prose content this layer would ever show); anything
+--   else is decoded via 'decodeTickData'.
 readTypesTick :: StoreM m => ObjectHash -> StoreT m ST.Tick
 readTypesTick h = do
   t  <- lift (readTick h)
@@ -112,18 +132,18 @@ readTypesTick h = do
       td = case t of
         Atom _ path tags content -> ST.TickData
           { ST.tickRefs    = ST.posRefs pos
-          , ST.tickFields  = ("file", T.pack path) : tags
-          , ST.tickMessage = "type:atom\n" <> content
+          , ST.tickFields  = ("type", "atom") : ("file", T.pack path) : tags
+          , ST.tickMessage = content
           }
         Binary _ path -> ST.TickData
           { ST.tickRefs    = ST.posRefs pos
-          , ST.tickFields  = [("file", T.pack path)]
-          , ST.tickMessage = "type:binary\n"
+          , ST.tickFields  = [("type", "binary"), ("file", T.pack path)]
+          , ST.tickMessage = ""
           }
         Opaque _ -> ST.TickData
           { ST.tickRefs    = ST.posRefs pos
           , ST.tickFields  = []
-          , ST.tickMessage = "type:opaque\n"
+          , ST.tickMessage = ""
           }
         NonAtom _ raw -> (decodeTickData raw) { ST.tickRefs = ST.posRefs pos }
   return ST.Tick { ST.tickPos = pos, ST.tickData = td }
@@ -205,21 +225,28 @@ fileTicksOf path = do
     toFileTick h cd = do
       t <- lift (readTick h)
       let refs = List.drop 1 (commitParents cd)
-          (fields, msg, mContent) = case t of
+          (kind, fields, msg, mContent) = case t of
             Atom _ p tags content ->
-              ( ("file", T.pack p) : tags, "type:atom\n" <> content
+              ( "atom", ("file", T.pack p) : tags, content
               , if p == path then Just content else Nothing )
-            Binary _ p -> ( [("file", T.pack p)], "type:binary\n", Nothing )
-            Opaque _   -> ( [], "type:opaque\n", Nothing )
+            Binary _ p -> ( "binary", [("file", T.pack p)], "", Nothing )
+            Opaque _   -> ( "opaque", [], "", Nothing )
             NonAtom _ raw ->
-              let td = decodeTickData raw in (ST.tickFields td, ST.tickMessage td, Nothing)
-          kind = fromMaybe "unknown" (tagOf msg)
+              let td = decodeTickData raw
+                  -- "type" is exposed via 'ftKind' already -- dropped from
+                  -- the outward-facing fields so it isn't duplicated on
+                  -- the wire, same as 'Atom'\/'Binary'\/'Opaque' above
+                  -- (none of which ever put "type" in their own fields
+                  -- either).
+                  otherFields = filter ((/= "type") . fst) (ST.tickFields td)
+              in ( fromMaybe "unknown" (lookup "type" (ST.tickFields td))
+                 , otherFields, ST.tickMessage td, Nothing )
       return FileTick
         { ftTickId  = unObjectHash h
         , ftKind    = kind
         , ftRefs    = map unObjectHash refs
         , ftFields  = fields
-        , ftMessage = stripTypeTag kind msg
+        , ftMessage = msg
         , ftContent = mContent
         , ftParent  = case commitParents cd of { [] -> Nothing; (p : _) -> Just (unObjectHash p) }
         }

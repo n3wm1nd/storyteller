@@ -19,7 +19,7 @@ import Data.Aeson.Types (Pair)
 import qualified Data.Text as T
 
 import qualified Storage.Tick as Storage
-import Storyteller.Core.Types (Tick(..), TickData(..), TickPos(..), tickId, tickParent, unTickId)
+import Storyteller.Core.Types (Tick(..), TickData(..), TickPos(..), tickId, tickParent, tickTypeOf, unTickId)
 
 -- | A tick as sent over the wire. Flat representation — the client interprets
 --   kind/fields/content to decide how to render it.
@@ -76,21 +76,20 @@ toWireTick ft = WireTick
   }
 
 -- | Convert a chain Tick (branch-level) directly to the wire representation.
---   Kind is extracted from the "type:<kind>" message prefix; falls back to "tick".
+--   Kind comes from the tick's own @"type"@ field ('tickTypeOf'); falls
+--   back to "tick" for an untagged one. "type" itself is dropped from the
+--   outward-facing fields so it isn't duplicated alongside 'wtKind' on the
+--   wire, same convention 'Storage.Tick.fileTicksOf' follows.
 tickToWireTick :: Tick -> WireTick
 tickToWireTick t = WireTick
   { wtTickId  = unTickId (tickId t)
-  , wtKind    = extractKind (tickMessage (tickData t))
+  , wtKind    = maybe "tick" id (tickTypeOf t)
   , wtRefs    = map unTickId (posRefs (tickPos t))
-  , wtFields  = tickFields (tickData t)
+  , wtFields  = filter ((/= "type") . fst) (tickFields (tickData t))
   , wtMessage = tickMessage (tickData t)
   , wtContent = Nothing
   , wtParent  = unTickId <$> tickParent t
   }
-  where
-    extractKind msg = case T.lines msg of
-      (l:_) | T.isPrefixOf "type:" l -> T.drop 5 l
-      _                               -> "tick"
 
 -- | Prepend an "id" field when present; omit the field entirely when absent.
 withId :: Maybe T.Text -> [Pair] -> [Pair]

@@ -10,11 +10,11 @@ import {
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
-  chatConverse, chatConverseRegen,
+  chatConverse, chatConverseRegen, cycleSwipe,
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
-  editJournalAtom, deleteJournalAtom, journalFix, appendJournal,
+  editJournalAtom, deleteJournalAtom, journalFix, appendJournal, cycleJournalSwipe,
 } from "./character-sidebar.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
@@ -537,6 +537,7 @@ export default function Home() {
                 onEdit={handleEditAtom}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}
+                onCycleSwipe={(tickId) => selectedFile && cycleSwipe(selectedFile, tickId)}
               />
             )}
 
@@ -571,6 +572,7 @@ export default function Home() {
               onSend={(text) => chatConverse(selectedFile, text)}
               onNote={(text) => chatNote(selectedFile, text)}
               onRegen={(promptTickId, atomTickId, text) => chatConverseRegen(selectedFile, promptTickId, atomTickId, text)}
+              onCycleSwipe={(tickId) => cycleSwipe(selectedFile, tickId)}
               onEditAtom={(tickId, content) => editAtom(selectedFile, tickId, content)}
               onEditPrompt={(tickId, content) => editPrompt(selectedFile, tickId, content)}
             />
@@ -602,7 +604,7 @@ export default function Home() {
               openJournals={openJournals}
               openJournal={openJournal} closeJournal={closeJournal}
               journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
-              trackJournal={trackJournal} editJournalAtom={editJournalAtom} appendJournal={appendJournal}
+              trackJournal={trackJournal} editJournalAtom={editJournalAtom} cycleJournalSwipe={cycleJournalSwipe} appendJournal={appendJournal}
               contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
               toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
               onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}

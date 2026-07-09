@@ -24,8 +24,10 @@ import qualified Storyteller.ChatSpec
 import qualified Storyteller.LibrarySpec
 import qualified Storyteller.ContextFilterSpec
 import qualified Storyteller.ContextPreviewSpec
+import qualified Storyteller.Common.SwipeSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
+import qualified Server.Writer.FileSpec
 import qualified Server.FileSpec
 import qualified Server.CharacterSpec
 import qualified Server.LibrarySpec
@@ -59,6 +61,7 @@ main = hspec $ do
   describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec
   describe "Storyteller.Writer.Agent.ContextFilter" Storyteller.ContextFilterSpec.spec
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
+  describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
   -- eager, and buffered through 'Storyteller.Core.Git.withStorage' — the
@@ -69,6 +72,8 @@ main = hspec $ do
   describe "Server.Core.Branch (withStorage)"   (Server.BranchSpec.spec testStackTransactional)
   describe "Server.Writer.Branch (eager)"       (Server.Writer.BranchSpec.spec testStack)
   describe "Server.Writer.Branch (withStorage)" (Server.Writer.BranchSpec.spec testStackTransactional)
+  describe "Server.Writer.File (eager)"         (Server.Writer.FileSpec.spec testStack)
+  describe "Server.Writer.File (withStorage)"   (Server.Writer.FileSpec.spec testStackTransactional)
   describe "Server.Core.File (eager)"           (Server.FileSpec.spec testStack)
   describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
   describe "Server.Writer.Character"            Server.CharacterSpec.spec

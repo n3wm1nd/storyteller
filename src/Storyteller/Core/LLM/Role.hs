@@ -10,39 +10,61 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 
+-- 'reinterpretProse'\/'reinterpretAgent's capability constraints on
+-- @chosenModel@ are load-bearing even though 'convertMessage'\/'convertConfig'
+-- (both 'unsafeCoerce') never use them in the function body -- they're the
+-- compile-time check that a real model has at least what its role
+-- declares. See this module's Haddock.
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
+
 -- | Fixed, named LLM roles, and the machinery that lets each be assigned an
 --   independently-chosen concrete model at runtime (see
 --   'Storyteller.Core.LLM.Registry') without that choice ever showing up as
 --   a type variable in agent or handler code.
 --
---   A role proxy's declared capabilities are only meaningful if they're
---   backed by a matching, compiler-checked fact about whatever real model
---   ends up assigned to that role -- an instance like @HasReasoning
---   ProseModel@ is worthless on its own, since it's just an assertion we
---   wrote, disconnected from what the runtime-chosen backing model actually
---   supports. 'reinterpretProse'\/'reinterpretAgent' close that gap: their
---   own type signature requires @chosenModel@ (the real, registry-resolved
---   model) to have every capability its role proxy claims. That constraint
---   is checked wherever a concrete model gets plugged in (see
---   'Storyteller.Core.LLM.Registry.resolveRoleRunner'), so a real model
---   lacking a capability its assigned role promises is a compile error,
---   not a runtime surprise -- restoring the actual point of a typesafe LLM
---   library. Since 'Storyteller.Core.LLM.Registry.KnownModel' already
---   requires every registrable entry to have 'HasTools'\/'HasJSON'\/
---   'HasReasoning', both roles below declare that same set: there is
---   currently no narrower, still-honest set to give either role while the
---   registry itself doesn't distinguish "text-only" from "reasoning-
---   capable" entries. A future registry split (some entries opt out of
---   HasReasoning) is what would let 'ProseModel' legitimately narrow again.
+--   A role proxy's declared capabilities should reflect exactly what the
+--   real model it proxies needs: 'ProseModel' only ever constructs plain
+--   text and tool calls, so it declares only 'HasTools'; 'AgentModel' also
+--   declares 'HasJSON'\/'HasReasoning' since its tool-heavy workflows may
+--   want them. 'reinterpretProse'\/'reinterpretAgent' require @chosenModel@
+--   (the real, registry-resolved model) to have at least that same set --
+--   checked wherever a concrete model gets plugged in (see
+--   'Storyteller.Core.LLM.Registry.resolveRoleRunner') -- so a model
+--   lacking a capability its assigned role needs is a compile error.
+--
+--   That constraint is necessarily a lower bound, not an exact match:
+--   Haskell has no way to say "@chosenModel@ must NOT have 'HasReasoning'",
+--   so nothing stops a model that happens to have /more/ than its role
+--   requires from being assigned there, and its response could genuinely
+--   contain a constructor the role's own type doesn't declare (a reasoning
+--   model assigned to Prose spontaneously emitting 'AssistantReasoning',
+--   say). No capability requirement on @chosenModel@ closes that gap --
+--   it's inherent to only being able to require a lower bound.
+--
+--   The actual fix is a different, more basic fact: a role never needs
+--   capability evidence for a constructor nothing downstream ever consumes.
+--   'convertMessage'\/'convertConfig' are 'unsafeCoerce' here, but that's
+--   an implementation shortcut, not the reason this is safe -- a
+--   hand-written, capability-checked version that pattern-matched every
+--   constructor and *dropped* (rather than errored on) the ones a narrow
+--   role can't represent would have exactly the same property. 'unsafeCoerce'
+--   is sound and equivalent to that "match and drop" version specifically
+--   because every constructor in both GADTs is phantom in the model
+--   parameter -- no constructor stores a value of that type, so there's no
+--   data an explicit drop would discard that a relabel doesn't already
+--   silently carry past whatever pattern-match downstream doesn't ask for
+--   it (exactly what already happens for any constructor a caller's list
+--   comprehension doesn't extract). Reconstructing via capability-checked
+--   pattern match and *erroring* on the rest -- the original version of
+--   this module -- was the actual mistake: it turned "a constructor nobody
+--   consumes" into a crash instead of a no-op.
 --
 --   Each role still gets its own proxy /provider/ type ('ProseProxyProvider',
 --   'AgentProxyProvider', paired with a role tag into an ullm @Model roleTag
 --   provider@) so two roles can be simultaneously live in one Polysemy
 --   effect row without ambiguity -- see e.g.
 --   'Storyteller.Writer.Agent.FlowWrite', which needs a prose model and an
---   agent model side by side. That's a distinctness requirement, not a
---   capability one; nothing stops a future role from genuinely diverging in
---   capability once the registry can express it.
+--   agent model side by side.
 module Storyteller.Core.LLM.Role
   ( -- * Proxy plumbing
     ProseProxyProvider
@@ -58,18 +80,19 @@ module Storyteller.Core.LLM.Role
   , LLMs
   ) where
 
+import Unsafe.Coerce (unsafeCoerce)
+
 import Polysemy (Member, Members, Sem, interpret, send)
 
-import Runix.LLM (LLM(..), Message(..), ModelConfig(..))
+import Runix.LLM (LLM(..), Message, ModelConfig)
 import UniversalLLM
   ( HasTools(..), HasJSON(..), HasReasoning(..), Model(..), ProviderOf
   , SupportsMaxTokens, SupportsSystemPrompt, SupportsTemperature )
 
 -- ---------------------------------------------------------------------------
--- Prose role: proseAgent's whole output shape is plain text and tool calls,
--- but the proxy still needs to declare HasJSON/HasReasoning (see this
--- module's Haddock) so 'reinterpretProse' can convert whatever a real
--- reasoning-capable model actually sends back.
+-- Prose role: narrow. 'Storyteller.Writer.Agent.Continuation.proseAgent'
+-- and everything built on it only ever construct plain text and tool
+-- calls -- no reason to declare more.
 -- ---------------------------------------------------------------------------
 
 data ProseProxyProvider
@@ -85,21 +108,15 @@ instance HasTools ProseModel where
   type ToolState ProseModel = ()
   withTools = error "Storyteller.Core.LLM.Role: role proxy models are never interpreted directly"
 
-instance HasJSON ProseModel where
-  type JSONState ProseModel = ()
-  withJSON = error "Storyteller.Core.LLM.Role: role proxy models are never interpreted directly"
-
-instance HasReasoning ProseModel where
-  type ReasoningState ProseModel = ()
-  withReasoning = error "Storyteller.Core.LLM.Role: role proxy models are never interpreted directly"
-
 -- ---------------------------------------------------------------------------
 -- Agent role: for agents whose main activity is calling tools rather than
 -- producing prose -- the fixer ('Storyteller.Writer.Agent.ReplaceTool', via
 -- its @replace_atom@ tool), the chat agent ('Storyteller.Writer.Agent.Chat',
 -- via @glob@\/@read_file@\/@sed_print@), and the outline splitter
 -- ('Storyteller.Writer.Agent.Outline.splitOutlineAgent', via
--- @emit_beat_sheet@).
+-- @emit_beat_sheet@). Also declares 'HasJSON'\/'HasReasoning': a real
+-- capability these tool-heavy agents may go on to use outbound, not just a
+-- response-side allowance.
 -- ---------------------------------------------------------------------------
 
 data AgentProxyProvider
@@ -138,49 +155,15 @@ type LLMs r = Members '[LLM ProseModel, LLM AgentModel] r
 -- Reinterpretation
 -- ---------------------------------------------------------------------------
 
--- | Re-tag a 'Message' between any two types that both have the full role
---   capability set ('HasTools'\/'HasJSON'\/'HasReasoning') -- both role
---   proxies now declare exactly this set, and so does every
---   'Storyteller.Core.LLM.Registry.KnownModel' entry, so this one function
---   covers all four directions ('ProseModel'\/'AgentModel' <-> a chosen
---   model). Purely a change of phantom type -- no constructor here carries
---   model-specific data. Only 'UserImage' ('HasVision') stays unreachable,
---   since no role or registry entry currently requires it.
-convertMessage :: forall b a. (HasTools b, HasJSON b, HasReasoning b) => Message a -> Message b
-convertMessage = \case
-  UserText t           -> UserText t
-  AssistantText t      -> AssistantText t
-  SystemText t         -> SystemText t
-  AssistantTool tc     -> AssistantTool tc
-  ToolResultMsg tr     -> ToolResultMsg tr
-  AssistantReasoning t -> AssistantReasoning t
-  AssistantJSON v      -> AssistantJSON v
-  UserRequestJSON q s  -> UserRequestJSON q s
-  UserImage _ _        -> unreachable
-  where
-    unreachable = error "Storyteller.Core.LLM.Role: no role or known model requires HasVision"
+-- | Re-tag a 'Message' between any two model types -- see this module's
+--   Haddock for why this is safe: every constructor is phantom in the model
+--   parameter, so this is a relabel, not a reconstruction.
+convertMessage :: Message a -> Message b
+convertMessage = unsafeCoerce
 
--- | Re-tag a 'ModelConfig' the same way -- see 'convertMessage'. 'Seed'\/
---   'Stop' stay unreachable: gated by 'SupportsSeed'\/'SupportsStop' on the
---   /provider/, which no role proxy provider declares, and (unlike
---   'Message') a 'ModelConfig' is never round-tripped back from a response,
---   so this can't be forced the way 'AssistantReasoning'\/'AssistantJSON'
---   were.
-convertConfig
-  :: forall b a
-  .  (HasTools b, HasReasoning b, SupportsSystemPrompt (ProviderOf b), SupportsMaxTokens (ProviderOf b), SupportsTemperature (ProviderOf b))
-  => ModelConfig a -> ModelConfig b
-convertConfig = \case
-  Temperature t     -> Temperature t
-  MaxTokens n       -> MaxTokens n
-  SystemPrompt t    -> SystemPrompt t
-  Tools ts          -> Tools ts
-  Reasoning b       -> Reasoning b
-  ReasoningEffort t -> ReasoningEffort t
-  Seed _            -> unreachable
-  Stop _            -> unreachable
-  where
-    unreachable = error "Storyteller.Core.LLM.Role: no role proxy provider declares SupportsSeed/SupportsStop"
+-- | Re-tag a 'ModelConfig' the same way -- see 'convertMessage'.
+convertConfig :: ModelConfig a -> ModelConfig b
+convertConfig = unsafeCoerce
 
 -- | Interpret 'ProseModel'\'s proxy 'LLM' effect by delegating to the real,
 --   runtime-chosen model's own already-interpreted 'LLM' effect further
@@ -188,16 +171,16 @@ convertConfig = \case
 --   resolveRoleRunner') and reused across requests via
 --   'Server.Writer.Env.ServerEnv'. The constraint list on @chosenModel@ is
 --   exactly 'ProseModel'\'s own declared capability set -- see this
---   module's Haddock for why that match matters.
+--   module's Haddock for why that match (and its limits) matters.
 reinterpretProse
   :: forall chosenModel r a.
-     ( HasTools chosenModel, HasJSON chosenModel, HasReasoning chosenModel
+     ( HasTools chosenModel
      , SupportsSystemPrompt (ProviderOf chosenModel), SupportsMaxTokens (ProviderOf chosenModel), SupportsTemperature (ProviderOf chosenModel)
      , Member (LLM chosenModel) r )
   => Sem (LLM ProseModel : r) a -> Sem r a
 reinterpretProse = interpret $ \case
   QueryLLM configs msgs -> do
-    result <- send (QueryLLM @chosenModel (map (convertConfig @chosenModel) configs) (map (convertMessage @chosenModel) msgs))
+    result <- send (QueryLLM @chosenModel (map convertConfig configs) (map convertMessage msgs))
     pure (fmap (map convertMessage) result)
 
 -- | Same as 'reinterpretProse', for 'AgentModel'.
@@ -209,5 +192,5 @@ reinterpretAgent
   => Sem (LLM AgentModel : r) a -> Sem r a
 reinterpretAgent = interpret $ \case
   QueryLLM configs msgs -> do
-    result <- send (QueryLLM @chosenModel (map (convertConfig @chosenModel) configs) (map (convertMessage @chosenModel) msgs))
+    result <- send (QueryLLM @chosenModel (map convertConfig configs) (map convertMessage msgs))
     pure (fmap (map convertMessage) result)
