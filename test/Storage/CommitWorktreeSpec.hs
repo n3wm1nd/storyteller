@@ -421,6 +421,58 @@ spec = do
         Left err -> expectationFailure err
         Right (history, _finalState) -> history `shouldBe` []
 
+  -- A deletion marker ('Storage.Ops.deleteFile') is a permanent, forward
+  -- record: 'Storage.Core.store's own Haddock promises every atom from
+  -- before the deletion stays on the chain (a 'readAt' to any tick before
+  -- it still sees the file exactly as it was), and 'atomHistory' treats
+  -- the marker as the boundary of the path's *current* lifetime.
+  -- Reconciliation, though, receives that marker as just another
+  -- zero-length atom -- and a zero-length atom can never classify as Kept
+  -- (see 'isKept'), so the first reconcile pass over a recreated path
+  -- Drops the marker, un-hiding the old lifetime mid-loop while the loop
+  -- keeps addressing atoms by index into a freshly re-walked (now longer)
+  -- 'atomHistory'. Depending on the old life's shape, the old content is
+  -- silently rebased out of the chain, or the leftover tree mismatch trips
+  -- 'syncOpaqueContent's tracked-path guard and every commitWorktree on
+  -- the branch fails from then on.
+  describe "commitWorktree: delete-then-recreate lifetimes" $ do
+
+    -- Oldest-first (tags, content) of every atom on @p@ anywhere in the
+    -- chain -- deliberately *not* 'atomHistory', which stops at the most
+    -- recent deletion marker: these tests are exactly about what survives
+    -- beyond that boundary.
+    let allAtomsOn p = follow [] $ \acc _ t -> case t of
+          Atom _ p' tags c | p' == p -> ((tags, c) : acc, True)
+          _                          -> (acc, True)
+
+    it "an untouched recreated file keeps its old life and deletion marker across commitWorktree" $ do
+      let result = runChain (do
+            _ <- addAtom "scene.md" "old"
+            _ <- deleteFile "scene.md"
+            _ <- addAtom "scene.md" ""      -- recreation, createFile-shaped
+            _ <- addAtom "scene.md" "new"
+            commitWorktree
+            content <- committedContent "scene.md"
+            atoms   <- allAtomsOn "scene.md"
+            return (content, atoms))
+      case result of
+        Left err -> expectationFailure err
+        Right ((content, atoms), _finalState) -> do
+          content `shouldBe` "new"
+          map snd atoms `shouldContain` ["old"]
+          filter (isRemoval . fst) atoms `shouldSatisfy` (not . null)
+
+    it "commitWorktree still succeeds when the deleted life had more than one atom" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "old1"
+            _ <- addAtom "scene.md" "old2"
+            _ <- deleteFile "scene.md"
+            _ <- addAtom "scene.md" ""
+            _ <- addAtom "scene.md" "new"
+            commitWorktree
+            committedContent "scene.md")
+      result `shouldBe` Right "new"
+
   -- Non-UTF8 ambient content — see the "one small can of worms" design
   -- conversation: a path that was *never* atom-tracked (dropped in by
   -- hand, e.g. via the git CLI, or part of a whole pre-existing repo

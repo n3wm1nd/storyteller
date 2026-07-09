@@ -241,6 +241,7 @@ test-suite storyteller-test
                   , Storage.TickSpec
                   , Storyteller.FileAtomsSpec
                   , Storyteller.AtGenericSpec
+                  , Storyteller.BranchScopeSpec
                   , Storyteller.StorageSpec
                   , Storyteller.GitCascadeSpec
                   , Storyteller.AppendSpec

@@ -27,6 +27,7 @@ module Storyteller.AtGenericSpec (spec) where
 
 import Prelude hiding (readFile, writeFile)
 
+import qualified Data.ByteString as BS
 import Data.Either (isLeft)
 import Data.Text (Text)
 import Test.Hspec
@@ -225,6 +226,29 @@ runForkWithOwnCommit inner =
       Nothing -> return Nothing
     return (mainHead, forkParent, txRes)
 
+-- | What the inner action sees of "a.md" at the rebase target a1, read two
+--   ways: through the plain ambient file access every Writer command and
+--   agent actually uses, and through 'Core.inWorktree' (the explicit
+--   committed-snapshot read, as a sanity check that the chain really is
+--   wound back to the target underneath).
+runInnerAmbientRead :: Either String (BS.ByteString, BS.ByteString)
+runInnerAmbientRead =
+  run
+  . runFail
+  . evalState emptyGitState
+  . evalState ([] :: RefLog)
+  . evalState (0 :: Int)
+  . runGitMock
+  . recordRefWrites
+  . runStoryStorageGit
+  $ do
+    (target, _origHead) <- buildChain
+    runBranchOpGit @Main mainBranch $
+      atGeneric @Main (TickId (Core.unObjectHash target)) $ do
+        (ambient, _)   <- runStorage @Main (Core.readFile "a.md")
+        (committed, _) <- runStorage @Main (Core.inWorktree (Core.readFile "a.md"))
+        return (ambient, committed)
+
 spec :: Spec
 spec = describe "atGeneric" $ do
 
@@ -269,3 +293,18 @@ spec = describe "atGeneric" $ do
       Right (mainHead, forkParent, txRes) -> do
         txRes `shouldBe` Right ()
         (unObjectHash <$> forkParent) `shouldBe` (unTickId <$> mainHead)
+
+  -- The rebase-marker contract is "run this command as if @target@ were
+  -- HEAD" -- and commands read files through the plain ambient file
+  -- operations (via 'runStoryFSGit'), not through 'Core.inWorktree'. The
+  -- descent winds the chain back correctly ('Core.drop' per tick), but
+  -- nothing re-syncs the ambient tree to the target's snapshot, so a plain
+  -- read inside the inner action still sees the file as the *original
+  -- head* left it in the scope's ambient tree -- an agent generating at a
+  -- past tick would assemble its context from future content.
+  it "the inner action's plain file read sees the target tick's content, not the original head's" $
+    case runInnerAmbientRead of
+      Left err -> expectationFailure err
+      Right (ambient, committed) -> do
+        committed `shouldBe` "A\n"   -- sanity: the chain really is wound back to a1
+        ambient   `shouldBe` "A\n"   -- the contract under test

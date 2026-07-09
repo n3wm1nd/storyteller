@@ -55,7 +55,7 @@ A **tick** is the smallest unit of chain advancement. Every time the branch move
 
 Every tick has:
 - A **message** — free text, interpreted by the application layer to determine tick kind
-- A **parent** — the previous tick in the chain (`Nothing` for root ticks and helper ticks)
+- A **parent** — the previous tick in the chain (`Nothing` for root ticks)
 - **References** — cross-branch links (e.g. a story tick referenced by an entity tick that records the same event)
 
 The filesystem at any point in the chain is the product of replaying all ticks from the beginning. The tick itself carries no file content — it records that the chain advanced, and the message says why.
@@ -74,10 +74,10 @@ The practical consequence: tick IDs are safe to use within a tight fetch-work-us
 
 Two invariants the storage layer enforces:
 
-1. **Monotonic references** — following any combination of parent and ref links must eventually terminate. There are no cycles, and no tick may reference a tick that comes after it in the same chain. References to other chains or orphan objects are unrestricted. This is what makes chain position meaningful: within a chain, anything a tick references is guaranteed to precede it. Unlike git, where content-addressing enforces this for free, here `updateReferences` mutates the graph in place after a rebase — so the monotonic invariant must be explicitly checked on every `updateReferences` call, verifying that each redirected ref still precedes its referencing tick in its chain.
+1. **Monotonic references** — following any combination of parent and ref links must eventually terminate. There are no cycles, and no tick may reference a tick that comes after it in the same chain. References to other chains or orphan objects are unrestricted. This is what makes chain position meaningful: within a chain, anything a tick references is guaranteed to precede it. Unlike git, where content-addressing enforces this for free, here `updateReferences` redirects references in place after a rebase — but that redirection is order-preserving by construction: a rebase substitutes a tick's *identity*, never its *position*, so a redirected ref precedes its referencing tick exactly when the original did. There is no global check on `updateReferences` itself; the invariant is enforced at the operations that actually change positions — `moveTick` rejects a move that would put a tick ahead of something it references (or behind something that references it), and `mergeAtoms` refuses gapped selections.
 2. **All tick references must be declared** — every reference to another tick must appear in `tickParent` or `tickRefs`. Tick IDs must never be embedded in the message or anywhere else. This is what makes rebase fixups complete and mechanical.
 
-Helper ticks (parentless ticks used purely as reference containers, e.g. to store a variable-length list of references that a single tick can then point to via `tickRefs`) are valid and follow the same invariants.
+Parentless "helper ticks" (reference containers a tick could point at via `tickRefs` to hold a variable-length ref list) appeared in earlier drafts of this design but are **not representable** in the current encoding: a commit's first parent slot is unconditionally the chain parent — `tickRefs` are recovered as everything after it — so a parentless tick's first ref would be misread as its parent. A variable-length ref list has to live on an ordinary in-chain tick instead.
 
 ### Tick Kinds
 
@@ -220,7 +220,7 @@ Not every tick needs a hard reference. A tick can instead carry an **association
 
 **Branch-scoped.** An association only makes sense to resolve within the branch it's read from. If the entity it names is renamed, every branch that might hold a tick associated with the old name has to be walked and updated — there's no single place a rename touches, because the association itself has no structural link back to the entity it names.
 
-**Contrast with hard references.** `tickRefs` (used by `Note`, `Fixup`) are structural: extra git-parent links, automatically kept in sync by `cascadeReplace` whenever the referenced tick's identity changes via rebase. An association carries no such guarantee — it's just text that has to already match. This is a deliberate trade, not an oversight: for something like `Presence`, the association's looseness is what makes the fold order (not the tick's target identity) the source of truth for what "enter"/"leave" mean — see the note on `moveTick` under Cross-Branch References. Coupling a presence tick to a specific atom's identity would force `moveTick` to drag it along whenever that atom moved, which is backwards: moving an atom past a `Leave` tick should change that atom's presence, not carry the `Leave` along with it.
+**Contrast with hard references.** `tickRefs` (used by `Note`, `Fixup`) are structural: extra git-parent links, automatically kept in sync by `cascadeReplace` whenever the referenced tick's identity changes via rebase. An association carries no such guarantee — it's just text that has to already match. This is a deliberate trade, not an oversight: for something like `Presence`, the association's looseness is what makes the fold order (not the tick's target identity) the source of truth for what "enter"/"leave" mean. Coupling a presence tick to a specific atom's identity would force `moveTick` to drag it along whenever that atom moved, which is backwards: moving an atom past a `Leave` tick should change that atom's presence, not carry the `Leave` along with it.
 
 **Relabel (pattern, not yet built).** No feature exists today that renames an associated entity, so no `relabel` operation has been implemented — but the shape it would need to take is worth recording so a future rename doesn't reinvent this: given an old and new name in some namespace (e.g. `character`), first check every branch for any tick already associating with the new name (a real collision — renaming into a name already in use would otherwise silently merge two identities, which might be desired but should never happen by accident), then, if clear, walk every branch's chain rewriting every tick's matching association value from old to new. This mirrors `cascadeReplace`'s "walk everything, rewrite what matches" shape, just keyed on text equality in a payload field instead of hash equality in a parent list.
 
@@ -259,44 +259,48 @@ The storage tree is loaded as creative prompting context during brainstorming an
 
 ## Core Chain Operations
 
-Everything above — amending, reticking, the rebase-marker UI, background summarizers and trackers reading historical state — is built from three primitives. Nothing above needs its own bespoke implementation; each is one of these, or a composition of them.
+Everything above — amending, reticking, the rebase-marker UI, background summarizers and trackers reading historical state — is built from a small closed set of operations in `Storage.Core`: a plain monad transformer (`StoreT`) over any content-addressed object store, with no dependency on git specifically. Nothing above needs its own bespoke implementation; each is one of these, or a composition of them. (The `Sem` world sees all of this through one first-order effect, `BranchOp` — a whole computation, however many nested rebases deep, is a single dispatch.)
 
-**follow** — walk the chain backward from HEAD, tick by tick, folding an accumulator and deciding at each step whether to continue. This is the only way anything inspects chain structure: finding a tick's position, building a file's atom-by-atom history, checking that one tick precedes another. Every "what happened before this point" question bottoms out in a `follow`.
-
-```haskell
-follow :: b -> (b -> Tick -> (b, Maybe TickId)) -> Sem r b
-```
-
-**At** — move to a given tick's position, run an action there, then either replay everything after it back onto whatever the action produced, or leave the chain untouched and return to where it started. Which of those two happens is not a property of `At` itself — it depends on whether the action wrote anything worth keeping. A write rebases the tail forward, and every rewritten tick gets a new id (propagated to anything referencing it, see Cross-Branch References above). A pure read does neither — see "Read" above. This is the one mechanism behind every operation that needs to act on the past: amending an atom, deleting or reordering a tick, dragging a rebase marker to run any command as if a past atom were HEAD, a background agent peeking at historical file state. None of these are special-cased; they're all `At` with a different inner action and a different answer to "did it write."
+**store / drop** — the only two operations that mutate the chain. `store` commits one tick onto head; an atom's new tree is computed from the parent commit's own tree (read the file's old blob, extend it, splice it back in), so it is an append *by construction* — there is nothing to verify afterward. `drop` pops the tick at head and hands back everything it was; `store =<< drop` rebuilds the same commit in place.
 
 ```haskell
-at       :: TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])  -- replays, broadcasts the mapping
-sneakyAt :: TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])  -- replays, caller broadcasts
-readAt   :: TickId -> Sem r a -> Sem r a                        -- no replay, no mapping, no broadcast
+store :: Tick -> StoreT m ObjectHash
+drop  :: StoreT m Tick
 ```
 
-**withFS** — temporarily swap the working tree to reflect the current position's committed snapshot, run an action, then restore whatever the working tree held before. Filesystem operations always act on "the current working tree," whatever that happens to be; `withFS` is how an action gets to see committed content instead of in-progress edits, without needing to know where or when it's being called from.
+**follow** — walk the chain backward from HEAD, tick by tick, folding an accumulator and deciding at each step whether to continue (always to the parent — there is only one meaningful "backward" in a linear chain). This is how anything inspects chain structure: finding a tick's position, building a file's atom-by-atom history, checking that one tick precedes another. `memoFold` is the memoized variant for incremental consumers: given checkpoints from a previous walk, it stops at the nearest one — content-addressing guarantees everything below an unchanged hash is unchanged.
 
 ```haskell
-withFS :: Sem r a -> Sem r a
+follow :: b -> (b -> ObjectHash -> Tick -> (b, Bool)) -> StoreT m b
 ```
 
-**Composing them:** `at tid (withFS action)` is historical filesystem access — check out `tid`'s snapshot, let `action` read or write it, then rebase the result forward or discard the excursion depending on whether it wrote. Nesting composes for free: an action already running under one `At` can call another `At` for a different tick, and the rebases (or lack of them) nest correctly. This is what makes the rebase-marker feature — and any future "run this generic command as if an earlier point were HEAD" feature — need no per-command logic at all.
+**at / readAt** — move to a given tick's position and run an action there. Both are compositions of `store`/`drop`, not primitives of their own. `at` replays everything after the target back on top of whatever the action produced — a rebase; every rewritten tick gets a new id. `readAt` is the pure read: nothing is replayed, no tick changes identity, the chain is restored exactly as found. Read or write is the *caller's* choice of operation, made up front — not, as in an earlier version of this design, inferred from whether the action happened to write. `atWith` generalizes `at` with a hook applied to every replayed tail tick (`renameFile` uses it to rewrite each replayed atom's path in the same single pass).
 
 ```haskell
-atWithFS     :: TickId -> Sem r a -> Sem r (a, [(TickId, TickId)])  -- at     . withFS
-readAtWithFS :: TickId -> Sem r a -> Sem r a                        -- readAt . withFS
+at     :: ObjectHash -> StoreT m a -> StoreT m a
+readAt :: ObjectHash -> StoreT m a -> StoreT m a
+atWith :: (Tick -> Tick) -> ObjectHash -> StoreT m a -> StoreT m a
 ```
+
+**The remap table.** `at` does not return the old→new mapping; the branch scope accumulates it, transitively closed, in its own state, and every id passing through `store`/`at`/`readAt` is resolved against it at the point of use (`resolveId`), so a caller-held id from before an earlier edit in the same scope still lands on the right tick. The interpreter that runs a scope (`runBranchOpGit`) publishes the accumulated mapping outward via `updateReferences`, which cascades it across every other branch (`cascadeReplace`) — the operation that triggered the rebase never has to know propagation exists.
+
+**inWorktree** — run an action against an ambient working tree freshly reset to head's committed content, then restore whatever the ambient tree held before. This replaces the old `withFS`: same purpose (see committed content instead of in-progress edits, from wherever it's called), but it is explicitly *the ambient tree's* scoping operation and touches the chain not at all — see The Working Tree below for the two-piece state model this lives in.
+
+```haskell
+inWorktree :: StoreT m a -> StoreT m a
+```
+
+**Composing them:** `readAt tid (inWorktree action)` is historical filesystem *reading* — `action` sees the files exactly as committed at `tid`, and nothing anywhere changes. Historical *writes* are chain edits under `at`: `at tid (editTick f)` amends the atom at `tid` and replays the tail; `at tid (store t)` inserts after it. The composition has to be said explicitly — the ambient tree does not follow chain position on its own, so an action that wants historical file content must ask for it with `inWorktree`. For an inner action that interleaves non-storage effects (LLM calls, recursive command dispatch — the rebase-marker feature), `atGeneric` provides the same wind-back/replay shape one level up, at the effect stack.
 
 ---
 
 ## The Working Tree
 
-Not to be confused with the storage tree above (wallclock-ordered author notes): the **working tree** is the filesystem state implied by a branch's chain at a given position, plus whatever hasn't been committed as a tick yet (`Storyteller.Git`'s `WorkingTree`). Every mutation stages into it before `Store`/`Replace` commits; `Drop` moves it back one tick; `At` and `withFS` (see Core Chain Operations above) move and scope it around historical positions.
+Not to be confused with the storage tree above (wallclock-ordered author notes): the **working tree** is `Storage.Core`'s ambient, in-memory filesystem — the second, entirely independent piece of a branch scope's state, alongside its chain position. All plain file operations a branch exposes (read, write, list, remove — the `FileSystem` effects) act on it by path. It does not follow the chain: moving through history (`at`/`readAt`) never touches it, and writing to it never touches the chain. The two meet only at explicit sync points — `reset` (make the ambient tree match head's committed content, discarding what was there) and `inWorktree` (scope an action to a fresh sync, then restore what was pending).
 
-The append-only invariant governs what gets written as a tick — not the working tree itself. Content in the working tree can be freely rewritten; the invariant only bites at the moment that state is checked in via `Store`/`Replace`, which requires the new content to be an append over the previous tick.
+The append-only invariant governs ticks, not the working tree. Content there can be freely rewritten — and committing an atom doesn't even look at it: `store` computes an atom's tree from the parent commit directly, so the append is by construction, never verified against staged state. Freeform ambient edits reach the chain through reconciliation instead (`commitWorktree`/`commitFiles` in `Storage.Ops`): each file's ambient content is diffed against its own atom history and folded in as kept atoms, same-position replacements (an amend, via `at` and rebase), drops, and new standalone atoms — an edit doesn't have to land as an append directly; reconciliation derives the appends and amends that express it.
 
-This is the concept underlying any operation that needs to reconcile raw, freeform edits into the tick chain — an edit doesn't have to land as an append directly; it can be staged in the working tree and diffed against the chain at commit time to produce a valid append (or an amend, via `At` and rebase).
+Two tick kinds bypass prose reconciliation and *do* read the ambient tree when committed: `Binary` adopts the ambient content at one declared path verbatim (an uploaded portrait), and `Opaque` adopts the whole ambient tree at once (content some other tool wrote, whose paths we can't enumerate). Both are trusted, not diffed.
 
 ---
 
