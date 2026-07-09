@@ -22,7 +22,7 @@ import Test.Hspec
 import Git.Mock (emptyGitState, runGitMock)
 import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (runBranchAndFS, runStoryStorageGit)
-import Storyteller.Core.LLM.Role (ProseRole, AgentRole, reinterpretRole)
+import Storyteller.Core.LLM.Role (reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Storage (createBranch)
 
@@ -46,7 +46,7 @@ import qualified Agent.Integration.JourneySpec
 --   'Storyteller.Core.LLM.Role.AgentModel' -- production agents now
 --   hardcode their role rather than staying generic (see
 --   'Storyteller.Core.LLM.Role.LLMs'), so this suite routes both role
---   proxies to @STORY_MODEL@ via 'reinterpretRole', same mechanism
+--   proxies to @STORY_MODEL@ via 'reinterpretProse'\/'reinterpretAgent', same mechanism
 --   'Storyteller.Core.Runtime.runStoryGit' uses for the CLI -- rather than
 --   picking two independent models for the two roles the way production
 --   does, since @STORY_MODEL@\/@JUDGE_MODEL@ is this suite's own axis of
@@ -101,11 +101,11 @@ main = do
               -- chroot root, per 'Runix.LLM.Cache.fileSystemLookup''s
               -- Haddock.
               . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryAgent)
-              . reinterpretRole @AgentRole @storyTy
+              . reinterpretAgent @storyTy
               . raiseUnder
               . runLLMRunner runStoryProse
               . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryProse)
-              . reinterpretRole @ProseRole @storyTy
+              . reinterpretProse @storyTy
               . raiseUnder
               . runLLMRunner runJudge
               . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runJudge)

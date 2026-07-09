@@ -45,7 +45,7 @@ import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
 import Runix.Git (Git, runGitIOPerCall, withGitCache)
-import Storyteller.Core.LLM.Role (ProseRole, ProseModel, AgentRole, AgentModel, reinterpretRole)
+import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
@@ -173,10 +173,10 @@ runInfrastructure repoPath _endpoint =
 --   The CLI has no per-role configuration -- every role resolves to the
 --   same 'storyModel'. Agents now unconditionally require
 --   'Storyteller.Core.LLM.Role.LLMs' (both roles live in the row at once),
---   so both proxy effects get routed through 'reinterpretRole' to that one
---   real model, via two independent interpreter instances (same mechanism
---   the server uses per-role, just both pointed at one target instead of
---   two independently-chosen ones).
+--   so both proxy effects get routed to that one real model via
+--   'reinterpretProse'\/'reinterpretAgent', through two independent
+--   interpreter instances (same mechanism the server uses per-role, just
+--   both pointed at one target instead of two independently-chosen ones).
 runStoryGit
   :: FilePath
   -> String
@@ -199,10 +199,10 @@ runStoryGit repoPath endpoint branch configs action =
   . runStoryStorageGit
   . runBranchAndFS @Main branch
   . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
-  . reinterpretRole @AgentRole @StoryModel
+  . reinterpretAgent @StoryModel
   . raiseUnder
   . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
-  . reinterpretRole @ProseRole @StoryModel
+  . reinterpretProse @StoryModel
   . raiseUnder
   $ do
       getBranch branch >>= \case

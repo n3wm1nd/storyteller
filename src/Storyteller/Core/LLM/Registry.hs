@@ -180,15 +180,18 @@ withKnownModel (KnownModel modelID model configs) k = do
 -- | An 'LLM' interpreter with its model type hidden -- what lets a caller
 --   store "the runner resolved for this role" as a plain value (e.g. a
 --   'Server.Writer.Env.ServerEnv' field) without that type leaking into
---   every signature that threads the value through. Only 'HasTools'\/
---   'SupportsSystemPrompt' are captured here because those are the only
---   capabilities any Storyteller agent (or 'Storyteller.Core.CLI.Env.modelConfigs')
---   currently needs -- see 'Storyteller.Core.LLM.Role'. The interpreter
---   field itself stays @forall r a.@ (not fixed to one @r@, unlike
---   'LLMRunner') so it can be applied at whatever position in the effect
---   row it ends up peeled at -- see 'resolveRoleRunner'.
+--   every signature that threads the value through. 'HasTools'\/
+--   'HasJSON'\/'HasReasoning'\/'SupportsSystemPrompt'\/'SupportsMaxTokens'\/
+--   'SupportsTemperature' are captured here because those are exactly what
+--   'Storyteller.Core.LLM.Role.reinterpretProse'\/'reinterpretAgent' need on
+--   @chosenModel@ (matching what every 'KnownModel' entry already
+--   guarantees) -- see 'Storyteller.Core.LLM.Role'. The interpreter field
+--   itself stays @forall r a.@ (not fixed to one @r@, unlike 'LLMRunner')
+--   so it can be applied at whatever position in the effect row it ends up
+--   peeled at -- see 'resolveRoleRunner'.
 data SomeLLMRunner where
-  SomeLLMRunner :: ( HasTools model, SupportsSystemPrompt (ProviderOf model)
+  SomeLLMRunner :: ( HasTools model, HasJSON model, HasReasoning model
+                   , SupportsSystemPrompt (ProviderOf model)
                    , SupportsMaxTokens (ProviderOf model), SupportsTemperature (ProviderOf model) )
                 => (forall r a. Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r
                     => Sem (LLM model : r) a -> Sem r a)

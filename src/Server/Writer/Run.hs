@@ -53,7 +53,7 @@ import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.LLM.Registry (SomeLLMRunner(..))
-import Storyteller.Core.LLM.Role (ProseRole, ProseModel, AgentRole, AgentModel, reinterpretRole)
+import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Runtime (runInfrastructureWith)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Storage (StoryStorage(..))
@@ -138,15 +138,15 @@ streamChunksWS :: Member (Embed IO) r => WS.Connection -> Sem (StreamChunk Strea
 streamChunksWS conn = interpret $ \(EmitChunk event) ->
   maybe (return ()) (embed . WS.sendTextData conn . encode) (previewEvent event)
 
--- | Interprets both role proxy effects: 'reinterpretRole' re-tags each
---   role's requests onto its runtime-chosen model (see
+-- | Interprets both role proxy effects: 'reinterpretProse'\/'reinterpretAgent'
+--   re-tag each role's requests onto its runtime-chosen model (see
 --   'Storyteller.Core.LLM.Role'), and the model's own already-built
 --   interpreter (resolved once at startup by 'Server.Writer.Env.loadServerEnv'
 --   — includes streaming preview wiring, retry, and auth; see
 --   'Storyteller.Core.LLM.Registry.resolveRoleRunner') takes it from there.
 --   'raiseUnder' inserts the chosen model's own 'LLM' effect directly under
---   the role effect being eliminated, which is what lets 'reinterpretRole's
---   converted request reach it.
+--   the role effect being eliminated, which is what lets the converted
+--   request reach it.
 actionStack
   :: (Member (Embed IO) r, Member (StreamChunk StreamEvent) r)
   => ServerEnv
@@ -173,10 +173,10 @@ actionStack env action =
       . interpretPromptStorageFS
       . runConfig (StreamingEnabled True)
       . agentRunner
-      . reinterpretRole @AgentRole @agentChosen
+      . reinterpretAgent @agentChosen
       . raiseUnder @(LLM agentChosen)
       . proseRunner
-      . reinterpretRole @ProseRole @proseChosen
+      . reinterpretProse @proseChosen
       . raiseUnder @(LLM proseChosen)
       $ action
 
