@@ -71,16 +71,25 @@ import Runix.Time (Time, getCurrentTime)
 
 -- | One entry in the undo log: every tracked ref's target at the moment it
 --   was recorded, plus that moment's wall-clock time. Addressed by the
---   hash of the commit that stores it.
+--   hash of the commit that stores it. 'undoKind' is whatever tag the
+--   write's own commit led with (see 'Snapshot' and 'tickKindOf') --
+--   'Nothing' for a deletion (nothing left to read) or for any write whose
+--   target didn't decode as one of these tag lines at all; this module
+--   never interprets the tag beyond "the first line before its colon," so
+--   it stays exactly as domain-agnostic about what the tag values *mean*
+--   as it's always been about branches and ticks in general.
 data UndoEntry = UndoEntry
   { undoId   :: ObjectHash
   , undoTime :: UTCTime
+  , undoKind :: Maybe Text
   , undoRefs :: [(RefName, ObjectHash)]
   } deriving (Show, Eq)
 
 data Undo (m :: Type -> Type) a where
-  -- | Record every tracked ref's current target as a new log entry.
-  Snapshot :: Undo m ()
+  -- | Record the moved ref's current target as a new log entry, tagged
+  --   with whatever 'tickKindOf' reads off @target@ (the ref's new value,
+  --   or 'Nothing' on a deletion -- there's nothing left to read).
+  Snapshot :: RefName -> Maybe ObjectHash -> Undo m ()
   -- | The full log, newest entry first.
   ListUndo :: Undo m [UndoEntry]
   -- | Restore every tracked ref to the state recorded by the given entry:
@@ -91,8 +100,8 @@ data Undo (m :: Type -> Type) a where
   --   history that needs its own place in it -- see the module haddock.
   ResetTo :: ObjectHash -> Undo m ()
 
-snapshotUndo :: Member Undo r => Sem r ()
-snapshotUndo = send Snapshot
+snapshotUndo :: Member Undo r => RefName -> Maybe ObjectHash -> Sem r ()
+snapshotUndo ref target = send (Snapshot ref target)
 
 listUndo :: Member Undo r => Sem r [UndoEntry]
 listUndo = send ListUndo
@@ -113,13 +122,15 @@ undoLogRef = RefName "refs/undo/log"
 emptyTreeHash :: ObjectHash
 emptyTreeHash = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
--- | Interpret 'Undo' against git: 'Snapshot' writes a real commit;
---   'ResetTo' writes no commit, it just restores the tracked refs;
---   'ListUndo' walks the chain back from 'undoLogRef'. @prefix@ selects
---   which refs ('Runix.Git.listRefs') a snapshot covers.
+-- | Interpret 'Undo' against git: 'Snapshot' writes a real commit, tagged
+--   via 'tickKindOf'; 'ResetTo' writes no commit, it just restores the
+--   tracked refs; 'ListUndo' walks the chain back from 'undoLogRef'.
+--   @prefix@ selects which refs ('Runix.Git.listRefs') a snapshot covers.
 runUndoGit :: Members '[Git, Time, Fail] r => Text -> Sem (Undo : r) a -> Sem r a
 runUndoGit prefix = interpret $ \case
-  Snapshot -> recordUndoSnapshot prefix
+  Snapshot _ref target -> do
+    kind <- maybe (return Nothing) tickKindOf target
+    recordUndoSnapshot prefix kind
   ListUndo -> walkUndoLog
   ResetTo entryId -> do
     entry   <- readUndoEntry entryId
@@ -127,6 +138,20 @@ runUndoGit prefix = interpret $ \case
     let restored = map fst (undoRefs entry)
     mapM_ deleteRef [ ref | (ref, _) <- current, ref `notElem` restored ]
     mapM_ (uncurry updateRef) (undoRefs entry)
+
+-- | Whatever tag leads @target@'s own commit message, if it's shaped like
+--   one at all -- ticks (see "Storage.Tick"'s @encodeTickData@) always lead
+--   with a @type:<tag>@ line by convention, so this reads it back with
+--   nothing more than a plain commit read and a text split, no dependency
+--   on 'Storyteller.Core.Types' or any tick-decoding machinery. A target
+--   that isn't tick-shaped (unexpected, but not this module's business to
+--   rule out) just yields 'Nothing' rather than failing the whole write.
+tickKindOf :: Members '[Git, Fail] r => ObjectHash -> Sem r (Maybe Text)
+tickKindOf target = do
+  cd <- readCommit target
+  case T.lines (commitMessage cd) of
+    (l : _) | ("type:" `T.isPrefixOf` l) -> return (Just (T.drop 5 l))
+    _                                    -> return Nothing
 
 -- | Wrap a computation so every ref write matching @isTracked@ (create,
 --   update, or delete — via plain 'Runix.Git', from anywhere inside
@@ -136,9 +161,9 @@ runUndoGit prefix = interpret $ \case
 --   from @action@ -- though not to 'runUndoGit's own writes (see 'ResetTo').
 interceptGitUndoLog :: Members '[Git, Undo] r => (RefName -> Bool) -> Sem r a -> Sem r a
 interceptGitUndoLog isTracked = intercept $ \case
-  CreateRef ref hash | isTracked ref -> send (CreateRef ref hash) <* send Snapshot
-  UpdateRef ref hash | isTracked ref -> send (UpdateRef ref hash) <* send Snapshot
-  DeleteRef ref      | isTracked ref -> send (DeleteRef  ref)     <* send Snapshot
+  CreateRef ref hash | isTracked ref -> send (CreateRef ref hash) <* send (Snapshot ref (Just hash))
+  UpdateRef ref hash | isTracked ref -> send (UpdateRef ref hash) <* send (Snapshot ref (Just hash))
+  DeleteRef ref      | isTracked ref -> send (DeleteRef  ref)     <* send (Snapshot ref Nothing)
   ResolveRef ref       -> send (ResolveRef ref)
   CreateRef  ref hash  -> send (CreateRef  ref hash)
   UpdateRef  ref hash  -> send (UpdateRef  ref hash)
@@ -172,15 +197,15 @@ withUndoLog prefix isTracked = runUndoGit prefix . interceptGitUndoLog isTracked
 --   to the undo log, parented on the log's previous entry (rootless for
 --   the first). The commit's tree is always empty — this is a pointer
 --   log, not a content snapshot.
-recordUndoSnapshot :: Members '[Git, Time, Fail] r => Text -> Sem r ()
-recordUndoSnapshot prefix = do
+recordUndoSnapshot :: Members '[Git, Time, Fail] r => Text -> Maybe Text -> Sem r ()
+recordUndoSnapshot prefix kind = do
   now     <- getCurrentTime
   refs    <- listRefs prefix
   parent  <- resolveRef undoLogRef
   newHash <- writeCommit CommitData
     { commitParents = maybe [] (: []) parent
     , commitTree    = emptyTreeHash
-    , commitMessage = encodeUndoEntry now refs
+    , commitMessage = encodeUndoEntry now kind refs
     }
   updateRef undoLogRef newHash
 
@@ -198,10 +223,19 @@ walkUndoLog = resolveRef undoLogRef >>= maybe (return []) walkFrom
 readUndoEntry :: Members '[Git, Fail] r => ObjectHash -> Sem r UndoEntry
 readUndoEntry hash = decodeUndoEntry hash <$> readCommit hash
 
--- | @time:<ISO8601>@ followed by one @<ref>:<hash>@ line per tracked ref.
-encodeUndoEntry :: UTCTime -> [(RefName, ObjectHash)] -> Text
-encodeUndoEntry now refs =
-  T.unlines $ ("time:" <> T.pack (iso8601Show now)) : map refLine refs
+-- | @time:<ISO8601>@, an optional @kind:<tag>@ (only when 'Snapshot'
+--   actually had one to record), then one @<ref>:<hash>@ line per tracked
+--   ref. @time:@\/@kind:@ can't collide with a real ref line: every ref
+--   here is a full path (@refs/heads/story/...@), never the bare word
+--   "time" or "kind" -- unchanged from before 'undoKind' existed, so old
+--   entries already in a running repo's log still decode their time
+--   correctly (just with no kind, same as 'Nothing' for a deletion).
+encodeUndoEntry :: UTCTime -> Maybe Text -> [(RefName, ObjectHash)] -> Text
+encodeUndoEntry now kind refs =
+  T.unlines $
+    ("time:" <> T.pack (iso8601Show now))
+    : maybe [] (\k -> ["kind:" <> k]) kind
+    ++ map refLine refs
   where
     refLine (RefName ref, hash) = ref <> ":" <> unObjectHash hash
 
@@ -211,6 +245,7 @@ decodeUndoEntry hash cd =
     { undoId   = hash
     , undoTime = fromMaybe (posixSecondsToUTCTime 0)
                    (listToMaybe timeLines >>= iso8601ParseM . T.unpack . T.drop 5)
+    , undoKind = T.drop 5 <$> listToMaybe kindLines
     , undoRefs = [ (RefName k, ObjectHash (T.drop 1 v))
                  | l <- refLines
                  , let (k, v) = T.breakOn ":" l
@@ -218,7 +253,8 @@ decodeUndoEntry hash cd =
                  ]
     }
   where
-    ls                    = T.lines (commitMessage cd)
-    (timeLines, refLines) = partition ("time:" `T.isPrefixOf`) ls
+    ls                     = T.lines (commitMessage cd)
+    (timeLines, ls')       = partition ("time:" `T.isPrefixOf`) ls
+    (kindLines, refLines)  = partition ("kind:" `T.isPrefixOf`) ls'
     listToMaybe []      = Nothing
     listToMaybe (x : _) = Just x

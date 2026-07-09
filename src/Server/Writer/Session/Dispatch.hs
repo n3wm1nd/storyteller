@@ -115,7 +115,7 @@ undoLog :: SessionEffects r => Sem r SessionEvent
 undoLog = do
   entries <- reverse . take undoLogLimit <$> listUndo
   return $ UndoLog
-    [ WireUndoEntry { weId = unObjectHash (undoId e), weTime = undoTime e }
+    [ WireUndoEntry { weId = unObjectHash (undoId e), weTime = undoTime e, weKind = undoKind e }
     | e <- entries
     ]
 

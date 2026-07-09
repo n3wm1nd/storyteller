@@ -130,9 +130,17 @@ export interface CharacterSummary {
 // would redo do" are purely local, ephemeral UI state derived from which
 // entry was last jumped to and whether this list has grown since -- see
 // app/undo-timeline.tsx.
+// 'kind' is whatever tag the write's own tick led with server-side (e.g.
+// "atom", "root", "note") -- absent for a branch deletion (nothing left to
+// read) or anything that didn't decode one. Opaque here: this module
+// doesn't know the full set of tags, undo-timeline.tsx owns turning
+// whichever one shows up into a color, with an "unknown tag" fallback so a
+// server-side tag this client hasn't been taught yet still renders instead
+// of erroring.
 export interface WireUndoEntry {
   id: string;
   time: string;
+  kind: string | null;
 }
 
 // branch.list, character.list, and undo.log are always unprompted -- pushed

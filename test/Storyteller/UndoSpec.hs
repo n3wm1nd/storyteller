@@ -17,7 +17,10 @@
 --     appending a new log entry (a jump changes what the tracked refs
 --     point at, it isn't a new fact about history);
 --   * a real write made after a 'resetToUndo' still appends exactly one
---     new entry, same as any other write.
+--     new entry, same as any other write;
+--   * an entry's 'undoKind' is whatever tag the write's own tick led with
+--     (e.g. 'createBranch' writes a 'Root' tick, tagged "root"), and is
+--     'Nothing' for a deletion, which has no tick left to read.
 module Storyteller.UndoSpec (spec) where
 
 import Test.Hspec
@@ -118,6 +121,25 @@ spec = describe "Undo" $ do
     case result of
       Left err                        -> expectationFailure err
       Right (beforeCount, afterCount) -> afterCount `shouldBe` beforeCount
+
+  it "an entry's undoKind reads the tag off the write's own tick -- 'root' for createBranch" $ do
+    let result = runUndoTest $ do
+          _ <- createBranch (BranchName "main")
+          newest : _ <- listUndo
+          return newest
+    case result of
+      Left err     -> expectationFailure err
+      Right newest -> undoKind newest `shouldBe` Just "root"
+
+  it "an entry's undoKind is Nothing for a deleteBranch -- nothing left to read" $ do
+    let result = runUndoTest $ do
+          _ <- createBranch (BranchName "main")
+          deleteBranch (BranchName "main")
+          newest : _ <- listUndo
+          return newest
+    case result of
+      Left err     -> expectationFailure err
+      Right newest -> undoKind newest `shouldBe` Nothing
 
   it "a real write made after resetToUndo still appends exactly one new entry" $ do
     let result = runUndoTest $ do

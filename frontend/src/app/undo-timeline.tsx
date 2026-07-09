@@ -46,14 +46,51 @@ const DOT = 7;
 const DOT_SMALL = 5.6;
 const DOT_GAP = 18;
 
-function Dot({ filled, faded, pulse, title, onClick }: {
+// Every dot stays the same brownish-amber base (BASE_L/BASE_C/BASE_H, the
+// timeline's existing default) — 'kind' only nudges the *hue* a fraction of
+// the way toward something distinguishable, the way a photo filter tints
+// rather than recolors. That reads as "the same understated dot, gently
+// colored" instead of a rainbow of separately-saturated badges, which a
+// couple dozen of these sitting in peripheral vision in the top bar calls
+// for. TINT_HUE borrows its target hues from fileview.tsx's MODE_COLOR
+// (notes lean toward the same blue used for annotation ticks, etc.) purely
+// as the *direction* to nudge toward, not the destination. "atom" (an
+// ordinary prose write) sits exactly at the base hue, so it doubles as the
+// fallback for a tag this client hasn't been taught — a future tick kind,
+// or a write whose tick didn't decode a tag at all (e.g. a binary upload,
+// or a branch deletion) — a dot for one of those just reads as the plain
+// base color rather than erroring or rendering blank; see lib/ws.ts's
+// WireUndoEntry doc for why 'kind' is opaque at this boundary.
+const BASE_L = 0.68;
+const BASE_C = 0.05;
+const BASE_H = 65;
+const TINT_AMOUNT = 0.4;
+const TINT_HUE: Record<string, number> = {
+  atom:     65,   // matches MODE_COLOR.write -- i.e. no shift from base at all
+  note:     240,  // matches MODE_COLOR.note / fileview's dotColor
+  fixup:    200,  // matches MODE_COLOR.fix
+  prompt:   300,  // matches MODE_COLOR.regen -- an agent call in flight
+  swipe:    60,   // matches MODE_COLOR.append -- a neutral, mechanical op
+  presence: 140,  // scene enter/leave, not prose
+  root:     30,   // branch creation, structural not content
+};
+function kindColor(kind: string | null, alpha?: number): string {
+  const targetH = (kind && TINT_HUE[kind]) ?? BASE_H;
+  const h = BASE_H + (targetH - BASE_H) * TINT_AMOUNT;
+  const triple = `${BASE_L} ${BASE_C} ${h.toFixed(1)}`;
+  return alpha === undefined ? `oklch(${triple})` : `oklch(${triple} / ${alpha})`;
+}
+
+function Dot({ filled, faded, pulse, color, title, onClick }: {
   filled?: boolean;
   faded?: boolean;
   pulse?: boolean;
+  color?: string;
   title: string;
   onClick: () => void;
 }) {
   const size = filled ? DOT : DOT_SMALL;
+  const c = color ?? kindColor(null);
   return (
     <span style={{
       position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -64,7 +101,7 @@ function Dot({ filled, faded, pulse, title, onClick }: {
           className="animate-ping"
           style={{
             position: "absolute", inset: -4, borderRadius: "50%",
-            background: "var(--amber)", opacity: 0.55,
+            background: c, opacity: 0.35,
           }}
         />
       )}
@@ -73,10 +110,10 @@ function Dot({ filled, faded, pulse, title, onClick }: {
         title={title}
         style={{
           width: size, height: size, borderRadius: "50%", padding: 0, cursor: "pointer",
-          border: filled ? "none" : "1.5px solid var(--text-dim)",
-          background: filled ? "var(--amber)" : "transparent",
-          opacity: faded ? 0.45 : 1,
-          boxShadow: filled ? "0 0 7px oklch(0.78 0.10 65 / 65%)" : "none",
+          border: filled ? "none" : `1.5px solid ${c}`,
+          background: filled ? c : "transparent",
+          opacity: faded ? 0.55 : filled ? 1 : 0.7,
+          boxShadow: filled ? `0 0 3px ${c.replace(")", " / 40%)")}` : "none",
         }}
       />
     </span>
@@ -211,7 +248,8 @@ export function UndoTimeline() {
                 <Dot
                   filled={isActive}
                   pulse={isActive && pulsing}
-                  title={new Date(entry.time).toLocaleString()}
+                  color={kindColor(entry.kind)}
+                  title={`${new Date(entry.time).toLocaleString()}${entry.kind ? ` — ${entry.kind}` : ""}`}
                   onClick={() => jump(entry)}
                 />
               </div>,
@@ -226,7 +264,8 @@ export function UndoTimeline() {
                   <div style={{ position: "absolute", right: DOT, width: DOT_GAP - DOT, height: 1, background: "var(--border-subtle)", opacity: 0.5 }} />
                   <Dot
                     faded
-                    title={`Undone — ${new Date(s.time).toLocaleString()}. Click to jump back here.`}
+                    color={kindColor(s.kind)}
+                    title={`Undone — ${new Date(s.time).toLocaleString()}${s.kind ? ` — ${s.kind}` : ""}. Click to jump back here.`}
                     onClick={() => jump(s)}
                   />
                 </div>,

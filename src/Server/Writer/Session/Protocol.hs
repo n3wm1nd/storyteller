@@ -70,14 +70,18 @@ instance ToJSON CharacterSummary where
 -- happened, not where any one viewer currently is (see its own haddock).
 -- A client derives "which dot is active right now" itself, from which
 -- entry it last jumped to and whether this list has grown since — see
--- app/undo-timeline.tsx.
+-- app/undo-timeline.tsx. 'weKind' is 'Storyteller.Core.Undo.undoKind'
+-- as-is — an opaque tag ("atom", "root", "note", ...), absent for a
+-- deletion or anything that didn't decode one; the client owns turning it
+-- into a color, this event doesn't presume to.
 data WireUndoEntry = WireUndoEntry
   { weId   :: T.Text
   , weTime :: UTCTime
+  , weKind :: Maybe T.Text
   } deriving (Show)
 
 instance ToJSON WireUndoEntry where
-  toJSON e = object [ "id" .= weId e, "time" .= weTime e ]
+  toJSON e = object [ "id" .= weId e, "time" .= weTime e, "kind" .= weKind e ]
 
 data SessionEvent
   = SessionReady'
