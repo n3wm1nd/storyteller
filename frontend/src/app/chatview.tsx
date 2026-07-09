@@ -208,7 +208,7 @@ export function ChatView({
   // (see CHAT_COMMANDS) — anything else, slash or not, is plain conversation.
   function submit() {
     const raw = draft.trim();
-    if (!raw || generating) return;
+    if (!raw) return;
     const parsed = parseCommand(raw);
     if (parsed?.name === "note") {
       if (parsed.text) onNote(parsed.text);
@@ -274,8 +274,7 @@ export function ChatView({
               if (auto.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
             }}
-            placeholder={generating ? "Waiting for a reply…" : "Message… (/note to annotate)"}
-            disabled={generating}
+            placeholder="Message… (/note to annotate)"
             rows={2}
             style={{
               flex: 1, resize: "none", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)",
@@ -285,13 +284,13 @@ export function ChatView({
         </div>
         <button
           onClick={submit}
-          disabled={generating || draft.trim().length === 0}
+          disabled={draft.trim().length === 0}
           title="Send"
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", width: 36, alignSelf: "flex-end",
-            height: 32, borderRadius: 6, border: "none", cursor: generating ? "default" : "pointer",
-            background: generating || draft.trim().length === 0 ? "var(--surface-deep)" : "oklch(0.78 0.10 65 / 0.2)",
-            color: generating || draft.trim().length === 0 ? "var(--text-dim)" : "var(--amber)",
+            height: 32, borderRadius: 6, border: "none", cursor: "pointer",
+            background: draft.trim().length === 0 ? "var(--surface-deep)" : "oklch(0.78 0.10 65 / 0.2)",
+            color: draft.trim().length === 0 ? "var(--text-dim)" : "var(--amber)",
           }}
         >
           <Send style={{ width: 14, height: 14 }} />
