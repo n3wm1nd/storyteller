@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
@@ -19,7 +19,7 @@ import {
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, type PresenceBar } from "./fileview";
+import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, type PresenceBar } from "./fileview";
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
@@ -177,6 +177,7 @@ export default function Home() {
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [rawEditMode, setRawEditMode] = useState(false);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
@@ -218,6 +219,11 @@ export default function Home() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  // Raw edit mode is per-file, ephemeral UI state — never carry it over to
+  // whatever gets selected next (a stale unsaved buffer for a different
+  // path would be actively misleading).
+  useEffect(() => { setRawEditMode(false); }, [selectedFile]);
 
   const handleEditAtom = useCallback((tickId: string, content: string) => {
     if (selectedFile) editAtom(selectedFile, tickId, content);
@@ -507,6 +513,13 @@ export default function Home() {
                 >
                   <Users style={{ width: 11, height: 11 }} />
                 </button>
+                <button
+                  onClick={() => setRawEditMode((v) => !v)}
+                  title={rawEditMode ? "Back to atom view" : "Raw edit mode — edit the whole file as plain text"}
+                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: rawEditMode ? "oklch(0.78 0.10 65 / 0.15)" : "transparent", color: rawEditMode ? "var(--amber)" : "var(--text-dim)" }}
+                >
+                  <FileCode style={{ width: 11, height: 11 }} />
+                </button>
               </div>
             )}
 
@@ -522,6 +535,8 @@ export default function Home() {
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 File does not exist yet — append to create it
               </div>
+            ) : rawEditMode ? (
+              <RawEditPanel branch={activeBranch} path={selectedFile} />
             ) : fileTicks.length === 0 ? (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 Loading…
@@ -541,20 +556,22 @@ export default function Home() {
               />
             )}
 
-            <ChatPreviewStrip preview={preview} />
-            <AgentLogStrip logs={agentLogs} onClear={clearAgentLogs} />
-            <InputBar
-              enabled={selectedFile !== null}
-              contextAtomCount={contextAtoms.size} contextAnnotationCount={contextAnnotations.size}
-              rebasing={rebaseMarker !== null}
-              onClearRebase={() => setRebaseMarker(null)}
-              onClearContext={clearContext}
-              onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
-              onWrite={(text)  => selectedFile && chatWrite(selectedFile, text)}
-              onFix={handleFix}
-              onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
-              onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
-            />
+            {!rawEditMode && <>
+              <ChatPreviewStrip preview={preview} />
+              <AgentLogStrip logs={agentLogs} onClear={clearAgentLogs} />
+              <InputBar
+                enabled={selectedFile !== null}
+                contextAtomCount={contextAtoms.size} contextAnnotationCount={contextAnnotations.size}
+                rebasing={rebaseMarker !== null}
+                onClearRebase={() => setRebaseMarker(null)}
+                onClearContext={clearContext}
+                onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
+                onWrite={(text)  => selectedFile && chatWrite(selectedFile, text)}
+                onFix={handleFix}
+                onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
+                onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
+              />
+            </>}
           </>}
 
           {centerTab === "ticks" && (

@@ -17,6 +17,7 @@ module Server.Writer.Branch
   , charGen
   , uploadFiles
   , uploadFile
+  , saveFile
   ) where
 
 import Control.Monad (void)
@@ -130,3 +131,16 @@ uploadFiles files = do
 uploadFile :: SessionEffects r => T.Text -> FilePath -> BS.ByteString -> Sem r ()
 uploadFile branch path content =
   withStorage (withBranch @Main branch (void (uploadFiles [(path, content)])))
+
+-- | One-shot save for the HTTP @PUT /branch/{name}/$raw/{path}@ endpoint —
+--   the raw-edit-mode counterpart to 'uploadFile'. Where an upload deposits
+--   an opaque 'Ops.addBinary' asset, this reconciles @content@ against the
+--   path's existing atom chain via 'Ops.saveFile': a whole-file overwrite
+--   from an editor that hands back the entire text still keeps whatever
+--   atoms didn't actually change, same as any other reconciliation path
+--   (chat regen, upload-then-ingest). Same one-shot branch-scope-opening
+--   shape as 'uploadFile', for the same reason (no already-open
+--   'BranchOpen' connection for this endpoint to run against).
+saveFile :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
+saveFile branch path content =
+  withStorage (withBranch @Main branch (void (runStorage @Main (Ops.saveFile path content))))

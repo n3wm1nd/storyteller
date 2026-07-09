@@ -16,6 +16,7 @@ module Storage.Ops
   , replaceAtom
   , setAtomHidden
   , addBinary
+  , saveFile
   , commitWorktree
   , commitFile
   , commitFiles
@@ -171,6 +172,18 @@ addBinary :: StoreM m => FilePath -> BS.ByteString -> StoreT m ObjectHash
 addBinary path content = do
   writeFile path content
   store (Binary [] path)
+
+-- | Overwrite @path@'s ambient content wholesale and reconcile it against
+--   its atom chain via 'commitFile' -- the "raw edit" entry point (a UI
+--   editor that just hands back the whole file, not individual atom
+--   edits). Unlike 'addBinary' (an opaque deposit, no reconciliation at
+--   all) this keeps 'commitFile's usual preserve-unchanged-atoms diff, so
+--   a caller pasting back a mostly-unmodified file still gets the same
+--   in-place update as any other reconciliation path, not a full rewrite.
+saveFile :: StoreM m => FilePath -> Text -> StoreT m ()
+saveFile path content = do
+  writeFile path (TE.encodeUtf8 content)
+  commitFile path
 
 -- | Append @content@ to @path@ as a single atom, ensuring it ends with a
 --   newline first -- an appended atom is one text block on disk, and a

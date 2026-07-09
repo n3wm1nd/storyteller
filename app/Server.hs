@@ -29,6 +29,13 @@
 --                                 'Server.Writer.Branch.uploadFile') — the
 --                                 only way to upload now; there is no WS
 --                                 command for this anymore
+--   PUT /branch/{name}/$raw/{path} — raw-edit-mode save: like the plain PUT
+--                                 above, but the body must be UTF-8 text and
+--                                 is reconciled against the path's existing
+--                                 atom chain (see
+--                                 'Server.Writer.Branch.saveFile'/
+--                                 'Storage.Ops.commitFile') instead of
+--                                 landing as an opaque binary asset
 --   /                           — the built frontend, if STATIC_DIR is set
 --                                 (see 'staticApp'); otherwise a plain
 --                                 placeholder response, unchanged from before
@@ -49,8 +56,9 @@ import System.FilePath ((</>), takeExtension, takeFileName)
 import System.IO (hPutStrLn, stderr)
 
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Server.Core.File (readFileContent)
-import Server.Writer.Branch (uploadFile)
+import Server.Writer.Branch (uploadFile, saveFile)
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort, envStaticDir)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
@@ -114,6 +122,21 @@ httpApp env req respond
           Right raw -> respond $ responseLBS status200
             ((hContentType, mimeType filePath) : corsHeaders req)
             (LBS.fromStrict raw)
+
+      -- Reserved segment ahead of the generic upload PUT below, same
+      -- convention as the WS router's "$context" (see wsRouter) — raw-edit
+      -- save reconciles against the atom chain ('Server.Writer.Branch.saveFile')
+      -- instead of depositing an opaque binary asset like a plain upload.
+      (m, "branch" : name : "$raw" : path@(_:_)) | m == methodPut -> do
+        let filePath = T.unpack (T.intercalate "/" path)
+        body <- strictRequestBody req
+        case TE.decodeUtf8' (LBS.toStrict body) of
+          Left _        -> respond $ responseLBS status400 (corsHeaders req) "raw edit content must be valid UTF-8"
+          Right content -> do
+            result <- runAction env (saveFile name filePath content)
+            case result of
+              Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
+              Right () -> respond $ responseLBS status200 (corsHeaders req) ""
 
       (m, "branch" : name : path@(_:_)) | m == methodPut -> do
         let filePath = T.unpack (T.intercalate "/" path)

@@ -52,6 +52,17 @@ export async function uploadBranchFile(branch: string, path: string, content: Bl
   if (!res.ok) throw new Error(`upload failed: ${res.status} ${path}`);
 }
 
+// Raw-edit-mode save: whole-file text replace, reconciled against the
+// path's existing atom chain server-side (see app/Server.hs's
+// PUT /branch/{name}/$raw/{path} and Server.Writer.Branch.saveFile) rather
+// than deposited as an opaque binary like 'uploadBranchFile' — unchanged
+// atoms keep their ids, only the parts that actually changed get rewritten.
+export async function saveRawFile(branch: string, path: string, content: string) {
+  const url = `${httpBase()}/branch/${encodeURIComponent(branch)}/$raw/${encodePath(path)}`;
+  const res = await fetch(url, { method: "PUT", body: content });
+  if (!res.ok) throw new Error(`save failed: ${res.status} ${path}`);
+}
+
 // ── Shared event types ────────────────────────────────────────────────────────
 
 export type ErrorEvent    = { type: "error";     message: string };

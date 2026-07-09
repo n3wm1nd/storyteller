@@ -9,6 +9,7 @@ import { type AnnotationMode, characterDisplayName, tailLeadTicks } from "@/lib/
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
+import { branchFileUrl, saveRawFile } from "@/lib/ws";
 
 // A character's presence, as a set of this file's own atom tickIds — not
 // fromTickId/toTickId, since a character can enter/leave more than once
@@ -707,6 +708,113 @@ export function WireTickList({
         willClear={dragging && candidate === null}
         onDragStart={startDrag}
       />
+    </div>
+  );
+}
+
+// ── Raw edit mode ─────────────────────────────────────────────────────────────
+
+// Whole-file text editing, bypassing atoms/positions entirely — for bulk
+// changes (find/replace across a scene, pasting in a rewritten draft) that
+// would be tedious to make atom-by-atom. Loads the file's current raw bytes
+// over plain HTTP (same GET the download/embed path already uses — see
+// lib/ws.branchFileUrl) rather than folding the tick chain client-side, so
+// what's shown here always matches exactly what a save will diff against.
+// Saving goes through 'saveRawFile' (PUT .../$raw/...), which reconciles
+// server-side against the existing atom chain (Storage.Ops.commitFile) —
+// unchanged paragraphs keep their atom ids, only what actually differs gets
+// rewritten, so this stays close to a normal edit rather than a full replace.
+export function RawEditPanel({ branch, path }: {
+  branch: string;
+  path: string;
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [savedContent, setSavedContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setContent(null);
+    fetch(branchFileUrl(branch, path))
+      .then((res) => {
+        if (!res.ok) throw new Error(`load failed: ${res.status}`);
+        return res.text();
+      })
+      .then((text) => {
+        if (cancelled) return;
+        setContent(text);
+        setSavedContent(text);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [branch, path]);
+
+  const dirty = content !== null && content !== savedContent;
+
+  function save() {
+    if (content === null || saving) return;
+    setSaving(true);
+    setError(null);
+    saveRawFile(branch, path, content)
+      .then(() => { setSavedContent(content); setSaving(false); })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setSaving(false);
+      });
+  }
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{
+        flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
+        display: "flex", alignItems: "center", gap: 8, fontSize: 10,
+      }}>
+        <span style={{ color: "var(--text-ghost)" }}>Raw edit — whole-file text, reconciled against atoms on save</span>
+        <span style={{ flex: 1 }} />
+        {error && <span style={{ color: "var(--rose)" }}>{error}</span>}
+        {dirty && !error && <span style={{ color: "var(--amber)" }}>unsaved</span>}
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          style={{
+            fontSize: 10, padding: "2px 10px", borderRadius: 4,
+            cursor: dirty && !saving ? "pointer" : "default",
+            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+            border: "1px solid " + (dirty ? "oklch(0.78 0.10 65 / 0.35)" : "var(--border-subtle)"),
+            color: dirty ? "var(--amber)" : "var(--text-dim)",
+          }}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {loading ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+          Loading…
+        </div>
+      ) : (
+        <textarea
+          value={content ?? ""}
+          onChange={(e) => setContent(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(); }
+          }}
+          spellCheck={false}
+          style={{
+            flex: 1, width: "100%", resize: "none", border: "none", outline: "none",
+            padding: "14px 18px", fontFamily: "ui-monospace, monospace", fontSize: 12.5,
+            lineHeight: 1.6, color: "var(--text-body)", background: "transparent",
+          }}
+        />
+      )}
     </div>
   );
 }
