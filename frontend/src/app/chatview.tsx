@@ -6,7 +6,7 @@
 // user/assistant bubbles. Not a separate connection or cache: this reads the
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Send, RotateCcw, EyeOff } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
@@ -39,6 +39,15 @@ function exchangesFromChain(chain: WireTick[]): ChatExchange[] {
 const bubbleBase: React.CSSProperties = {
   maxWidth: "72%", padding: "8px 12px", borderRadius: 10, fontSize: 12.5,
   lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
+};
+
+// Placeholder for a reply that hasn't arrived yet — used both for the last
+// real exchange whose atom tick is still in flight and for optimistic
+// exchanges (ChatView's pendingPrompts) before the server confirms even the
+// prompt. Same shape as an assistant reply bubble, just "…" in ghost text.
+const typingBubble: React.CSSProperties = {
+  ...bubbleBase, alignSelf: "flex-start", background: "var(--surface-deep)",
+  border: "1px solid var(--border-subtle)", color: "var(--text-ghost)", fontStyle: "italic",
 };
 
 // Rough row estimate for the edit textarea — assistant replies can run to
@@ -202,7 +211,24 @@ export function ChatView({
   const lastIndex = exchanges.length - 1;
   const generating = preview !== null || (lastIndex >= 0 && exchanges[lastIndex].atomTick === null);
 
-  const scrollRef = useAutoScroll<HTMLDivElement>(exchanges.length + (preview?.text.length ?? 0), head, "end");
+  // Optimistic prompts: messages the user just sent but the server hasn't
+  // confirmed with a real prompt tick yet. Each records the exchange count at
+  // submission time — it's still "pending" only while the server-side count
+  // hasn't grown past that point. Filtering during render (not in an effect)
+  // avoids a one-frame flash where both the optimistic bubble and the
+  // confirmed one are visible simultaneously; the effect just trims stale
+  // entries from state afterwards.
+  const [pendingPrompts, setPendingPrompts] = useState<{ id: number; text: string; atCount: number }[]>([]);
+  const pendingIdRef = useRef(0);
+  const visiblePending = pendingPrompts.filter(pp => exchanges.length <= pp.atCount);
+  useEffect(() => {
+    setPendingPrompts(p => {
+      const next = p.filter(pp => exchanges.length <= pp.atCount);
+      return next.length === p.length ? p : next;
+    });
+  }, [exchanges.length]);
+
+  const scrollRef = useAutoScroll<HTMLDivElement>(exchanges.length + visiblePending.length + (preview?.text.length ?? 0), head, "end");
 
   // A leading "/note" sends an annotation instead of a conversational turn
   // (see CHAT_COMMANDS) — anything else, slash or not, is plain conversation.
@@ -214,6 +240,7 @@ export function ChatView({
       if (parsed.text) onNote(parsed.text);
     } else {
       onSend(raw);
+      setPendingPrompts(p => [...p, { id: pendingIdRef.current++, text: raw, atCount: exchanges.length }]);
     }
     setDraft("");
   }
@@ -221,7 +248,7 @@ export function ChatView({
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "14px", display: "flex", flexDirection: "column", gap: 14 }}>
-        {exchanges.length === 0 && preview === null && (
+        {exchanges.length === 0 && preview === null && visiblePending.length === 0 && (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
             Say something to start the conversation
           </div>
@@ -244,7 +271,7 @@ export function ChatView({
                   else onEditPrompt(ex.promptTick.tickId, text);
                 }}
               />
-              {atomTick && (
+              {atomTick ? (
                 <AssistantReply
                   atomTick={atomTick}
                   disabled={generating}
@@ -252,10 +279,20 @@ export function ChatView({
                   onSave={(text) => onEditAtom(atomTick.tickId, text)}
                   onRegen={() => onRegen(ex.promptTick.tickId, atomTick.tickId, ex.promptTick.message)}
                 />
+              ) : (
+                <div style={typingBubble}>…</div>
               )}
             </div>
           );
         })}
+        {visiblePending.map(pp => (
+          <div key={`opt-${pp.id}`} style={{ display: "flex", flexDirection: "column", gap: 8, opacity: 0.6 }}>
+            <div style={{ ...bubbleBase, alignSelf: "flex-end", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)", color: "var(--text-heading)" }}>
+              {pp.text}
+            </div>
+            <div style={typingBubble}>…</div>
+          </div>
+        ))}
       </div>
 
       <ChatPreviewStrip preview={preview} />
