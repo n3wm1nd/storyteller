@@ -302,8 +302,19 @@ export function chatFix(path: string, text: string) {
   sendChatCommand(path, () => ({ type: "chat.fixer", text, context, targets }));
 }
 
+// A note with nothing selected implicitly targets the last atom in the
+// file — notes aren't tied to a file at all server-side (Note []'s refs are
+// just commentary payload, chained onto the current head regardless), so an
+// empty targets list would otherwise float free of any atom instead of
+// commenting on whatever the user was just looking at.
 export function chatNote(path: string, text: string) {
-  const targets = buildContextTargets(path);
+  let targets = buildContextTargets(path);
+  if (targets.length === 0) {
+    const fc = getServerCache().openFiles[path];
+    const atoms = fc ? tickChain(fc.ticks, fc.head).filter((t) => t.kind === "atom") : [];
+    const last = atoms[atoms.length - 1];
+    if (last) targets = [last.tickId];
+  }
   sendChatCommand(path, () => ({ type: "chat.note", text, targets }));
 }
 
