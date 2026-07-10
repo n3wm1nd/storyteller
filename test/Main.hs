@@ -25,6 +25,7 @@ import qualified Storyteller.ChatSpec
 import qualified Storyteller.LibrarySpec
 import qualified Storyteller.ContextFilterSpec
 import qualified Storyteller.ContextPreviewSpec
+import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
@@ -63,6 +64,7 @@ main = hspec $ do
   describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec
   describe "Storyteller.Writer.Agent.ContextFilter" Storyteller.ContextFilterSpec.spec
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
+  describe "Storyteller.Writer.Agent.Outline" Storyteller.OutlineSpec.spec
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:

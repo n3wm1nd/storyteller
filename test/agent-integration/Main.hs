@@ -35,6 +35,7 @@ import qualified Agent.Integration.JourneySpec
 import qualified Agent.Integration.OutlineSplitQualitySpec
 import qualified Agent.Integration.OutlineSplitDefaultsSpec
 import qualified Agent.Integration.OutlineSplitFreeformSpec
+import qualified Agent.Integration.OutlineSplitBulkSpec
 import qualified Agent.Integration.OutlineSplitEscapingSpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
@@ -126,4 +127,5 @@ main = do
         describe "Agent.Integration.OutlineSplitQualitySpec" (Agent.Integration.OutlineSplitQualitySpec.spec @judgeTy runner)
         describe "Agent.Integration.OutlineSplitDefaultsSpec" (Agent.Integration.OutlineSplitDefaultsSpec.spec @judgeTy runner)
         describe "Agent.Integration.OutlineSplitFreeformSpec" (Agent.Integration.OutlineSplitFreeformSpec.spec @judgeTy runner)
+        describe "Agent.Integration.OutlineSplitBulkSpec" (Agent.Integration.OutlineSplitBulkSpec.spec @judgeTy runner)
         describe "Agent.Integration.OutlineSplitEscapingSpec" (Agent.Integration.OutlineSplitEscapingSpec.spec @judgeTy runner)

@@ -48,19 +48,30 @@ weaker models — more than raw model capability.**
 
 The clearest single result of this investigation. Same task (split a messy,
 3-chapter outline into beat sheets), same model (`openai/gpt-oss-20b` via
-OpenRouter), two mechanisms:
+OpenRouter), three mechanisms:
 
 | mechanism | gpt-oss-20b | deepseek-v4-flash |
 |---|---|---|
 | tool-call loop (`splitOutlineAgent`) | 0/3 — duplicated `ch1`, omitted chapters, garbled order, turn counts up to 35 | ~10/11 across the full suite |
-| plain conversation (`splitOutlineFreeform`) | 2/3 — clean 3-chapter structure both times; the one failure is a single beat pulled across a boundary, not structural collapse | 3/3 |
+| sequential conversation, one chapter per turn (`splitOutlineFreeform`) | 2/3 — clean 3-chapter structure both times; the one failure is a single beat pulled across a boundary, not structural collapse | 3/3 |
+| bulk, one response, `---`-delimited (`splitOutlineBulk`) | **3/3** — clean sweep | 3/3 |
 
-A raw probe (bypassing the harness, straight OpenRouter API call) showed
-the same thing even more starkly: asked to just write the three beat sheets
-as delimited markdown, gpt-oss-20b got the structure perfectly right —
-correct count, correct order, no duplication — while its *prose quality*
-was still visibly weaker than deepseek's (some genuinely incoherent
-sentences by chapter 3). That's two separable findings, not one:
+Bulk beating sequential for the weak model, specifically, is worth sitting
+with: it means re-prompting turn by turn — even *without* tool calls, even
+with the bookkeeping burden already moved onto our own code
+(`splitOutlineFreeform` counts chapters and assigns paths itself, the model
+never has to) — still cost something. A single uninterrupted draft avoided
+even the mild boundary drift the sequential variant showed. For deepseek
+both land at 3/3, so this only shows up once the model is already weak
+enough for turn-by-turn interruption to matter.
+
+A raw probe (bypassing the harness, straight OpenRouter API call, informal
+precursor to `splitOutlineBulk`) showed the same thing even more starkly:
+asked to just write the three beat sheets as delimited markdown, gpt-oss-20b
+got the structure perfectly right — correct count, correct order, no
+duplication — while its *prose quality* was still visibly weaker than
+deepseek's (some genuinely incoherent sentences by chapter 3). That's two
+separable findings, not one:
 
 1. The tool-call mechanism is what breaks structural tracking for a weaker
    model — most likely because each call is an isolated, JSON-syntax-
@@ -75,6 +86,21 @@ sentences by chapter 3). That's two separable findings, not one:
    mechanism change doesn't touch — gpt-oss-20b is still weaker prose-wise
    than deepseek-v4-flash even under ideal (non-tool-call) conditions.
 
+**The general shape, not just this one case:** a model is fundamentally a
+text-completion engine; chat formatting and tool/function calling are both
+layers of fine-tuning imposed on top of that, not the native mode. Chat is
+the layer closest to what most models get the most training data for, so
+it degrades gracefully; forced tool calling is a further, more specialized
+layer on top of *that* — real, but thinner, and models not specifically
+trained on agentic workflows (as opposed to e.g. coding-focused models with
+heavy agentic RL) have less of it to draw on. That predicts exactly the
+ordering measured here (raw completion > chat > tool calls), and predicts
+it'll get worse, not better, for other agents built the same way
+(`reworkAtom`, the chat agent) against a similarly weak, non-agentic-tuned
+model — worth keeping in mind before assuming a tool-call-shaped agent that
+works well against a frontier model will degrade gracefully against a
+smaller one; on this evidence it won't, disproportionately.
+
 **What this does *not* yet establish**, and would need a second round to
 say more confidently:
 - Whether a longer, more elaborate prompt helps or hurts a weak model more
@@ -82,11 +108,13 @@ say more confidently:
   explicitly enumerate chapters up front) made GPT-OSS-20B's results *worse*
   (turn counts 6→35, more duplication), which is itself only one data point
   against one prompt variant, not a general "don't scaffold more" rule.
-- Bulk (all chapters in one response, delimited) vs. sequential (one
-  chapter per turn, as `splitOutlineFreeform` currently does) — the
-  experiment this project actually wants to run next, per the discussion
-  that led to building `splitOutlineFreeform` in the first place. Only the
-  sequential variant is implemented so far.
+- Whether bulk beating sequential holds for a longer outline than 3
+  chapters — `defaultBulkConfig`'s `MaxTokens 8192` covers every chapter's
+  beat sheet in one response, and that budget only gets tighter as chapter
+  count grows, the same way `defaultSplitConfig`'s did for the tool-call
+  version. Worth deliberately testing against a bigger outline before
+  trusting bulk as the general answer rather than just the answer for
+  three-chapter fixtures.
 - Whether `splitOutlineFreeform`'s remaining failure mode (a beat pulled
   across a chapter boundary) is itself mechanism-related (still some
   cross-turn bookkeeping, just less of it) or purely a content-judgment

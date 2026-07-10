@@ -37,6 +37,8 @@ module Storyteller.Writer.Agent.Outline
   , expandAgent
   , splitOutlineAgent
   , splitOutlineFreeform
+  , splitOutlineBulk
+  , splitOnRule
   , chapterProse
   , chapterProseByBeat
   , reconcileChapter
@@ -422,6 +424,76 @@ withTurnBudget maxTurns sentinel = withInterception @model overBudget respond
     isAssistantTurn (AssistantJSON _)      = True
     isAssistantTurn _                      = False
 
+-- | Second variant of the same experiment 'splitOutlineFreeform' runs: same
+--   job, same no-tool-calls premise, but the whole split in a single
+--   response instead of one chapter per conversational turn. The model
+--   writes every chapter's beat sheet at once, separated by a line
+--   containing only @---@; we split on that deterministically and assign
+--   paths in order, the same way 'splitOutlineFreeform' assigns them per
+--   turn.
+--
+--   This is the one place in the module that actually depends on a
+--   delimiter to grep for, which the module Haddock's "neither depends on
+--   a delimiter" claim is about a different granularity than: that's about
+--   never parsing *beats* out of a beat sheet's own free-form markdown
+--   (still true, still nobody's job here). Splitting a bulk response into
+--   *chapters* is a coarser, new kind of parsing this function alone
+--   introduces, and it's exactly the tradeoff being tested: does asking for
+--   one big structured response (parseable, but only if the model reliably
+--   produces the delimiter) work better or worse than
+--   'splitOutlineFreeform's one-small-request-per-chapter, no-parsing-needed
+--   shape? See @FINDINGS.md@ once that comparison has actually been run.
+--
+--   If the model doesn't use the delimiter at all, this comes back with a
+--   single "chapter" containing everything -- logged as a warning (visible,
+--   not retried) rather than guessed at further; a real fix would need to
+--   look at why, not just resubmit and hope.
+splitOutlineBulk
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
+  => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
+  -> OutlineDoc            -- ^ the whole-story outline being split
+  -> Sem r [ChapterBeats]
+splitOutlineBulk contextBlocks (OutlineDoc doc) = do
+  configsWithPrompt <- getConfigWithPrompt "agent.outline.split.bulk" defaultBulkSystem defaultBulkConfig
+  Prompt closing    <- getPrompt "agent.outline.split.bulk.instructions" defaultBulkInstructions
+
+  let contextSection
+        | null contextBlocks = ""
+        | otherwise =
+            "Surrounding context:\n\n"
+            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+            <> "\n\n"
+
+      userMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> closing
+
+  info "splitOutlineAgent (bulk): splitting outline into chapter beat sheets"
+  response <- queryLLM configsWithPrompt [UserText userMsg]
+  let whole  = mconcat [ t | AssistantText t <- response ]
+      pieces = filter (not . T.null) (map T.strip (splitOnRule whole))
+      sheets = zipWith (\n piece -> ChapterBeats ("chapters/ch" <> show n <> ".outline.md") (BeatSheet piece))
+                 [1 :: Int ..] pieces
+
+  if length pieces <= 1
+    then warning "splitOutlineAgent (bulk): response didn't contain a --- delimiter, treating it as one chapter"
+    else pure ()
+  mapM_ (\(ChapterBeats path _) -> info ("splitOutlineAgent (bulk): " <> T.pack path)) sheets
+  info $ "splitOutlineAgent (bulk): done, " <> T.pack (show (length sheets)) <> " beat sheet(s) emitted"
+  return sheets
+
+-- | Split text on any line that's a bare Markdown horizontal rule
+--   (@---@, alone on its line once stripped) -- the delimiter
+--   'defaultBulkSystem' asks the model to put between chapters.
+splitOnRule :: Text -> [Text]
+splitOnRule = map (T.strip . T.unlines) . go . T.lines
+  where
+    go [] = [[]]
+    go (l:ls)
+      | T.strip l == "---" = [] : go ls
+      | otherwise          = case go ls of
+                                (cur : rest) -> (l : cur) : rest
+                                []           -> [[l]]
+
 -- | The @emit_beat_sheet@ tool body: package the model's two arguments into a
 --   'ChapterBeats'. No effect — reporting only, like 'ReplaceTool's tool.
 emitBeatSheet :: forall r. BeatSheetPath -> BeatSheetBody -> Sem r ChapterBeats
@@ -739,3 +811,40 @@ defaultFreeformInstructions =
 --   sheet's own length.
 defaultFreeformConfig :: [ModelConfig AgentModel]
 defaultFreeformConfig = [MaxTokens 4096, Temperature 0.7]
+
+-- | System prompt for 'splitOutlineBulk' -- 'defaultFreeformSystem'
+--   reframed again, this time for one single response covering every
+--   chapter: the model has to both decide the chapter breakdown *and*
+--   signal it via the @---@ delimiter, in one shot, rather than each
+--   chapter being its own separate, focused request.
+defaultBulkSystem :: Prompt
+defaultBulkSystem =
+  "You are a story planner. You'll be given an outline for a story — either \
+  \the whole story, or as much of it as exists so far — and asked to write \
+  \one beat sheet per chapter, all in a single response. For each chapter, \
+  \write a Markdown heading, then prose notes covering what happens, \
+  \logistics, the emotional turn, and a rough length — plain markdown, no \
+  \tool calls. Separate one chapter's beat sheet from the next with a line \
+  \containing only ---, and nothing else on that line — no other horizontal \
+  \rules, no code fences, no commentary outside the beat sheets themselves. \
+  \\n\n\
+  \The chapters may not be marked out explicitly; use your judgement to \
+  \decide how many there are and where each begins and ends, inventing \
+  \concrete plot beats to fill each chapter out where the outline only \
+  \sketches — be creative there, but stay faithful to the outline's own \
+  \structure and intent. If the outline already marks out chapters, treat \
+  \that division as deliberate: keep every event in the chapter the outline \
+  \already put it in, don't move a beat into a neighboring chapter."
+
+-- | The one free-text part of 'splitOutlineBulk's user message a prompt
+--   override can actually change.
+defaultBulkInstructions :: Prompt
+defaultBulkInstructions =
+  "Write every chapter's beat sheet now, separated by --- as described."
+
+-- | Compiled-in sampling default for @agent.outline.split.bulk@ -- same
+--   reasoning as 'defaultFreeformConfig', except @MaxTokens@ has to cover
+--   *every* chapter's beat sheet in one response instead of just one, so
+--   it needs considerably more headroom.
+defaultBulkConfig :: [ModelConfig AgentModel]
+defaultBulkConfig = [MaxTokens 8192, Temperature 0.7]

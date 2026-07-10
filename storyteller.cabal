@@ -258,6 +258,7 @@ test-suite storyteller-test
                   , Storyteller.LibrarySpec
                   , Storyteller.ContextFilterSpec
                   , Storyteller.ContextPreviewSpec
+                  , Storyteller.OutlineSpec
                   , Storyteller.Common.SwipeSpec
                   , Server.TestStack
                   , Server.BranchSpec
@@ -327,7 +328,9 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.OutlineSplitQualitySpec
                   , Agent.Integration.OutlineSplitDefaultsSpec
                   , Agent.Integration.OutlineSplitEscapingSpec
+                  , Agent.Integration.OutlineSplitCheck
                   , Agent.Integration.OutlineSplitFreeformSpec
+                  , Agent.Integration.OutlineSplitBulkSpec
                   , Agent.Integration.ToolCallQuality
                   , Git.Mock
                   , Paths_storyteller

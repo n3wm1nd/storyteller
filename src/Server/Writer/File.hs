@@ -49,7 +49,7 @@ import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
 import Storyteller.Writer.Agent.Outline
   ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
-  , reconcileChapter, reconcileChapterByBeat, splitOutlineAgent )
+  , reconcileChapter, reconcileChapterByBeat, splitOutlineFreeform )
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.Runtime (Main)
@@ -246,18 +246,28 @@ chatChapterRegen mode path prompt context = do
     maxBeats = 40 :: Int
 
 -- | Split a whole-story outline (this file, by convention @outline.md@) into
---   per-chapter beat sheets. The model decides the chapter breakdown and the
---   output paths — the chapter files needn't exist yet — and each returned
---   beat sheet is written as its own file (atomized by the splitter, same as
---   generated prose). Existing beat-sheet files are left alone: writing only
---   happens for paths the model emits, and a path it re-emits appends rather
---   than clobbers, so this is safe to re-run.
+--   per-chapter beat sheets. The model decides the chapter breakdown; the
+--   output paths (@chapters/ch1.outline.md@, …) are assigned by
+--   'splitOutlineFreeform' itself, one per chapter in reading order, and
+--   each is written as its own file (atomized by the splitter, same as
+--   generated prose).
+--
+--   Unlike the tool-call-driven 'splitOutlineAgent' this used to call, this
+--   is /not/ safe to re-run on a story that's already partially split:
+--   'splitOutlineFreeform' always starts from chapter 1 and has no
+--   "skip chapters that already have a beat sheet" logic (see its Haddock
+--   and @../PLAN.md@ in the agent-integration suite for why the tool-call
+--   loop it replaces here still exists, unremoved, for exactly that
+--   incremental-fill use case). Chosen for this handler anyway because it's
+--   substantially more reliable at getting the chapter breakdown right in
+--   the first place — see @FINDINGS.md@ in the same suite for the measured
+--   comparison.
 chatSplitOutline :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> Sem r ()
 chatSplitOutline path = do
   outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
   (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
   info $ "outline split starting: " <> T.pack path
-  sheets <- splitOutlineAgent fileCtx outline
+  sheets <- splitOutlineFreeform fileCtx outline
   mapM_ writeSheet sheets
   info $ "outline split done: " <> T.pack path <> " (" <> T.pack (show (length sheets)) <> " chapters)"
   where
