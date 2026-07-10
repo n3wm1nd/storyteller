@@ -60,6 +60,13 @@ interface UIState {
   // real cache, which is exactly why this lives here and not there.
   agentLogs: { level: string; message: string }[];
 
+  // Answers to ask.character commands (ephemeral, capped ring buffer) —
+  // same shape/lifetime as agentLogs: streamed from the server, explicitly
+  // not part of synced state (the exchange itself is server-recorded as a
+  // CharacterAnswer tick, but the client doesn't need to track that tick,
+  // only show the answer once).
+  characterAnswers: { character: string; question: string; answer: string }[];
+
   // A chat.writer/chat.fixer/chat.append command submitted while a previous
   // generation ('preview') was still in flight. Held here instead of sent
   // immediately (the server processes one command at a time per
@@ -78,6 +85,7 @@ interface UIState {
   setRebaseMarker:         (tickId: string | null) => void;
   setJournalMarker:        (branch: string, tickId: string | null) => void;
   addAgentLog:             (level: string, message: string) => void;
+  addCharacterAnswer:      (character: string, question: string, answer: string) => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -90,6 +98,7 @@ export const useUI = create<UIState>((set) => ({
   rebaseMarker: null,
   pendingSubmit: null,
   agentLogs: [],
+  characterAnswers: [],
 
   setHoverHighlight: (tickIds, color) => set({ hoverHighlight: { tickIds, color } }),
   clearHoverHighlight: () => set({ hoverHighlight: null }),
@@ -115,6 +124,10 @@ export const useUI = create<UIState>((set) => ({
   setJournalMarker: (branch, tickId) => set((s) => ({ journalMarkers: { ...s.journalMarkers, [branch]: tickId } })),
 
   addAgentLog: (level, message) => set((s) => ({ agentLogs: [...s.agentLogs, { level, message }].slice(-200) })),
+
+  addCharacterAnswer: (character, question, answer) => set((s) => ({
+    characterAnswers: [...s.characterAnswers, { character, question, answer }].slice(-50),
+  })),
 }));
 
 // Selection is a temporary "about to act on this" marker, not a durable

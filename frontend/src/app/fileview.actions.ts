@@ -58,6 +58,8 @@ export async function openFile(path: string): Promise<void> {
       handleTickRemap(evt.mapping);
     } else if (evt.type === "agent.log") {
       useUI.getState().addAgentLog(evt.level, evt.message);
+    } else if (evt.type === "character.answered") {
+      useUI.getState().addCharacterAnswer(evt.character, evt.question, evt.answer);
     } else if (isChatPreviewEvent(evt)) {
       handleChatPreview(evt);
     } else if (evt.type === "error") {
@@ -223,6 +225,18 @@ export function enterScene(path: string, character: string) {
 
 export function leaveScene(path: string, character: string) {
   sendFileCommand(path, { type: "leave.scene", character });
+}
+
+// Ask 'character' a question, answered from only their own branch (sheet,
+// journal — not this scene, not any other character; see Server.Writer.
+// File.askCharacter). Recorded here as a CharacterAnswer tick on this
+// branch, not the character's own — asking doesn't give them a new memory.
+// Goes through sendFileCommand like any other mutating command, so it gets
+// rebase-at-marker for free (asking "as of" a historical point in the
+// story) — the answer itself arrives as a character.answered event, handled
+// in openFile's subscribe callback above.
+export function askCharacter(path: string, character: string, question: string) {
+  sendFileCommand(path, { type: "ask.character", character, question });
 }
 
 export function appendToFile(path: string, content: string) {

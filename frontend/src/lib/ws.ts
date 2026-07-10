@@ -257,6 +257,14 @@ export type FileCommand =
   // same as any other file command — no separate mechanism needed.
   | { type: "enter.scene"; id?: string; character: string }
   | { type: "leave.scene"; id?: string; character: string }
+  // Ask: pose `question` to `character`, answered from only their own
+  // branch (sheet, journal — not this scene, not any other character). The
+  // exchange is recorded on *this* branch (the scene, not the character's —
+  // asking doesn't give a character a new memory, it only reads what they
+  // already know), and the answer is pushed straight back as a
+  // `character.answered` event rather than relying on a ref-move
+  // notification (the character's own branch didn't change).
+  | { type: "ask.character"; id?: string; character: string; question: string }
   // Rebase: run `command` as if `tickId` were HEAD, then replay everything
   // that came after it on top of the result. Lets the client re-target any
   // command at a historical point in the file's chain. `branches` carries
@@ -276,6 +284,10 @@ export type FileEvent =
   // tickId held locally (rebase marker, context selection) — a no-op for ids
   // this client doesn't track.
   | { type: "tick.remap"; mapping: [string, string][] }
+  // The answer to an `ask.character` command, correlated by `id` (the
+  // command's own id — see `withId` server-side) since a connection can
+  // have more than one ask in flight.
+  | { type: "character.answered"; id?: string; character: string; question: string; answer: string }
   | AgentLogEvent
   | ChatPreviewEvent
   | ErrorEvent;

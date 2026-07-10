@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Users, UserPlus, X, ChevronDown, ChevronRight, History, RefreshCw } from "lucide-react";
+import { Users, UserPlus, X, ChevronDown, ChevronRight, History, RefreshCw, HelpCircle } from "lucide-react";
 import { type CharacterConn, type FileConn, type WireTick } from "@/lib/serverCacheStore";
 import { type CharacterSummary } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
@@ -129,6 +129,60 @@ function JournalPanel({
   );
 }
 
+// ── Ask panel ────────────────────────────────────────────────────────────────
+//
+// Ask this character a question, answered from only their own branch (see
+// Server.Writer.File.askCharacter) — not the scene, not any other character.
+// The exchange is recorded server-side as a CharacterAnswer tick on the
+// scene's own branch (not the character's — see that module's own Haddock),
+// but this panel doesn't read that tick back; it just shows whatever's
+// arrived in useUI's characterAnswers ring buffer for this character,
+// oldest first, same ephemeral-log treatment as AgentLogStrip.
+
+function AskPanel({ answers, onAsk }: { answers: { question: string; answer: string }[]; onAsk: (question: string) => void }) {
+  const [draft, setDraft] = useState("");
+  function submitAsk() {
+    const question = draft.trim();
+    if (!question) return;
+    onAsk(question);
+    setDraft("");
+  }
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
+      <span style={{ fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-dim)" }}>
+        Ask
+      </span>
+      {answers.length > 0 && (
+        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6, maxHeight: "30vh", overflow: "auto" }}>
+          {answers.map((a, i) => (
+            <div key={i} style={{ fontSize: 10 }}>
+              <div style={{ color: "var(--text-dim)", fontStyle: "italic" }}>{a.question}</div>
+              <div style={{ color: "var(--text-secondary)", marginTop: 2 }}>{a.answer}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+        <input
+          value={draft} onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAsk(); } }}
+          placeholder="Ask them something…"
+          style={{ flex: 1, fontSize: 10, padding: "3px 6px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--foreground)", outline: "none" }}
+        />
+        <button
+          onClick={submitAsk}
+          disabled={!draft.trim()}
+          style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10, padding: "3px 8px", background: "transparent", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-label)", cursor: draft.trim() ? "pointer" : "default", opacity: draft.trim() ? 1 : 0.5 }}
+        >
+          <HelpCircle style={{ width: 10, height: 10 }} />
+          Ask
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Character card ───────────────────────────────────────────────────────────
 
 function CharacterCard({
@@ -136,6 +190,7 @@ function CharacterCard({
   journalMarker, onSetJournalMarker,
   contextAtoms, contextAnnotations, onToggleContextAtom, onToggleContextAnnotation,
   onTrack, onHoverAtoms, onHoverEnd, onEditAtom, onCycleSwipe, onAppend,
+  onAsk, answers,
 }: {
   branch: string;
   conn: CharacterConn | undefined;
@@ -155,6 +210,8 @@ function CharacterCard({
   onEditAtom: (tickId: string, content: string, marker: string | null) => void;
   onCycleSwipe: (tickId: string, marker: string | null) => void;
   onAppend: (text: string, marker: string | null) => void;
+  onAsk: (question: string) => void;
+  answers: { question: string; answer: string }[];
 }) {
   const connected = conn !== undefined;
   // 'conn.name' (from the /character/{branch} connection's CharacterState)
@@ -197,14 +254,17 @@ function CharacterCard({
       </div>
 
       {expanded && (
-        <JournalPanel
-          branch={branch} journal={journal}
-          journalMarker={journalMarker} onSetJournalMarker={onSetJournalMarker}
-          contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
-          onToggleContextAtom={onToggleContextAtom} onToggleContextAnnotation={onToggleContextAnnotation}
-          onTrack={onTrack} onHoverAtoms={onHoverAtoms} onHoverEnd={onHoverEnd}
-          onEditAtom={onEditAtom} onCycleSwipe={onCycleSwipe} onAppend={onAppend}
-        />
+        <>
+          <JournalPanel
+            branch={branch} journal={journal}
+            journalMarker={journalMarker} onSetJournalMarker={onSetJournalMarker}
+            contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
+            onToggleContextAtom={onToggleContextAtom} onToggleContextAnnotation={onToggleContextAnnotation}
+            onTrack={onTrack} onHoverAtoms={onHoverAtoms} onHoverEnd={onHoverEnd}
+            onEditAtom={onEditAtom} onCycleSwipe={onCycleSwipe} onAppend={onAppend}
+          />
+          <AskPanel answers={answers} onAsk={onAsk} />
+        </>
       )}
     </div>
   );
@@ -217,7 +277,7 @@ export function CharacterSidebar({
   openCharacter, closeCharacter, openJournals, openJournal, closeJournal,
   journalMarkers, setJournalMarker, trackJournal, editJournalAtom, cycleJournalSwipe, appendJournal,
   contextAtoms, contextAnnotations, toggleContextAtom, toggleContextAnnotation,
-  onHoverAtoms, onHoverEnd, enterScene, leaveScene,
+  onHoverAtoms, onHoverEnd, enterScene, leaveScene, askCharacter, characterAnswers,
 }: {
   // Presence is scoped to a file (a scene), not the whole branch — see
   // WRITER.md — so this sidebar reflects whichever file is open, not the
@@ -255,6 +315,11 @@ export function CharacterSidebar({
   onHoverEnd: () => void;
   enterScene: (path: string, character: string) => void;
   leaveScene: (path: string, character: string) => void;
+  askCharacter: (path: string, character: string, question: string) => void;
+  // Ring buffer of every character.answered event received so far this
+  // session (see lib/uiStore's characterAnswers) — filtered per branch
+  // below, same shape AgentLogStrip reads agentLogs in.
+  characterAnswers: { character: string; question: string; answer: string }[];
 }) {
   const effectiveHead = rebaseMarker ?? head;
   const active = activeCharacterBranches(ticks, effectiveHead);
@@ -347,6 +412,8 @@ export function CharacterSidebar({
               onEditAtom={(tickId, content, marker) => editJournalAtom(b, tickId, content, marker)}
               onCycleSwipe={(tickId, marker) => cycleJournalSwipe(b, tickId, marker)}
               onAppend={(text, marker) => appendJournal(b, text, marker)}
+              onAsk={(question) => selectedFile && askCharacter(selectedFile, b, question)}
+              answers={characterAnswers.filter((a) => a.character === b)}
             />
           ))
         )}

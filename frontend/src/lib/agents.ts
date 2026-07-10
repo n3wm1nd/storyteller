@@ -117,6 +117,23 @@ export const AGENTS: AgentDef[] = [
     contextSources: [{ id: "story", label: "Story branch", mode: "on-demand" }],
     appliesTo: isChatFile,
   },
+  {
+    id: "askCharacter",
+    label: "Ask Character",
+    description: "Answers a question in character, using only that character's own branch (sheet, journal) — not the scene, not any other character.",
+    promptKeys: ["agent.ask-character"],
+    configRole: "agent",
+    // Empty, like Fixer's: not because there's no context (there plainly
+    // is — the character's whole branch), but because it isn't
+    // configurable through this per-branch include/exclude UI. Which
+    // branch gets read is chosen per call ("/ask @character=..."), not
+    // fixed like every other agent's source, and charSummaryAgent itself
+    // has no filtering to configure in the first place — it reads
+    // everything in that branch unconditionally (see Storyteller.Writer.
+    // Agent.CharContext).
+    contextSources: [],
+    appliesTo: (path) => !isChatFile(path),
+  },
 ];
 
 export function promptKeyToPath(key: string): string {

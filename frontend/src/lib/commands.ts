@@ -29,6 +29,16 @@ export const COMMANDS: CommandDef[] = [
     name: "regen", label: "Regen", description: "Regenerate this chapter to fit its beat sheet.",
     params: [{ name: "beat", description: "Regenerate beat-by-beat instead of the whole chapter.", flag: true }],
   },
+  // Not one of the write/fix/append/note/regen agents AGENT_META lists —
+  // this doesn't edit the file at all, it asks a character a question,
+  // answered from only their own branch (see Server.Writer.File.
+  // askCharacter). Recorded on this branch, surfaced through the same
+  // characterAnswers ring buffer the sidebar's per-character Ask panel
+  // reads, not inline in the file — see uiStore.ts.
+  {
+    name: "ask", label: "Ask", description: "Ask a character a question, answered from only their own branch.",
+    params: [{ name: "character", description: "Which character to ask (their branch id, e.g. character/alice)." }],
+  },
 ];
 
 // ChatView's input only ever sends a conversational turn (chatConverse) —

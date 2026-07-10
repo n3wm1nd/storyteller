@@ -6,7 +6,7 @@ import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
 import {
-  openFile, createFile, deleteFile, renameFile, closeFile, enterScene, leaveScene,
+  openFile, createFile, deleteFile, renameFile, closeFile, enterScene, leaveScene, askCharacter,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
@@ -160,7 +160,7 @@ export default function Home() {
   } = useServerCache();
 
   const {
-    conns, error, journalMarkers, agentLogs, contextAtoms, contextAnnotations, rebaseMarker, hoverHighlight,
+    conns, error, journalMarkers, agentLogs, characterAnswers, contextAtoms, contextAnnotations, rebaseMarker, hoverHighlight,
     setJournalMarker, setHoverHighlight, clearHoverHighlight,
     toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, setRebaseMarker,
   } = useUI();
@@ -586,6 +586,7 @@ export default function Home() {
                 onFix={handleFix}
                 onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
                 onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
+                onAsk={(character, question) => selectedFile && askCharacter(selectedFile, character, question)}
               />
             </>}
           </>}
@@ -642,6 +643,7 @@ export default function Home() {
               toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
               onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}
               enterScene={enterScene} leaveScene={leaveScene}
+              askCharacter={askCharacter} characterAnswers={characterAnswers}
             />
           </div>
         )}

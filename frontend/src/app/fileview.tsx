@@ -1099,7 +1099,7 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   regen:  { label: "Regen",  title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
 };
 
-export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen }: {
+export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk }: {
   enabled: boolean;
   contextAtomCount: number;
   contextAnnotationCount: number;
@@ -1111,6 +1111,9 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   onFix:    (text: string) => void;
   onNote:   (text: string) => void;
   onRegen:  (text: string, byBeat: boolean) => void;
+  // Not a mode in AGENT_META (this doesn't edit the file) — only reachable
+  // via the "/ask @character=..." command, never the mode pill/dropdown.
+  onAsk:    (character: string, question: string) => void;
 }) {
   const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
@@ -1143,6 +1146,7 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   const commandActions: Record<string, (t: string, params: Record<string, string>) => void> = {
     write: (t) => onWrite(t), fix: (t) => onFix(t), append: (t) => onAppend(t), note: (t) => onNote(t),
     regen: (t, p) => onRegen(t, p.beat !== undefined),
+    ask: (t, p) => { if (p.character) onAsk(p.character, t); },
   };
 
   function fire() {
