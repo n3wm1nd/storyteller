@@ -3,12 +3,12 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff } from "lucide-react";
-import { StickyNote } from "lucide-react";
+import { StickyNote, HelpCircle } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { type WireTick } from "@/lib/serverCacheStore";
-import { type AnnotationMode, characterDisplayName, tailLeadTicks } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName, characterColor, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
@@ -247,7 +247,54 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
 
   const isNote   = tick.kind === "note";
   const isPrompt = tick.kind === "prompt";
-  if (!isNote && !isPrompt) return null;
+  const isAsk    = tick.kind === "character-answer";
+  if (!isNote && !isPrompt && !isAsk) return null;
+
+  // An ask has its own two-part shape (who was asked + the question, then
+  // the answer) rather than a single message — see Storyteller.Writer.
+  // Types.CharacterAnswer: 'message' is the answer, the question and which
+  // character answered are carried as fields (same wire convention Presence
+  // uses for its own "file"/"character" fields).
+  if (isAsk) {
+    const character = tick.fields?.character ?? "";
+    const question  = tick.fields?.question ?? "";
+    const name       = characterDisplayName(character);
+    const accentColor = characterColor(character);
+    const expandable  = tick.message.length > 80;
+    const preview     = expandable ? tick.message.slice(0, 80) + "…" : tick.message;
+
+    return (
+      <div
+        onClick={(e) => {
+          if (e.ctrlKey || e.metaKey) { onToggleContext(tick.tickId); return; }
+          if (expandable) setExpanded((v) => !v);
+        }}
+        style={{
+          margin: "4px 0 10px 12px", borderRadius: 5, padding: "5px 10px",
+          background: "oklch(0.22 0.02 240 / 0.4)", border: `1px solid ${accentColor.replace(")", " / 0.35)")}`,
+          outline: inContext ? `2px solid var(--amber)` : "none",
+          outlineOffset: 1, cursor: expandable ? "pointer" : "default",
+          transition: "outline 0.12s",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <HelpCircle style={{ width: 11, height: 11, color: accentColor, flexShrink: 0 }} />
+          <span style={{ fontSize: 11, color: accentColor, fontWeight: 600, flex: 1 }}>
+            Asked {name}: <span style={{ fontWeight: 400, fontStyle: "italic", color: "var(--text-muted)" }}>{question}</span>
+          </span>
+          {expandable && (
+            <ChevronDown style={{
+              width: 10, height: 10, color: "var(--text-ghost)", flexShrink: 0,
+              transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s",
+            }} />
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, marginTop: 3 }}>
+          {expanded ? tick.message : preview}
+        </div>
+      </div>
+    );
+  }
 
   const accentColor = isNote ? "oklch(0.55 0.15 240)" : "var(--amber)";
   const bgColor     = isNote ? "oklch(0.22 0.01 240 / 0.6)" : "oklch(0.78 0.10 65 / 0.08)";
@@ -295,9 +342,10 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  function dotColor(kind: string): string {
-    if (kind === "note")   return "oklch(0.55 0.15 240)";
-    if (kind === "prompt") return "var(--amber)";
+  function dotColor(ann: WireTick): string {
+    if (ann.kind === "note")             return "oklch(0.55 0.15 240)";
+    if (ann.kind === "prompt")           return "var(--amber)";
+    if (ann.kind === "character-answer") return characterColor(ann.fields?.character ?? "");
     return "var(--text-dim)";
   }
 
@@ -307,11 +355,14 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
         {annotations.map((ann) => {
           const inCtx  = contextAnnotations.has(ann.tickId);
           const isOpen = expandedId === ann.tickId;
-          const color  = dotColor(ann.kind);
+          const color  = dotColor(ann);
+          const title  = ann.kind === "character-answer"
+            ? `Asked ${characterDisplayName(ann.fields?.character ?? "")}: ${ann.fields?.question ?? ""}\n${ann.message.slice(0, 80)}`
+            : ann.message.slice(0, 80);
           return (
             <button
               key={ann.tickId}
-              title={ann.message.slice(0, 80)}
+              title={title}
               onClick={(e) => {
                 if (e.ctrlKey || e.metaKey) { onToggleContext(ann.tickId); return; }
                 setExpandedId((id) => id === ann.tickId ? null : ann.tickId);
