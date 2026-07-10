@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -13,7 +14,7 @@ module Storyteller.Writer.Agent.Tracker
   , dropUntilAfterLastSynced
   ) where
 
-import Data.Maybe (listToMaybe)
+import Data.Maybe (catMaybes, listToMaybe)
 import qualified Data.Set as Set
 import Polysemy
 
@@ -24,15 +25,23 @@ import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (Tick(..), TickId(..), tickId, tickParent)
 
--- | Copy atoms from @trackeeBranch@ to @trackerBranch@ for a single file pair.
---   Each new trackee atom produces exactly one tracker atom referencing it.
---   Returns the list of created tracker tick ids.
+-- | Copy atoms from @trackeeBranch@ to @trackerBranch@ for a single file pair,
+--   after running each candidate tick through @atomFilter@ -- 'Nothing' drops
+--   it, 'Just' keeps it (optionally changed) as what actually gets copied.
+--   Runs in the trackee branch's own 'BranchOp' scope, so it can read
+--   anything about the trackee (e.g. 'Storyteller.Writer.Presence.presentOn',
+--   for a caller that only wants to track ticks written while some character
+--   was present) without a second dispatch. Each surviving tick produces
+--   exactly one tracker atom referencing it. Returns the list of created
+--   tracker tick ids.
 trackBranch
   :: forall trackeeBranch trackerBranch r
   .  Members '[BranchOp trackeeBranch, BranchOp trackerBranch] r
-  => (FilePath, FilePath)   -- ^ (source file on trackee, dest file on tracker)
+  => (forall m. Core.StoreM m => Tick -> Core.StoreT m (Maybe Tick))
+     -- ^ per-tick filter\/transform, run against the trackee branch
+  -> (FilePath, FilePath)   -- ^ (source file on trackee, dest file on tracker)
   -> Sem r [TickId]
-trackBranch (fromFile, toFile) = do
+trackBranch atomFilter (fromFile, toFile) = do
   (trackeeTicks, _) <- runStorage @trackeeBranch $ do
     hashes <- Core.follow [] $ \acc h _t -> (h : acc, True)
     mapM Tick.readTypesTick hashes
@@ -48,7 +57,8 @@ trackBranch (fromFile, toFile) = do
   let contentTicks = filter ((/= Nothing) . tickParent) trackeeTicks
       newTicks     = dropUntilAfterLastSynced syncedRefs contentTicks
 
-  mapM (copyAtom @trackerBranch fromFile toFile) newTicks
+  (kept, _) <- runStorage @trackeeBranch (catMaybes <$> mapM atomFilter newTicks)
+  mapM (copyAtom @trackerBranch fromFile toFile) kept
   where
     coerceRef (Core.ObjectHash h) = TickId h
 

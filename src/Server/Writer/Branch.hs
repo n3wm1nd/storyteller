@@ -18,6 +18,7 @@ module Server.Writer.Branch
   , uploadFiles
   , uploadFile
   , saveFile
+  , onlyWhilePresent
   ) where
 
 import Control.Monad (void)
@@ -34,10 +35,13 @@ import Server.Core.Util (withBranch)
 
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
+import Storyteller.Writer.Presence (presentAt)
+import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage, withStorage)
+import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Storage (createBranch, getBranch)
-import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Core.Types (BranchName(..), Tick, fromTick, tickId)
 import qualified Data.Yaml as Yaml
 
 import Prelude hiding (writeFile)
@@ -67,8 +71,26 @@ trackFiles target source pairs = do
   let destPaths = map snd pairs
   runBranchAndFS @Source source
     $ runBranchAndFS @Tracker target $ do
-        mapM_ (trackBranch @Source @Tracker) pairs
+        mapM_ (trackBranch @Source @Tracker (onlyWhilePresent target)) pairs
         return destPaths
+
+-- | Only copy an atom into @character@'s branch if that character was
+--   marked present (see 'Storyteller.Writer.Presence.presentAt') on the
+--   atom's own file at the point it was written -- narrative events that
+--   happened while the character wasn't in the scene don't belong in their
+--   journal. Drops every non-atom tick outright too (presence ticks, notes,
+--   ...) -- a character's journal is a copy of narrative content, not a
+--   mirror of every tick kind the source branch happens to record. A
+--   dropped tick is never marked synced (see
+--   'Storyteller.Writer.Agent.Tracker.dropUntilAfterLastSynced'), so a
+--   later sync pass simply reconsiders it -- harmless, since presence at a
+--   fixed historical position never changes, so it drops again every time.
+onlyWhilePresent :: Core.StoreM m => BranchName -> Tick -> Core.StoreT m (Maybe Tick)
+onlyWhilePresent character tick = case fromTick @Atom tick of
+  Nothing -> pure Nothing
+  Just (Atom file _) -> do
+    present <- presentAt file
+    pure (if present (tickId tick) character then Just tick else Nothing)
 
 -- | Run chargen and commit the result to a branch.
 --   Creates the branch if it doesn't exist.

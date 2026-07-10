@@ -27,7 +27,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types
 import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
-import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
+import Storyteller.Writer.Presence (recordPresence, activeCharactersFor, presentOn, presentAt)
 
 -- | Every tick reachable from head, typed, oldest first -- the
 -- "Storage.Tick"-based counterpart of @followChain@\/@fileTicksOf@ used
@@ -214,3 +214,49 @@ spec = do
       case result of
         Right (Just _tb, Nothing, [Just "character/bob"]) -> return ()
         other -> expectationFailure ("expected only Bob's (rebased) tick to survive, got: " <> show other)
+
+  describe "presentOn" $ do
+
+    it "is False on a file nobody has entered" $
+      runStory True (fst <$> runStorage @Story (do
+        check <- presentOn "scene.md"
+        pure (check (BranchName "character/alice"))))
+        `shouldBe` Right False
+
+    it "is True after Enter" $
+      runStory True (do
+        _ <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
+        fst <$> runStorage @Story (do
+          check <- presentOn "scene.md"
+          pure (check (BranchName "character/alice"))))
+        `shouldBe` Right True
+
+    it "does not leak across files -- entering in one file leaves another untouched" $
+      runStory True (do
+        _ <- recordPresence @Story "chapters/ch1.md" (BranchName "character/alice") Enter
+        fst <$> runStorage @Story (do
+          check <- presentOn "chapters/ch2.md"
+          pure (check (BranchName "character/alice"))))
+        `shouldBe` Right False
+
+  describe "presentAt" $ do
+
+    it "answers differently for a tick before an Enter than for one after, within the same tracking pass" $ do
+      let result = runStory True $ do
+            beforeTid <- writeAtom "scene.md" "absent."
+            _         <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
+            afterTid  <- writeAtom "scene.md" "\n\npresent."
+            fst <$> runStorage @Story (do
+              check <- presentAt "scene.md"
+              pure ( check beforeTid (BranchName "character/alice")
+                   , check afterTid  (BranchName "character/alice") ))
+      result `shouldBe` Right (False, True)
+
+    it "does not leak across files when checking a specific tick" $ do
+      let result = runStory True $ do
+            _   <- recordPresence @Story "chapters/ch1.md" (BranchName "character/alice") Enter
+            tid <- writeAtom "chapters/ch2.md" "elsewhere."
+            fst <$> runStorage @Story (do
+              check <- presentAt "chapters/ch2.md"
+              pure (check tid (BranchName "character/alice")))
+      result `shouldBe` Right False

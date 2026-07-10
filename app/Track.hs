@@ -75,4 +75,7 @@ runTrackIO repoPath endpoint sourceBranch trackerBranch files =
       getBranch trackerBranch >>= \case
         Nothing -> void $ createBranch trackerBranch
         Just _  -> return ()
-      fmap concat $ mapM (trackBranch @Source @Tracker) files
+      -- No character/presence context at this level (a bare CLI over two
+      -- named branches) -- keep every candidate tick, same as before this
+      -- CLI's 'trackBranch' gained its filter parameter.
+      fmap concat $ mapM (trackBranch @Source @Tracker (\tick -> pure (Just tick))) files

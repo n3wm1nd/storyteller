@@ -25,6 +25,9 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types
 import Storyteller.Writer.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (PresenceEvent(..))
+import Server.Writer.Branch (onlyWhilePresent)
 
 -- ---------------------------------------------------------------------------
 -- Phantoms
@@ -56,6 +59,13 @@ runTwoTrack action =
 -- ---------------------------------------------------------------------------
 -- Pure tests
 -- ---------------------------------------------------------------------------
+
+-- | 'trackBranch's filter argument, set to "keep everything" -- these tests
+--   are about the sync/dedup mechanics, not the presence-aware filtering
+--   'Server.Writer.Branch.onlyWhilePresent' adds on top for the character
+--   use case.
+keepAll :: Core.StoreM m => Tick -> Core.StoreT m (Maybe Tick)
+keepAll tick = pure (Just tick)
 
 mkTick :: Int -> [TickId] -> Tick
 mkTick n refs = Tick
@@ -105,7 +115,7 @@ spec = do
             _ <- runStorage @Source (Ops.addAtom "story.md" "paragraph one")
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nparagraph two")
             -- Track into tracker.
-            tids <- trackBranch @Source @Tracker
+            tids <- trackBranch @Source @Tracker keepAll
                       ("story.md", "story.md")
             -- Read tracker result.
             content <- readFile @(BranchTag Tracker) "story.md"
@@ -120,12 +130,12 @@ spec = do
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "atom one")
             -- First track.
-            tids1 <- trackBranch @Source @Tracker
+            tids1 <- trackBranch @Source @Tracker keepAll
                        ("story.md", "story.md")
             -- Add another atom to source.
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\natom two")
             -- Second track: should only copy the new atom.
-            tids2 <- trackBranch @Source @Tracker
+            tids2 <- trackBranch @Source @Tracker keepAll
                        ("story.md", "story.md")
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids1, length tids2, content)
@@ -140,7 +150,7 @@ spec = do
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "source atom")
             -- First track.
-            _ <- trackBranch @Source @Tracker
+            _ <- trackBranch @Source @Tracker keepAll
                    ("story.md", "story.md")
             -- Tracker adds its own tick (no ref to source).
             writeFile @(BranchTag Tracker) "notes.md" "author note"
@@ -148,7 +158,7 @@ spec = do
             -- Add new source atom.
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nnew atom")
             -- Second track: should only copy new source atom.
-            tids <- trackBranch @Source @Tracker
+            tids <- trackBranch @Source @Tracker keepAll
                       ("story.md", "story.md")
             storyContent <- readFile @(BranchTag Tracker) "story.md"
             noteContent  <- fileExists @(BranchTag Tracker) "notes.md"
@@ -160,13 +170,56 @@ spec = do
           storyContent `shouldBe` "source atom\n\nnew atom"
           notesExist `shouldBe` True
 
+  describe "trackBranch with onlyWhilePresent (character presence-gated tracking)" $ do
+    it "copies only the atom written while the character was present" $ do
+      let character = BranchName "tracker"
+      let result = runTwoTrack $ do
+            _ <- recordPresence @Source "story.md" character Enter
+            _ <- runStorage @Source (Ops.addAtom "story.md" "she arrived.")
+            _ <- recordPresence @Source "story.md" character Leave
+            _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nmeanwhile, elsewhere.")
+            tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
+                      ("story.md", "story.md")
+            content <- readFile @(BranchTag Tracker) "story.md"
+            return (length tids, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n, content) -> do
+          n `shouldBe` 1
+          content `shouldBe` "she arrived."
+
+    it "copies nothing when the character was never present" $ do
+      let character = BranchName "tracker"
+      let result = runTwoTrack $ do
+            _ <- runStorage @Source (Ops.addAtom "story.md" "nobody's here.")
+            tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
+                      ("story.md", "story.md")
+            return (length tids)
+      result `shouldBe` Right 0
+
+    it "copies everything once the character re-enters, still skipping the absent gap" $ do
+      let character = BranchName "tracker"
+      let result = runTwoTrack $ do
+            _ <- runStorage @Source (Ops.addAtom "story.md" "absent.")
+            _ <- recordPresence @Source "story.md" character Enter
+            _ <- runStorage @Source (Ops.addAtom "story.md" "\n\npresent.")
+            tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
+                      ("story.md", "story.md")
+            content <- readFile @(BranchTag Tracker) "story.md"
+            return (length tids, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n, content) -> do
+          n `shouldBe` 1
+          content `shouldBe` "\n\npresent."
+
     it "nothing to track when source has no new atoms" $ do
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "atom one")
-            _ <- trackBranch @Source @Tracker
+            _ <- trackBranch @Source @Tracker keepAll
                    ("story.md", "story.md")
             -- Track again with no new source atoms.
-            tids <- trackBranch @Source @Tracker
+            tids <- trackBranch @Source @Tracker keepAll
                       ("story.md", "story.md")
             return (length tids)
       result `shouldBe` Right 0
