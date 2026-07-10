@@ -109,26 +109,39 @@ data CharacterAnswer = CharacterAnswer
   , caFile      :: Maybe FilePath
   } deriving (Show, Eq)
 
+-- | 'caQuestion' is free-form, possibly multi-line text -- exactly what
+--   'Storage.Tick.encodeTickData's own invariant forbids in a field (see
+--   its Haddock), so it can't sit in 'tickFields' next to 'caCharacter'\/
+--   'caFile' the way an earlier version of this instance had it. Both
+--   'caQuestion' and 'caAnswer' go into the message instead, joined by a
+--   single NUL character: not a delimiter either side could plausibly
+--   produce itself (unlike a chosen text delimiter, which a question or
+--   answer could in principle contain), and safe to split on across any
+--   consumer of this wire format, Haskell or otherwise, since it's one
+--   literal character rather than a count that depends on how "length"
+--   is defined for the text's encoding.
+questionAnswerSep :: Text
+questionAnswerSep = "\NUL"
+
 instance TickType CharacterAnswer where
   tickTypeName = "character-answer"
 
   toDraft (CharacterAnswer (Character branch) question answer mFile) =
-    encodeDraft @CharacterAnswer []
-      ( ("character", unBranchName branch)
-      : ("question", question)
-      : maybe [] (\f -> [("file", T.pack f)]) mFile
-      )
-      answer
+    encodeDraft @CharacterAnswer
+      []
+      (("character", unBranchName branch) : maybe [] (\f -> [("file", T.pack f)]) mFile)
+      (question <> questionAnswerSep <> answer)
 
   fromTick t = do
-    _         <- decodePayload @CharacterAnswer t
+    _        <- decodePayload @CharacterAnswer t
     let fields = tickFields (tickData t)
-    charName  <- lookup "character" fields
-    question  <- lookup "question" fields
+    charName <- lookup "character" fields
     let mFile = T.unpack <$> lookup "file" fields
+        (question, rest) = T.breakOn questionAnswerSep (tickMessage (tickData t))
+    answer <- T.stripPrefix questionAnswerSep rest
     Just CharacterAnswer
       { caCharacter = Character (BranchName charName)
       , caQuestion  = question
-      , caAnswer    = tickMessage (tickData t)
+      , caAnswer    = answer
       , caFile      = mFile
       }

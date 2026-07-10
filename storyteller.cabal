@@ -255,6 +255,7 @@ test-suite storyteller-test
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
                   , Storyteller.PresenceSpec
+                  , Storyteller.Writer.CharacterAnswerSpec
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec

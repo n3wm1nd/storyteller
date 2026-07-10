@@ -21,6 +21,7 @@ import qualified Storyteller.TrackerSpec
 import qualified Storyteller.CharGenSpec
 import qualified Storyteller.CharContextSpec
 import qualified Storyteller.PresenceSpec
+import qualified Storyteller.Writer.CharacterAnswerSpec
 import qualified Storyteller.UndoSpec
 import qualified Storyteller.ChatSpec
 import qualified Storyteller.LibrarySpec
@@ -61,6 +62,7 @@ main = hspec $ do
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
   describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
   describe "Storyteller.Presence"       Storyteller.PresenceSpec.spec
+  describe "Storyteller.Writer.Types.CharacterAnswer" Storyteller.Writer.CharacterAnswerSpec.spec
   describe "Storyteller.Undo"           Storyteller.UndoSpec.spec
   describe "Storyteller.Writer.Agent.Chat" Storyteller.ChatSpec.spec
   describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec

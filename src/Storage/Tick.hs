@@ -50,10 +50,30 @@ import qualified Storyteller.Core.Types as ST
 --   collapsing tag and payload onto adjacent lines with no separator at
 --   all whenever a tick had none — see 'decodeTickData's own Haddock for
 --   what that made possible to get wrong.)
-encodeTickData :: ST.TickData -> Text
-encodeTickData td =
-  let fieldLines = map (\(k, v) -> k <> ":" <> v) (ST.tickFields td)
-  in T.intercalate "\n" fieldLines <> "\n\n" <> ST.tickMessage td
+--
+--   Fails (via 'MonadFail') if any field's key or value itself contains a
+--   newline -- a general invariant of this encoding, not something any one
+--   'TickType' instance is responsible for remembering: the header block
+--   is one line per field, so a field value with an embedded newline would
+--   either get silently truncated (the rest parses as a bogus, colon-less
+--   header line and is dropped -- see 'decodeTickData') or, worse, produce
+--   a spurious blank line that 'decodeTickData' mistakes for the real
+--   header\/payload boundary, swallowing everything genuinely after it
+--   (later fields, the real message) into what it thinks is this field's
+--   own tail. A 'TickType' with free-form, possibly-multiline text to
+--   carry (e.g. 'Storyteller.Writer.Types.CharacterAnswer's question) must
+--   put it in the message, the one part of this format that's read
+--   verbatim to the end with no further line-based parsing -- never in a
+--   field.
+encodeTickData :: MonadFail m => ST.TickData -> m Text
+encodeTickData td
+  | any invalidField (ST.tickFields td) =
+      fail ("encodeTickData: a field key or value contains a newline: " <> show (ST.tickFields td))
+  | otherwise =
+      let fieldLines = map (\(k, v) -> k <> ":" <> v) (ST.tickFields td)
+      in return (T.intercalate "\n" fieldLines <> "\n\n" <> ST.tickMessage td)
+  where
+    invalidField (k, v) = T.any (== '\n') k || T.any (== '\n') v
 
 -- | Split @raw@ at its header\/payload boundary: the first blank line,
 --   full stop ('T.breakOn "\n\n"', not 'T.lines'\/'break T.null' — the
@@ -97,7 +117,9 @@ uncoerceRef (ObjectHash t) = TickId t
 --   has never needed to special-case that kind, since nothing calls it
 --   with one.
 storeAs :: (StoreM m, TickType a) => a -> StoreT m ObjectHash
-storeAs a = store (NonAtom (map coerceRef (ST.tickRefs td)) (encodeTickData td))
+storeAs a = do
+  msg <- encodeTickData td
+  store (NonAtom (map coerceRef (ST.tickRefs td)) msg)
   where td = toDraft a
 
 -- ---------------------------------------------------------------------------

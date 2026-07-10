@@ -232,7 +232,7 @@ editChatPrompt (TickId tid) content = do
   case fromTick @Prompt typed of
     Nothing -> fail "editChatPrompt: not a chat prompt"
     Just (Prompt file _) -> do
-      let newMsg = Tick.encodeTickData (toDraft (Prompt file content))
+      newMsg <- Tick.encodeTickData (toDraft (Prompt file content))
       void $ runStorage @Main $ Core.at (Core.ObjectHash tid) $ Core.editTick $ \case
         Core.NonAtom refs _ -> return (Core.NonAtom refs newMsg)
         _                    -> fail "editChatPrompt: not a chat prompt (it's an atom)"

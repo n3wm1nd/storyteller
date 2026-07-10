@@ -189,10 +189,11 @@ withStorageWithCallback onRef action = do
         case existing of
           Just _ -> raise $ fail $ "branch already exists: " <> T.unpack (unBranchName name)
           Nothing -> do
+            rootMsg  <- Tick.encodeTickData (toDraft (Root name))
             rootHash <- raise $ RG.writeCommit CommitData
               { commitParents = []
               , commitTree    = emptyTree
-              , commitMessage = Tick.encodeTickData (toDraft (Root name))
+              , commitMessage = rootMsg
               }
             let tid = TickId (unObjectHash rootHash)
             applyRef name (Just tid)

@@ -198,6 +198,21 @@ export function nearestJournalMarker(
   return best;
 }
 
+// A "character-answer" tick's own message is question and answer joined by
+// a single NUL character, not split across separate fields — see
+// Storyteller.Writer.Types.CharacterAnswer's own Haddock for why: both are
+// free-form text that can contain embedded newlines (a multi-line
+// question, a multi-paragraph answer), which a plain tick field can't hold
+// safely, and a NUL is a character neither side could plausibly produce
+// itself, unlike a chosen text delimiter. Splits into ["", message] if the
+// separator is missing (malformed input this convention never produces
+// itself), so a caller always gets a question/answer pair back, never a
+// thrown error.
+export function splitQuestionAnswer(message: string): [string, string] {
+  const idx = message.indexOf("\0");
+  return idx === -1 ? ["", message] : [message.slice(0, idx), message.slice(idx + 1)];
+}
+
 export function statusColor(status: string): string {
   switch (status) {
     case "connected":  return "var(--emerald)";

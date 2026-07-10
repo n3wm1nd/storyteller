@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sanity tests for "Storage.Tick" -- the bridge between "Storage.Core"'s
@@ -13,11 +14,44 @@ import Storage.Ops
 import Storage.Tick
 import Storage.MockStore
 
-import Storyteller.Core.Types (BranchName(..), Root(..), TickId(..), fromTick, tickData, tickMessage, tickFields, tickPos, posParent, posRefs)
+import Storyteller.Core.Types
+  ( BranchName(..), Root(..), TickId(..)
+  , fromTick, tickData, tickMessage, tickFields, tickPos, posParent, posRefs
+  )
+import qualified Storyteller.Core.Types as ST
 import Storyteller.Common.Types (Note(..))
 
 spec :: Spec
 spec = do
+  describe "encodeTickData" $ do
+    -- The header block is one line per field ("key:value", joined by "\n",
+    -- see encodeTickData's own Haddock) -- an embedded newline in a field's
+    -- own key or value would either get silently dropped (a colon-less
+    -- continuation line the decoder can't parse as a field) or, worse, a
+    -- field value containing a literal blank line would produce a spurious
+    -- "\n\n" the decoder mistakes for the real header/payload boundary,
+    -- swallowing every later field and the real message into what it
+    -- thinks is this field's own tail. Rejecting outright at encode time
+    -- turns that into a loud failure instead of a silent corruption.
+    it "fails when a field value contains a newline" $ do
+      let bad = ST.TickData { ST.tickRefs = [], ST.tickFields = [("question", "line one\nline two")], ST.tickMessage = "" }
+          result = fst <$> runChain (encodeTickData bad)
+      result `shouldSatisfy` \case { Left _ -> True; Right _ -> False }
+
+    it "fails when a field value contains a blank line (two consecutive newlines)" $ do
+      let bad = ST.TickData { ST.tickRefs = [], ST.tickFields = [("question", "para one\n\npara two")], ST.tickMessage = "" }
+          result = fst <$> runChain (encodeTickData bad)
+      result `shouldSatisfy` \case { Left _ -> True; Right _ -> False }
+
+    it "fails when a field key contains a newline" $ do
+      let bad = ST.TickData { ST.tickRefs = [], ST.tickFields = [("bad\nkey", "value")], ST.tickMessage = "" }
+          result = fst <$> runChain (encodeTickData bad)
+      result `shouldSatisfy` \case { Left _ -> True; Right _ -> False }
+
+    it "succeeds when no field contains a newline, even if the message itself does" $ do
+      let ok = ST.TickData { ST.tickRefs = [], ST.tickFields = [("a", "b")], ST.tickMessage = "hello\n\nworld" }
+          result = fst <$> runChain (encodeTickData ok)
+      result `shouldSatisfy` \case { Left _ -> False; Right _ -> True }
   describe "decodeTickData / a payload with its own blank line" $ do
     -- Regression: the header/payload boundary used to be found by
     -- scanning for the first *blank* line, which misfired the moment a

@@ -8,7 +8,7 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { type WireTick } from "@/lib/serverCacheStore";
-import { type AnnotationMode, characterDisplayName, characterColor, tailLeadTicks } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
@@ -251,17 +251,18 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
   if (!isNote && !isPrompt && !isAsk) return null;
 
   // An ask has its own two-part shape (who was asked + the question, then
-  // the answer) rather than a single message — see Storyteller.Writer.
-  // Types.CharacterAnswer: 'message' is the answer, the question and which
-  // character answered are carried as fields (same wire convention Presence
-  // uses for its own "file"/"character" fields).
+  // the answer). Which character answered is a field (same wire convention
+  // Presence uses for its own "character" field), but the question and
+  // answer themselves are both joined into 'message' — see
+  // lib/utils.splitQuestionAnswer for why neither can be a plain tick
+  // field (both are free-form, possibly multi-line text).
   if (isAsk) {
     const character = tick.fields?.character ?? "";
-    const question  = tick.fields?.question ?? "";
+    const [question, answer] = splitQuestionAnswer(tick.message);
     const name       = characterDisplayName(character);
     const accentColor = characterColor(character);
-    const expandable  = tick.message.length > 80;
-    const preview     = expandable ? tick.message.slice(0, 80) + "…" : tick.message;
+    const expandable  = answer.length > 80;
+    const preview     = expandable ? answer.slice(0, 80) + "…" : answer;
 
     return (
       <div
@@ -290,7 +291,7 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
           )}
         </div>
         <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, marginTop: 3 }}>
-          {expanded ? tick.message : preview}
+          {expanded ? answer : preview}
         </div>
       </div>
     );
@@ -356,9 +357,11 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
           const inCtx  = contextAnnotations.has(ann.tickId);
           const isOpen = expandedId === ann.tickId;
           const color  = dotColor(ann);
-          const title  = ann.kind === "character-answer"
-            ? `Asked ${characterDisplayName(ann.fields?.character ?? "")}: ${ann.fields?.question ?? ""}\n${ann.message.slice(0, 80)}`
-            : ann.message.slice(0, 80);
+          const title  = (() => {
+            if (ann.kind !== "character-answer") return ann.message.slice(0, 80);
+            const [question, answer] = splitQuestionAnswer(ann.message);
+            return `Asked ${characterDisplayName(ann.fields?.character ?? "")}: ${question}\n${answer.slice(0, 80)}`;
+          })();
           return (
             <button
               key={ann.tickId}
