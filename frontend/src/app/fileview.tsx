@@ -4,6 +4,9 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff } from "lucide-react";
 import { StickyNote } from "lucide-react";
+import { useEditor, EditorContent } from "@tiptap/react";
+import { StarterKit } from "@tiptap/starter-kit";
+import { Markdown } from "tiptap-markdown";
 import { type WireTick } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
@@ -712,7 +715,7 @@ export function WireTickList({
   );
 }
 
-// ── Raw edit mode ─────────────────────────────────────────────────────────────
+// ── Text/Source edit modes ────────────────────────────────────────────────────
 
 // Whole-file text editing, bypassing atoms/positions entirely — for bulk
 // changes (find/replace across a scene, pasting in a rewritten draft) that
@@ -814,6 +817,127 @@ export function RawEditPanel({ branch, path }: {
             lineHeight: 1.6, color: "var(--text-body)", background: "transparent",
           }}
         />
+      )}
+    </div>
+  );
+}
+
+// Whole-file WYSIWYG editing — a Word-like surface (bold/strike/lists,
+// natural copy-paste) over the same raw markdown 'RawEditPanel' edits, for
+// quick editorial passes across a scene without threading through individual
+// atoms. Loads/saves through the identical plumbing as raw mode (same GET/PUT
+// pair, same server-side atom reconciliation) — only the editing widget
+// differs: TipTap (via 'tiptap-markdown') owns the live document and speaks
+// markdown in and out, rather than a controlled textarea string.
+export function TextEditPanel({ branch, path }: {
+  branch: string;
+  path: string;
+}) {
+  const [savedContent, setSavedContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const savedContentRef = useRef<string | null>(null);
+  const savingRef = useRef(false);
+
+  function save() {
+    if (!editor || savingRef.current) return;
+    const md = editor.storage.markdown.getMarkdown();
+    savingRef.current = true;
+    setSaving(true);
+    setError(null);
+    saveRawFile(branch, path, md)
+      .then(() => {
+        savedContentRef.current = md;
+        setSavedContent(md);
+        setDirty(false);
+        savingRef.current = false;
+        setSaving(false);
+      })
+      .catch((err) => {
+        savingRef.current = false;
+        setError(err instanceof Error ? err.message : String(err));
+        setSaving(false);
+      });
+  }
+
+  const editor = useEditor({
+    extensions: [StarterKit, Markdown.configure({ html: false, transformPastedText: true })],
+    content: "",
+    immediatelyRender: false,
+    onUpdate: ({ editor }) => setDirty(editor.storage.markdown.getMarkdown() !== savedContentRef.current),
+    editorProps: {
+      handleKeyDown: (_view, event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "s") { event.preventDefault(); save(); return true; }
+        return false;
+      },
+    },
+  });
+
+  useEffect(() => {
+    if (!editor) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(branchFileUrl(branch, path))
+      .then((res) => {
+        if (!res.ok) throw new Error(`load failed: ${res.status}`);
+        return res.text();
+      })
+      .then((text) => {
+        if (cancelled) return;
+        editor.commands.setContent(text);
+        savedContentRef.current = text;
+        setSavedContent(text);
+        setDirty(false);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branch, path, editor]);
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{
+        flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
+        display: "flex", alignItems: "center", gap: 8, fontSize: 10,
+      }}>
+        <span style={{ color: "var(--text-ghost)" }}>Text edit — WYSIWYG, reconciled against atoms on save</span>
+        <span style={{ flex: 1 }} />
+        {error && <span style={{ color: "var(--rose)" }}>{error}</span>}
+        {dirty && !error && <span style={{ color: "var(--amber)" }}>unsaved</span>}
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          style={{
+            fontSize: 10, padding: "2px 10px", borderRadius: 4,
+            cursor: dirty && !saving ? "pointer" : "default",
+            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+            border: "1px solid " + (dirty ? "oklch(0.78 0.10 65 / 0.35)" : "var(--border-subtle)"),
+            color: dirty ? "var(--amber)" : "var(--text-dim)",
+          }}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {loading ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+          Loading…
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflow: "auto", padding: "14px 18px" }}>
+          <EditorContent
+            editor={editor}
+            className="tiptap-text-mode"
+            style={{ fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.8, color: "var(--text-body)" }}
+          />
+        </div>
       )}
     </div>
   );

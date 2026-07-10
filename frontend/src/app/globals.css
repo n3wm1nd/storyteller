@@ -109,3 +109,21 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--text-dim); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
+
+/* Text mode (app/fileview.tsx TextEditPanel): TipTap ships its ProseMirror
+   root unstyled — sizing/spacing here mirrors the read-only 'mdComponents'
+   renderer used elsewhere in the same file, so Blocks and Text look like the
+   same document. */
+.tiptap-text-mode .ProseMirror { outline: none; max-width: 680px; margin: 0 auto; }
+.tiptap-text-mode p { margin: 0 0 0.9em; }
+.tiptap-text-mode h1 { margin: 0 0 0.6em; font-size: 20px; color: var(--text-heading); font-weight: 600; }
+.tiptap-text-mode h2 { margin: 0 0 0.5em; font-size: 16px; color: var(--text-heading); font-weight: 600; }
+.tiptap-text-mode h3 { margin: 0 0 0.4em; font-size: 14px; color: var(--text-heading); font-weight: 600; }
+.tiptap-text-mode blockquote { margin: 0 0 0.9em; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-muted); font-style: italic; }
+.tiptap-text-mode code { font-family: monospace; font-size: 11px; background: oklch(0.18 0.01 60); padding: 1px 4px; border-radius: 3px; color: var(--text-label); }
+.tiptap-text-mode pre { margin: 0 0 0.9em; padding: 8px 10px; background: oklch(0.18 0.01 60); border-radius: 5px; overflow-x: auto; font-size: 11px; line-height: 1.6; }
+.tiptap-text-mode pre code { background: none; padding: 0; }
+
+/* Forward-compatible slot for token decoration (app/token-decoration.ts) —
+   not yet registered by any editor extension. */
+.token-highlight { background: oklch(0.78 0.10 65 / 0.15); border-radius: 2px; }
