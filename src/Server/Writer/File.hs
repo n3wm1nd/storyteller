@@ -39,52 +39,76 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, WordCount(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, CharLabel(..), WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import Storyteller.Writer.Agent.Write (writeAgent)
+import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
 import Storyteller.Writer.Agent.Outline
   ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
   , reconcileChapter, reconcileChapterByBeat, splitOutlineFreeform )
-import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
 import Storyteller.Writer.Types (PresenceEvent)
 import Storyteller.Core.Runtime (Main)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
-import Storyteller.Core.Types (BranchName, TickId(..), fromTick, toDraft)
-import Storyteller.Core.Git (BranchTag, runStorage)
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, toDraft)
+import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage)
 
 import Prelude hiding (readFile, writeFile)
+
+-- | A phantom tag for opening one active character branch's filesystem at
+--   a time, dynamically -- same role 'Server.Writer.Branch.CharBranch'
+--   plays there, just local to this module since nothing outside it needs
+--   to name the tag.
+data ActiveChar
+
+-- | Every currently-active character's context, in the shape 'writeAgent'\/
+--   'flowWriteAgent' already accept -- presence ticks
+--   ('Storyteller.Writer.Presence.activeCharactersFor') are the sole source
+--   of truth for "who's in this scene"; there is no separate client-supplied
+--   signal, so this is the one place that decides which character branches
+--   an agent sees. Each active branch is opened dynamically (same
+--   'runBranchAndFS' pattern 'Server.Writer.Branch.charGen'\/'trackFiles'
+--   use for a runtime-named branch) and summarized via 'charSummaryAgent'.
+activeCharacterContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [(CharLabel, [CharContextBlock])]
+activeCharacterContext path = do
+  active <- activeCharactersFor @Main path
+  mapM summarize active
+  where
+    summarize (BranchName name) = do
+      blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar))
+      let label = maybe name id (T.stripPrefix "character/" name)
+      pure (CharLabel label, blocks)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
 --   'Storyteller.Writer.Agent.FlowWrite'). Context (existing file content,
 --   branch files, character summaries) is gathered here and handed to the
 --   agents as plain data; they append nothing themselves, so appending the
---   result is done here too. No character branches are wired into a scene
---   yet, hence the empty list below — see WRITER.md presence conventions
---   for where that's headed.
+--   result is done here too.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Sem r ()
 chatWriter path prompt context layout mFlowTid = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)
+  charBlocks <- activeCharacterContext path
   let extraContext = toContextBlocks context <> fileCtx
       instruction  = Instruction prompt
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid existing extraContext instruction []
+      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid existing extraContext instruction charBlocks
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
-      Prose generated <- writeAgent existing extraContext instruction []
+      Prose generated <- writeAgent existing extraContext instruction charBlocks
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
@@ -226,15 +250,15 @@ chatChapterRegen mode path prompt context = do
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
+      charBlocks <- flattenCharBlocks <$> activeCharacterContext path
       let extraContext = toContextBlocks context <> fileCtx
           instruction  = Instruction prompt
-          noChars      = [] :: [CharContextBlock]
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path
       Prose regenerated <- case mode of
         RegenWhole  -> reconcileChapter (Just (WordCount 1200))
-                         noChars extraContext current instruction sheet
+                         charBlocks extraContext current instruction sheet
         RegenByBeat -> reconcileChapterByBeat (Just (WordCount 300))
-                         noChars extraContext current instruction sheet maxBeats
+                         charBlocks extraContext current instruction sheet maxBeats
       -- Overwrite the file in the working tree, then reconcile against the
       -- chain: unchanged atoms keep their ids, changed atoms replace in place,
       -- removed prose drops, new prose appends. commitFiles broadcasts its own

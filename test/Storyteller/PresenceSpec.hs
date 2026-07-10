@@ -8,7 +8,7 @@ module Storyteller.PresenceSpec (spec) where
 
 import Prelude hiding (appendFile)
 
-import Data.List (find)
+import Data.List (find, sort)
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Test.Hspec
@@ -27,7 +27,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types
 import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
-import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
 
 -- | Every tick reachable from head, typed, oldest first -- the
 -- "Storage.Tick"-based counterpart of @followChain@\/@fileTicksOf@ used
@@ -166,6 +166,41 @@ spec = do
             mtid2 <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
             return mtid2
       result `shouldBe` Right Nothing
+
+  describe "activeCharactersFor" $ do
+
+    it "is empty on a file nobody has entered" $
+      runStory True (activeCharactersFor @Story "scene.md")
+        `shouldBe` Right []
+
+    it "includes a character after Enter, mirroring the frontend's activeCharacterBranches fold" $
+      runStory True (do
+        _ <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
+        activeCharactersFor @Story "scene.md")
+        `shouldBe` Right [BranchName "character/alice"]
+
+    it "drops a character after Leave" $
+      runStory True (do
+        _ <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
+        _ <- writeAtom "scene.md" "she arrived.\n"
+        _ <- recordPresence @Story "scene.md" (BranchName "character/alice") Leave
+        activeCharactersFor @Story "scene.md")
+        `shouldBe` Right []
+
+    it "is scoped per file -- a fresh file starts with nobody in it" $
+      runStory True (do
+        _ <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
+        activeCharactersFor @Story "other-scene.md")
+        `shouldBe` Right []
+
+    it "tracks multiple characters independently" $ do
+      let result = runStory True $ do
+            _ <- createBranch (BranchName "character/bob")
+            _ <- recordPresence @Story "scene.md" (BranchName "character/alice") Enter
+            _ <- recordPresence @Story "scene.md" (BranchName "character/bob") Enter
+            active <- activeCharactersFor @Story "scene.md"
+            return (sort active)
+      result `shouldBe` Right (sort [BranchName "character/alice", BranchName "character/bob"])
 
     it "resolves interleaved characters correctly: Alice squashes away, Bob's tick survives" $ do
       let result = runStory True $ do

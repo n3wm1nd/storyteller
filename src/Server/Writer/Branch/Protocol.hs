@@ -23,9 +23,11 @@ module Server.Writer.Branch.Protocol
 
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 import Server.Core.Protocol (Update, withId)
+import Server.Writer.File.Protocol (AtBranch(..))
 
 data TrackFile = TrackFile
   { trackFrom :: FilePath
@@ -53,7 +55,7 @@ data BranchCommand
   -- a future Ticks-view rebase marker, the branch-level equivalent of the
   -- file view's drag handle — no client trigger for this exists yet, this
   -- is just the generic capability being available symmetrically).
-  | At { bcId :: Maybe T.Text, bcTickId :: T.Text, bcCommand :: BranchCommand }
+  | At { bcId :: Maybe T.Text, bcTickId :: T.Text, bcCommand :: BranchCommand, bcBranches :: [AtBranch] }
   deriving (Show)
 
 instance FromJSON BranchCommand where
@@ -66,7 +68,7 @@ instance FromJSON BranchCommand where
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
-      "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
+      "at"          -> At         i <$> o .: "tickId" <*> o .: "command" <*> (fromMaybe [] <$> o .:? "branches")
       _             -> fail ("unknown branch command: " <> T.unpack t)
 
 -- | Short label for logging — see 'Server.Writer.File.Protocol.commandKind'.
@@ -77,7 +79,7 @@ commandKind = \case
   AddNote {}    -> "add.note"
   MoveTick {}   -> "move.tick"
   DeleteTick {} -> "delete.tick"
-  At _ _ inner  -> "at:" <> commandKind inner
+  At _ _ inner _ -> "at:" <> commandKind inner
 
 -- | Events the server sends on a branch connection.
 --

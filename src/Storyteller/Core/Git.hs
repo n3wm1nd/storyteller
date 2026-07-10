@@ -61,6 +61,7 @@ module Storyteller.Core.Git
 
     -- * Generic rebase (for inner actions that interleave other effects)
   , atGeneric
+  , atGenericSeeded
 
     -- * Cross-branch reference cascade (exported for its own unit tests --
     -- see 'Storyteller.GitCascadeSpec')
@@ -703,21 +704,49 @@ runBranchAndFS name = runBranchOpGit @branch name . runStoryFSGit @branch name
 -- cross-branch cascade fires once with the full old->new mapping instead
 -- of once per replayed tick (see 'replayBack').
 
+-- | 'atGenericSeeded' with an empty seed -- the common case, and the only
+--   one every pre-existing call site needs: no behaviour change from
+--   before this had a seed parameter at all.
+atGeneric
+  :: forall branch r a
+  .  Members '[BranchOp branch, Git, Fail] r
+  => TickId -> Sem r a -> Sem r a
+atGeneric tid inner = fst <$> atGenericSeeded @branch Map.empty tid inner
+
 -- | Move to @tid@'s position, run an arbitrary inner action there, then
 --   replay everything after it back onto whatever the action produced.
 --   Descent pops one tick per 'runStorage' dispatch; the replay is a
 --   single 'StoreT' dispatch (see 'replayBack') that hands the whole
 --   old->new remap table to 'runBranchOpGit' at once, so the cross-branch
 --   cascade fires exactly once for the entire tail.
-atGeneric
+--
+--   @seed@ primes the replay's own remap table (via 'Core.logRemap') before
+--   any of this branch's own popped ticks are re-stored -- so 'Core.store's
+--   existing, generic ref-resolution (@resolveId@, see "Storage.Core") also
+--   rewrites any of *this* branch's 'Core.tickRefs' that happen to point at
+--   a hash some other branch's own rebase already remapped, exactly as if
+--   that remap had happened in this same scope. This is how a connected
+--   branch (e.g. a character's journal, holding cross-branch refs into a
+--   scene -- see 'Storyteller.Writer.Agent.Tracker') gets its stale
+--   cross-references fixed when the scene it refs is rebased: the scene's
+--   own rebase produces a mapping, and replaying the journal branch's own
+--   tail with that mapping seeded in (this function, called again with
+--   @branch@ instantiated to the journal) is what actually rewrites them.
+--   An empty seed (see 'atGeneric') makes this identical to before.
+--
+--   Returns the *full* resulting mapping -- @seed@ composed with whatever
+--   new remaps this call's own replay produced -- so a caller chaining a
+--   third branch off of this one's result has the complete picture, same
+--   spirit as 'rewriteChain's own memo.
+atGenericSeeded
   :: forall branch r a
   .  Members '[BranchOp branch, Git, Fail] r
-  => TickId -> Sem r a -> Sem r a
-atGeneric tid inner = goDown []
+  => Map Core.ObjectHash Core.ObjectHash -> TickId -> Sem r a -> Sem r (a, Map Core.ObjectHash Core.ObjectHash)
+atGenericSeeded seed tid inner = goDown []
   where
     target = Core.ObjectHash (unTickId tid)
 
-    goDown :: [(Core.ObjectHash, Core.Tick)] -> Sem r a
+    goDown :: [(Core.ObjectHash, Core.Tick)] -> Sem r (a, Map Core.ObjectHash Core.ObjectHash)
     goDown poppedRev = do
       (current, _) <- runStorage @branch Core.headHash
       if current == target
@@ -733,9 +762,9 @@ atGeneric tid inner = goDown []
           -- rebase do not survive it, exactly as with 'Core.syncTo'.
           _ <- runStorage @branch Core.reset
           a <- inner
-          replayBack poppedRev
+          newMapping <- replayBack poppedRev
           _ <- runStorage @branch Core.reset
-          return a
+          return (a, Map.union newMapping seed)
         else do
           (t, _) <- runStorage @branch $ do
             cd <- lift (Core.readCommit current)
@@ -749,6 +778,11 @@ atGeneric tid inner = goDown []
     --   so 'runBranchOpGit' receives a single remap table covering every
     --   replayed tick and runs the cross-branch cascade once with it --
     --   rather than once per tick (O(N) cascades, O(N^2) remap entries).
-    replayBack :: [(Core.ObjectHash, Core.Tick)] -> Sem r ()
-    replayBack popped = () <$ runStorage @branch
-      (mapM_ (\(oldHash, t) -> Core.store t >>= \newHash -> Core.logRemap oldHash newHash) popped)
+    --   @seed@ is folded in first, in the same dispatch, so 'Core.store's
+    --   ref-resolution sees it for every tick replayed here.
+    replayBack :: [(Core.ObjectHash, Core.Tick)] -> Sem r (Map Core.ObjectHash Core.ObjectHash)
+    replayBack popped = do
+      (_, tickIdMapping) <- runStorage @branch $ do
+        mapM_ (uncurry Core.logRemap) (Map.toList seed)
+        mapM_ (\(oldHash, t) -> Core.store t >>= \newHash -> Core.logRemap oldHash newHash) popped
+      return (Map.fromList [ (Core.ObjectHash (unTickId o), Core.ObjectHash (unTickId n)) | (o, n) <- tickIdMapping ])

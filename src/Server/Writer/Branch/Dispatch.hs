@@ -29,14 +29,16 @@ module Server.Writer.Branch.Dispatch
   ( runCommand
   ) where
 
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Polysemy (Sem)
 
 import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
 import Server.Writer.Branch (trackFiles, charGen)
 import Server.Writer.Branch.Protocol
+import Server.Writer.File.Dispatch (runConnectedBranch)
 import Server.Core.Run (SessionEffects)
-import Storyteller.Core.Git (atGeneric)
+import Storyteller.Core.Git (atGenericSeeded)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 
 runCommand
@@ -67,14 +69,13 @@ runCommand branch cmd =
 
     -- Rebase 'inner' at 'tid': wind the chain back, run it against that
     -- tick's filesystem snapshot, then replay the tail on top of whatever it
-    -- produced. 'atGeneric' is the one operation still built on generic
-    -- recursion (not a single closed-form "Storage.Core" computation),
-    -- since 'inner' can recurse into arbitrary Writer commands — see
-    -- 'Storyteller.Core.Git.atGeneric'. Each of its own navigation steps is
-    -- its own 'runStorage' dispatch, so each already broadcasts its own
-    -- remap entry as it goes -- nothing left to do here once it returns.
-    At _mid tid inner ->
-      atGeneric @Main (TickId tid) (runCommand branch inner)
+    -- produced, same shape as 'Server.Writer.File.Dispatch's own 'At' case
+    -- (including 'branches': connected branches replayed with the mapping
+    -- this rebase produces seeded in -- see 'runConnectedBranch').
+    At _mid tid inner branches -> do
+      (events, mainMapping) <- atGenericSeeded @Main Map.empty (TickId tid) (runCommand branch inner)
+      mapM_ (runConnectedBranch mainMapping) branches
+      return events
 
 -- ---------------------------------------------------------------------------
 -- Helpers

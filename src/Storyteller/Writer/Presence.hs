@@ -12,8 +12,10 @@
 -- 'Storyteller.Common.Annotation' has to 'Storyteller.Common.Types'.
 module Storyteller.Writer.Presence
   ( recordPresence
+  , activeCharactersFor
   ) where
 
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
@@ -76,6 +78,27 @@ isActive character = go False
       | ftKind ft /= "presence"                                        = go acc rest
       | lookup "character" (ftFields ft) /= Just (unBranchName character) = go acc rest
       | otherwise = go (lookup "event" (ftFields ft) == Just "enter") rest
+
+-- | Every character currently active on @file@ -- the single source of
+--   truth an agent should read to decide who's "in the scene", same fold
+--   'isActive' does but generalized to every character mentioned instead of
+--   testing one. Mirrors the frontend's 'activeCharacterBranches'
+--   (@lib/utils.ts@), just off the server's own tick read instead of
+--   whatever the client already has in memory.
+activeCharactersFor
+  :: forall branch r
+  .  Members '[BranchOp branch, Fail] r
+  => FilePath -> Sem r [BranchName]
+activeCharactersFor file = do
+  (ticks, _) <- runStorage @branch (Tick.fileTicksOf file)
+  pure (Set.toList (foldl' step Set.empty ticks))
+  where
+    step acc ft
+      | ftKind ft /= "presence" = acc
+      | otherwise = case (lookup "character" (ftFields ft), lookup "event" (ftFields ft)) of
+          (Just charT, Just "enter") -> Set.insert (BranchName charT) acc
+          (Just charT, Just "leave") -> Set.delete (BranchName charT) acc
+          _                          -> acc
 
 -- | The most recent presence tick for @character@ on this file, if nothing
 --   since it has actually changed the file's content — i.e. it's still the

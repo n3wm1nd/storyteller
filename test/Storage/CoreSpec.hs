@@ -130,6 +130,28 @@ spec = do
           refChanged `shouldBe` True
           refTick    `shouldBe` Atom [] "scene.md" [] "p2\n"
 
+    it "a tick's ref is rewritten against a mapping seeded in before it's stored, not just one this same 'at' produced" $ do
+      -- Simulates what 'Storyteller.Core.Git.atGenericSeeded' does across
+      -- two *different* branches: branch A's own rebase produces an
+      -- old->new mapping (here just faked directly via 'logRemap', standing
+      -- in for whatever A's own replay already resolved); branch B (a
+      -- character's journal, in production) has a tick whose ref points at
+      -- one of A's old hashes. Storing that tick in the *same* scope the
+      -- seed was logged into is exactly the "seed folded in before replay"
+      -- step -- so its ref should come out rewritten, the same generic
+      -- 'resolveId' mechanism 'at' already uses for same-chain refs, just
+      -- fed a mapping from outside this chain entirely.
+      let result = runChain $ do
+            aOld <- store (Atom [] "scene.md" [] "p1\n")
+            aNew <- store (Atom [] "scene.md" [] "p1-revised\n")
+            logRemap aOld aNew
+            bTick <- store (NonAtom [aOld] "type:note\nabout scene's p1")
+            storedTick <- lift (readTick bTick)
+            return (tickRefs storedTick, aNew)
+      case result of
+        Left err -> expectationFailure err
+        Right ((refs, aNew), _finalState) -> refs `shouldBe` [aNew]
+
     it "readAt leaves the chain untouched" $ do
       let result = runChain $ do
             t1 <- store (Atom [] "scene.md" [] "p1\n")

@@ -12,6 +12,7 @@ module Server.Writer.File.Protocol
   ( FileCommand(..)
   , FileEvent(..)
   , ContextItem(..)
+  , AtBranch(..)
   , commandKind
   ) where
 
@@ -36,6 +37,23 @@ data ContextItem = ContextItem
 instance FromJSON ContextItem where
   parseJSON = withObject "ContextItem" $ \o ->
     ContextItem <$> o .: "tickId" <*> o .: "kind" <*> o .: "content"
+
+-- | One entry of an 'At' command's @branches@ field: a connected branch
+--   (e.g. a character's journal, see WRITER.md) to also wind back and
+--   replay, at the position the client picked for it — 'frontend/src/lib/
+--   wsHelpers.ts''s 'atRebase' sends one of these per active character,
+--   defaulting to 'nearestJournalMarker' but user-overridable, since the
+--   right position isn't reliably inferrable server-side (story time and a
+--   character branch's own position aren't in lock-step — flashbacks,
+--   retellings, etc.). See 'Storyteller.Core.Git.atGenericSeeded'.
+data AtBranch = AtBranch
+  { atBranchName   :: T.Text
+  , atBranchTickId :: T.Text
+  } deriving (Show)
+
+instance FromJSON AtBranch where
+  parseJSON = withObject "AtBranch" $ \o ->
+    AtBranch <$> o .: "branch" <*> o .: "tickId"
 
 -- | Commands the client may send on a file connection.
 --   Each is an intent — the server decides what ticks result.
@@ -128,8 +146,15 @@ data FileCommand
   --   command executed there, then every later tick is replayed on top of
   --   whatever the inner command produced. Lets a client re-target any
   --   command at a historical point without a dedicated code path per
-  --   command — see 'Storyteller.Core.Storage.atWithFS'.
-  | At         { fcId :: Maybe T.Text, fcTickId :: T.Text, fcCommand :: FileCommand }
+  --   command — see 'Storyteller.Core.Git.atGeneric'.
+  --
+  --   'fcBranches' additionally winds back and replays each named connected
+  --   branch (e.g. an active character's journal) at its own given
+  --   position, so cross-branch refs into whatever 'fcCommand' just rebased
+  --   get fixed up as that branch's own tail replays — see 'AtBranch' and
+  --   'Storyteller.Core.Git.atGenericSeeded'. Empty when no connected
+  --   branch is open, which is exactly today's (pre-'AtBranch') behaviour.
+  | At         { fcId :: Maybe T.Text, fcTickId :: T.Text, fcCommand :: FileCommand, fcBranches :: [AtBranch] }
   deriving (Show)
 
 instance FromJSON FileCommand where
@@ -172,7 +197,7 @@ instance FromJSON FileCommand where
         ChatNote i <$> o .: "text" <*> pure targets
       "enter.scene" -> EnterScene i <$> o .: "character"
       "leave.scene" -> LeaveScene i <$> o .: "character"
-      "at"          -> At         i <$> o .: "tickId" <*> o .: "command"
+      "at"          -> At         i <$> o .: "tickId" <*> o .: "command" <*> (fromMaybe [] <$> o .:? "branches")
       _             -> fail ("unknown file command: " <> T.unpack t)
 
 -- | Short label for logging — the same tag 'FromJSON' parses from, so it
@@ -204,7 +229,7 @@ commandKind = \case
   ChatNote {}     -> "chat.note"
   EnterScene {}   -> "enter.scene"
   LeaveScene {}   -> "leave.scene"
-  At _ _ inner    -> "at:" <> commandKind inner
+  At _ _ inner _  -> "at:" <> commandKind inner
 
 -- | Events the server sends on a file connection.
 --

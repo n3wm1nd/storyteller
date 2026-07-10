@@ -14,6 +14,7 @@
 -- caller's job — this module only does the LLM-facing computation.
 module Storyteller.Writer.Agent.Write
   ( writeAgent
+  , flattenCharBlocks
   ) where
 
 import Polysemy
@@ -43,8 +44,14 @@ writeAgent
   -> Instruction
   -> [(CharLabel, [CharContextBlock])]            -- ^ (label, resolved blocks) per active char branch
   -> Sem r Prose
-writeAgent existing extraContext instruction charBlocks = do
-  let charContexts = concatMap
-        (\(CharLabel name, blocks) -> CharContextBlock ("## Character: " <> name) : blocks)
-        charBlocks
-  proseAgent (Just (WordCount 300)) charContexts extraContext existing instruction
+writeAgent existing extraContext instruction charBlocks =
+  proseAgent (Just (WordCount 300)) (flattenCharBlocks charBlocks) extraContext existing instruction
+
+-- | @(label, resolved blocks)@ per active character branch, flattened into
+--   the plain 'CharContextBlock' list a 'proseAgent'-shaped call actually
+--   takes -- each branch's blocks preceded by a @"## Character: {name}"@
+--   header block. Shared with 'Storyteller.Writer.Agent.Outline''s
+--   reconciliation calls, which take the same flattened shape directly.
+flattenCharBlocks :: [(CharLabel, [CharContextBlock])] -> [CharContextBlock]
+flattenCharBlocks = concatMap
+  (\(CharLabel name, blocks) -> CharContextBlock ("## Character: " <> name) : blocks)
