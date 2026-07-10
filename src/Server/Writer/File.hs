@@ -23,6 +23,7 @@ module Server.Writer.File
   , chatSplitOutline
   , RegenMode(..)
   , setPresence
+  , askCharacter
   ) where
 
 import Control.Monad (void)
@@ -45,6 +46,7 @@ import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
@@ -52,7 +54,7 @@ import Storyteller.Writer.Agent.Outline
   ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
   , reconcileChapter, reconcileChapterByBeat, splitOutlineFreeform )
 import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
-import Storyteller.Writer.Types (Character(..), PresenceEvent)
+import Storyteller.Writer.Types (Character(..), CharacterAnswer(..), PresenceEvent)
 import Storyteller.Core.Runtime (Main)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -316,3 +318,18 @@ toContextBlocks = map (ContextBlock . ciContent)
 --   'Storyteller.Writer.Types.Presence' and WRITER.md.
 setPresence :: FileOpen r => FilePath -> Character -> PresenceEvent -> Sem r ()
 setPresence path character event = void $ recordPresence @Main path character event
+
+-- | Ask @character@ a question, answered from only their own branch (see
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent') -- not the
+--   scene, not any other character. 'askCharacterAgent' itself only reads
+--   and answers; it stores nothing, same as any other agent here
+--   ('proseAgent', 'chatAgent', ...) -- this function, the caller, is where
+--   the result gets recorded, and it goes on @Main@ (the scene's own
+--   chain), not the character's: asking a question is something that
+--   happened during *this* writing, not a new memory for the character --
+--   see 'Storyteller.Writer.Types.CharacterAnswer'.
+askCharacter :: (FileOpen r, SessionEffects r) => FilePath -> Character -> T.Text -> Sem r T.Text
+askCharacter path character@(Character branch) question = do
+  answer <- runBranchAndFS @ActiveChar branch (askCharacterAgent @(BranchTag ActiveChar) question)
+  _ <- runStorage @Main (Tick.storeAs (CharacterAnswer character question answer (Just path)))
+  return answer

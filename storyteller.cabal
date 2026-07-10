@@ -62,6 +62,7 @@ library
                   , Storyteller.Writer.Agent.ContextFilter
                   , Storyteller.Writer.Agent.Chat
                   , Storyteller.Writer.Agent.CharContext
+                  , Storyteller.Writer.Agent.AskCharacter
                   , Storyteller.Common.Splitter
                   , Storyteller.Writer.Agent.Tracker
                   , Storyteller.Writer.Agent.CharGen

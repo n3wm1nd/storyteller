@@ -33,8 +33,8 @@ import Polysemy (Member, Sem)
 import qualified Data.Text as T
 
 import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
-import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence)
-import Server.Writer.File.Protocol (FileCommand(..), AtBranch(..))
+import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter)
+import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
 import qualified Storage.Core as Core
 import Storyteller.Common.Splitter (Splitter)
@@ -49,74 +49,82 @@ import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 --   is fine — same role 'Server.Writer.Branch.CharBranch' plays there.
 data ConnectedBranch
 
-runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r ()
+runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r [FileEvent]
 runCommand path cmd = case cmd of
 
   CreateFile _mid ->
-    createFile path
+    [] <$ createFile path
 
   ChatAppend _mid content ->
-    appendToFile path content
+    [] <$ appendToFile path content
 
   Delete _mid ->
-    deleteFile path
+    [] <$ deleteFile path
 
   Rename _mid newPath ->
-    renameFile path (T.unpack newPath)
+    [] <$ renameFile path (T.unpack newPath)
 
   EditAtom _mid tid content ->
-    editFileAtom path (TickId tid) content
+    [] <$ editFileAtom path (TickId tid) content
 
   EditPrompt _mid tid content ->
-    editChatPrompt (TickId tid) content
+    [] <$ editChatPrompt (TickId tid) content
 
   DeleteAtom _mid tid ->
-    deleteFileAtom (TickId tid)
+    [] <$ deleteFileAtom (TickId tid)
 
   MoveAtom _mid tid mAfter ->
-    moveFileAtom (TickId tid) (TickId <$> mAfter)
+    [] <$ moveFileAtom (TickId tid) (TickId <$> mAfter)
 
   MergeAtoms _mid targets ->
-    mergeFileAtoms (map TickId targets)
+    [] <$ mergeFileAtoms (map TickId targets)
 
   SplitAtoms _mid targets ->
-    splitFileAtoms (map TickId targets)
+    [] <$ splitFileAtoms (map TickId targets)
 
   HideAtoms _mid targets ->
-    hideFileAtoms (map TickId targets)
+    [] <$ hideFileAtoms (map TickId targets)
 
   UnhideAtoms _mid targets ->
-    unhideFileAtoms (map TickId targets)
+    [] <$ unhideFileAtoms (map TickId targets)
 
   ChatWriter _mid prompt context layout flowTid ->
-    chatWriter path prompt context layout (TickId <$> flowTid)
+    [] <$ chatWriter path prompt context layout (TickId <$> flowTid)
 
   ChatFixer _mid prompt context targets ->
-    chatFixer path prompt context (map TickId targets)
+    [] <$ chatFixer path prompt context (map TickId targets)
 
   ChatRegen _mid prompt context byBeat ->
-    chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt context
+    [] <$ chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt context
 
   ChatConverse _mid prompt ->
-    chatConverse path prompt
+    [] <$ chatConverse path prompt
 
   ChatConverseSwipe _mid promptTid atomTid prompt ->
-    chatConverseSwipe path (TickId promptTid) (TickId atomTid) prompt
+    [] <$ chatConverseSwipe path (TickId promptTid) (TickId atomTid) prompt
 
   CycleSwipe _mid tid ->
-    cycleAtomSwipe (TickId tid)
+    [] <$ cycleAtomSwipe (TickId tid)
 
   ChatOutline _mid ->
-    chatSplitOutline path
+    [] <$ chatSplitOutline path
 
   ChatNote _mid text targets ->
-    chatNote text (map TickId targets)
+    [] <$ chatNote text (map TickId targets)
 
   EnterScene _mid character ->
-    setPresence path (Character (BranchName character)) Enter
+    [] <$ setPresence path (Character (BranchName character)) Enter
 
   LeaveScene _mid character ->
-    setPresence path (Character (BranchName character)) Leave
+    [] <$ setPresence path (Character (BranchName character)) Leave
+
+  -- The one command whose result isn't just a mutation another connection's
+  -- ref-move notification would surface: the answer lands on the
+  -- character's own branch, not this file's, so it's returned here to be
+  -- pushed straight back to the asking connection instead.
+  AskCharacter mid character question -> do
+    answer <- askCharacter path (Character (BranchName character)) question
+    return [CharacterAnswered mid character question answer]
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it
@@ -140,8 +148,9 @@ runCommand path cmd = case cmd of
   -- get corrected as its own tail replays — no inner command runs there,
   -- since there's nothing else to do.
   At _mid tid inner branches -> do
-    (_, mainMapping) <- atGenericSeeded @Main Map.empty (TickId tid) (runCommand path inner)
+    (events, mainMapping) <- atGenericSeeded @Main Map.empty (TickId tid) (runCommand path inner)
     mapM_ (runConnectedBranch mainMapping) branches
+    return events
 
 -- | Wind back and replay one connected branch (see 'AtBranch') at its own
 --   given position, seeded with @mainMapping@ so any of its own

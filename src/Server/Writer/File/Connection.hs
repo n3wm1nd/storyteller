@@ -141,7 +141,8 @@ commandLoop branch conn path = loop
     -- fires right after this command, not just at connection close.
     handle cmd =
       catch @String
-        (logCommand (commandKind cmd) (withStorage (withBranch @Main branch (runCommand path cmd))))
+        (logCommand (commandKind cmd) (withStorage (withBranch @Main branch (runCommand path cmd)))
+          >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
 
 -- 'since = Nothing' means we're still in the absent state from connect —

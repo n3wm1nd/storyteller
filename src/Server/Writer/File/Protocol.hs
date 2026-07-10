@@ -141,6 +141,15 @@ data FileCommand
   --   file's own chain, not the whole branch. See WRITER.md.
   | EnterScene { fcId :: Maybe T.Text, fcCharacter :: T.Text }
   | LeaveScene { fcId :: Maybe T.Text, fcCharacter :: T.Text }
+  -- | Ask @fcCharacter@ a question, answered from only their own branch --
+  --   see 'Server.Writer.File.askCharacter'\/'Storyteller.Writer.Agent.
+  --   AskCharacter.askCharacterAgent'. Unlike every other command here, the
+  --   result isn't just a chain mutation another connection's ref-move
+  --   notification would pick up (the answer lands on the *character's*
+  --   branch, not this file's) -- so this is the one 'FileCommand' whose
+  --   dispatch actually returns something (a 'CharacterAnswered' event),
+  --   pushed straight back to the asking connection.
+  | AskCharacter { fcId :: Maybe T.Text, fcCharacter :: T.Text, fcQuestion :: T.Text }
   -- | Run 'fcCommand' rebased at 'fcTickId': the chain is temporarily wound
   --   back to that tick, the filesystem set to its snapshot, the inner
   --   command executed there, then every later tick is replayed on top of
@@ -197,6 +206,7 @@ instance FromJSON FileCommand where
         ChatNote i <$> o .: "text" <*> pure targets
       "enter.scene" -> EnterScene i <$> o .: "character"
       "leave.scene" -> LeaveScene i <$> o .: "character"
+      "ask.character" -> AskCharacter i <$> o .: "character" <*> o .: "question"
       "at"          -> At         i <$> o .: "tickId" <*> o .: "command" <*> (fromMaybe [] <$> o .:? "branches")
       _             -> fail ("unknown file command: " <> T.unpack t)
 
@@ -229,6 +239,7 @@ commandKind = \case
   ChatNote {}     -> "chat.note"
   EnterScene {}   -> "enter.scene"
   LeaveScene {}   -> "leave.scene"
+  AskCharacter {} -> "ask.character"
   At _ _ inner _  -> "at:" <> commandKind inner
 
 -- | Events the server sends on a file connection.
@@ -259,6 +270,11 @@ data FileEvent
   | TickRemap   [(T.Text, T.Text)]
   | AgentLog    { feLevel :: T.Text, feMessage :: T.Text }
   | FileError   T.Text
+  -- | The answer to an 'AskCharacter' command, pushed straight back to the
+  --   connection that asked -- see that constructor's own Haddock for why
+  --   this is the one dispatch result that needs its own push rather than
+  --   relying on a ref-move notification.
+  | CharacterAnswered { feId :: Maybe T.Text, feCharacter :: T.Text, feQuestion :: T.Text, feAnswer :: T.Text }
   deriving (Show)
 
 instance ToJSON FileEvent where
@@ -276,3 +292,9 @@ instance ToJSON FileEvent where
              , "message" .= msg ]
     FileError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]
+    CharacterAnswered mid character question answer ->
+      object $ withId mid
+        [ "type"      .= ("character.answered" :: T.Text)
+        , "character" .= character
+        , "question"  .= question
+        , "answer"    .= answer ]

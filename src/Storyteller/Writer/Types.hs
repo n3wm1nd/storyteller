@@ -11,6 +11,7 @@ module Storyteller.Writer.Types
   ( Character(..)
   , Presence(..)
   , PresenceEvent(..)
+  , CharacterAnswer(..)
   ) where
 
 import qualified Data.Text as T
@@ -82,3 +83,52 @@ parseEvent :: Text -> Maybe PresenceEvent
 parseEvent "enter" = Just Enter
 parseEvent "leave" = Just Leave
 parseEvent _       = Nothing
+
+-- | A recorded "ask this character a question" exchange -- see
+-- 'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent'. Stored on the
+-- branch of whoever asked (the scene being written), *not* the character's
+-- own branch: this is a record of something that happened during the
+-- current writing (which character was consulted, and what they said),
+-- not a memory the character themselves now has -- asking a question
+-- doesn't add to what a character knows, it only reads what they already
+-- do. 'caFile' plays the same role as 'Presence's own "file" field when
+-- there is one -- a hint 'walkFileTicks' folds this into that file's
+-- projection by -- but unlike 'Presence' it's optional: a @\/ask@ command
+-- fired from a file connection always has one, but an agent asking mid
+-- generation isn't necessarily bound to any single file (deferred for now
+-- -- see WRITER.md), so the type has to allow for "no file" from the
+-- start rather than assume one always exists. Note the asymmetry with
+-- 'Presence': that lives on the scene but names a character elsewhere by
+-- branch reference; this lives on the scene *and* is entirely about a
+-- character elsewhere, but neither points into the character's own chain
+-- -- there's nothing there for a rebase to keep in sync either way.
+data CharacterAnswer = CharacterAnswer
+  { caCharacter :: Character
+  , caQuestion  :: Text
+  , caAnswer    :: Text
+  , caFile      :: Maybe FilePath
+  } deriving (Show, Eq)
+
+instance TickType CharacterAnswer where
+  tickTypeName = "character-answer"
+
+  toDraft (CharacterAnswer (Character branch) question answer mFile) =
+    encodeDraft @CharacterAnswer []
+      ( ("character", unBranchName branch)
+      : ("question", question)
+      : maybe [] (\f -> [("file", T.pack f)]) mFile
+      )
+      answer
+
+  fromTick t = do
+    _         <- decodePayload @CharacterAnswer t
+    let fields = tickFields (tickData t)
+    charName  <- lookup "character" fields
+    question  <- lookup "question" fields
+    let mFile = T.unpack <$> lookup "file" fields
+    Just CharacterAnswer
+      { caCharacter = Character (BranchName charName)
+      , caQuestion  = question
+      , caAnswer    = tickMessage (tickData t)
+      , caFile      = mFile
+      }
