@@ -306,12 +306,17 @@ test-suite storyteller-test
 -- 'Storyteller.Core.Runtime.StoryModel' calls (cached to disk via
 -- 'Runix.LLM.Cache', see @test/fixtures/llm-agent-cache/@), checking whether
 -- context is actually used, edits are actually targeted, etc. -- properties
--- @storyteller-test@'s mocked LLM-free specs can't reach. Kept as its own
--- stanza (not part of @storyteller-test@) so the fast mocked suite stays
--- untouched; run explicitly with
--- @cabal test storyteller-agent-integration-test@.
-test-suite storyteller-agent-integration-test
-  type:             exitcode-stdio-1.0
+-- @storyteller-test@'s mocked LLM-free specs can't reach.
+--
+-- A plain @executable@, not a @test-suite@, even though @Main.hs@ just
+-- calls 'Test.Hspec.hspec' -- deliberately: a @test-suite@ component is
+-- exactly what @cabal test@ (with no target) runs by default, and this one
+-- shouldn't be swept up in that (hits real models, needs network/API keys,
+-- can take minutes). Being an @executable@ means @cabal test@/@cabal build
+-- all@ never touch it; run it with
+-- @cabal run storyteller-agent-integration-test@ (pass hspec args after
+-- @--@, e.g. @-- --match "..."@).
+executable storyteller-agent-integration-test
   main-is:          Main.hs
   other-modules:    Agent.Integration.Harness
                   , Agent.Integration.Judge
@@ -319,6 +324,11 @@ test-suite storyteller-agent-integration-test
                   , Agent.Integration.CharContextWriteSpec
                   , Agent.Integration.ReworkAtomSpec
                   , Agent.Integration.JourneySpec
+                  , Agent.Integration.OutlineSplitQualitySpec
+                  , Agent.Integration.OutlineSplitDefaultsSpec
+                  , Agent.Integration.OutlineSplitEscapingSpec
+                  , Agent.Integration.OutlineSplitFreeformSpec
+                  , Agent.Integration.ToolCallQuality
                   , Git.Mock
                   , Paths_storyteller
   autogen-modules:  Paths_storyteller

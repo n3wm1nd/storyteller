@@ -57,6 +57,7 @@ import UniversalLLM
   , SupportsMaxTokens, SupportsSystemPrompt, SupportsTemperature, route )
 import UniversalLLM.Models.Alibaba.Qwen (Qwen35_40B(..))
 import UniversalLLM.Models.DeepSeek.DeepSeek (DeepSeekV4Flash(..))
+import UniversalLLM.Models.OpenAI.GPT (GPTOSS20B(..))
 import UniversalLLM.Providers.OpenAI (LlamaCpp(..), OpenRouter(..))
 
 -- | Which auth backend a model needs -- the one place that knows which env
@@ -84,6 +85,10 @@ knownModels :: [(String, KnownModel)]
 knownModels =
   [ ("qwen35-40b",        KnownModel ViaLlamaCpp   (Model Qwen35_40B LlamaCpp)        [MaxTokens 2048, Temperature 0.8])
   , ("deepseek-v4-flash", KnownModel ViaOpenRouter (Model DeepSeekV4Flash OpenRouter) [MaxTokens 1024])
+  -- "-openrouter" suffix is deliberate, not decorative: GPT-OSS-20B is also
+  -- available locally via llama.cpp, so a bare "gpt-oss-20b" would be
+  -- ambiguous about which backend it resolves to.
+  , ("gpt-oss-20b-openrouter", KnownModel ViaOpenRouter (Model GPTOSS20B OpenRouter) [MaxTokens 2048, Temperature 0.7])
   ]
 
 -- | Resolve an env var to a 'KnownModel', falling back to @defaultName@ if

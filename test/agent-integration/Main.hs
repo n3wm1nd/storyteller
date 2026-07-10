@@ -14,7 +14,6 @@ import Runix.FileSystem (fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 import Runix.HTTP (httpIO)
 import Runix.LLM.Cache (cacheLLM, fileSystemLookup, fileSystemStore)
-import Runix.Logging (loggingIO)
 import Runix.Runner (withRequestTimeout)
 import Runix.Time (timeIO, sleepIO)
 import Test.Hspec
@@ -28,11 +27,15 @@ import Storyteller.Core.Storage (createBranch)
 
 import Agent.Integration.Harness
   ( CacheProject(..), KnownModel(..), LLMRunner(..), Main, Runner
-  , mainBranch, modelInterpreter, resolveFixture, resolveKnownModel
+  , loggingPretty, mainBranch, modelInterpreter, resolveFixture, resolveKnownModel
   )
 import qualified Agent.Integration.CharContextWriteSpec
 import qualified Agent.Integration.ReworkAtomSpec
 import qualified Agent.Integration.JourneySpec
+import qualified Agent.Integration.OutlineSplitQualitySpec
+import qualified Agent.Integration.OutlineSplitDefaultsSpec
+import qualified Agent.Integration.OutlineSplitFreeformSpec
+import qualified Agent.Integration.OutlineSplitEscapingSpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
 --   env vars -- see 'Agent.Integration.Harness.knownModels') and build the
@@ -87,7 +90,7 @@ main = do
           runner action =
               runM
               . runFail
-              . loggingIO
+              . loggingPretty
               . splitMarkdownAware
               . filesystemIO
               . fileSystemLocal (CacheProject agentCacheDir)
@@ -120,3 +123,7 @@ main = do
         describe "Agent.Integration.CharContextWriteSpec" (Agent.Integration.CharContextWriteSpec.spec @judgeTy runner)
         describe "Agent.Integration.ReworkAtomSpec"        (Agent.Integration.ReworkAtomSpec.spec @judgeTy runner)
         describe "Agent.Integration.JourneySpec"           (Agent.Integration.JourneySpec.spec @judgeTy runner)
+        describe "Agent.Integration.OutlineSplitQualitySpec" (Agent.Integration.OutlineSplitQualitySpec.spec @judgeTy runner)
+        describe "Agent.Integration.OutlineSplitDefaultsSpec" (Agent.Integration.OutlineSplitDefaultsSpec.spec @judgeTy runner)
+        describe "Agent.Integration.OutlineSplitFreeformSpec" (Agent.Integration.OutlineSplitFreeformSpec.spec @judgeTy runner)
+        describe "Agent.Integration.OutlineSplitEscapingSpec" (Agent.Integration.OutlineSplitEscapingSpec.spec @judgeTy runner)

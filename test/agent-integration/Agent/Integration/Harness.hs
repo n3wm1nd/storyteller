@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,8 +12,8 @@
 -- | Building blocks for the agent integration suite's effect stack: real
 --   LLM calls, cached to disk via 'Runix.LLM.Cache.cacheLLM' so a recorded
 --   response replays without the network on every run after the first. See
---   @../PLAN@ (agent integration test suite) for why this suite exists and
---   is kept separate from @storyteller-test@.
+--   @../PLAN.md@ (agent integration test suite) for why this suite exists
+--   and is kept separate from @storyteller-test@.
 --
 --   Neither role (agent-under-test, judge) has a model baked in anywhere in
 --   this module: 'Storyteller.Core.LLM.Registry.knownModels' is the one
@@ -30,32 +31,44 @@ module Agent.Integration.Harness
   , Main
   , ModelID(..)
   , Runner
+  , assertToolCallBudget
   , knownModels
+  , loggingPretty
   , mainBranch
   , modelInterpreter
+  , quietSetup
+  , recordToolCalls
+  , withPromptOverride
   , resolveFixture
   , resolveKnownModel
   , runExpect
   , withKnownModel
   ) where
 
+import Data.List (intercalate)
+import qualified Data.Text as T
+
 import Polysemy
 import Polysemy.Fail (Fail)
+import Polysemy.Output (Output, runOutputList, output)
 import Test.Hspec (expectationFailure)
 
 import Paths_storyteller (getDataFileName)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, HasProjectPath(..))
 import Runix.Git (Git)
-import Runix.LLM (LLM)
-import Runix.Logging (Logging)
+import Runix.LLM (LLM(..), Message(..))
+import Runix.Logging (Level(..), Logging(..), info)
+import UniversalLLM (ToolCall(..))
 
+import Agent.Integration.ToolCallQuality
+  (TurnReport(..), invalidCallsSinceLastUser, reportTurn)
 import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.LLM.Registry
   ( KnownModel(..), LLMRunner(..), ModelID(..)
   , knownModels, modelInterpreter, resolveKnownModel, withKnownModel )
 import Storyteller.Core.LLM.Role (LLMs)
-import Storyteller.Core.Prompt (PromptStorage)
+import Storyteller.Core.Prompt (Prompt, PromptKey, PromptStorage(..))
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
@@ -141,3 +154,169 @@ runExpect
   -> (forall r. ScenarioEffects judgeModel r => Sem r ())
   -> IO ()
 runExpect runner action = runner action >>= either expectationFailure pure
+
+-- | Log one response message's tool call, if it has one -- a call that
+--   parsed (name and arguments) or one that didn't (name and parse error).
+--   Long-running, real-LLM scenarios should keep the caller up to date via
+--   'Runix.Logging.info'\/'Runix.Logging.warning' rather than going silent
+--   until the final result (see @../PLAN.md@); this is the one place that
+--   applies to tool calls specifically, shared by 'recordToolCalls' and
+--   'assertGoodToolCalls' so every caller of either gets it for free instead
+--   of having to remember to layer on a separate logging wrapper.
+logToolCall :: Member Logging r => Message model -> Sem r ()
+logToolCall (AssistantTool (ToolCall _ name args)) =
+  info $ "tool call: " <> name <> " " <> T.pack (show args)
+logToolCall (AssistantTool (InvalidToolCall _ name _raw err)) =
+  info $ "invalid tool call to " <> name <> ": " <> err
+logToolCall _ = pure ()
+
+-- | Run @action@ while recording every raw response 'Runix.LLM.QueryLLM'
+--   returns for @model@'s role, oldest turn first -- so a spec can inspect
+--   turn-by-turn tool-call validity (retries, malformed JSON) that a
+--   production agent's own return type intentionally doesn't expose (e.g.
+--   'Storyteller.Writer.Agent.Outline.splitOutlineAgent' returns only
+--   @['Storyteller.Writer.Agent.Outline.ChapterBeats']@, the end result, not
+--   how many tries it took to get there -- see 'Agent.Integration.ToolCallQuality').
+--   Also logs each turn's tool call(s) via 'logToolCall' as they arrive, so a
+--   live run's output shows what the model actually tried, not just the
+--   eventual result -- useful for a long generation where the next visible
+--   output might otherwise be minutes away.
+--
+--   Built the same way 'Runix.Logging.loggingList' captures logs: 'intercept'
+--   keeps 'LLM' @model@ live in the row (each call still falls through to the
+--   real interpreter via the inner 'send', exactly like
+--   'Runix.LLM.Cache.cacheLLM'), while 'output' each response into a fresh
+--   'Polysemy.Output.Output' layer that 'runOutputList' collects and peels
+--   back off -- no mutable state, no new member in 'ScenarioEffects'.
+recordToolCalls
+  :: forall model r a
+  .  Members '[LLM model, Logging] r
+  => Sem r a -> Sem r (a, [[Message model]])
+recordToolCalls action = do
+  (turns, result) <- runOutputList $ intercept @(LLM model) recorder (raise action)
+  return (result, turns)
+  where
+    recorder :: forall m x. LLM model m x -> Sem (Output [Message model] : r) x
+    recorder (QueryLLM configs msgs) = do
+      resp <- send (QueryLLM configs msgs)
+      case resp of
+        Right msgs' -> mapM_ logToolCall msgs' >> output msgs' >> pure resp
+        Left _       -> pure resp
+
+-- | Like 'recordToolCalls', but fails (via 'Polysemy.Fail.Fail') from
+--   inside the interceptor itself, the moment the cumulative count of
+--   malformed calls exceeds @budget@ -- instead of letting the rest of the
+--   turn-by-turn loop, including retries beyond what's tolerable, run to
+--   completion before anything notices. A model recovering after one or two
+--   retries is legitimate self-correction, not a free pass forever: past
+--   @budget@ the retry loop isn't "working as designed" any more, it's
+--   masking a model that can't reliably format the call, and that should
+--   fail the same way giving up immediately would ('budget' @0@ -- see
+--   @Agent.Integration.OutlineSplitQualitySpec@, which wants exactly that,
+--   a call that isn't right on the first try). Logs each turn the same way
+--   'recordToolCalls' does, so the log line for a bad turn is visible even
+--   though 'fail' may abort the run right after.
+--
+--   Only unparseable JSON counts as malformed -- a call that parsed fine is
+--   never flagged on its *content*, however unusual (a file path, a
+--   made-up UNC share, anything). An earlier version of this also flagged
+--   'Agent.Integration.ToolCallQuality.escapingArtifacts' hits as
+--   over-escaping, but that check can't coexist with fixtures that
+--   deliberately invite the model to invent plausible technical color (see
+--   @../PLAN.md@): you cannot both dare a model to write something that
+--   might contain a path and then fail it for writing one. A dedicated,
+--   *controlled* round-trip check (hand the model an exact literal string
+--   in the outline, assert that exact string comes back unchanged) would be
+--   the honest way to test escaping specifically, if that's ever wanted --
+--   not a heuristic scan over freely-generated prose.
+--
+--   No separate counter needed to track "how many retries so far": each
+--   'Runix.LLM.QueryLLM' call already carries the full growing history as
+--   its argument, so 'Agent.Integration.ToolCallQuality.invalidCallsSinceLastUser'
+--   reads the retry count straight off it.
+assertToolCallBudget
+  :: forall model r a
+  .  Members '[LLM model, Logging, Fail] r
+  => Int  -- ^ malformed calls tolerated before this fails the run
+  -> Sem r a -> Sem r (a, [[Message model]])
+assertToolCallBudget budget action = do
+  (turns, result) <- runOutputList $ intercept @(LLM model) recorder (raise action)
+  return (result, turns)
+  where
+    recorder :: forall m x. LLM model m x -> Sem (Output [Message model] : r) x
+    recorder (QueryLLM configs msgs) = do
+      resp <- send (QueryLLM configs msgs)
+      case resp of
+        Right msgs' -> do
+          mapM_ logToolCall msgs'
+          checkTurn msgs msgs'
+          output msgs'
+          pure resp
+        Left _       -> pure resp
+
+    checkTurn :: [Message model] -> [Message model] -> Sem (Output [Message model] : r) ()
+    checkTurn history msgs' = do
+      let tr = reportTurn msgs'
+          total = invalidCallsSinceLastUser history + length (trInvalidCalls tr)
+      case (total > budget, trInvalidCalls tr) of
+        (True, (name, err) : _) ->
+          fail $ T.unpack ("malformed tool call to " <> name <> " (" <> T.pack (show total)
+            <> " so far, budget " <> T.pack (show budget) <> "): " <> err)
+        _ -> pure ()
+
+-- | Run @setup@ with its 'Runix.Logging.Logging' output dropped, then
+--   continue as normal -- for reusing an already-tested flow (e.g.
+--   'Agent.Integration.Journey.runJourney', or just its outline step) as
+--   cheap setup for a *different* scenario. Thanks to 'Runix.LLM.Cache.cacheLLM',
+--   replaying a previously-recorded flow to reach some starting state is
+--   near-instant -- no live LLM round trip -- but its own step-by-step
+--   logging ("journey: generating outline.md", ...) is noise once it's not
+--   the thing actually under test; only the scenario that's actually being
+--   exercised should show up in a run's output. Built the same way
+--   'assertToolCallBudget' taps 'LLM': 'intercept' keeps 'Logging' live in
+--   the row (so anything *after* @setup@ still logs normally), it just
+--   drops every call made *during* @setup@ instead of forwarding it to the
+--   real interpreter underneath.
+quietSetup :: forall r a. Member Logging r => Sem r a -> Sem r a
+quietSetup = intercept @Logging $ \case
+  Log _ _ _ -> pure ()
+
+-- | Local, suite-specific replacement for 'Runix.Logging.loggingIO' --
+--   indented and dimmed\/colored (every line of a multi-line message, not
+--   just the first) so log output stays visually distinct from whatever
+--   else shares the terminal. Kept in this module rather than changed
+--   upstream in 'Runix.Logging': that interpreter is shared by every
+--   'Runix.Logging.Logging' user across both projects (server, CLI, ...),
+--   and a look this specific to "interspersed with hspec output in one
+--   test binary" has no business being everyone's default.
+loggingPretty :: Member (Embed IO) r => Sem (Logging : r) a -> Sem r a
+loggingPretty = interpret $ \case
+  Log level _cs m -> embed $ putStrLn $ colorize level $ indent $ prefix level <> T.unpack m
+  where
+    prefix Info    = "info: "
+    prefix Warning = "warn: "
+    prefix Error   = " err: "
+    indent = intercalate "\n" . map ("  " <>) . lines
+    colorize Info s    = "\ESC[90m" <> s <> "\ESC[0m"    -- dim gray
+    colorize Warning s = "\ESC[1;33m" <> s <> "\ESC[0m"  -- bold yellow, more visible
+    colorize Error s   = "\ESC[1;31m" <> s <> "\ESC[0m"  -- bold red
+
+-- | Override one 'Storyteller.Core.Prompt.PromptStorage' key for the
+--   duration of @action@, whatever the shared runner's own
+--   'Storyteller.Core.Prompt.interpretPromptStorageMap' (built once in
+--   @Main.hs@, normally empty) would otherwise have returned. For nudging
+--   an agent toward test-appropriate output without touching its shipped
+--   default -- e.g. @Agent.Integration.OutlineSplitQualitySpec@ asking for
+--   concise beat sheets so a scenario stays fast, while
+--   @Agent.Integration.OutlineSplitDefaultsSpec@ deliberately applies no
+--   override at all, to check the shipped default itself is sufficient
+--   (see @../PLAN.md@ on why those are two separate questions). Built the
+--   same way 'quietSetup' taps 'Runix.Logging.Logging': 'intercept' keeps
+--   'PromptStorage' live in the row, forwarding every other key through to
+--   the real interpreter unchanged.
+withPromptOverride :: forall r a. Member PromptStorage r => PromptKey -> Prompt -> Sem r a -> Sem r a
+withPromptOverride key override = intercept @PromptStorage $ \case
+  GetPrompt k def
+    | k == key  -> pure override
+    | otherwise -> send (GetPrompt k def)
+  GetConfig k defaults -> send (GetConfig k defaults)

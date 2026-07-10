@@ -29,7 +29,7 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Agent.Integration.Harness (Runner, runExpect)
 import Agent.Integration.Journey (JourneyResult(..), runJourney)
-import Agent.Integration.Judge (Verdict(..), judge)
+import Agent.Integration.Judge (judgeOrFail)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..))
 
 spec
@@ -39,8 +39,15 @@ spec
 spec runner = describe "a full outline -> beat sheets -> chapters session (real LLM, cached)" $
   it "produces a coherent chapter-by-chapter draft from a one-line pitch" $
     runExpect @judgeModel runner $ do
+      -- 'runJourney' itself already gates chapter generation on the split
+      -- step's tool-call format quality -- see its Haddock and @../PLAN.md@
+      -- on failing early -- so reaching this point means every
+      -- 'emit_beat_sheet' turn already came back well-formed; nothing left
+      -- to check about the wire format here, only content/structure.
       result <- runJourney
       info $ "journey outline:\n" <> jrOutline result
+      info $ "split step: " <> T.pack (show (length (jrSplitTurns result))) <> " turn(s)"
+
       embed $ do
         jrOutline result `shouldNotBe` ""
 
@@ -102,15 +109,13 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
           -- deepseek-v4-flash's 1024-token cap ('Agent.Integration.Harness.knownModels')
           -- mid-string and produced truncated, unparseable JSON on a live
           -- run. A short reason fits comfortably inside the cap.
-          Verdict pass reason <- judge @judgeModel artifact $ T.unwords
+          judgeOrFail @judgeModel artifact $ T.unwords
             [ "Above is a chapter beat sheet, then the chapter prose written from"
             , "it. Does the prose realize the events, characters, and progression"
             , "described in the beat sheet (not just share a similar tone)? Answer"
             , "no if the prose follows a different sequence of events than the beat"
             , "sheet describes. Keep your reason to one sentence."
             ]
-          info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)
-          embed $ pass `shouldBe` True
         _ -> embed $ expectationFailure "journey produced no chapters to check"
 
 wordCount :: T.Text -> Int

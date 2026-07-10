@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -35,6 +36,7 @@ module Storyteller.Writer.Agent.Outline
   , ChapterBeats(..)
   , expandAgent
   , splitOutlineAgent
+  , splitOutlineFreeform
   , chapterProse
   , chapterProseByBeat
   , reconcileChapter
@@ -45,11 +47,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import Autodocodec (HasCodec(..), dimapCodec, object, requiredField, parseJSONViaCodec, (.=))
+import qualified Data.Aeson as Aeson
 import Data.Aeson.Types (parseEither)
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.LLM (queryLLM)
+import Runix.LLM (LLM(..), queryLLM)
 import Runix.LLM.ToolInstances ()
+import Runix.Logging (Logging, info, warning)
 import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
@@ -147,21 +151,27 @@ instance ToolParameter BeatSheetBody where
   paramName = "beat_sheet"
   paramDescription = "the full beat sheet for this chapter, as free-form markdown"
 
--- | Split a whole-story outline into per-chapter beat sheets.
+-- | Split a story outline into per-chapter beat sheets.
 --
 --   Unlike 'expandAgent' (one document in, one out), the model here decides
 --   the chapter breakdown itself and emits one beat sheet per chapter via
 --   repeated @emit_beat_sheet@ tool calls — each call names the target file
---   and carries that chapter's beats. This is the "chapters may not exist
---   yet" case: the outline is the only input, and the model's judgement
---   determines how many chapters there are and what each contains.
+--   and carries that chapter's beats. Chapters needn't be marked out in the
+--   outline already: the model's own judgement determines how many there
+--   are, where each begins and ends, and invents concrete beats to fill in
+--   what the outline only sketches, while staying faithful to its structure.
 --
---   Returns every emitted @(path, beat sheet)@; the caller writes them (see
---   'Server.Writer.File.chatSplitOutline'). A malformed call is dropped
---   rather than failing the whole batch.
+--   Safe to call again as a story grows, not just once up front: @doc@ can
+--   be the whole story or only as much of it as exists so far, and
+--   @contextBlocks@ (which already carries every other branch file, see
+--   'Server.Writer.File.chatSplitOutline') lets the model see which
+--   chapters already have a beat sheet and skip re-emitting those — the
+--   system prompt tells it to. Returns every emitted @(path, beat sheet)@
+--   for chapters that didn't have one yet; the caller writes them. A
+--   malformed call is dropped rather than failing the whole batch.
 splitOutlineAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
@@ -187,7 +197,10 @@ splitOutlineAgent contextBlocks (OutlineDoc doc) = do
       userMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> closing
 
   let allConfigs = Tools (map llmToolToDefinition tools) : configsWithPrompt
-  loop tools allConfigs maxTurns [UserText userMsg]
+  info "splitOutlineAgent: splitting outline into chapter beat sheets"
+  sheets <- loop tools allConfigs (1 :: Int) maxTurns [UserText userMsg]
+  info $ "splitOutlineAgent: done, " <> T.pack (show (length sheets)) <> " beat sheet(s) emitted"
+  return sheets
   where
     -- The model emits its emit_beat_sheet calls across several turns — one (or
     -- a few) per turn, then it waits for the tool results before continuing.
@@ -198,8 +211,28 @@ splitOutlineAgent contextBlocks (OutlineDoc doc) = do
     -- query again — until a turn makes no calls. emit_beat_sheet's return
     -- value is the ChapterBeats itself, so we harvest it from each execution
     -- rather than caring what the model does with the result message.
-    loop _ _ 0 _ = return []
-    loop tools allConfigs budget history = do
+    --
+    -- What actually goes back into history' as each call's result is *not*
+    -- the raw execution output, though: 'emitBeatSheet' just echoes its own
+    -- arguments back as a 'ChapterBeats', so the unmodified result would put
+    -- the beat sheet the model just wrote into its own context a second
+    -- time, as the "result" -- accumulating turn after turn, that's every
+    -- prior chapter's text present twice for no new information (the model
+    -- already knows what it wrote), with nothing that reads as "chapter 1
+    -- done, N to go." 'confirmationFor' trims that down to just the saved
+    -- path -- 'sheets' below still harvests the real 'ChapterBeats' from the
+    -- untrimmed 'executed', so nothing is lost, only what the model has to
+    -- re-read every subsequent turn.
+    --
+    -- Logged turn by turn (which path each call targeted, any failures) so a
+    -- long-running split is visible while it's happening, not just as a
+    -- final chapter count -- the same visibility
+    -- @Agent.Integration.Harness.recordToolCalls@ gives the test suite,
+    -- now also there for a real user watching server\/CLI logs.
+    loop _ _ turnNo 0 _ = do
+      warning $ "splitOutlineAgent: hit the " <> T.pack (show turnNo) <> "-turn budget without the model settling, stopping"
+      return []
+    loop tools allConfigs turnNo budget history = do
       response <- queryLLM allConfigs history
       let calls = [tc | AssistantTool tc <- response]
       if null calls
@@ -209,13 +242,185 @@ splitOutlineAgent contextBlocks (OutlineDoc doc) = do
           let sheets  = [ cb | r <- executed
                              , Right value <- [toolResultOutput r]
                              , Right cb    <- [parseEither parseJSONViaCodec value] ]
-              history' = history <> response <> map ToolResultMsg executed
-          (sheets <>) <$> loop tools allConfigs (budget - 1) history'
+              failed  = length executed - length sheets
+          mapM_ (\(ChapterBeats path _) -> info ("splitOutlineAgent: turn " <> T.pack (show turnNo) <> ": emit_beat_sheet -> " <> T.pack path)) sheets
+          if failed > 0
+            then warning $ "splitOutlineAgent: turn " <> T.pack (show turnNo) <> ": "
+                   <> T.pack (show failed) <> " of " <> T.pack (show (length executed)) <> " call(s) failed or didn't parse"
+            else pure ()
+          let history' = history <> response <> map (ToolResultMsg . confirmationFor) executed
+          (sheets <>) <$> loop tools allConfigs (turnNo + 1) (budget - 1) history'
+
+    -- Replace a successful emit_beat_sheet result with a short save
+    -- confirmation instead of echoing the submitted 'ChapterBeats' back
+    -- whole -- see the Haddock on 'loop' above. An unparseable or failed
+    -- result is left as-is: that error message is small already, and the
+    -- model needs to see exactly what went wrong to retry correctly.
+    confirmationFor :: ToolResult -> ToolResult
+    confirmationFor r@(ToolResult call (Right value)) =
+      case parseEither parseJSONViaCodec value of
+        Right (ChapterBeats path _) -> ToolResult call (Right (Aeson.object ["saved" Aeson..= T.pack path]))
+        Left _                      -> r
+    confirmationFor r = r
 
     -- Bound on the number of model turns, so a model that keeps calling the
     -- tool (or never stops) can't loop forever. Far above any realistic
     -- chapter count.
     maxTurns = 60 :: Int
+
+-- | Alternative to 'splitOutlineAgent': same job (one beat sheet per
+--   chapter), but drives it as a plain conversation instead of a tool-call
+--   loop -- ask for "the next chapter," get back markdown prose, repeat
+--   until a sentinel signals every chapter is covered, the same shape
+--   'chapterProseByBeat' already uses for pacing prose beat by beat.
+--
+--   Exists because of a measured finding, not a hunch: probing gpt-oss-20b
+--   directly with the same task, bypassing tool calling entirely, produced
+--   a perfectly correct three-chapter breakdown on an outline where
+--   'splitOutlineAgent' reliably duplicated, omitted, or garbled chapters
+--   (see the agent-integration suite's @../PLAN.md@). The working
+--   hypothesis: a forced-JSON tool call fragments a weaker model's
+--   generation into isolated, syntax-constrained completions, and gives it
+--   nothing but its own past tool calls to reconstruct "what have I already
+--   covered" from. Plain conversation lets it draft continuously, and this
+--   function removes the self-tracking burden a step further by having
+--   *us* -- not the model -- count chapters and assign paths, rather than
+--   asking the model to name its own target each time.
+--
+--   Doesn't replace 'splitOutlineAgent': that one's explicit per-chapter
+--   targeting and "skip chapters that already have a beat sheet" logic are
+--   still the right shape for filling in missing or added chapters later,
+--   where the model needs to name one specific existing gap rather than
+--   just continue a sequence from wherever it left off. This is for the
+--   first, whole-outline split -- see @../PLAN.md@ for the experiment this
+--   is meant to run (one chapter per turn, as here, vs. everything in one
+--   bulk response) before either replaces anything in production.
+splitOutlineFreeform
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
+  => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
+  -> OutlineDoc            -- ^ the whole-story outline being split
+  -> Sem r [ChapterBeats]
+splitOutlineFreeform contextBlocks (OutlineDoc doc) = do
+  configsWithPrompt <- getConfigWithPrompt "agent.outline.split.freeform" defaultFreeformSystem defaultFreeformConfig
+  Prompt opening    <- getPrompt "agent.outline.split.freeform.instructions" defaultFreeformInstructions
+
+  let contextSection
+        | null contextBlocks = ""
+        | otherwise =
+            "Surrounding context:\n\n"
+            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+            <> "\n\n"
+
+      openingMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> opening
+
+  info "splitOutlineAgent (freeform): splitting outline into chapter beat sheets"
+  -- Turn budget is tacked on via 'withTurnBudget', not a branch of 'go's
+  -- own -- once the model has taken 'maxTurns' turns without settling,
+  -- @withTurnBudget@ starts handing 'go' the sentinel itself, and 'go'
+  -- stops the exact same way it would if the model had said so. 'go'
+  -- itself never has to know a budget exists.
+  sheets <- withTurnBudget @AgentModel maxTurns outlineCompleteSentinel
+    (go configsWithPrompt [UserText openingMsg] (1 :: Int))
+  info $ "splitOutlineAgent (freeform): done, " <> T.pack (show (length sheets)) <> " beat sheet(s) emitted"
+  return sheets
+  where
+    -- One chapter per turn: each response is taken whole as that chapter's
+    -- beat sheet (no parsing, no delimiter to grep for -- WRITER.md's usual
+    -- rule), and *we* assign chapters/ch{N}.outline.md in order rather than
+    -- asking the model to. The model's only job each turn is "write the
+    -- next chapter, or say you're done" -- not "remember which of your own
+    -- past tool calls covered which chapter."
+    go configsWithPrompt history chapterNo = do
+      response <- queryLLM configsWithPrompt history
+      let piece = T.strip (mconcat [ t | AssistantText t <- response ])
+      if T.null piece || outlineCompleteSentinel `T.isInfixOf` piece
+        then return []
+        else do
+          let path = "chapters/ch" <> show chapterNo <> ".outline.md"
+          info $ "splitOutlineAgent (freeform): chapter " <> T.pack (show chapterNo) <> " -> " <> T.pack path
+          let history' = history <> response <> [UserText nextChapterPrompt]
+          (ChapterBeats path (BeatSheet piece) :)
+            <$> go configsWithPrompt history' (chapterNo + 1)
+
+    nextChapterPrompt = "Write the next chapter's beat sheet now, continuing in reading order. If every \
+      \chapter in the outline has already been covered, respond with exactly "
+      <> outlineCompleteSentinel <> " and nothing else."
+
+    -- One chapter per turn (unlike splitOutlineAgent's tool loop, which can
+    -- fit several calls in one turn), so this needs its own, larger budget.
+    maxTurns = 40 :: Int
+
+-- | Sentinel for 'splitOutlineFreeform' signalling every chapter in the
+--   outline has been covered -- distinct from 'doneSentinel', which signals
+--   a single chapter's *prose* is finished, not the whole split.
+outlineCompleteSentinel :: Text
+outlineCompleteSentinel = "[[OUTLINE-COMPLETE]]"
+
+-- | The general mechanism underneath 'withTurnBudget': intercept every
+--   'Runix.LLM.QueryLLM' call, and once @shouldIntervene history@ is true
+--   for the growing history so far, stop actually querying the model and
+--   run @respond history@ instead to produce what comes back in its place.
+--   Turn count past a budget is only one condition ('withTurnBudget');
+--   "does the history already contain N tool calls," "has this specific
+--   message appeared," or anything else over the same @[Message model]@ is
+--   just a different @shouldIntervene@, and @respond@ deciding whether to
+--   hand back a synthetic message, look something up, or 'Polysemy.Fail.fail'
+--   outright is what let 'withTurnBudget' build its own "don't inject the
+--   sentinel twice" safety check purely as an instance of this, not a
+--   special case baked in here.
+--
+--   Cross-cutting behaviour a caller's own loop doesn't have to know exists
+--   -- the same way @Agent.Integration.Harness.assertToolCallBudget@ taps
+--   the same effect for the agent-integration test suite's own
+--   cross-cutting concerns (recording, fail-fast retries). Only
+--   'withTurnBudget' builds on this so far; worth lifting both out of here
+--   (this module, or even @Runix.LLM@ itself, if useful beyond Storyteller)
+--   once a second, genuinely different condition wants it -- see PLAN.md's
+--   preference for that order, not the reverse.
+withInterception
+  :: forall model r a
+  .  Member (LLM model) r
+  => ([Message model] -> Bool)                     -- ^ condition on the history so far
+  -> ([Message model] -> Sem r [Message model])    -- ^ what to return instead, given that history
+  -> Sem r a -> Sem r a
+withInterception shouldIntervene respond = intercept @(LLM model) recorder
+  where
+    recorder :: forall m x. LLM model m x -> Sem r x
+    recorder (QueryLLM configs history)
+      | shouldIntervene history = Right <$> respond history
+      | otherwise               = send (QueryLLM configs history)
+
+-- | Cap a multi-turn conversation at @maxTurns@ actual model queries: once
+--   reached, inject a synthetic response containing @sentinel@ instead of
+--   querying the model again, so a loop already watching for that sentinel
+--   (see 'outlineCompleteSentinel'\/'doneSentinel') terminates the normal
+--   way, with no separate "budget ran out" branch of its own to get right.
+--
+--   Refuses (via 'Polysemy.Fail.Fail') to inject the sentinel a second time
+--   -- if the caller's own loop isn't stopping once the sentinel shows up,
+--   injecting it again would just spin forever instead of actually
+--   terminating anything.
+withTurnBudget
+  :: forall model r a
+  .  Members '[LLM model, Fail] r
+  => Int   -- ^ turn budget: queries beyond this get the sentinel instead of a real response
+  -> Text  -- ^ the sentinel to inject once the budget is reached
+  -> Sem r a -> Sem r a
+withTurnBudget maxTurns sentinel = withInterception @model overBudget respond
+  where
+    overBudget = (>= maxTurns) . length . filter isAssistantTurn
+
+    respond history
+      | sentinel `T.isInfixOf` mconcat [ t | AssistantText t <- history ] =
+          fail "withTurnBudget: sentinel already in history but the loop kept going -- refusing to inject it again"
+      | otherwise = pure [AssistantText sentinel]
+
+    isAssistantTurn (AssistantText _)      = True
+    isAssistantTurn (AssistantTool _)      = True
+    isAssistantTurn (AssistantReasoning _) = True
+    isAssistantTurn (AssistantJSON _)      = True
+    isAssistantTurn _                      = False
 
 -- | The @emit_beat_sheet@ tool body: package the model's two arguments into a
 --   'ChapterBeats'. No effect — reporting only, like 'ReplaceTool's tool.
@@ -439,10 +644,32 @@ defaultExpandConfig ToBeatSheet = [MaxTokens 1536, Temperature 0.8]
 
 defaultSplitSystem :: Prompt
 defaultSplitSystem =
-  "You are a story planner. Given a whole-story outline, divide it into \
-  \chapters and produce one beat sheet per chapter. The chapters may not \
-  \exist yet — use your judgement to decide how many there are and where each \
-  \begins and ends. For each chapter, call emit_beat_sheet once, with a path \
+  "You are a story planner. You'll be given an outline for a story — either \
+  \the whole story, or as much of it as exists so far — and your job is to \
+  \divide it into chapters and produce one beat sheet per chapter, so each \
+  \chapter can be developed on its own. The chapters may not be marked out \
+  \explicitly; use your judgement to decide how many there are and where \
+  \each begins and ends, inventing concrete plot beats to fill each chapter \
+  \out where the outline only sketches — be creative there, but stay \
+  \faithful to the outline's own structure and intent: don't introduce \
+  \events, characters, or a sequence that contradicts it. \
+  \\n\n\
+  \If the outline already marks out chapters — headings, numbered sections, \
+  \any explicit break — treat that division as deliberate, not a rough \
+  \sketch to improve on: whoever wrote it chose where one chapter ends and \
+  \the next begins, for reasons of pacing, a cliffhanger, or chapter length \
+  \that may not be spelled out. Keep every event in the chapter the outline \
+  \already put it in. Do not move a beat into a neighboring chapter, even if \
+  \a different split would read more smoothly to you. \
+  \\n\n\
+  \Before writing anything, check the surrounding context for chapters that \
+  \already have a beat sheet (a chapters/*.outline.md file). Skip those — \
+  \do not call emit_beat_sheet for a chapter that already has one. Only \
+  \emit beat sheets for chapters that don't have one yet, so this is safe \
+  \to run again as a story grows: it fills in what's missing rather than \
+  \redoing what's already there. \
+  \\n\n\
+  \For each remaining chapter, call emit_beat_sheet once, with a path \
   \(chapters/ch1.outline.md, chapters/ch2.outline.md, …, in reading order) and \
   \the beat sheet: one Markdown heading per beat, prose notes under each \
   \covering what happens, logistics, the emotional turn, and a rough length. \
@@ -456,10 +683,59 @@ defaultSplitInstructions =
 
 -- | Compiled-in sampling default for @agent.outline.split@ -- see
 --   @$key.llmsettings.yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'.
---   Per-turn budget in the same range as 'defaultExpandConfig' (one chapter's
---   beat sheet per @emit_beat_sheet@ call), with a slightly cooler
---   temperature: this is a judgement call about chapter boundaries, not
---   creative composition, so consistency matters a little more than
---   variation -- but the beat sheet text itself still needs some.
+--   With a slightly cooler temperature than 'defaultExpandConfig': this is a
+--   judgement call about chapter boundaries, not creative composition, so
+--   consistency matters a little more than variation -- but the beat sheet
+--   text itself still needs some.
+--
+--   @MaxTokens@ deliberately above 'Storyteller.Writer.Agent.Continuation.defaultWriterConfig'\'s
+--   3000, not below it: a beat sheet is skeletal notes, but it's an entire
+--   chapter's worth (several headed beats, each with logistics/emotional-turn/
+--   length notes) packed into a *single* tool-call argument, and it has to
+--   fit inside one JSON string with room to spare -- 1536 measured too
+--   tight in practice (@Agent.Integration.OutlineSplitQualitySpec@, run
+--   against a real, richly-detailed user outline rather than a short
+--   agent-generated one, hit @emit_beat_sheet@ calls truncated mid-string
+--   well before the model finished writing the beat sheet).
 defaultSplitConfig :: [ModelConfig AgentModel]
-defaultSplitConfig = [MaxTokens 1536, Temperature 0.7]
+defaultSplitConfig = [MaxTokens 4096, Temperature 0.7]
+
+-- | System prompt for 'splitOutlineFreeform' -- the same job as
+--   'defaultSplitSystem', reframed for plain conversation instead of
+--   repeated tool calls: no path assignment (that's 'splitOutlineFreeform'\'s
+--   own job now), no "call the tool," just "write this chapter's beat sheet
+--   as markdown, or say you're done."
+defaultFreeformSystem :: Prompt
+defaultFreeformSystem =
+  "You are a story planner. You'll be given an outline for a story — either \
+  \the whole story, or as much of it as exists so far — and asked to write \
+  \one beat sheet per chapter, one at a time, in a running conversation: \
+  \each turn you'll be asked for the next chapter's beat sheet, in reading \
+  \order, and should respond with plain markdown only — one Markdown \
+  \heading per beat, prose notes under each covering what happens, \
+  \logistics, the emotional turn, and a rough length. No tool calls, no \
+  \code fences, no commentary outside the beat sheet itself — just the beat \
+  \sheet, since your whole response each turn is taken as exactly one \
+  \chapter. \
+  \\n\n\
+  \The chapters may not be marked out explicitly; use your judgement to \
+  \decide how many there are and where each begins and ends, inventing \
+  \concrete plot beats to fill each chapter out where the outline only \
+  \sketches — be creative there, but stay faithful to the outline's own \
+  \structure and intent. If the outline already marks out chapters, treat \
+  \that division as deliberate: keep every event in the chapter the outline \
+  \already put it in, don't move a beat into a neighboring chapter."
+
+-- | The one free-text part of 'splitOutlineFreeform's opening user message
+--   a prompt override can actually change.
+defaultFreeformInstructions :: Prompt
+defaultFreeformInstructions =
+  "Write the first chapter's beat sheet now."
+
+-- | Compiled-in sampling default for @agent.outline.split.freeform@ -- same
+--   reasoning as 'defaultSplitConfig'\'s @MaxTokens@ (a beat sheet needs
+--   room), but nothing here is packed inside a JSON string argument, so
+--   there's no extra JSON-overhead margin to budget for on top of the beat
+--   sheet's own length.
+defaultFreeformConfig :: [ModelConfig AgentModel]
+defaultFreeformConfig = [MaxTokens 4096, Temperature 0.7]

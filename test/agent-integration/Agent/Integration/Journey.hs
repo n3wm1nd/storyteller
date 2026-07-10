@@ -41,13 +41,15 @@ import qualified Data.Text as T
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
+import Runix.LLM (Message)
 import Runix.Logging (Logging, info)
 
+import Agent.Integration.Harness (assertToolCallBudget)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
-import Storyteller.Core.LLM.Role (LLMs)
+import Storyteller.Core.LLM.Role (AgentModel, LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
@@ -73,8 +75,14 @@ type JourneyEffects r =
 
 -- | The three requests a Writer-tab session issues, and what each produced.
 data JourneyResult = JourneyResult
-  { jrOutline  :: T.Text            -- ^ full contents of @outline.md@
-  , jrChapters :: [ChapterBeats]    -- ^ beat sheets 'splitOutlineAgent' emitted, reading order
+  { jrOutline    :: T.Text            -- ^ full contents of @outline.md@
+  , jrChapters   :: [ChapterBeats]    -- ^ beat sheets 'splitOutlineAgent' emitted, reading order
+  , jrSplitTurns :: [[Message AgentModel]] -- ^ every raw response 'splitOutlineAgent' got back from
+                                            --   the model while splitting the outline, oldest first --
+                                            --   'jrChapters' only keeps what the tool loop successfully
+                                            --   harvested, so this is the only place a caller can see a
+                                            --   turn that came back as a malformed tool call (see
+                                            --   'Agent.Integration.ToolCallQuality')
   , jrProse    :: [(FilePath, T.Text)] -- ^ (chapter path, generated prose) per beat sheet, same order
   , jrFiles    :: [FilePath]        -- ^ every path actually in the branch once the session is done,
                                      --   sorted -- read straight off the filesystem, independent of
@@ -107,9 +115,18 @@ runJourney = do
 
   info "journey: splitting outline into chapter beat sheets"
   (_, outlineCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
-  sheets <- splitOutlineAgent outlineCtx (OutlineDoc outline)
+  -- A budget of 2: one or two retries recovering from a malformed
+  -- 'emit_beat_sheet' call is legitimate self-correction (see
+  -- 'Storyteller.Writer.Agent.Outline.splitOutlineAgent's own retry loop)
+  -- and worth letting play out here, same as a real Writer-tab session
+  -- would -- but past that it isn't "working as designed" any more, and
+  -- this aborts (via 'Agent.Integration.Harness.assertToolCallBudget')
+  -- before ever spending a live chapter-writing generation on beat sheets
+  -- from a split step that's clearly struggling. See @../PLAN.md@.
+  (sheets, splitTurns) <- assertToolCallBudget @AgentModel 2 (splitOutlineAgent outlineCtx (OutlineDoc outline))
   mapM_ (\(ChapterBeats path (BeatSheet body)) -> appendGenerated path body) sheets
-  info $ "journey: got " <> T.pack (show (length sheets)) <> " beat sheet(s)"
+  info $ "journey: got " <> T.pack (show (length sheets)) <> " beat sheet(s) over "
+       <> T.pack (show (length splitTurns)) <> " turn(s)"
 
   info "journey: writing each chapter from its beat sheet"
   chapters <- forM sheets $ \(ChapterBeats sheetPath _) -> do
@@ -118,7 +135,7 @@ runJourney = do
     return (chapterPath, prose)
 
   files <- logFileTree @(BranchTag Main)
-  return (JourneyResult outline sheets chapters files)
+  return (JourneyResult outline sheets splitTurns chapters files)
 
 -- | List every path in the branch, sorted, and log it -- a plain filesystem
 --   listing, no LLM call, just visibility into what the three requests above
