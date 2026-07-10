@@ -118,6 +118,7 @@ function Dot({ filled, faded, color, title, onClick }: {
     <button
       onClick={onClick}
       title={title}
+      className="undo-dot"
       style={{
         width: size, height: size, borderRadius: "50%", padding: 0, cursor: "pointer",
         border: filled ? "none" : `1.5px solid ${c}`,

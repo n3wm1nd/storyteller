@@ -96,6 +96,14 @@ body {
 }
 .log-pulse { animation: log-pulse 0.6s ease-out; }
 
+/* Undo timeline (app/undo-timeline.tsx): dots are deliberately tinted, not
+   fully saturated, at rest (see 'kindColor's own comment — a couple dozen
+   of these sit in peripheral vision in the top bar, so full saturation
+   would read as noisy). Hover reveals the underlying hue at full strength
+   as a cheap, pure-CSS boost rather than computing/passing a second color —
+   a plain saturation filter on whatever's already rendered there. */
+.undo-dot:hover { filter: saturate(6); }
+
 /* Thin custom scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

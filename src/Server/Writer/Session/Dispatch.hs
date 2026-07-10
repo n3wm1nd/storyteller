@@ -107,10 +107,12 @@ characterSummaries = do
 --   most recent 'undoLogLimit' entries: the underlying log itself is never
 --   trimmed (it's still the full, real history, walked in full by every
 --   'Storyteller.Core.Undo.resetToUndo'), only what crosses the wire is —
---   the timeline UI shows on the order of a couple dozen dots at once, so
---   sending the other thousands a long session accumulates is pure waste
---   with no consumer today. Revisit if a client ever wants to page back
---   further than this covers.
+--   sending the thousands more a long session accumulates is pure waste
+--   with no consumer today. Sized to comfortably overflow the timeline
+--   strip's own width even on a large display (rather than to exactly fit
+--   any one screen), so the row's fade-out mask always has real content to
+--   fade rather than running out and hard-clipping. Revisit if a client
+--   ever wants to page back further than this covers.
 undoLog :: SessionEffects r => Sem r SessionEvent
 undoLog = do
   entries <- reverse . take undoLogLimit <$> listUndo
@@ -120,4 +122,4 @@ undoLog = do
     ]
 
 undoLogLimit :: Int
-undoLogLimit = 50
+undoLogLimit = 150
