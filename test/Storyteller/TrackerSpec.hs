@@ -26,7 +26,7 @@ import qualified Storage.Ops as Ops
 import Storyteller.Core.Types
 import Storyteller.Writer.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
 import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (PresenceEvent(..))
+import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 import Server.Writer.Branch (onlyWhilePresent)
 
 -- ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ spec = do
 
   describe "trackBranch with onlyWhilePresent (character presence-gated tracking)" $ do
     it "copies only the atom written while the character was present" $ do
-      let character = BranchName "tracker"
+      let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
             _ <- recordPresence @Source "story.md" character Enter
             _ <- runStorage @Source (Ops.addAtom "story.md" "she arrived.")
@@ -189,7 +189,7 @@ spec = do
           content `shouldBe` "she arrived."
 
     it "copies nothing when the character was never present" $ do
-      let character = BranchName "tracker"
+      let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "nobody's here.")
             tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
@@ -198,7 +198,7 @@ spec = do
       result `shouldBe` Right 0
 
     it "copies everything once the character re-enters, still skipping the absent gap" $ do
-      let character = BranchName "tracker"
+      let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "absent.")
             _ <- recordPresence @Source "story.md" character Enter

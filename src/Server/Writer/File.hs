@@ -52,7 +52,7 @@ import Storyteller.Writer.Agent.Outline
   ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
   , reconcileChapter, reconcileChapterByBeat, splitOutlineFreeform )
 import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
-import Storyteller.Writer.Types (PresenceEvent)
+import Storyteller.Writer.Types (Character(..), PresenceEvent)
 import Storyteller.Core.Runtime (Main)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -82,7 +82,7 @@ activeCharacterContext path = do
   active <- activeCharactersFor @Main path
   mapM summarize active
   where
-    summarize (BranchName name) = do
+    summarize (Character (BranchName name)) = do
       blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar))
       let label = maybe name id (T.stripPrefix "character/" name)
       pure (CharLabel label, blocks)
@@ -314,5 +314,5 @@ toContextBlocks = map (ContextBlock . ciContent)
 -- | Record a character entering or leaving the scene on @path@ — presence
 --   is scoped to the file (the scene), not the whole branch, see
 --   'Storyteller.Writer.Types.Presence' and WRITER.md.
-setPresence :: FileOpen r => FilePath -> BranchName -> PresenceEvent -> Sem r ()
+setPresence :: FileOpen r => FilePath -> Character -> PresenceEvent -> Sem r ()
 setPresence path character event = void $ recordPresence @Main path character event

@@ -8,7 +8,8 @@
 -- (the @character/{id}@ branch-naming convention documented in WRITER.md),
 -- which only means something to this app.
 module Storyteller.Writer.Types
-  ( Presence(..)
+  ( Character(..)
+  , Presence(..)
   , PresenceEvent(..)
   ) where
 
@@ -19,6 +20,16 @@ import Storyteller.Core.Types
   ( BranchName(..), TickType(..), TickData(..), Tick(..)
   , encodeDraft, decodePayload
   )
+
+-- | A character, identified by its @character/{id}@ branch (see WRITER.md).
+--   Wraps 'BranchName' rather than reusing it bare: a bare 'BranchName'
+--   parameter answers equally well to "the tracker branch", "the source
+--   branch", or any other branch a caller might have in scope, so a
+--   function that only makes sense for *this one specific kind* of branch
+--   (e.g. "is this character present?" -- nonsense to ask of an arbitrary
+--   branch) should say so in its type, not just its argument name.
+newtype Character = Character { unCharacter :: BranchName }
+  deriving (Show, Eq, Ord)
 
 -- | Whether a character is entering or leaving the scene at this point in
 --   the story.
@@ -44,14 +55,14 @@ data PresenceEvent = Enter | Leave
 --   file's chain is in view — see WRITER.md.
 data Presence = Presence
   { presenceFile      :: FilePath
-  , presenceCharacter :: BranchName
+  , presenceCharacter :: Character
   , presenceEvent     :: PresenceEvent
   } deriving (Show, Eq)
 
 instance TickType Presence where
   tickTypeName = "presence"
 
-  toDraft (Presence file branch event) =
+  toDraft (Presence file (Character branch) event) =
     encodeDraft @Presence [] [("file", T.pack file), ("character", unBranchName branch), ("event", eventText event)] ""
 
   fromTick t = do
@@ -61,7 +72,7 @@ instance TickType Presence where
     charName <- lookup "character" fields
     evText   <- lookup "event" fields
     event    <- parseEvent evText
-    Just Presence { presenceFile = T.unpack file, presenceCharacter = BranchName charName, presenceEvent = event }
+    Just Presence { presenceFile = T.unpack file, presenceCharacter = Character (BranchName charName), presenceEvent = event }
 
 eventText :: PresenceEvent -> Text
 eventText Enter = "enter"

@@ -28,8 +28,8 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
-import Storyteller.Core.Types (BranchName(..), TickId(..))
-import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
+import Storyteller.Writer.Types (Character(..), Presence(..), PresenceEvent(..))
 
 -- | Record a character entering or leaving the scene on @file@, on
 --   @branch@'s chain — see 'Storyteller.Writer.Types.Presence' for why this
@@ -50,10 +50,10 @@ import Storyteller.Writer.Types (Presence(..), PresenceEvent(..))
 recordPresence
   :: forall branch r
   .  Members '[BranchOp branch, StoryStorage, Fail] r
-  => FilePath -> BranchName -> PresenceEvent -> Sem r (Maybe TickId)
-recordPresence file character event =
-  getBranch character >>= \case
-    Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName character))
+  => FilePath -> Character -> PresenceEvent -> Sem r (Maybe TickId)
+recordPresence file character@(Character branch) event =
+  getBranch branch >>= \case
+    Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName branch))
     Just _  -> do
       (ticks, _) <- runStorage @branch (Tick.fileTicksOf file)
       priorActive <- case trailingPresenceFor character ticks of
@@ -84,13 +84,13 @@ recordPresence file character event =
 --   track every other character's state to get there (contrast
 --   'activeCharacters', which genuinely needs all of them, for the
 --   "list everyone present" query 'activeCharactersFor' answers).
-presentIn :: BranchName -> [FileTick] -> Bool
-presentIn character = go . reverse
+presentIn :: Character -> [FileTick] -> Bool
+presentIn (Character branch) = go . reverse
   where
     go [] = False
     go (ft : rest)
       | ftKind ft /= "presence"                                        = go rest
-      | lookup "character" (ftFields ft) /= Just (unBranchName character) = go rest
+      | lookup "character" (ftFields ft) /= Just (unBranchName branch) = go rest
       | otherwise = lookup "event" (ftFields ft) == Just "enter"
 
 -- | Every character active as of the end of @ticks@ -- the "list everyone
@@ -98,14 +98,14 @@ presentIn character = go . reverse
 --   genuinely needs to fold every character's own state, since the answer
 --   *is* the set of characters. Mirrors the frontend's
 --   'activeCharacterBranches' (@lib/utils.ts@).
-activeCharacters :: [FileTick] -> Set.Set BranchName
+activeCharacters :: [FileTick] -> Set.Set Character
 activeCharacters = foldl' step Set.empty
   where
     step acc ft
       | ftKind ft /= "presence" = acc
       | otherwise = case (lookup "character" (ftFields ft), lookup "event" (ftFields ft)) of
-          (Just charT, Just "enter") -> Set.insert (BranchName charT) acc
-          (Just charT, Just "leave") -> Set.delete (BranchName charT) acc
+          (Just charT, Just "enter") -> Set.insert (Character (BranchName charT)) acc
+          (Just charT, Just "leave") -> Set.delete (Character (BranchName charT)) acc
           _                          -> acc
 
 -- | Every character currently active on @file@ -- the single source of
@@ -114,7 +114,7 @@ activeCharacters = foldl' step Set.empty
 activeCharactersFor
   :: forall branch r
   .  Members '[BranchOp branch, Fail] r
-  => FilePath -> Sem r [BranchName]
+  => FilePath -> Sem r [Character]
 activeCharactersFor file = do
   (ticks, _) <- runStorage @branch (Tick.fileTicksOf file)
   pure (Set.toList (activeCharacters ticks))
@@ -125,35 +125,53 @@ activeCharactersFor file = do
 --   'activeCharactersFor', which needs a full 'BranchOp' dispatch). Not
 --   specific to any one caller -- 'Storyteller.Writer.Agent.Tracker' and
 --   anything else asking "is X here right now" reach for this the same way.
---   As of head, same as 'activeCharactersFor'; see 'presentAt' for the
---   point-in-time variant a caller walking several historical ticks needs
---   instead.
-presentOn :: Core.StoreM m => FilePath -> Core.StoreT m (BranchName -> Bool)
-presentOn file = do
-  ticks <- Tick.fileTicksOf file
-  pure (`presentIn` ticks)
+--
+--   A real transaction, not a query bolted on after one: walks one commit
+--   at a time from head backward (see 'presentAsOf'), reading and decoding
+--   only as many ticks as it takes to find this character's own most
+--   recent word -- unlike going through 'Tick.fileTicksOf' first, whose
+--   own walk reads and decodes *every* tick in the file's history before
+--   handing any of them back, no matter how early the answer was actually
+--   sitting. See 'presentAt' for the point-in-time variant.
+presentOn :: Core.StoreM m => FilePath -> Character -> Core.StoreT m Bool
+presentOn file character = do
+  h <- Core.headHash
+  presentAsOf h file character
 
--- | Like 'presentOn', but answering for an arbitrary historical tick on
---   @file@ instead of head -- what a caller replaying several ticks from
---   the same file needs (see 'Server.Writer.Branch.onlyWhilePresent'):
---   a single tracking pass can span an Enter\/Leave gap (the character
---   present for an early atom, gone by a later one in the same pass), so
---   asking 'presentOn' once per atom would answer every one of them
---   identically, using whatever the *final* state happens to be -- wrong
---   for exactly the atoms this exists to tell apart. Folding only the
---   presence ticks at-or-before each queried tick's own position is what
---   makes the answer differ within a single pass the way it should.
-presentAt :: Core.StoreM m => FilePath -> Core.StoreT m (TickId -> BranchName -> Bool)
-presentAt file = do
-  ticks <- Tick.fileTicksOf file
-  pure (\tid character -> presentIn character (upToAndIncluding tid ticks))
+-- | Like 'presentOn', but starting the backward walk from an arbitrary
+--   historical tick instead of head -- what a caller replaying several
+--   ticks from the same file needs (see
+--   'Server.Writer.Branch.onlyWhilePresent'): a single tracking pass can
+--   span an Enter\/Leave gap (the character present for an early atom,
+--   gone by a later one in the same pass), so asking 'presentOn' once per
+--   atom would answer every one of them identically, using whatever the
+--   *current* state happens to be -- wrong for exactly the atoms this
+--   exists to tell apart.
+presentAt :: Core.StoreM m => TickId -> FilePath -> Character -> Core.StoreT m Bool
+presentAt (TickId tid) = presentAsOf (Core.ObjectHash tid)
+
+-- | The walk both 'presentOn' and 'presentAt' are built on: read @start@'s
+--   own tick, and if it's a presence tick naming @character@ on @file@,
+--   that's the answer (Enter -> present, Leave -> not) -- stop right there,
+--   nothing earlier can still be relevant since a later word always wins.
+--   Otherwise follow 'tickParent' to the previous tick and repeat; running
+--   out of chain (root, no parent) means not present -- a fresh file
+--   starts with nobody in it (see 'Storyteller.Writer.Types.Presence'),
+--   so there is no earlier state to fall back to, only empty. Each step is
+--   exactly one 'Tick.readTypesTick' -- no upfront pass over the rest of
+--   the chain, so a character whose last word was one tick back costs one
+--   read, not a read of everything that ever happened on @file@.
+presentAsOf :: Core.StoreM m => Core.ObjectHash -> FilePath -> Character -> Core.StoreT m Bool
+presentAsOf start file character = go start
   where
-    upToAndIncluding (TickId target) = go
-      where
-        go [] = []
-        go (ft : rest)
-          | ftTickId ft == target = [ft]
-          | otherwise             = ft : go rest
+    go h = do
+      t <- Tick.readTypesTick h
+      case fromTick @Presence t of
+        Just p | presenceFile p == file, presenceCharacter p == character ->
+          pure (presenceEvent p == Enter)
+        _ -> case tickParent t of
+          Nothing          -> pure False
+          Just (TickId ph) -> go (Core.ObjectHash ph)
 
 -- | The most recent presence tick for @character@ on this file, if nothing
 --   since it has actually changed the file's content — i.e. it's still the
@@ -164,13 +182,13 @@ presentAt file = do
 --   exact character is hit; skips anything else (other characters'
 --   presence ticks, prompts, notes — none of them represent "an atom
 --   happened" or say anything about this character).
-trailingPresenceFor :: BranchName -> [FileTick] -> Maybe TickId
-trailingPresenceFor character ticks = go (reverse ticks)
+trailingPresenceFor :: Character -> [FileTick] -> Maybe TickId
+trailingPresenceFor (Character branch) ticks = go (reverse ticks)
   where
     go [] = Nothing
     go (ft : rest)
       | ftKind ft == "atom" = Nothing
       | ftKind ft == "presence"
-      , lookup "character" (ftFields ft) == Just (unBranchName character)
+      , lookup "character" (ftFields ft) == Just (unBranchName branch)
       = Just (TickId (ftTickId ft))
       | otherwise = go rest

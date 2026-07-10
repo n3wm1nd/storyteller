@@ -36,6 +36,7 @@ import Server.Core.Util (withBranch)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Writer.Presence (presentAt)
+import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage, withStorage)
 import qualified Storage.Core as Core
@@ -71,7 +72,7 @@ trackFiles target source pairs = do
   let destPaths = map snd pairs
   runBranchAndFS @Source source
     $ runBranchAndFS @Tracker target $ do
-        mapM_ (trackBranch @Source @Tracker (onlyWhilePresent target)) pairs
+        mapM_ (trackBranch @Source @Tracker (onlyWhilePresent (Character target))) pairs
         return destPaths
 
 -- | Only copy an atom into @character@'s branch if that character was
@@ -85,12 +86,12 @@ trackFiles target source pairs = do
 --   'Storyteller.Writer.Agent.Tracker.dropUntilAfterLastSynced'), so a
 --   later sync pass simply reconsiders it -- harmless, since presence at a
 --   fixed historical position never changes, so it drops again every time.
-onlyWhilePresent :: Core.StoreM m => BranchName -> Tick -> Core.StoreT m (Maybe Tick)
+onlyWhilePresent :: Core.StoreM m => Character -> Tick -> Core.StoreT m (Maybe Tick)
 onlyWhilePresent character tick = case fromTick @Atom tick of
   Nothing -> pure Nothing
   Just (Atom file _) -> do
-    present <- presentAt file
-    pure (if present (tickId tick) character then Just tick else Nothing)
+    present <- presentAt (tickId tick) file character
+    pure (if present then Just tick else Nothing)
 
 -- | Run chargen and commit the result to a branch.
 --   Creates the branch if it doesn't exist.

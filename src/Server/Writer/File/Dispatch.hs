@@ -41,7 +41,7 @@ import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Git (atGenericSeeded, runBranchAndFS)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
-import Storyteller.Writer.Types (PresenceEvent(..))
+import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 -- | Phantom tag for opening one connected branch (a character's journal —
 --   see 'AtBranch') at a time, dynamically. Only ever used one branch at a
@@ -113,10 +113,10 @@ runCommand path cmd = case cmd of
     chatNote text (map TickId targets)
 
   EnterScene _mid character ->
-    setPresence path (BranchName character) Enter
+    setPresence path (Character (BranchName character)) Enter
 
   LeaveScene _mid character ->
-    setPresence path (BranchName character) Leave
+    setPresence path (Character (BranchName character)) Leave
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it
