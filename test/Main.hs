@@ -19,6 +19,7 @@ import qualified Storyteller.SubdirSpec
 import qualified Storyteller.SplitterSpec
 import qualified Storyteller.TrackerSpec
 import qualified Storyteller.CharGenSpec
+import qualified Storyteller.CharContextSpec
 import qualified Storyteller.PresenceSpec
 import qualified Storyteller.UndoSpec
 import qualified Storyteller.ChatSpec
@@ -58,6 +59,7 @@ main = hspec $ do
   describe "Storyteller.Splitter"       Storyteller.SplitterSpec.spec
   describe "Storyteller.Tracker"        Storyteller.TrackerSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
+  describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
   describe "Storyteller.Presence"       Storyteller.PresenceSpec.spec
   describe "Storyteller.Undo"           Storyteller.UndoSpec.spec
   describe "Storyteller.Writer.Agent.Chat" Storyteller.ChatSpec.spec

@@ -61,7 +61,7 @@ instance HasProjectPath CharFixture where
 --   the LLM-effect stack a 'Runner' wraps.
 readCharFixture :: FilePath -> IO [CharContextBlock]
 readCharFixture dir = do
-  result <- runM . runFail . filesystemIO . fileSystemLocal (CharFixture dir) $ readCharFiles @CharFixture
+  result <- runM . runFail . filesystemIO . fileSystemLocal (CharFixture dir) $ readCharFiles @CharFixture (const True)
   either (fail . ("readCharFixture: " <>)) (pure . renderCharContext) result
 
 charFixtureDir :: FilePath

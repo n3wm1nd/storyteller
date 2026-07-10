@@ -78,16 +78,31 @@ data ActiveChar
 --   signal, so this is the one place that decides which character branches
 --   an agent sees. Each active branch is opened dynamically (same
 --   'runBranchAndFS' pattern 'Server.Writer.Branch.charGen'\/'trackFiles'
---   use for a runtime-named branch) and summarized via 'charSummaryAgent'.
+--   use for a runtime-named branch) and summarized via 'charSummaryAgent'
+--   -- excluding @journal.md@ (see 'journalPath'): it's long, mostly a copy
+--   of what the scene's own history already says, sometimes stale or
+--   contradictory, and not written for a narrator to read. Full journal
+--   access is still available on request, via
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent'
+--   (@\/ask@\/the sidebar's Ask panel) -- deliberately not wired into
+--   generation itself yet.
 activeCharacterContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [(CharLabel, [CharContextBlock])]
 activeCharacterContext path = do
   active <- activeCharactersFor @Main path
   mapM summarize active
   where
     summarize (Character (BranchName name)) = do
-      blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar))
+      blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar) (/= journalPath))
       let label = maybe name id (T.stripPrefix "character/" name)
       pure (CharLabel label, blocks)
+
+-- | A character branch's own account, in fiction-time order (see
+--   WRITER.md's "Character structure" section) -- excluded from
+--   generation's ambient context (see 'activeCharacterContext'), included
+--   in full for an explicit 'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent'
+--   query.
+journalPath :: FilePath
+journalPath = "journal.md"
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see

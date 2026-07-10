@@ -35,16 +35,25 @@ import Storyteller.Writer.Agent (CharContextBlock(..))
 
 import Prelude hiding (readFile)
 
--- | Read all files from a character branch's filesystem, sorted by path.
---   The @project@ type parameter is the filesystem phantom for the character
---   branch. The caller is responsible for having that branch's filesystem
---   interpreter in scope.
+-- | Read files from a character branch's filesystem matching @keep@, sorted
+--   by path. The @project@ type parameter is the filesystem phantom for the
+--   character branch. The caller is responsible for having that branch's
+--   filesystem interpreter in scope.
+--
+--   @keep@ is the caller's call, not a default this module picks: a
+--   generation call gathering ambient context for every active character
+--   (see 'Server.Writer.File.activeCharacterContext') wants their journal
+--   excluded (long, mostly a copy of what's already in the scene's own
+--   history, and not written for a narrator to read), while an explicit
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' query wants
+--   everything, journal included -- there is no one "right" filter for
+--   "a character's files" independent of who's asking.
 readCharFiles
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => Sem r [(FilePath, T.Text)]
-readCharFiles = do
-  files <- List.sort <$> listAllFiles @project "/"
+  => (FilePath -> Bool) -> Sem r [(FilePath, T.Text)]
+readCharFiles keep = do
+  files <- filter keep . List.sort <$> listAllFiles @project "/"
   mapM (\path -> (,) path . TE.decodeUtf8 <$> readFile @project path) files
 
 -- | Format read files as labelled blocks: @"### \<path\>\n\n\<content\>"@.
@@ -58,5 +67,5 @@ renderCharContext = map $ \(path, content) ->
 charSummaryAgent
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => Sem r [CharContextBlock]
-charSummaryAgent = renderCharContext <$> readCharFiles @project
+  => (FilePath -> Bool) -> Sem r [CharContextBlock]
+charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep

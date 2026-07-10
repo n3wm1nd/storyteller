@@ -102,7 +102,7 @@ chapterAction mode sheetPath outFile activeChars = do
 
   charBlocks <- forM activeChars $ \charBranch -> do
     blocks <- runBranchAndFS @Char_ (BranchName charBranch)
-            $ charSummaryAgent @(BranchTag Char_)
+            $ charSummaryAgent @(BranchTag Char_) (const True)
     return (CharLabel charBranch, blocks)
 
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile

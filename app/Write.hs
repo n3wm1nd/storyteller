@@ -84,7 +84,7 @@ writeAction outFile instruction activeChars = do
   charBlocks <- forM activeChars $ \charBranch -> do
     let branchName = BranchName charBranch
     blocks <- runBranchAndFS @Char_ branchName
-            $ charSummaryAgent @(BranchTag Char_)
+            $ charSummaryAgent @(BranchTag Char_) (const True)
     return (CharLabel charBranch, blocks)
 
   (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile

@@ -42,7 +42,7 @@ askCharacterAgent
   .  (LLMs r, Members '[FileSystem project, FileSystemRead project, PromptStorage, Fail] r)
   => T.Text -> Sem r T.Text
 askCharacterAgent question = do
-  blocks <- charSummaryAgent @project
+  blocks <- charSummaryAgent @project (const True)
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig
   let userMsg = renderAskPrompt blocks question
   response <- queryLLM configsWithPrompt [UserText userMsg]
