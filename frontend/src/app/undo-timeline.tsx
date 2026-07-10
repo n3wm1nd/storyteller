@@ -155,9 +155,18 @@ export function UndoTimeline() {
 
   // The override + stash pair described in the module doc — 'null' means
   // "no undo pending, active is just the last entry." Set by clicking any
-  // dot that isn't already the last one; stops applying the instant the
-  // entry count grows past what it was when the override was made (a real
-  // write happened, from this client or anywhere else).
+  // dot that isn't already the last one; stops applying the instant a real
+  // write lands (from this client or anywhere else) — detected by
+  // 'tailIdAtJump' (the id of whatever was the newest entry at the moment
+  // of the jump) no longer matching the array's current tail, *not* by
+  // comparing lengths: the server caps how much history it sends
+  // (Server.Writer.Session.Dispatch.undoLogLimit), so once a session has
+  // been running long enough to hit that cap, a real write pushes an old
+  // entry off the front at the same time it adds a new one at the back —
+  // the length never changes, so a length-based check would (and did)
+  // silently stop clearing forever the moment a session crossed that cap.
+  // Identity of the tail is exactly the fact that's actually true
+  // regardless of how the array's front edge is being trimmed.
   //
   // Whether it still applies is computed fresh every render ('effective'
   // below) rather than cleared via a useEffect: an effect only runs after
@@ -166,17 +175,18 @@ export function UndoTimeline() {
   // override for one frame — invisible most of the time, but exactly what
   // "the first change after an undo gets swallowed, the next one
   // self-corrects" looks like when it isn't. Deriving it inline means the
-  // same render that first sees the longer list already shows the correct,
+  // same render that first sees the new tail already shows the correct,
   // un-overridden state — nothing to catch up on next time. The state
   // itself is still cleared in an effect below, purely so a stale object
   // isn't held onto indefinitely; that cleanup is never load-bearing for
   // what's rendered.
-  const [override, setOverride] = useState<{ activeId: string; stash: WireUndoEntry[]; countAtJump: number } | null>(null);
-  const effective = override && entries.length <= override.countAtJump ? override : null;
+  const [override, setOverride] = useState<{ activeId: string; stash: WireUndoEntry[]; tailIdAtJump: string | undefined } | null>(null);
+  const currentTailId = entries[entries.length - 1]?.id;
+  const effective = override && currentTailId === override.tailIdAtJump ? override : null;
 
   useEffect(() => {
-    if (override && entries.length > override.countAtJump) setOverride(null);
-  }, [entries.length, override]);
+    if (override && currentTailId !== override.tailIdAtJump) setOverride(null);
+  }, [currentTailId, override]);
 
   const activeId = effective?.activeId ?? entries[entries.length - 1]?.id;
   const stash = effective?.stash ?? [];
@@ -230,7 +240,7 @@ export function UndoTimeline() {
 
   function jump(entry: WireUndoEntry) {
     const idx = entries.findIndex((e) => e.id === entry.id);
-    setOverride({ activeId: entry.id, stash: entries.slice(idx + 1), countAtJump: entries.length });
+    setOverride({ activeId: entry.id, stash: entries.slice(idx + 1), tailIdAtJump: currentTailId });
     setJustJumpedTo(entry.id);
     resetToUndo(entry.id);
   }
