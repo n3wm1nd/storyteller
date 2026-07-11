@@ -1,21 +1,3 @@
-@import "tailwindcss";
-@import "tw-animate-css";
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-surface: var(--surface);
-  --color-sidebar: var(--sidebar);
-  --color-card: var(--card);
-  --color-border: var(--border);
-  --color-muted: var(--muted);
-  --color-amber: var(--amber);
-  --color-teal: var(--teal);
-  --color-rose: var(--rose);
-  --color-emerald: var(--emerald);
-  --color-violet: var(--violet);
-}
-
 :root {
   /* Surfaces */
   --background:    oklch(0.12 0.01 60);
@@ -103,6 +85,13 @@ body {
    as a cheap, pure-CSS boost rather than computing/passing a second color —
    a plain saturation filter on whatever's already rendered there. */
 .undo-dot:hover { filter: saturate(6); }
+
+/* Spinner (replaces Tailwind's `animate-spin` utility — see
+   context-source.tsx/agentstab.tsx's loading indicators — now that
+   Tailwind itself is gone; same rotation, same class name so no call site
+   needed to change). */
+@keyframes spin { to { transform: rotate(360deg); } }
+.animate-spin { animation: spin 1s linear infinite; }
 
 /* Thin custom scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
