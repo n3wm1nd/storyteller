@@ -15,7 +15,7 @@
 -- content edit never adds or removes a name); nobody else needs the
 -- distinction, since every other consumer wants to know about *any* move.
 -- 'TicksRemapped' is posted by
--- 'Server.Writer.Run.storageNotify' whenever 'Storyteller.Core.Storage.updateReferences'
+-- 'Server.Writer.Run.notifyRemaps' whenever a transaction boundary's flush
 -- runs with a non-empty mapping; it is delivered to every connection
 -- regardless of branch, since applying a remap to ids you aren't tracking is
 -- a no-op — the client checks whether it holds any of the affected ids

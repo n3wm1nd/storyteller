@@ -45,7 +45,7 @@ instance FromJSON ContextItem where
 --   defaulting to 'nearestJournalMarker' but user-overridable, since the
 --   right position isn't reliably inferrable server-side (story time and a
 --   character branch's own position aren't in lock-step — flashbacks,
---   retellings, etc.). See 'Storyteller.Core.Git.atGenericSeeded'.
+--   retellings, etc.). See 'Storyteller.Core.Git.atGeneric'.
 data AtBranch = AtBranch
   { atBranchName   :: T.Text
   , atBranchTickId :: T.Text
@@ -157,12 +157,15 @@ data FileCommand
   --   command at a historical point without a dedicated code path per
   --   command — see 'Storyteller.Core.Git.atGeneric'.
   --
-  --   'fcBranches' additionally winds back and replays each named connected
-  --   branch (e.g. an active character's journal) at its own given
-  --   position, so cross-branch refs into whatever 'fcCommand' just rebased
-  --   get fixed up as that branch's own tail replays — see 'AtBranch' and
-  --   'Storyteller.Core.Git.atGenericSeeded'. Empty when no connected
-  --   branch is open, which is exactly today's (pre-'AtBranch') behaviour.
+  --   'fcBranches' additionally winds each named connected branch (e.g.
+  --   an active character's journal) to its own given position *around*
+  --   the whole thing — before 'fcCommand' runs, replayed after — so the
+  --   command executes in a world where every chosen branch, opened
+  --   anywhere or not, sits at its chosen point; see 'AtBranch' and
+  --   'Server.Writer.File.Dispatch.atBranches'. Cross-branch ref fixup
+  --   needs no per-branch handling at all anymore (the transaction
+  --   boundary's cascade covers every branch). Empty when no connected
+  --   branch has a position to pin.
   | At         { fcId :: Maybe T.Text, fcTickId :: T.Text, fcCommand :: FileCommand, fcBranches :: [AtBranch] }
   deriving (Show)
 

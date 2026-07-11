@@ -87,5 +87,5 @@ main = hspec $ do
   describe "Server.Writer.Character"            Server.CharacterSpec.spec
   describe "Server.Writer.Library"               Server.LibrarySpec.spec
   describe "Server.Writer.Notification"         Server.NotificationSpec.spec
-  describe "Server.Writer.Run (storageNotify)"  Server.StorageNotifySpec.spec
+  describe "Server.Writer.Run (notifyRemaps)"   Server.StorageNotifySpec.spec
   describe "Server.Writer.GitWorker"            Server.Writer.GitWorkerSpec.spec

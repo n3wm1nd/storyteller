@@ -76,7 +76,7 @@ Writer-specific business logic).
 | Module | Role |
 |---|---|
 | `Server.Writer.Env` | `ServerEnv`/`AppState` — app config and shared STM state |
-| `Server.Writer.Run` | Effect-stack assembly: `actionStack`, `wsAction`, `loggingWS`, `streamChunksWS`, `gitNotify`/`storageNotify` wiring. Imports `SessionEffects` from `Server.Core.Run` rather than redefining it. |
+| `Server.Writer.Run` | Effect-stack assembly: `actionStack`, `wsAction`, `loggingWS`, `streamChunksWS`, `gitNotify`/`notifyRemaps` wiring. Imports `SessionEffects` from `Server.Core.Run` rather than redefining it. |
 | `Server.Writer.GitWorker` | A single shared git-storage worker thread for the whole process — one interpreter stack/`git cat-file --batch` reader for every connection and HTTP request to submit jobs to, instead of one per connection. See PLAN-git-storage-worker.md. |
 | `Server.Writer.Notification` | `BranchNotification`, `watchBranch` — this app's pub/sub wiring |
 | `Server.Writer.Session.Protocol`/`.Connection`/`.Dispatch` | `/session` connection: list/create/delete branch. Storage-generic in content, but protocol decode and connection lifecycle are wiring, so it lives here, not Core. |

@@ -131,7 +131,7 @@ spec = do
           refTick    `shouldBe` Atom [] "scene.md" [] "p2\n"
 
     it "a tick's ref is rewritten against a mapping seeded in before it's stored, not just one this same 'at' produced" $ do
-      -- Simulates what 'Storyteller.Core.Git.atGenericSeeded' does across
+      -- Simulates what the shared, transaction-owned remap table does across
       -- two *different* branches: branch A's own rebase produces an
       -- old->new mapping (here just faked directly via 'logRemap', standing
       -- in for whatever A's own replay already resolved); branch B (a
