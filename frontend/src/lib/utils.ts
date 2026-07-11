@@ -102,9 +102,13 @@ export function promptGroupForAtom(ticks: Record<string, WireTick>, head: string
   return { promptTick: chain[promptIndex], atomTickIds };
 }
 
-export function tickPayload(msg: string): string {
-  const nl = msg.indexOf("\n");
-  return nl >= 0 ? msg.slice(nl + 1) : msg;
+// A tick's message is stored verbatim (see Storyteller.Core.Types.decodePayload
+// — no header line ever gets folded into it), so a one-line list preview
+// can't peel anything off; it has to collapse whatever whitespace/newlines
+// the payload actually contains and truncate to a fixed budget instead.
+export function tickPreview(msg: string, maxLen = 140): string {
+  const collapsed = msg.replace(/\s+/g, " ").trim();
+  return collapsed.length > maxLen ? collapsed.slice(0, maxLen) + "…" : collapsed;
 }
 
 export function tickField(tick: WireTick, key: string): string | undefined {

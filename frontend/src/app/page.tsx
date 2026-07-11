@@ -610,6 +610,7 @@ export default function Home() {
               activeBranch={activeBranch}
               ticks={tickChain(ticks, branchHead).reverse()}
               onAddNote={addNote} onMoveTick={moveTick} onDeleteTick={deleteTickEntry}
+              onSelectFile={handleSelectFile}
             />
           )}
 
