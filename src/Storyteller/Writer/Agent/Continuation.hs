@@ -32,6 +32,7 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, listAllFiles, readFile)
 import Runix.LLM (queryLLM)
+import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
@@ -47,9 +48,17 @@ import Prelude hiding (readFile)
 --   persona, tone constraints, etc. can be added here as new effects.
 --
 --   Always the 'ProseModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
+--
+--   Logs immediately before the one 'queryLLM' call it makes -- this is the
+--   single call every plain write ('writeAgent'), in-flight revision-free
+--   continuation, and single-shot 'Storyteller.Writer.Agent.Outline'
+--   generation (@chapterProse@\/@reconcileChapter@) funnels through, so
+--   without it a slow model response looks identical, from the log, to a
+--   hang: nothing at all between whatever "starting" line the caller logged
+--   and either the result or a very long silence.
 proseAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount        -- ^ approximate desired output length
   -> [CharContextBlock]     -- ^ character context blocks
   -> [ContextBlock]         -- ^ branch context file blocks
@@ -62,6 +71,7 @@ proseAgent outputHint charContexts contextBlocks (ExistingContent existing) (Ins
 
   let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
 
+  info "proseAgent: querying model..."
   response <- queryLLM configsWithPrompt [UserText userMsg]
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 

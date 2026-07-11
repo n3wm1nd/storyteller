@@ -26,6 +26,8 @@ import Data.Maybe (mapMaybe)
 import Polysemy
 import Polysemy.Fail (Fail)
 
+import Runix.Logging (Logging)
+
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
@@ -37,7 +39,7 @@ import Storyteller.Core.Types (TickId(..))
 -- | Always the 'AgentModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
 fixAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
   => FilePath
   -> [TickId]                -- ^ targets: atoms flagged for fixing (non-empty)
   -> Instruction

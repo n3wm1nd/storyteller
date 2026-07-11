@@ -41,7 +41,7 @@ import Polysemy (Embed, Member, Sem, embed, runM)
 import Server.Core.Util (withBranch)
 import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.Notification (BranchNotification(..), watchBranch)
-import Server.Writer.Run (actionStack, wsAction)
+import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Writer.ContextView.Protocol
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
@@ -99,7 +99,7 @@ commandLoop branch conn slotsVar = loop
 --   puts a tick id on the wire.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> TVar [ContextSlot] -> IO ()
 runNotifier env branch conn chan slotsVar = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
     void $ watchBranch chan branch () (onNotify branch conn slotsVar)
   either (reportError conn) return result
 

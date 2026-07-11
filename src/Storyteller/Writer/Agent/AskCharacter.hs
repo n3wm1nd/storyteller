@@ -22,6 +22,7 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Runix.LLM (queryLLM)
+import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
@@ -39,12 +40,13 @@ import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 --   draws, which this reuses directly for the read.
 askCharacterAgent
   :: forall project r
-  .  (LLMs r, Members '[FileSystem project, FileSystemRead project, PromptStorage, Fail] r)
+  .  (LLMs r, Members '[FileSystem project, FileSystemRead project, PromptStorage, Fail, Logging] r)
   => T.Text -> Sem r T.Text
 askCharacterAgent question = do
   blocks <- charSummaryAgent @project (const True)
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig
   let userMsg = renderAskPrompt blocks question
+  info "askCharacterAgent: querying model..."
   response <- queryLLM configsWithPrompt [UserText userMsg]
   return (mconcat [ t | AssistantText t <- response ])
 

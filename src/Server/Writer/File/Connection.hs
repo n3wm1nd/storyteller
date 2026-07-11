@@ -55,7 +55,7 @@ import Server.Core.Protocol (Update(..))
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
-import Server.Writer.Run (actionStack, wsAction)
+import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Common.Splitter (Splitter, splitMarkdownAware)
 import Storyteller.Core.Git (withStorage)
@@ -83,7 +83,7 @@ runCommands env branch path conn = do
 --   long-held scope to notice writes made elsewhere.
 runNotifier :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch path conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
     void $ watchBranch chan branch Nothing (onNotify branch conn path)
   either (reportError conn) return result
 

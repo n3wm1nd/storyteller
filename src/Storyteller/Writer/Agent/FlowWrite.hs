@@ -27,6 +27,7 @@ module Storyteller.Writer.Agent.FlowWrite
 
 import Polysemy
 import Polysemy.Fail (Fail)
+import Runix.Logging (Logging)
 
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
@@ -46,7 +47,7 @@ import Storyteller.Core.Types (TickId(..))
 --   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
   => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
   -> ExistingContent

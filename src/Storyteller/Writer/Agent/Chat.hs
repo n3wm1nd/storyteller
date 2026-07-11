@@ -73,13 +73,15 @@ module Storyteller.Writer.Agent.Chat
   , historyFromFileTicks
   ) where
 
+import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Runix.LLM (queryLLM)
+import Runix.Logging (Logging, info)
 import qualified Runix.Tools as Tools
-import UniversalLLM (Message(..), ModelConfig(..))
+import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFromList)
 
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
@@ -96,23 +98,33 @@ import Storage.Tick (FileTick(..))
 --   round trip dominates the cost of either by orders of magnitude, so
 --   there's nothing worth the extra shape (and the loss of "the recursive
 --   call looks exactly like the original one") to save it.
+--   Logged turn by turn, same reasoning as
+--   'Storyteller.Writer.Agent.Outline.splitOutlineAgent': a tool-exploring
+--   conversation can run several real round trips (a 'glob' to find
+--   something, then a 'read_file' on what it found, ...) before it settles
+--   on a reply, so without a log line before each query, that whole
+--   exploration looks identical to one long hang.
 chatAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, FileSystem branch, FileSystemRead branch, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, FileSystem branch, FileSystemRead branch, Fail, Logging] r)
   => [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
   -> Sem r [Message AgentModel]  -- ^ everything this call added on top of the given context
-chatAgent context = do
-  configsWithPrompt <- getConfigWithPrompt "agent.chat" defaultChatSystemPrompt defaultChatConfig
-  let tools = chatTools @branch @r
-      configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
-  response <- queryLLM configsWithTools context
-  case [tc | AssistantTool tc <- response] of
-    [] -> return response
-    calls -> do
-      results <- mapM (executeToolCallFromList tools) calls
-      let added = response ++ map ToolResultMsg results
-      rest <- chatAgent @branch (context ++ added)
-      return (added ++ rest)
+chatAgent context = go (1 :: Int) context
+  where
+    go turnNo ctx = do
+      configsWithPrompt <- getConfigWithPrompt "agent.chat" defaultChatSystemPrompt defaultChatConfig
+      let tools = chatTools @branch @r
+          configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
+      info $ "chatAgent: turn " <> T.pack (show turnNo) <> ": querying model..."
+      response <- queryLLM configsWithTools ctx
+      case [tc | AssistantTool tc <- response] of
+        [] -> return response
+        calls -> do
+          mapM_ (\tc -> info ("chatAgent: turn " <> T.pack (show turnNo) <> ": calling " <> getToolCallName tc)) calls
+          results <- mapM (executeToolCallFromList tools) calls
+          let added = response ++ map ToolResultMsg results
+          rest <- go (turnNo + 1) (ctx ++ added)
+          return (added ++ rest)
 
 -- | Fallback for @agent.chat@ (the namespace root -- see
 --   'Storyteller.Core.Prompt' on why the root is implicitly the system

@@ -54,7 +54,7 @@ import Server.Writer.Notification (BranchNotification(..), watchBranch)
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
-import Server.Writer.Run (actionStack, wsAction)
+import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Core.Git (withStorage)
 import qualified Storage.Core as Core
@@ -84,7 +84,7 @@ runCommands env branch conn = do
 --   push at startup so the first real 'RefMoved' is already warm.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $ do
     initialCache <- withBranch @Main branch (push conn [])
     void $ watchBranch chan branch initialCache (onNotify branch conn)
   either (reportError conn) return result

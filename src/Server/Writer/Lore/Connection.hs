@@ -39,7 +39,7 @@ import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.Notification (BranchNotification(..), watchBranch)
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
-import Server.Writer.Run (actionStack, wsAction)
+import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 
 runLore :: ServerEnv -> T.Text -> WS.Connection -> IO ()
@@ -56,7 +56,7 @@ runInitial env branch conn = do
 
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
     void $ watchBranch chan branch () (onNotify branch conn)
   either (reportError conn) return result
 

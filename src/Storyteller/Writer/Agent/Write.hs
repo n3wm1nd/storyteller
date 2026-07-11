@@ -19,6 +19,7 @@ module Storyteller.Writer.Agent.Write
 
 import Polysemy
 import Polysemy.Fail (Fail)
+import Runix.Logging (Logging)
 
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction, Prose, CharContextBlock(..), CharLabel(..), ContextBlock, ExistingContent, WordCount(..))
@@ -38,7 +39,7 @@ import Storyteller.Core.Prompt (PromptStorage)
 --   equivalent) by the time this is called.
 writeAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => ExistingContent
   -> [ContextBlock]                              -- ^ extra context (e.g. user's pinned selection)
   -> Instruction

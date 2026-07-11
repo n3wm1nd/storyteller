@@ -105,7 +105,7 @@ data ExpandGoal
 --   like 'proseAgent'.
 expandAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => ExpandGoal
   -> [ContextBlock]        -- ^ surrounding context (other chapters' outlines, world files, ...)
   -> OutlineDoc            -- ^ the document being expanded
@@ -123,6 +123,7 @@ expandAgent goal contextBlocks (OutlineDoc doc) = do
 
       userMsg = contextSection <> "Outline to expand:\n\n" <> doc <> "\n\n" <> closing
 
+  info "expandAgent: querying model..."
   response <- queryLLM configsWithPrompt [UserText userMsg]
   return $ mconcat [ t | AssistantText t <- response ]
 
@@ -235,6 +236,7 @@ splitOutlineAgent contextBlocks (OutlineDoc doc) = do
       warning $ "splitOutlineAgent: hit the " <> T.pack (show turnNo) <> "-turn budget without the model settling, stopping"
       return []
     loop tools allConfigs turnNo budget history = do
+      info $ "splitOutlineAgent: turn " <> T.pack (show turnNo) <> ": querying model..."
       response <- queryLLM allConfigs history
       let calls = [tc | AssistantTool tc <- response]
       if null calls
@@ -334,6 +336,7 @@ splitOutlineFreeform contextBlocks (OutlineDoc doc) = do
     -- next chapter, or say you're done" -- not "remember which of your own
     -- past tool calls covered which chapter."
     go configsWithPrompt history chapterNo = do
+      info $ "splitOutlineAgent (freeform): chapter " <> T.pack (show chapterNo) <> ": querying model..."
       response <- queryLLM configsWithPrompt history
       let piece = T.strip (mconcat [ t | AssistantText t <- response ])
       if T.null piece || outlineCompleteSentinel `T.isInfixOf` piece
@@ -517,7 +520,7 @@ instance ToolParameter ChapterBeats where
 --   the instruction source, everything else is ordinary prose generation.
 chapterProse
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -537,9 +540,13 @@ chapterProse outputHint charContexts contextBlocks existing (BeatSheet sheet) =
 --   splits and appends exactly as for 'chapterProse', so the two drivers are
 --   interchangeable at the call site. @maxBeats@ bounds the loop so a model
 --   that never emits the done sentinel can't run away.
+--   Logged beat by beat, same reasoning as 'splitOutlineAgent'\/'reworkAtomsAt':
+--   each beat is its own separate 'queryLLM' call, so a chapter running long
+--   would otherwise look identical to a hang between one beat's streamed
+--   tokens ending and the next beat's starting.
 chapterProseByBeat
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount       -- ^ approximate length hint, per beat
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -548,21 +555,28 @@ chapterProseByBeat
   -> Int                   -- ^ maxBeats: hard cap on iterations
   -> Sem r Prose
 chapterProseByBeat outputHint charContexts contextBlocks (ExistingContent existing0) (BeatSheet sheet) maxBeats =
-  Prose . dropWritten <$> go existing0 maxBeats
+  Prose . dropWritten <$> go existing0 (1 :: Int) maxBeats
   where
     -- Loop until the model signals done (or the budget runs out), carrying
     -- the full prose (pre-existing + generated) so each beat sees what came
     -- before it. Returns the full accumulated text; 'dropWritten' below peels
     -- off the pre-existing prefix so the caller only gets the new prose.
-    go soFar 0      = return soFar
-    go soFar budget = do
+    go soFar beatNo 0 = do
+      warning $ "chapterProseByBeat: hit the " <> T.pack (show (beatNo - 1)) <> "-beat budget without the model signalling done, stopping"
+      return soFar
+    go soFar beatNo budget = do
+      info $ "chapterProseByBeat: beat " <> T.pack (show beatNo) <> ": querying model..."
       Prose piece <- proseAgent outputHint charContexts contextBlocks
         (ExistingContent soFar)
         (nextBeatInstruction sheet)
       let trimmed = T.strip piece
       if T.null trimmed || doneSentinel `T.isInfixOf` trimmed
-        then return soFar
-        else go (soFar <> "\n\n" <> trimmed) (budget - 1)
+        then do
+          info $ "chapterProseByBeat: done, " <> T.pack (show (beatNo - 1)) <> " beat(s) written"
+          return soFar
+        else do
+          info $ "chapterProseByBeat: beat " <> T.pack (show beatNo) <> " written"
+          go (soFar <> "\n\n" <> trimmed) (beatNo + 1) (budget - 1)
 
     -- What we return is only the newly generated prose, not the pre-existing
     -- content we were primed with — the caller appends our result to a file
@@ -580,7 +594,7 @@ chapterProseByBeat outputHint charContexts contextBlocks (ExistingContent existi
 --   ('commitFiles'), so unchanged prose keeps its atom ids.
 reconcileChapter
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -597,9 +611,10 @@ reconcileChapter outputHint charContexts contextBlocks current userInstr (BeatSh
 --   beat per call (see 'chapterProseByBeat' for the loop mechanics), with the
 --   current prose and the user's steer folded into each beat's instruction so
 --   every beat is reconciled against the outline rather than continued.
+--   Logged beat by beat -- same reasoning as 'chapterProseByBeat'.
 reconcileChapterByBeat
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
   -> [ContextBlock]
@@ -609,17 +624,24 @@ reconcileChapterByBeat
   -> Int                   -- ^ maxBeats: hard cap on iterations
   -> Sem r Prose
 reconcileChapterByBeat outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) maxBeats =
-  Prose <$> go "" maxBeats
+  Prose <$> go "" (1 :: Int) maxBeats
   where
-    go soFar 0      = return soFar
-    go soFar budget = do
+    go soFar beatNo 0 = do
+      warning $ "reconcileChapterByBeat: hit the " <> T.pack (show (beatNo - 1)) <> "-beat budget without the model signalling done, stopping"
+      return soFar
+    go soFar beatNo budget = do
+      info $ "reconcileChapterByBeat: beat " <> T.pack (show beatNo) <> ": querying model..."
       Prose piece <- proseAgent outputHint charContexts contextBlocks
         (ExistingContent soFar)
         (reconcileNextBeatInstruction current userInstr sheet)
       let trimmed = T.strip piece
       if T.null trimmed || doneSentinel `T.isInfixOf` trimmed
-        then return soFar
-        else go (if T.null soFar then trimmed else soFar <> "\n\n" <> trimmed) (budget - 1)
+        then do
+          info $ "reconcileChapterByBeat: done, " <> T.pack (show (beatNo - 1)) <> " beat(s) written"
+          return soFar
+        else do
+          info $ "reconcileChapterByBeat: beat " <> T.pack (show beatNo) <> " written"
+          go (if T.null soFar then trimmed else soFar <> "\n\n" <> trimmed) (beatNo + 1) (budget - 1)
 
 -- | Sentinel the model emits (instead of prose) to signal the chapter is
 --   fully realized. Kept blunt and unlikely to occur in prose.

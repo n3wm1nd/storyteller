@@ -9,7 +9,8 @@
 import { branchConn, characterConn, fileConn } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyUpdate, remapSet, atRebase } from "@/lib/wsHelpers";
+import { applyUpdate, isChatPreviewEvent, remapSet, atRebase } from "@/lib/wsHelpers";
+import { clearPreviewDelayTimer, handleChatPreview } from "@/lib/chatPreview";
 
 const JOURNAL_PATH = "journal.md";
 
@@ -102,14 +103,21 @@ export async function openJournal(branch: string): Promise<void> {
       }));
       setConnStatus(label, "connected");
     } else if (evt.type === "update") {
+      clearPreviewDelayTimer();
       mirrorServerEvent((s) => {
         const prev = s.openJournals[branch];
         if (!prev) return {};
-        return { openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false } } };
+        return { openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false }, preview: null } };
       });
     } else if (evt.type === "tick.remap") {
       handleContextRemap(evt.mapping);
+    } else if (evt.type === "agent.log") {
+      useUI.getState().addAgentLog(evt.level, evt.message);
+    } else if (isChatPreviewEvent(evt)) {
+      handleChatPreview(evt);
     } else if (evt.type === "error") {
+      clearPreviewDelayTimer();
+      mirrorServerEvent({ preview: null });
       setError(evt.message);
     }
   });

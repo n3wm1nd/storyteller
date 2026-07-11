@@ -55,7 +55,7 @@ import Server.Writer.Env (ServerEnv(..))
 import Server.Core.Logging (logCommand)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Notification (BranchNotification(..))
-import Server.Writer.Run (actionStack)
+import Server.Writer.Run (actionStack, loggingWS)
 import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames, undoLog)
 import Server.Writer.Session.Protocol
 
@@ -70,7 +70,7 @@ runSession env conn = do
 --   drop chunks rather than push them anywhere.
 runCommands :: ServerEnv -> WS.Connection -> IO ()
 runCommands env conn = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $ do
     embed $ WS.sendTextData conn (encode SessionReady')
     pushBranchList conn
     pushCharacterList conn
@@ -84,7 +84,7 @@ runCommands env conn = do
 --   why each reacts to a different, precise subset of what's possible.
 runNotifier :: ServerEnv -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
     watchNotifications chan (onRefMove conn) (pushUndoLog conn)
   either (reportError conn) return result
 

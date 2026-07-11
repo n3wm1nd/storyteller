@@ -48,6 +48,7 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.LLM (queryLLM)
 import Runix.LLM.ToolInstances ()
+import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
@@ -173,20 +174,36 @@ defaultFixerConfig = [MaxTokens 1024, Temperature 0.5]
 --   before each attempt rather than trusting ids captured before the loop
 --   started — this is the one place ids and content genuinely can't be
 --   gathered upfront and handed to a pure core.
+--
+--   Logged per atom, the same reasoning as 'Storyteller.Writer.Agent.Outline.splitOutlineAgent':
+--   each target is its own separate 'queryLLM' call with a gap of ordinary
+--   git work in between, so a fix touching several atoms would otherwise
+--   look identical to a hang between one atom's streamed tokens ending and
+--   the next atom's starting -- the "N of M" progress line is what tells
+--   the two apart for a user actually watching it run.
 reworkAtomsAt
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
   => FilePath -> Instruction -> [Int] -> Sem r [TickId]
-reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
+reworkAtomsAt path instruction idxs = do
+  info $ "fixAgent: reviewing " <> T.pack (show total) <> " atom(s) in " <> T.pack path
+  changed <- catMaybes <$> mapM oneAt (zip [1 :: Int ..] idxs)
+  info $ "fixAgent: done, " <> T.pack (show (length changed)) <> " of " <> T.pack (show total) <> " atom(s) changed"
+  return changed
   where
-    oneAt idx = do
+    total = length idxs
+    oneAt (n, idx) = do
       ticks <- runStorage @branch (Tick.fileTicksOf path)
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
+          info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": querying model..."
           mProposal <- reworkAtom content instruction
           case mProposal of
-            Nothing -> return Nothing
+            Nothing -> do
+              info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": left unchanged"
+              return Nothing
             Just (ReplaceProposal newText reason) -> do
+              info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": " <> reason
               newTid <- runStorage @branch (do
                 newHash <- Ops.editAtomAt (Core.ObjectHash tid) newText
                 let tid' = TickId (Core.unObjectHash newHash)

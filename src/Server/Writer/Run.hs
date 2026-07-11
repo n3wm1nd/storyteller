@@ -128,14 +128,29 @@ streamChunksWS conn = interpret $ \(EmitChunk event) ->
 --   'raiseUnder' inserts the chosen model's own 'LLM' effect directly under
 --   the role effect being eliminated, which is what lets the converted
 --   request reach it.
+--   'Logging' is deliberately left uninterpreted in the return row rather
+--   than eliminated in here (unlike every other effect in the list): a
+--   command's log-worthy moments aren't only the ones domain/agent code
+--   produces directly (an 'info'\/'warning' call) — 'failLog' below turns
+--   any 'Polysemy.Fail.fail' anywhere in 'action' into a 'Logging' entry
+--   too, and that conversion has to run *before* whatever finally
+--   interprets 'Logging', or its output silently lands on a different,
+--   inner occurrence of the effect than the one 'action's own calls use
+--   (two 'Logging's in the row instead of one) and never reaches
+--   wherever the caller sends the rest. Leaving it be lets 'wsAction'
+--   and 'runAction' each interpret the *one* resulting occurrence with
+--   whatever sink fits their transport — 'loggingWS' or 'loggingIO' —
+--   after every other interpreter in this stack (including 'failLog')
+--   has already had its say, so nothing logged during a command's run
+--   is missed regardless of where in the stack it was logged from.
 actionStack
   :: (Member (Embed IO) r, Member (StreamChunk StreamEvent) r)
   => ServerEnv
   -> Sem ( LLM ProseModel : LLM AgentModel
          : Config StreamingEnabled : PromptStorage : StoryStorage : Undo
          : Random : HTTP : HTTPStreaming : Sleep : Time : Git
-         : Fail : Logging : Error String : r) a
-  -> Sem r (Either String a)
+         : Fail : Error String : Logging : r) a
+  -> Sem (Logging : r) (Either String a)
 actionStack env action =
   case (envProseRunner env, envAgentRunner env) of
     ( SomeLLMRunner (proseRunner :: forall r' a'. Members
@@ -146,7 +161,6 @@ actionStack env action =
         => Sem (LLM agentChosen : r') a' -> Sem r' a')
       ) ->
         runError @String
-      . loggingIO
       . failLog
       . runInfrastructureWith (runGitViaWorker (envGitWorker env))
       . runStoryStorageGitNotify (notifyRemaps (envNotifyChan env))
@@ -162,17 +176,29 @@ actionStack env action =
 
 -- | No WS connection to push a streaming preview to (CLI/session-only use);
 --   drop chunks instead, same as 'wsAction' consuming them into pushes.
+--   'Logging' still has to be interpreted somewhere now that 'actionStack'
+--   leaves it be — stdout, the same sink every CLI executable's own
+--   'Runix.Runner.loggingIO' already writes to, is the closest thing this
+--   path has to a "frontend."  Applied directly around 'actionStack's
+--   result (innermost), same reasoning as 'wsAction': 'Logging' is only
+--   actually at the head of that result's row, so 'ignoreChunks' — which
+--   needs its own effect at its own head — has to go outside it, not
+--   the other way around.
 runAction
   :: ServerEnv
   -> (forall r. SessionEffects r => Sem r a)
   -> IO (Either String a)
-runAction env action = runM (ignoreChunks @StreamEvent (actionStack env action))
+runAction env action = runM (ignoreChunks @StreamEvent (loggingIO (actionStack env action)))
 
 -- | Shared composition for WS connections: layers the connection's
---   log-forwarding interpreter *underneath* 'actionStack' (same as before —
---   real 'Log' calls from domain code are diverted to the socket instead of
---   reaching 'runInfrastructure's stdout logger), and its LLM-streaming
---   preview push *around the outside*. Unlike 'Logging', 'StreamChunk
+--   log-forwarding interpreter *directly around 'actionStack's own result*
+--   (not around 'action' itself — see 'actionStack's Haddock on why
+--   'Logging' is left for the caller to interpret), and its LLM-streaming
+--   preview push *around the outside of that*. This is what makes every
+--   'Log' call made anywhere while this command runs — every agent's own
+--   'info'\/'warning', and every 'Polysemy.Fail.fail' 'failLog' converts —
+--   reach this one connection as an @agent.log@ push, not just the ones
+--   domain code happens to emit directly. Unlike 'Logging', 'StreamChunk
 --   StreamEvent' isn't eliminated anywhere inside 'actionStack' — nothing
 --   there interprets it, so 'llmStreamingRestAPI's emitted chunks surface on
 --   'actionStack's own return row instead of needing to be threaded through
@@ -185,4 +211,4 @@ wsAction
   :: ServerEnv -> WS.Connection
   -> (forall r. (SessionEffects r, Member (Embed IO) r, Member (Error String) r) => Sem r a)
   -> Sem '[Embed IO] (Either String a)
-wsAction env conn action = streamChunksWS conn (actionStack env (loggingWS conn action))
+wsAction env conn action = streamChunksWS conn (loggingWS conn (actionStack env action))

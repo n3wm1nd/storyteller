@@ -57,7 +57,7 @@ import Server.Core.Protocol (Update(..))
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
-import Server.Writer.Run (actionStack, wsAction)
+import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (withStorage)
@@ -94,7 +94,7 @@ runCommands env branch conn = do
 --   re-announce every already-known file as newly added.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ actionStack env $ do
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $ do
     initialFiles <- withBranch @Main branch (fst <$> branchState)
     void $ watchBranch chan branch (Nothing, Set.fromList initialFiles) (onNotify branch conn)
   either (reportError conn) return result
