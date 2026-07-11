@@ -34,7 +34,7 @@ cmake -S "$src_dir" -B "$build_dir" \
   -DUSE_SSH=OFF \
   -DUSE_HTTPS=OFF \
   -DREGEX_BACKEND=builtin \
-  -DUSE_BUNDLED_ZLIB=ON \
+  -DUSE_BUNDLED_ZLIB=OFF \
   -DUSE_THREADS=ON \
   -DBUILD_TESTS=OFF \
   -DBUILD_CLI=OFF \
