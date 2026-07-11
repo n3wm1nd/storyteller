@@ -332,7 +332,7 @@ export function ChatView({
 
       <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "10px 14px", display: "flex", gap: 8 }}>
         <div style={{ position: "relative", flex: 1, display: "flex" }}>
-          <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} />
+          <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} reference={auto.taRef} />
           <textarea
             ref={auto.taRef}
             value={draft}

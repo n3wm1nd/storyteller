@@ -8,6 +8,7 @@
 // just the trailing text, so completion still works after the caret has
 // moved back into an earlier token.
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
 import { COMMANDS, commandSuggestions, type CommandDef, type Suggestion } from "@/lib/commands";
 
 export function useSuggestionAutocomplete(
@@ -71,15 +72,36 @@ export function useCommandAutocomplete(text: string, setText: (t: string) => voi
 
 export type Autocomplete = ReturnType<typeof useSuggestionAutocomplete>;
 
-export function CommandSuggestionPopup({ suggestions, activeIndex, onPick }: {
+// Anchored to `reference` (typically the composer's own textarea ref —
+// see InputBar) via Floating UI rather than a hand-picked `bottom: "100%"`
+// offset: `flip()` moves it below the anchor instead of off-screen when
+// there's no room above (e.g. the composer sitting near the top of a short
+// window), `shift()` nudges it back on-screen horizontally instead of
+// clipping, and `autoUpdate` keeps it correctly placed across
+// scroll/resize without a manual recompute. Same visual result as the old
+// fixed offset in the common case; only the edge cases behave differently.
+export function CommandSuggestionPopup({ suggestions, activeIndex, onPick, reference }: {
   suggestions: Suggestion[];
   activeIndex: number;
   onPick: (index: number) => void;
+  reference: RefObject<HTMLElement | null>;
 }) {
-  if (suggestions.length === 0) return null;
+  const open = suggestions.length > 0;
+  const { refs, floatingStyles } = useFloating({
+    open,
+    placement: "top-start",
+    middleware: [offset(4), flip(), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+  });
+
+  useEffect(() => {
+    refs.setReference(reference.current);
+  }, [reference, refs]);
+
+  if (!open) return null;
   return (
-    <div style={{
-      position: "absolute", bottom: "100%", left: 0, marginBottom: 4, zIndex: 10,
+    <div ref={refs.setFloating} style={{
+      ...floatingStyles, zIndex: 10,
       background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
       boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", overflow: "hidden", minWidth: 220, maxWidth: 360,
     }}>

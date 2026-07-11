@@ -7,6 +7,7 @@ import { StickyNote, HelpCircle } from "lucide-react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
+import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
 import { type WireTick } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
@@ -1346,6 +1347,16 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
   const [height, setHeight] = useState(90);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  // Positioning only — menuRef above still owns click-outside detection
+  // over the whole button+dropdown cluster. flip()/shift() cover the mode
+  // dropdown opening near a screen edge, same reasoning as
+  // CommandSuggestionPopup's own Floating UI migration.
+  const modeMenu = useFloating({
+    open: menuOpen,
+    placement: "top-end",
+    middleware: [offset(4), flip(), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+  });
   const auto = useCommandAutocomplete(text, setText);
 
   const hasContext = contextAtomCount > 0 || contextAnnotationCount > 0;
@@ -1450,8 +1461,8 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
       )}
       <div style={{ flex: 1, display: "flex", gap: 8, alignItems: "stretch", padding: "4px 16px 10px", minHeight: 0 }}>
         <div style={{ position: "relative", flex: 1, display: "flex" }}>
-          <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} />
-          <CommandSuggestionPopup suggestions={mentionAuto.suggestions} activeIndex={mentionAuto.activeIndex} onPick={mentionAuto.pick} />
+          <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} reference={auto.taRef} />
+          <CommandSuggestionPopup suggestions={mentionAuto.suggestions} activeIndex={mentionAuto.activeIndex} onPick={mentionAuto.pick} reference={auto.taRef} />
           <textarea
             ref={auto.taRef}
             value={text}
@@ -1483,7 +1494,7 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
               {(() => { const Icon = AGENT_META[mode].icon; return Icon ? <Icon style={{ width: 10, height: 10 }} /> : null; })()}
               {AGENT_META[mode].label}
             </button>
-            <button onClick={() => setMenuOpen((o) => !o)} title="Choose mode (shift-tab cycles)" style={{
+            <button ref={modeMenu.refs.setReference} onClick={() => setMenuOpen((o) => !o)} title="Choose mode (shift-tab cycles)" style={{
               padding: "4px 5px",
               background: modeColor(mode, 0.15), border: `1px solid ${modeColor(mode, 0.4)}`,
               borderLeft: `1px solid ${modeColor(mode, 0.4)}`,
@@ -1495,8 +1506,8 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
           </div>
 
           {menuOpen && (
-            <div style={{
-              position: "absolute", bottom: "100%", right: 0, marginBottom: 4, zIndex: 10,
+            <div ref={modeMenu.refs.setFloating} style={{
+              ...modeMenu.floatingStyles, zIndex: 10,
               background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
               boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", overflow: "hidden", minWidth: 120,
             }}>
