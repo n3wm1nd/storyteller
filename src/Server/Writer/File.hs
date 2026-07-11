@@ -30,6 +30,8 @@ import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.List (isSuffixOf)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe, isJust)
 import Polysemy (Member, Sem)
 import Runix.Logging (info)
 import Runix.FileSystem (fileExists, readFile, writeFile)
@@ -43,7 +45,7 @@ import UniversalLLM (Message(..))
 import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, CharLabel(..), WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
-import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles)
+import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, classifyPath)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
@@ -78,21 +80,41 @@ data ActiveChar
 --   signal, so this is the one place that decides which character branches
 --   an agent sees. Each active branch is opened dynamically (same
 --   'runBranchAndFS' pattern 'Server.Writer.Branch.charGen'\/'trackFiles'
---   use for a runtime-named branch) and summarized via 'charSummaryAgent'
---   -- excluding @journal.md@ (see 'journalPath'): it's long, mostly a copy
---   of what the scene's own history already says, sometimes stale or
---   contradictory, and not written for a narrator to read. Full journal
---   access is still available on request, via
---   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent'
---   (@\/ask@\/the sidebar's Ask panel) -- deliberately not wired into
---   generation itself yet.
-activeCharacterContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [(CharLabel, [CharContextBlock])]
-activeCharacterContext path = do
+--   use for a runtime-named branch) and summarized via 'charSummaryAgent'.
+--
+--   @sheet.md@ and @journal.md@ are never lore-gated by @charLayouts@ --
+--   both are excluded from 'Storyteller.Writer.Lore.isLoreEligible' (so
+--   they never even appear as a codex entry a user could toggle), and this
+--   function enforces the same two facts unconditionally at the read
+--   layer, independent of whatever a user has curated for everything else:
+--   the sheet is core identity, always sent; the journal is long, mostly a
+--   copy of what the scene's own history already says, sometimes stale or
+--   contradictory, and not written for a narrator to read, so always
+--   excluded here (full journal access is still available on request, via
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' -- the
+--   sidebar's Ask panel). Everything else on the branch is real codex
+--   content: an absent or empty entry in @charLayouts@ for a branch means
+--   "no override configured", which reads as "show everything" -- the same
+--   convention 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
+--   already uses for an empty layout, and exactly today's behavior for
+--   anyone who has never opened the per-character context UI. A non-empty
+--   entry is fully authoritative over that branch's extra files, via
+--   'Storyteller.Writer.Agent.ContextFilter.classifyPath' -- the identical
+--   picker semantics 'chatWriter's own @layout@ parameter already applies
+--   to the story branch itself, through 'gatherFileContext'.
+activeCharacterContext :: (FileOpen r, SessionEffects r) => Map.Map T.Text ContextLayout -> FilePath -> Sem r [(CharLabel, [CharContextBlock])]
+activeCharacterContext charLayouts path = do
   active <- activeCharactersFor @Main path
   mapM summarize active
   where
     summarize (Character (BranchName name)) = do
-      blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar) (/= journalPath))
+      let layout = fromMaybe [] (Map.lookup name charLayouts)
+          keep p
+            | p == "sheet.md"  = True
+            | p == journalPath = False
+            | null layout      = True
+            | otherwise        = isJust (classifyPath layout p)
+      blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar) keep)
       let label = maybe name id (T.stripPrefix "character/" name)
       pure (CharLabel label, blocks)
 
@@ -110,11 +132,11 @@ journalPath = "journal.md"
 --   branch files, character summaries) is gathered here and handed to the
 --   agents as plain data; they append nothing themselves, so appending the
 --   result is done here too.
-chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Sem r ()
-chatWriter path prompt context layout mFlowTid = do
+chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Map.Map T.Text ContextLayout -> Sem r ()
+chatWriter path prompt context layout mFlowTid charLayouts = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)
-  charBlocks <- activeCharacterContext path
+  charBlocks <- activeCharacterContext charLayouts path
   let extraContext = toContextBlocks context <> fileCtx
       instruction  = Instruction prompt
   case mFlowTid of
@@ -135,7 +157,7 @@ chatWriter path prompt context layout mFlowTid = do
 --   to the same Writer path 'chatWriter' takes, rather than living inside
 --   'Storyteller.Writer.Agent.Fix.fixAgent'.
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt context [] = chatWriter path prompt context [] Nothing
+chatFixer path prompt context [] = chatWriter path prompt context [] Nothing Map.empty
 chatFixer path prompt _context targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
@@ -267,7 +289,7 @@ chatChapterRegen mode path prompt context = do
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
-      charBlocks <- flattenCharBlocks <$> activeCharacterContext path
+      charBlocks <- flattenCharBlocks <$> activeCharacterContext Map.empty path
       let extraContext = toContextBlocks context <> fileCtx
           instruction  = Instruction prompt
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path

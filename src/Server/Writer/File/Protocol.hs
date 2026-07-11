@@ -19,6 +19,7 @@ module Server.Writer.File.Protocol
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
 import Data.Maybe (fromMaybe)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 
 import Server.Core.Protocol (Update, withId)
@@ -104,7 +105,14 @@ data FileCommand
   --   'Storyteller.Writer.Agent.Continuation.gatherFileContext'). See the
   --   project's context-assembly design notes for the picker model this
   --   implements.
-  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcFlowTid :: Maybe T.Text }
+  --
+  --   'fcCharacterLayouts' is the same picker model, one entry per active
+  --   character branch the client has curated (branch name -> layout) —
+  --   see 'Server.Writer.File.activeCharacterContext'. A branch absent from
+  --   this map (the common case: nobody has opened that character's
+  --   context UI) means "no override", which reads as today's fixed
+  --   sheet-in/journal-out behavior, not "show nothing".
+  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcFlowTid :: Maybe T.Text, fcCharacterLayouts :: Map.Map T.Text [PickerRule] }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
   -- | Discuss, don't write: send a message to the chat agent, which sees
   --   this file's own prior 'ChatConverse' exchanges as conversation
@@ -187,10 +195,11 @@ instance FromJSON FileCommand where
       "hide.atoms"   -> HideAtoms   i . fromMaybe [] <$> o .:? "targets"
       "unhide.atoms" -> UnhideAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
-        context <- fromMaybe [] <$> o .:? "context"
-        layout  <- fromMaybe [] <$> o .:? "contextLayout"
-        flowTid <- o .:? "flowTid"
-        ChatWriter i <$> o .: "text" <*> pure context <*> pure layout <*> pure flowTid
+        context      <- fromMaybe [] <$> o .:? "context"
+        layout       <- fromMaybe [] <$> o .:? "contextLayout"
+        flowTid      <- o .:? "flowTid"
+        charLayouts  <- fromMaybe Map.empty <$> o .:? "characterLayouts"
+        ChatWriter i <$> o .: "text" <*> pure context <*> pure layout <*> pure flowTid <*> pure charLayouts
       "chat.fixer"  -> do
         context <- fromMaybe [] <$> o .:? "context"
         targets <- fromMaybe [] <$> o .:? "targets"

@@ -11,8 +11,9 @@ import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
-import { tickChain } from "@/lib/utils";
+import { tickChain, activeCharacterBranches } from "@/lib/utils";
 import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
+import { WRITER_STORY_SOURCE_ID, CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
 
 export async function openFile(path: string): Promise<void> {
   const { activeBranch, openFiles } = getServerCache();
@@ -291,12 +292,6 @@ export function unhideSelected(path: string) {
   dropFromSelection(targets);
 }
 
-// Writer's ambient story-branch context source, per lib/agents.ts's
-// STORY_AMBIENT ("writer:story") — the same sourceId context-source.tsx's
-// ContextSourceConfig keys its settings entry by for the Writer agent's
-// Agents-tab panel, so a layout configured there is the one attached here.
-const WRITER_STORY_SOURCE_ID = "writer:story";
-
 function writerContextLayout(): PickerRule[] {
   const branch = getServerCache().activeBranch;
   if (!branch) return [];
@@ -304,10 +299,27 @@ function writerContextLayout(): PickerRule[] {
   return filter ? toContextLayout(filter) : [];
 }
 
+// One entry per currently-active (in-scene) character branch that's
+// actually been curated via character-sidebar.tsx's Context panel — a
+// branch with no configured override (the common case) is simply omitted,
+// since an absent entry and an explicit empty layout resolve identically
+// server-side (see Server.Writer.File.activeCharacterContext).
+function activeCharacterLayouts(path: string): Record<string, PickerRule[]> {
+  const fc = getServerCache().openFiles[path];
+  if (!fc) return {};
+  const result: Record<string, PickerRule[]> = {};
+  for (const branch of activeCharacterBranches(fc.ticks, fc.head)) {
+    const filter = useSettings.getState().contextFilters[contextFilterKey(branch, CHARACTER_CONTEXT_SOURCE_ID)];
+    if (filter && filter.tags.length > 0) result[branch] = toContextLayout(filter);
+  }
+  return result;
+}
+
 export function chatWrite(path: string, text: string) {
   const context = buildContextItems(path);
   const contextLayout = writerContextLayout();
-  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text, context, contextLayout, flowTid }));
+  const characterLayouts = activeCharacterLayouts(path);
+  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text, context, contextLayout, flowTid, characterLayouts }));
 }
 
 export function chatFix(path: string, text: string) {

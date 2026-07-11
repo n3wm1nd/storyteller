@@ -6,6 +6,8 @@ import { type CharacterConn, type FileConn, type WireTick } from "@/lib/serverCa
 import { type CharacterSummary } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
 import { WireTickList } from "./fileview";
+import { LoreSelector } from "./lore-selector";
+import { CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
 
 // ── Journal panel ────────────────────────────────────────────────────────────
 //
@@ -183,6 +185,29 @@ function AskPanel({ answers, onAsk }: { answers: { question: string; answer: str
   );
 }
 
+// ── Context panel ────────────────────────────────────────────────────────────
+//
+// This character's own curated lore, via the shared LoreSelector (see
+// lore-selector.tsx) bound to CHARACTER_CONTEXT_SOURCE_ID — the same
+// bucket-picker ContextFilter model the story branch's Codex tab uses, just
+// scoped to this character's own branch. sheet.md/journal.md never appear
+// as candidates here at all (excluded server-side, see
+// Storyteller.Writer.Lore) — this panel only ever shows extra files beyond
+// those two, which is usually nothing.
+
+function ContextPanel({ branch }: { branch: string }) {
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 2, gap: 6 }}>
+        <span style={{ fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-dim)", flex: 1 }}>
+          Context
+        </span>
+      </div>
+      <LoreSelector branch={branch} sourceId={CHARACTER_CONTEXT_SOURCE_ID} compact />
+    </div>
+  );
+}
+
 // ── Character card ───────────────────────────────────────────────────────────
 
 function CharacterCard({
@@ -255,6 +280,7 @@ function CharacterCard({
 
       {expanded && (
         <>
+          <ContextPanel branch={branch} />
           <JournalPanel
             branch={branch} journal={journal}
             journalMarker={journalMarker} onSetJournalMarker={onSetJournalMarker}

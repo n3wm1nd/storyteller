@@ -221,8 +221,12 @@ export type FileCommand =
   // whether atoms generated since then are still provisional. `contextLayout`
   // is the user-configured bucket-picker ordering for this call's ambient
   // context (see PickerRule below); omitted/empty falls back to the
-  // server's default alphabetical order.
-  | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; flowTid?: string }
+  // server's default alphabetical order. `characterLayouts` is the same
+  // picker model, one entry per active character branch that's actually
+  // been curated (branch name -> layout) — a branch absent here means "no
+  // override", which the server reads as today's fixed sheet-in/journal-out
+  // behavior, not "show nothing" (see Server.Writer.File.activeCharacterContext).
+  | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; flowTid?: string; characterLayouts?: Record<string, PickerRule[]> }
   // Fixer: `targets` are the atoms flagged as the subject of `text`.
   | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
   // Regen: rewrite this chapter to fit its beat sheet (ch{N}.outline.md by

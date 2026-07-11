@@ -1,13 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | The pure "codex" organizational-tree derivation behind @\/lore\/{name}@
--- (see WS-PROTOCOL.md). A path belongs here iff
--- 'Storyteller.Writer.Library.classifyPath' calls it 'OtherFile' — anything
--- recognized as a chapter, beat sheet, or the whole-story outline already
--- has a home in the Library tab, so it's excluded here rather than shown
--- twice — and it isn't under a top-level @chat\/@ folder (conversational
--- scratch space, not curated lore). What's left is exactly the freeform
--- content a user hand-authors: notes, world-building, a style guide.
+-- (see WS-PROTOCOL.md) — one uniform "get me all the lore for this branch"
+-- definition, used identically for the main story branch and for a
+-- @character\/*@ branch (see 'Server.Writer.File.activeCharacterContext',
+-- the real generation-time consumer for the character case). A path belongs
+-- here iff 'Storyteller.Writer.Library.classifyPath' calls it 'OtherFile' —
+-- anything recognized as a chapter, beat sheet, or the whole-story outline
+-- already has a home in the Library tab, so it's excluded here rather than
+-- shown twice — it isn't under a top-level @chat\/@ folder (conversational
+-- scratch space, not curated lore), and it isn't a character's @sheet.md@ or
+-- @journal.md@ at the branch root (WRITER.md's convention): a sheet is core
+-- identity delivered unconditionally through a different path, never a
+-- codex entry, and a journal is excluded from generation context entirely,
+-- also never a codex entry. Applying that same basename exclusion
+-- unconditionally to a story branch is harmless — a story branch practically
+-- never has a @sheet.md@, and a @journal.md@ there would just be manual
+-- notes with no special meaning, fine to leave out of the codex too. What's
+-- left is exactly the freeform content a user hand-authors: notes,
+-- world-building, a style guide, or (on a character branch) any extra file
+-- beyond the sheet/journal.
 --
 -- Deliberately pure and IO-free, same reasoning as
 -- 'Storyteller.Writer.Library.buildLibraryTree': this only needs each
@@ -24,7 +36,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import qualified Data.Text as T
-import System.FilePath (splitDirectories)
+import System.FilePath (splitDirectories, takeFileName, takeDirectory)
 
 import Storyteller.Writer.Library (LibraryKind(..), classifyPath)
 
@@ -44,7 +56,12 @@ data LoreNode = LoreNode
 --   reading any content, rather than reading everything and discarding.
 isLoreEligible :: FilePath -> Bool
 isLoreEligible path =
-  classifyPath path == OtherFile && take 1 (splitDirectories path) /= ["chat"]
+  classifyPath path == OtherFile
+    && take 1 (splitDirectories path) /= ["chat"]
+    && not (isRootFile "sheet.md" path)
+    && not (isRootFile "journal.md" path)
+  where
+    isRootFile name p = takeFileName p == name && takeDirectory p == "."
 
 -- | Build the codex forest from every eligible path paired with its
 --   already-read blurb. Folders are synthesized wherever a path implies

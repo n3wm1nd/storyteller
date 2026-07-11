@@ -7,7 +7,7 @@
 // safe (writes go through the loudly-named 'mirrorServerEvent', importable
 // from anywhere).
 
-import { sessionConn, branchConn, libraryConn, loreConn, uploadBranchFile } from "@/lib/ws";
+import { sessionConn, branchConn, libraryConn, uploadBranchFile } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent } from "@/lib/wsHelpers";
@@ -72,7 +72,6 @@ export function resetToUndo(entryId: string) {
 export async function selectBranch(name: string): Promise<void> {
   const prev = getServerCache()._branch;
   const prevLibrary = getServerCache()._library;
-  const prevLore = getServerCache()._lore;
   const prevName = getServerCache().activeBranch;
   if (prev) {
     prev.close();
@@ -81,10 +80,6 @@ export async function selectBranch(name: string): Promise<void> {
   if (prevLibrary) {
     prevLibrary.close();
     if (prevName) removeConn(`library:${prevName}`);
-  }
-  if (prevLore) {
-    prevLore.close();
-    if (prevName) removeConn(`lore:${prevName}`);
   }
 
   for (const fc of Object.values(getServerCache().openFiles)) fc.conn.close();
@@ -99,7 +94,6 @@ export async function selectBranch(name: string): Promise<void> {
     branchHead: null,
     libraryTree: [],
     libraryChapters: [],
-    loreTree: [],
     openFiles: {},
     openCharacters: {},
     openJournals: {},
@@ -181,37 +175,6 @@ export async function selectBranch(name: string): Promise<void> {
     mirrorServerEvent({ _library: library });
   } catch (err) {
     setConnStatus(libraryLabel, "error");
-    setError(String(err));
-  }
-
-  // A third, independent connection (see WS-PROTOCOL.md's /lore/{name}) —
-  // the codex candidate list, already excluding chapters/outlines/chat/
-  // binaries server-side (see Storyteller.Writer.Lore), kept live the same
-  // way 'library' above is.
-  const loreLabel = `lore:${name}`;
-  setConnStatus(loreLabel, "connecting");
-
-  const lore = loreConn(name);
-
-  lore.onStatus((s) => {
-    if (s !== "connected") setConnStatus(loreLabel, "connecting");
-  });
-
-  lore.subscribe((evt) => {
-    bumpActivity(loreLabel);
-    if (evt.type === "lore.tree") {
-      mirrorServerEvent({ loreTree: evt.nodes });
-      setConnStatus(loreLabel, "connected");
-    } else if (evt.type === "error") {
-      setError(evt.message);
-    }
-  });
-
-  try {
-    await lore.connect();
-    mirrorServerEvent({ _lore: lore });
-  } catch (err) {
-    setConnStatus(loreLabel, "error");
     setError(String(err));
   }
 }
