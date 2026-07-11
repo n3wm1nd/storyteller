@@ -76,12 +76,12 @@ withBranch_ runner name action = run $ runner $ do
 
 storeNonAtom :: Member (BranchOp Main) r => T.Text -> Sem r TickId
 storeNonAtom msg = do
-  (h, _) <- runStorage @Main (Core.store (Core.NonAtom [] msg))
+  h <- runStorage @Main (Core.store (Core.NonAtom [] msg))
   return (TickId (Core.unObjectHash h))
 
 storeNote :: Member (BranchOp Main) r => [TickId] -> T.Text -> Sem r TickId
 storeNote refs text = do
-  (h, _) <- runStorage @Main (Tick.storeAs (Note refs text))
+  h <- runStorage @Main (Tick.storeAs (Note refs text))
   return (TickId (Core.unObjectHash h))
 
 -- ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ storeNote refs text = do
 externalWrite :: BranchName -> FilePath -> Sem (StoryStorage : TestEffects '[]) TickId
 externalWrite name path = runBranchAndFS @Main name $ do
   writeFile @(BranchTag Main) path "content"
-  (h, _) <- runStorage @Main (Ops.commitFiles [path] >> Core.headHash)
+  h <- runStorage @Main (Ops.commitFiles [path] >> Core.headHash)
   return (TickId (Core.unObjectHash h))
 
 tickIds :: Update -> [T.Text]

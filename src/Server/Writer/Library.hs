@@ -83,7 +83,7 @@ libraryTree
   -> Sem r ([LibraryNode], [ChapterUnit], [(Core.ObjectHash, ChapterContentCache)])
 libraryTree cache = do
   paths <- listAllFiles @(BranchTag Main) "/"
-  ((content, nextCache), _) <- runStorage @Main (Core.memoFold foldChapterContent Map.empty cache)
+  (content, nextCache) <- runStorage @Main (Core.memoFold foldChapterContent Map.empty cache)
   tree <- withBinaryFlags (withHeadings content (buildLibraryTree paths))
   return (tree, chapterUnits tree, nextCache)
 
@@ -111,7 +111,7 @@ withBinaryFlags = mapM go
         children <- withBinaryFlags (lnChildren n)
         return n { lnChildren = children }
       _ -> do
-        (tracked, _) <- runStorage @Main (Ops.hasAnyAtom (lnPath n))
+        tracked <- runStorage @Main (Ops.hasAnyAtom (lnPath n))
         return n { lnBinary = not tracked }
 
 firstLine :: T.Text -> Maybe T.Text
@@ -131,7 +131,7 @@ firstLine t = case T.lines t of
 --   a 'Chapter' node.
 chapterCreate :: BranchOpen r => FilePath -> T.Text -> Sem r ()
 chapterCreate path name = do
-  (existing, _) <- runStorage @Main (Tick.fileTicksOf path)
+  existing <- runStorage @Main (Tick.fileTicksOf path)
   case existing of
     [] -> void (runStorage @Main (Ops.addAtom path ("# " <> name <> "\n")))
     _  -> fail ("chapterCreate: already exists: " <> path)

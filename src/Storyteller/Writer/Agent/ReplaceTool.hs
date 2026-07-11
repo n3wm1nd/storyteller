@@ -180,14 +180,14 @@ reworkAtomsAt
 reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
   where
     oneAt idx = do
-      (ticks, _) <- runStorage @branch (Tick.fileTicksOf path)
+      ticks <- runStorage @branch (Tick.fileTicksOf path)
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
           mProposal <- reworkAtom content instruction
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do
-              (newTid, _) <- runStorage @branch (do
+              newTid <- runStorage @branch (do
                 newHash <- Ops.editAtomAt (Core.ObjectHash tid) newText
                 let tid' = TickId (Core.unObjectHash newHash)
                 _ <- Tick.storeAs (Fixup [tid'] reason)

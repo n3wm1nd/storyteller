@@ -163,7 +163,7 @@ chatFixer path prompt _context targets = do
 --   includes the message currently being answered.
 chatConverse :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 chatConverse path prompt = do
-  (ticks, _) <- runStorage @Main (Tick.fileTicksOf path)
+  ticks <- runStorage @Main (Tick.fileTicksOf path)
   let history = historyFromFileTicks ticks
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "chat agent starting: " <> T.pack path
@@ -198,7 +198,7 @@ chatConverse path prompt = do
 --   to replace.
 chatConverseSwipe :: (FileOpen r, SessionEffects r) => FilePath -> TickId -> TickId -> T.Text -> Sem r ()
 chatConverseSwipe path promptTid atomTid newPromptText = do
-  (ticks, _) <- runStorage @Main (Tick.fileTicksOf path)
+  ticks <- runStorage @Main (Tick.fileTicksOf path)
   let (before, _fromPrompt) = span ((/= unTickId promptTid) . Tick.ftTickId) ticks
       history = historyFromFileTicks before
   editChatPrompt promptTid newPromptText
@@ -228,7 +228,7 @@ chatConverseSwipe path promptTid atomTid newPromptText = do
 --   whatever it puts in the header is exactly what it'll expect back out.
 editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
 editChatPrompt (TickId tid) content = do
-  (typed, _) <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash tid))
+  typed <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash tid))
   case fromTick @Prompt typed of
     Nothing -> fail "editChatPrompt: not a chat prompt"
     Just (Prompt file _) -> do

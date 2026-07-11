@@ -155,14 +155,14 @@ interpretPromptStorageFS action = do
   interpret (\case
     GetPrompt (PromptKey key) def -> runBranchOpGit @Prompts promptsBranchName $ do
       let path = "/" <> T.unpack (T.replace "." "/" key) <> ".md"
-      fst <$> runStorage @Prompts (do
+      runStorage @Prompts (do
         exists <- Ops.exists path
         if exists
           then Prompt . TE.decodeUtf8 <$> Core.readFile path
           else return def)
     GetConfig (PromptKey key) (defaults :: [ModelConfig model]) -> runBranchOpGit @Prompts promptsBranchName $ do
       let path = "/" <> T.unpack (T.replace "." "/" key) <> ".llmsettings.yaml"
-      fst <$> runStorage @Prompts (do
+      runStorage @Prompts (do
         exists <- Ops.exists path
         if exists
           then do

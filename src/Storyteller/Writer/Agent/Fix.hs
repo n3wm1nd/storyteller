@@ -43,6 +43,6 @@ fixAgent
   -> Instruction
   -> Sem r [TickId]
 fixAgent path targets instruction = do
-  (ticks0, _) <- runStorage @branch (fileTicksOf path)
+  ticks0 <- runStorage @branch (fileTicksOf path)
   let idxs = mapMaybe (\t -> elemIndex (unTickId t) (map ftTickId ticks0)) targets
   reworkAtomsAt @branch path instruction idxs

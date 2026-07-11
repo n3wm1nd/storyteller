@@ -94,7 +94,7 @@ branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
   _ <- runStorage @Main Core.reset
   files <- listAllFiles @(BranchTag Main) "/"
-  (ticks, _) <- runStorage @Main $ do
+  ticks <- runStorage @Main $ do
     hashes <- Core.follow [] $ \acc h _t ->
       if Just (TickId (Core.unObjectHash h)) == since
         then (acc, False)

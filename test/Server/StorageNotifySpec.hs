@@ -6,27 +6,22 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | 'Server.Writer.Run.storageNotify' is the one thing that decides whether
---   a rebase's tick-id remapping ever reaches a client as 'tick.remap'. An
+-- | 'Server.Writer.Run.notifyRemaps' — wired in as the root 'StoryStorage'
+--   interpreter's flush callback — is the one thing that decides whether a
+--   rebase's tick-id remapping ever reaches a client as 'tick.remap'. An
 --   in-place 'at' command's own tail replay renames every tail tick (new
 --   parent, new hash), and a client tracking one of those ids (a rebase
 --   marker, a context selection) needs to learn where it went.
 --
 --   That used to fall through a real gap: every command handler (see
 --   'Server.Writer.File.Connection') runs its command under a fresh,
---   per-command 'Storyteller.Core.Git.withStorage', whose 'UpdateReferences'
---   case used to cascade entirely inside its own local buffer and never
---   re-emit anything outward for 'storageNotify' to see — only the
---   collapsed 'setRef' escaped, which 'storageNotify' doesn't react to at
---   all. 'Storyteller.AtGenericSpec' already proved 'withStorage' collapses
---   a rebase to one real ref write without 'storageNotify' wired in at all,
---   and 'Server.NotificationSpec' proved 'watchBranch' dispatches a
---   'TicksRemapped' that's already sitting in the channel — neither checked
---   whether one is actually posted there for a real command. The fix
---   ('cascadeReplace' returning what it discovers instead of discarding it,
---   threaded through 'withStorage' and announced via the dedicated
---   'AnnounceRemap' effect — see its own doc for why that's a separate
---   effect from 'UpdateReferences', not a reuse of it) is exercised here.
+--   per-command 'Storyteller.Core.Git.withStorage', which once cascaded
+--   entirely inside its own local buffer and never re-emitted anything
+--   outward — only the collapsed 'setRef' escaped, which no remap listener
+--   reacts to at all. The guarantee under test: the boundary flush calls
+--   the callback with the complete applied mapping — the transaction's own
+--   recorded renames *plus* whatever the cascade itself discovered — once
+--   per boundary, never for an empty one.
 module Server.StorageNotifySpec (spec) where
 
 import Prelude hiding (readFile, writeFile)
@@ -44,11 +39,11 @@ import Runix.Git (Git)
 
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.Git
-  ( atGeneric, runBranchOpGit, runStoryStorageGit, withStorage )
+  ( atGeneric, runBranchOpGit, runStoryStorageGitNotify, withStorage )
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch, updateReferences)
 import Storyteller.Core.Types (BranchName(..), TickId(..), branchHead, unTickId)
 import Server.Writer.Notification (BranchNotification(..))
-import Server.Writer.Run (storageNotify)
+import Server.Writer.Run (notifyRemaps)
 import qualified Storage.Core as Core
 
 -- | Local phantom branch tag, same reasoning as 'Storyteller.AtGenericSpec':
@@ -63,9 +58,9 @@ mainBranch = BranchName "main"
 buildChain :: Members '[StoryStorage, Git, Fail] r => Sem r (Core.ObjectHash, Core.ObjectHash, Core.ObjectHash)
 buildChain = do
   _ <- createBranch mainBranch
-  (a1, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "A\n")))
-  (a2, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "B\n")))
-  (a3, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "C\n")))
+  a1 <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "A\n")))
+  a2 <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "B\n")))
+  a3 <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "C\n")))
   return (a1, a2, a3)
 
 -- | Changes the working tree at the rebase target, so the replayed a2/a3
@@ -95,11 +90,11 @@ remapPairs :: [BranchNotification] -> [(Text, Text)]
 remapPairs events = [ pair | TicksRemapped pairs <- events, pair <- pairs ]
 
 spec :: Spec
-spec = describe "storageNotify" $ do
+spec = describe "notifyRemaps (root flush callback)" $ do
 
   it "posts a TicksRemapped covering the whole tail for an ordinary in-place 'at' command" $ do
     chan <- newTChanIO
-    result <- runM . runFail . evalState emptyGitState . runGitMock . runStoryStorageGit . storageNotify chan $ do
+    result <- runM . runFail . evalState emptyGitState . runGitMock . runStoryStorageGitNotify (notifyRemaps chan) $ do
       (a1, a2, a3) <- buildChain
       _ <- runFail $ withStorage $ runBranchOpGit @Main mainBranch $
         atGeneric @Main (TickId (Core.unObjectHash a1)) markerInner
@@ -124,7 +119,7 @@ spec = describe "storageNotify" $ do
 
   it "does post TicksRemapped for an UpdateReferences call that reaches the real StoryStorage directly" $ do
     chan <- newTChanIO
-    _ <- runM . runFail . evalState emptyGitState . runGitMock . runStoryStorageGit . storageNotify chan $ do
+    _ <- runM . runFail . evalState emptyGitState . runGitMock . runStoryStorageGitNotify (notifyRemaps chan) $ do
       _ <- createBranch mainBranch
       updateReferences [(TickId "old", TickId "new")]
     events <- drainChan chan
@@ -132,7 +127,7 @@ spec = describe "storageNotify" $ do
 
   it "posts nothing for a no-op UpdateReferences (empty mapping)" $ do
     chan <- newTChanIO
-    _ <- runM . runFail . evalState emptyGitState . runGitMock . runStoryStorageGit . storageNotify chan $ do
+    _ <- runM . runFail . evalState emptyGitState . runGitMock . runStoryStorageGitNotify (notifyRemaps chan) $ do
       _ <- createBranch mainBranch
       updateReferences []
     events <- drainChan chan

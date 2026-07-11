@@ -45,7 +45,7 @@ import           Storyteller.Core.Git (BranchTag(..), BranchOp, runStorage)
 import qualified Storage.Ops as Ops
 import           Storyteller.Core.Runtime (runInfrastructure, runBranchAndFS, runStoryStorageGit)
 import           Storyteller.Core.Storage (StoryStorage)
-import           Storyteller.Core.Types (BranchName(..), TickId)
+import           Storyteller.Core.Types (BranchName(..))
 
 import           Prelude hiding (writeFile)
 
@@ -89,10 +89,10 @@ charGenAction
               , StoryStorage
               , Logging, Fail
               ] r
-  => FilePath -> T.Text -> Sem r [(TickId, TickId)]
+  => FilePath -> T.Text -> Sem r ()
 charGenAction sheetFile text = do
   writeFile @(BranchTag branch) sheetFile (TE.encodeUtf8 text)
-  snd <$> runStorage @branch (Ops.commitFiles [sheetFile])
+  runStorage @branch (Ops.commitFiles [sheetFile])
 
 parseArgs :: [String] -> IO (FilePath, FilePath, Maybe Int)
 parseArgs args = go args Nothing Nothing Nothing

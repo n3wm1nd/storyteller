@@ -90,6 +90,7 @@ module Storage.Core
   , replaceTick
   , resolveId
   , logRemap
+  , composeMapping
   , follow
   , memoFold
   , syncTo
@@ -157,15 +158,71 @@ data StoreObject
 --   Any store that can hold objects this way -- git, or anything else
 --   content-addressed -- can supply an instance and reuse everything in
 --   this module unchanged.
+--
+--   Beyond object I\/O, the store owns the *remap table*: the running
+--   old->new record of every id a rebase in the current storage scope has
+--   replaced. It used to live per-'StoreT'-scope; it doesn't, conceptually
+--   -- a rename made on one branch matters to every other branch holding a
+--   reference into it -- so the store (whose interpreter defines the
+--   enclosing transaction) is its natural owner, and every scope over the
+--   same store shares one table automatically.
+--
+--   * 'recordRemap' folds one @old -> new@ pair in. The instance must keep
+--     the table transitively closed ('composeMapping' does exactly that),
+--     so 'resolveHash' stays a single lookup.
+--   * 'resolveHash' answers what an id has since become -- itself, if
+--     never replaced. Every operation here already calls it at the point
+--     an id is actually used ('store' for a tick's refs, 'at'\/'readAt'
+--     for their target), and every commit read decodes its
+--     cross-reference parents through it (see 'readCommitResolved' --
+--     never the chain parent) -- so a reference to a replaced tick reads
+--     as pointing at its replacement *before* any physical rewrite has
+--     happened. Applying the table for real (rewriting other branches'
+--     parent links, moving refs) is the interpreter's business at its own
+--     transaction boundary, not this module's.
 class Monad m => MonadStore m where
   readCommit  :: ObjectHash -> m CommitData
   writeCommit :: CommitData -> m ObjectHash
   readObject  :: ObjectHash -> m StoreObject
   writeObject :: StoreObject -> m ObjectHash
+  resolveHash :: ObjectHash -> m ObjectHash
+  recordRemap :: ObjectHash -> ObjectHash -> m ()
 
 -- | Shorthand for the constraints every operation here needs: a pluggable
 --   object store, plus the ability to fail (an unknown tick, ...).
 type StoreM m = (MonadStore m, MonadFail m)
+
+-- | 'readCommit', with every *cross-reference* parent (everything after
+--   the first -- a tick's 'tickRefs') resolved through the store's remap
+--   table, so a ref to a tick some rebase has since replaced is
+--   transparently read as a ref to its replacement, before any physical
+--   rewrite of the referencing commit has happened. The commit's own hash
+--   then no longer matches its (virtual) content -- deliberately
+--   irrelevant: trees are never remapped and tick content is identical,
+--   so nothing downstream can tell.
+--
+--   The chain parent (the first slot) is deliberately *never* resolved:
+--   navigation must walk the live chain exactly as written. Under content
+--   addressing an old hash can come back from the dead -- re-storing a
+--   tick with the same content on the same parent re-mints the identical
+--   hash (a swipe carousel returning to an earlier rotation does exactly
+--   this) -- so a superseded id in the table isn't proof the hash isn't
+--   also a live chain member again, and redirecting a live commit's
+--   structural parent through the table can teleport a walk off the chain
+--   onto orphaned history (or into a cycle). A dangling *ref* resolved
+--   too eagerly is a wrong answer; a rewritten *parent* is a broken walk.
+--   Structural rewriting of chains is the transaction boundary's job
+--   (the cascade), never a read's. Reads that only want a commit's tree
+--   ('loadWorkingTree', 'store''s 'NonAtom' case) use raw 'readCommit';
+--   nothing they touch is an id.
+readCommitResolved :: StoreM m => ObjectHash -> m CommitData
+readCommitResolved h = do
+  cd <- readCommit h
+  case commitParents cd of
+    []              -> return cd
+    (chain : refs)  -> do
+      refs' <- mapM resolveHash refs
+      return cd { commitParents = chain : refs' }
 
 readBlobM :: StoreM m => ObjectHash -> m BS.ByteString
 readBlobM h = readObject h >>= \case
@@ -402,10 +459,12 @@ decodeTick refs raw
         Just (path, tags, content) -> Atom refs path tags content
         Nothing                     -> NonAtom refs raw
 
--- | Read and decode the tick held by the commit at a given hash.
+-- | Read and decode the tick held by the commit at a given hash. Reads
+--   through 'readCommitResolved', so the tick's own 'tickRefs' come back
+--   already pointing at whatever their targets have since become.
 readTick :: StoreM m => ObjectHash -> m Tick
 readTick h = do
-  cd <- readCommit h
+  cd <- readCommitResolved h
   return (decodeTick (List.drop 1 (commitParents cd)) (commitMessage cd))
 
 -- ---------------------------------------------------------------------------
@@ -416,17 +475,16 @@ readTick h = do
 -- 'remove'\/'list'\/... in "Storage.FS") are the only ones that do.
 -- ---------------------------------------------------------------------------
 
--- | The three pieces of state a scope needs: the commit currently at
---   head, the ambient working tree 'readFile'\/'writeFile'\/
---   'createDirectory'\/'remove' operate on, and a running old->new
---   remap table (every id any 'store' this scope has made has since
---   become, transitively closed -- see 'resolveId'\/'logRemap'). Kept as
---   a plain triple, not a record: nothing outside this module reaches
---   into any one piece without going through 'headHash'\/'reset'\/
---   'inWorktree'\/'resolveId', except a caller of 'runStoreT' who wants
---   the final remap table to propagate elsewhere once this computation
---   is done -- the one piece worth exposing 'ScopeState''s shape for.
-type ScopeState = (ObjectHash, WorkingTree, Map ObjectHash ObjectHash)
+-- | The two pieces of state a scope needs: the commit currently at head,
+--   and the ambient working tree 'readFile'\/'writeFile'\/
+--   'createDirectory'\/'remove' operate on. (The remap table used to be a
+--   third piece here; it now belongs to the store itself -- see
+--   'MonadStore''s 'resolveHash'\/'recordRemap' -- since a rename is never
+--   really scoped to one branch.) Kept as a plain pair, not a record:
+--   nothing outside this module reaches into either piece without going
+--   through 'headHash'\/'reset'\/'inWorktree', except a caller of
+--   'runStoreT'\/'runStoreTFrom' threading a scope across dispatches.
+type ScopeState = (ObjectHash, WorkingTree)
 
 newtype StoreT m a = StoreT (StateT ScopeState m a)
   deriving (Functor, Applicative, Monad, MonadState ScopeState)
@@ -438,12 +496,11 @@ instance MonadFail m => MonadFail (StoreT m) where
   fail = StoreT . lift . fail
 
 -- | The scope state a freshly-opened branch starts in: head at @h@, the
---   ambient tree synced to it (as if 'reset' had just run), and an empty
---   remap table.
+--   ambient tree synced to it (as if 'reset' had just run).
 freshScope :: StoreM m => ObjectHash -> m ScopeState
 freshScope h = do
   wt <- loadWorkingTree h
-  return (h, wt, Map.empty)
+  return (h, wt)
 
 -- | Run a 'StoreT' computation seeded fresh at the given head -- see
 --   'freshScope'.
@@ -454,9 +511,9 @@ runStoreT h action = freshScope h >>= \seed -> runStoreTFrom seed action
 --   'ScopeState' rather than reloading fresh -- for a caller making
 --   several separate dispatches against the same branch scope (e.g. one
 --   per 'Storyteller.Core.Branch.BranchOp' effect operation) that needs
---   the ambient tree's own pending, uncommitted edits (and the remap
---   table) to survive between them, not just head. A caller that doesn't
---   need that continuity can just always call 'runStoreT' instead.
+--   the ambient tree's own pending, uncommitted edits to survive between
+--   them, not just head. A caller that doesn't need that continuity can
+--   just always call 'runStoreT' instead.
 runStoreTFrom :: ScopeState -> StoreT m a -> m (a, ScopeState)
 runStoreTFrom seed (StoreT s) = runStateT s seed
 
@@ -464,10 +521,10 @@ liftG :: Monad m => m a -> StoreT m a
 liftG = lift
 
 headHash :: Monad m => StoreT m ObjectHash
-headHash = gets (\(h, _, _) -> h)
+headHash = gets fst
 
 putHead :: Monad m => ObjectHash -> StoreT m ()
-putHead h = modify (\(_, wt, table) -> (h, wt, table))
+putHead h = modify (\(_, wt) -> (h, wt))
 
 -- | The ambient working tree 'readFile'\/'writeFile' (and, via
 --   "Storage.FS", 'createDirectory'\/'remove'\/'list'\/...) operate on.
@@ -475,48 +532,52 @@ putHead h = modify (\(_, wt, table) -> (h, wt, table))
 --   this module needs it -- 'reset'\/'inWorktree' replace or isolate the
 --   whole thing, the file operations touch it by path.
 getAmbientTree :: Monad m => StoreT m WorkingTree
-getAmbientTree = gets (\(_, wt, _) -> wt)
+getAmbientTree = gets snd
 
 putAmbientTree :: Monad m => WorkingTree -> StoreT m ()
-putAmbientTree wt = modify (\(h, _, table) -> (h, wt, table))
+putAmbientTree wt = modify (\(h, _) -> (h, wt))
 
 -- | Apply @f@ to the ambient working tree -- the write seam "Storage.FS"'s
 --   own ambient file operations are built on, so they needn't reach into
 --   'ScopeState' themselves. Like 'getAmbientTree', exported only for that
 --   sibling module.
 modifyAmbientTree :: Monad m => (WorkingTree -> WorkingTree) -> StoreT m ()
-modifyAmbientTree f = modify (\(h, wt, table) -> (h, f wt, table))
+modifyAmbientTree f = modify (\(h, wt) -> (h, f wt))
 
--- | What @oid@ has become, if this scope has ever replaced it (directly,
---   or transitively through a chain of replacements) -- @oid@ itself if
---   not. Must be called right before actually using an id, never cached
---   from an earlier read: a value that was current when read can go
---   stale the moment something else in the same scope replaces it, so
---   only a lookup made at the point of use can be trusted. 'store'\/'at'\/
---   'readAt' already do this for the ids they themselves handle
---   (a tick's own 'tickRefs', and 'at'\/'readAt''s own @target@) --
---   nothing else in this module ever holds an id across a gap where it
---   could go stale, so nothing else needs to call this. A caller outside
---   this module, holding an id from before some other edit in the same
---   scope, does.
-resolveId :: Monad m => ObjectHash -> StoreT m ObjectHash
-resolveId oid = gets (\(_, _, table) -> Map.findWithDefault oid oid table)
+-- | What @oid@ has become, if any rebase this storage scope can see has
+--   replaced it (directly, or transitively through a chain of
+--   replacements) -- @oid@ itself if not. Delegates straight to the
+--   store's own 'resolveHash': the table is the store's, shared by every
+--   scope over it, not this scope's private state. Must be called right
+--   before actually using an id, never cached from an earlier read: a
+--   value that was current when read can go stale the moment something
+--   else replaces it, so only a lookup made at the point of use can be
+--   trusted. 'store'\/'at'\/'readAt' already do this for the ids they
+--   themselves handle (a tick's own 'tickRefs', and 'at'\/'readAt''s own
+--   @target@) -- nothing else in this module ever holds an id across a
+--   gap where it could go stale, so nothing else needs to call this. A
+--   caller outside this module, holding an id from before some other
+--   edit, does.
+resolveId :: MonadStore m => ObjectHash -> StoreT m ObjectHash
+resolveId = liftG . resolveHash
 
--- | Record that @old@ has become @new@, folding it into the running
---   table so every earlier entry whose current value was @old@ now
---   points at @new@ instead -- keeps the table transitively closed
---   (never more than one hop to walk) as a cheap fixup on write, so
---   'resolveId' itself can stay a single lookup instead of chasing a
---   chain at every read. 'editTick'\/'replaceTick'\/'at'\'s own tail-replay
---   already call this for the common case (one tick replaced by exactly
---   one other); exported for an @action@ passed to 'at' that produces
---   more than one successor and needs to say which one @target@ itself
---   becomes, since 'at'\'s own generic fallback can't guess that (see its
---   Haddock).
-logRemap :: Monad m => ObjectHash -> ObjectHash -> StoreT m ()
-logRemap old new = modify (\(h, wt, table) -> (h, wt, composeMapping table [(old, new)]))
+-- | Record that @old@ has become @new@ -- the store's 'recordRemap',
+--   lifted. 'editTick'\/'replaceTick'\/'at'\'s own tail-replay already call
+--   this for the common case (one tick replaced by exactly one other);
+--   exported for an @action@ passed to 'at' that produces more than one
+--   successor and needs to say which one @target@ itself becomes, since
+--   'at'\'s own generic fallback can't guess that (see its Haddock).
+logRemap :: MonadStore m => ObjectHash -> ObjectHash -> StoreT m ()
+logRemap old new = liftG (recordRemap old new)
 
-composeMapping :: Map ObjectHash ObjectHash -> [(ObjectHash, ObjectHash)] -> Map ObjectHash ObjectHash
+-- | Fold new pairs into a remap table, keeping it transitively closed
+--   (never more than one hop to walk): every earlier entry whose current
+--   value is now itself remapped is redirected, so a resolve stays a
+--   single lookup instead of chasing a chain at every read. Not used by
+--   this module itself anymore -- exported as the one canonical
+--   implementation of the closure 'recordRemap' instances are required
+--   to maintain (see 'MonadStore'), so no interpreter reinvents it.
+composeMapping :: Ord k => Map k k -> [(k, k)] -> Map k k
 composeMapping table new =
   let newMap       = Map.fromList new
       updatedOld   = Map.map (\cur -> Map.findWithDefault cur cur newMap) table
@@ -958,11 +1019,10 @@ readFile path = do
 writeFile :: StoreM m => FilePath -> BS.ByteString -> StoreT m ()
 writeFile path content = do
   h <- liftG (writeBlobM content)
-  modify $ \(hd, wt, table) ->
+  modify $ \(hd, wt) ->
     ( hd
     , Map.insert path (FSFile h)
         (foldr (\d m -> Map.insertWith keepExisting d FSDir m) wt (ancestorDirs path))
-    , table
     )
 
 keepExisting :: FSNode -> FSNode -> FSNode

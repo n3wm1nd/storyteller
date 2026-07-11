@@ -98,7 +98,7 @@ fileState path = fileStateSince path Nothing
 --   'since' is 'Nothing' or no longer present (rewritten out from under it),
 --   the full chain is returned.
 fileStateSince :: FileOpen r => FilePath -> Maybe T.Text -> Sem r Update
-fileStateSince path since = fileUpdateSince since . fst <$> runStorage @Main (Tick.fileTicksOf path)
+fileStateSince path since = fileUpdateSince since <$> runStorage @Main (Tick.fileTicksOf path)
 
 -- ---------------------------------------------------------------------------
 -- Mutations on the already-open branch
@@ -114,7 +114,7 @@ fileStateSince path since = fileUpdateSince since . fst <$> runStorage @Main (Ti
 -- again.
 createFile :: (FileOpen r, Member Logging r) => FilePath -> Sem r ()
 createFile path = do
-  (already, _) <- runStorage @Main (Ops.exists path)
+  already <- runStorage @Main (Ops.exists path)
   if already
     then fail ("createFile: already exists: " <> path)
     else do
@@ -127,7 +127,7 @@ createFile path = do
 -- reasoning as 'createFile's own guard.
 deleteFile :: (FileOpen r, Member Logging r) => FilePath -> Sem r ()
 deleteFile path = do
-  (present, _) <- runStorage @Main (Ops.exists path)
+  present <- runStorage @Main (Ops.exists path)
   if not present
     then fail ("deleteFile: no such file: " <> path)
     else do
@@ -141,8 +141,8 @@ deleteFile path = do
 -- own guards.
 renameFile :: (FileOpen r, Member Logging r) => FilePath -> FilePath -> Sem r ()
 renameFile path newPath = do
-  (present, _)    <- runStorage @Main (Ops.exists path)
-  (newTaken, _)   <- runStorage @Main (Ops.exists newPath)
+  present  <- runStorage @Main (Ops.exists path)
+  newTaken <- runStorage @Main (Ops.exists newPath)
   if not present
     then fail ("renameFile: no such file: " <> path)
     else if newTaken
@@ -187,11 +187,11 @@ mergeFileAtoms tids =
 --   not-yet-processed id is still valid when its turn comes.
 splitFileAtoms :: (FileOpen r, Member Splitter r) => [TickId] -> Sem r ()
 splitFileAtoms tids = do
-  (positioned, _) <- runStorage @Main (Ops.chainPositions (map toHash tids))
+  positioned <- runStorage @Main (Ops.chainPositions (map toHash tids))
   mapM_ splitOne (map (fromHash . fst) (sortOn (Down . snd) positioned))
   where
     splitOne tid = do
-      (tick, _) <- runStorage @Main (Core.readAt (toHash tid) Tick.getTypesTick)
+      tick <- runStorage @Main (Core.readAt (toHash tid) Tick.getTypesTick)
       case fromTick @Atom tick of
         Nothing -> fail ("splitFileAtoms: not an atom: " <> T.unpack (unTickId tid))
         Just (Atom _path msg) -> do
@@ -206,7 +206,7 @@ splitFileAtoms tids = do
 --   target's id valid when its own turn comes.
 setFileAtomsHidden :: FileOpen r => [TickId] -> Bool -> Sem r ()
 setFileAtomsHidden tids hidden = do
-  (positioned, _) <- runStorage @Main (Ops.chainPositions (map toHash tids))
+  positioned <- runStorage @Main (Ops.chainPositions (map toHash tids))
   mapM_ (\tid -> void $ runStorage @Main (Ops.setAtomHidden (toHash tid) hidden))
         (map (fromHash . fst) (sortOn (Down . snd) positioned))
 

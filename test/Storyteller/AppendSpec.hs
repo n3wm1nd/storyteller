@@ -56,7 +56,7 @@ runAppend action =
 --   -- 'Storage.Ops.addAtom' returns 'Core.ObjectHash' directly.
 appendAtom :: Member (BranchOp Main) r => FilePath -> Text -> Sem r TickId
 appendAtom path content = do
-  (h, _) <- runStorage @Main (Ops.addAtom path content)
+  h <- runStorage @Main (Ops.addAtom path content)
   return (TickId (Core.unObjectHash h))
 
 toHash :: TickId -> Core.ObjectHash
@@ -95,7 +95,7 @@ spec = describe "appendAtom" $ do
           writeFile @(BranchTag Main) "b.md" "pending"
           newTid          <- appendAtom "a.md" "hello"
           ambientB        <- readFile @(BranchTag Main) "b.md"
-          (existsAtNewTick, _) <- runStorage @Main (Core.inWorktree (Ops.exists "b.md") `atHash` toHash newTid)
+          existsAtNewTick <- runStorage @Main (Core.inWorktree (Ops.exists "b.md") `atHash` toHash newTid)
           return (ambientB, existsAtNewTick)
     result `shouldBe` Right ("pending", False)
 
@@ -104,12 +104,12 @@ spec = describe "appendAtom" $ do
           _        <- appendAtom "a.md" "first"
           writeFile @(BranchTag Main) "b.md" "pending"
           newTid   <- appendAtom "a.md" " second"
-          (tick, _) <- runStorage @Main (Tick.readTypesTick (toHash newTid))
+          tick <- runStorage @Main (Tick.readTypesTick (toHash newTid))
           case tickParent tick of
             Nothing  -> fail "expected a parent"
             Just pid -> do
-              (existedBefore, _) <- runStorage @Main (Core.inWorktree (Ops.exists "b.md") `atHash` toHash pid)
-              (existsNow, _)     <- runStorage @Main (Core.inWorktree (Ops.exists "b.md") `atHash` toHash newTid)
+              existedBefore <- runStorage @Main (Core.inWorktree (Ops.exists "b.md") `atHash` toHash pid)
+              existsNow <- runStorage @Main (Core.inWorktree (Ops.exists "b.md") `atHash` toHash newTid)
               ambientB           <- readFile @(BranchTag Main) "b.md"
               return (existedBefore, existsNow, ambientB)
     result `shouldBe` Right (False, False, "pending")
@@ -134,7 +134,7 @@ spec = describe "appendAtom" $ do
           _        <- appendAtom "a.md" "hello world"
           writeFile @(BranchTag Main) "a.md" "hello"   -- dirty delete of " world"
           newTid   <- appendAtom "a.md" " again"
-          (isolated, _) <- runStorage @Main (Core.inWorktree (Core.readFile "a.md") `atHash` toHash newTid)
+          isolated <- runStorage @Main (Core.inWorktree (Core.readFile "a.md") `atHash` toHash newTid)
           ambient  <- readFile @(BranchTag Main) "a.md"
           return (isolated, ambient)
     result `shouldBe` Right ("hello world again", "hello again")
@@ -156,7 +156,7 @@ spec = describe "appendAtom" $ do
           _        <- appendAtom "a.md" "H1"
           writeFile @(BranchTag Main) "a.md" "H1 pending"  -- uncommitted append past HEAD
           newTid   <- appendAtom "a.md" "H2"
-          (isolated, _) <- runStorage @Main (Core.inWorktree (Core.readFile "a.md") `atHash` toHash newTid)
+          isolated <- runStorage @Main (Core.inWorktree (Core.readFile "a.md") `atHash` toHash newTid)
           ambient  <- readFile @(BranchTag Main) "a.md"
           return (isolated, ambient)
     result `shouldBe` Right ("H1H2", "H1 pendingH2")

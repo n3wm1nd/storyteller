@@ -66,7 +66,7 @@ appendAtom
   :: Member (BranchOp Main) r
   => FilePath -> T.Text -> Sem r TickId
 appendAtom path content = do
-  (h, _) <- runStorage @Main (Ops.addAtom path content)
+  h <- runStorage @Main (Ops.addAtom path content)
   return (TickId (Core.unObjectHash h))
 
 -- ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ spec runner = do
             (,) <$> fileState "f.md" <*> runStorage @Main (Ops.atomHistory "f.md")
       case result of
         Left err -> expectationFailure err
-        Right (upd, (history, _)) -> do
+        Right (upd, history) -> do
           length (updateTicks upd) `shouldBe` 3
           mconcat (map snd history) `shouldBe` ""
 
@@ -300,11 +300,11 @@ spec runner = do
             -- Rebase the prompt in place, exactly like 'editChatPrompt' --
             -- this replays (re-hashes) the atom after it, even though the
             -- atom's own content is untouched by this step.
-            _ <- runStorage @Main $ Core.at (fst promptTid) $ Core.editTick $ \case
+            _ <- runStorage @Main $ Core.at promptTid $ Core.editTick $ \case
               Core.NonAtom refs _ -> return (Core.NonAtom refs "type:prompt\n\nhi (edited)")
               other               -> return other
             -- Use the *stale* (pre-rebase) atom id, same as the caller.
-            _ <- runStorage @Main (Swipe.pushSwipe (fst atomTid) "second reply")
+            _ <- runStorage @Main (Swipe.pushSwipe atomTid "second reply")
             fileState "chat/f.md"
       case result of
         Left err  -> expectationFailure err

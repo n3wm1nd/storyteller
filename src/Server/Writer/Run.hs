@@ -27,7 +27,7 @@ module Server.Writer.Run
   , actionStack
   , loggingWS
   , wsAction
-  , storageNotify
+  , notifyRemaps
   ) where
 
 import Control.Concurrent.STM (TChan, atomically, writeTChan)
@@ -56,47 +56,28 @@ import Storyteller.Core.LLM.Registry (SomeLLMRunner(..))
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Runtime (runInfrastructureWith)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
-import Storyteller.Core.Storage (StoryStorage(..))
-import Storyteller.Core.Git (runStoryStorageGit)
+import Storyteller.Core.Git (runStoryStorageGitNotify)
+import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (TickId, unTickId)
 import Storyteller.Core.Undo (Undo)
 
--- | Intercept 'StoryStorage' and notify whenever a non-empty batch of tick
--- ids gets renamed — the point at which any client tracking one of those
--- ids (a rebase marker, a context selection) needs to move it. Two call
--- sites carry that: a direct 'UpdateReferences' (a rename reaching this
--- layer without ever passing through a buffering 'Storyteller.Core.Git.
--- withStorage'), and 'AnnounceRemap' ('withStorage's own end-of-scope
--- announcement of everything it accumulated — see its doc for why that's a
--- distinct, no-op-everywhere-else effect rather than reusing
--- 'UpdateReferences' for it: replaying an already-cascaded mapping through
--- 'UpdateReferences' would cascade it a second time). Doesn't consume the
--- effect ('intercept', not 'interpret'): 'runStoryStorageGit' still does
--- the real work (a real cascade for 'UpdateReferences', nothing at all for
--- 'AnnounceRemap') — this only observes the mapping either one carries.
-storageNotify
-  :: forall r a. Members '[StoryStorage, Embed IO] r
+-- | Notify whenever a non-empty batch of tick ids gets renamed — the
+-- point at which any client tracking one of those ids (a rebase marker, a
+-- context selection) needs to move it. Passed to the root 'StoryStorage'
+-- interpreter as its flush callback (see 'runStoryStorageGitNotify'), the
+-- one place the *complete* applied mapping exists: the transaction's own
+-- recorded renames plus everything the boundary cascade discovered while
+-- rewriting other branches — an interceptor above the interpreter could
+-- only ever see the former. Fires once per boundary, so one transaction
+-- is one notification however many renames it made.
+notifyRemaps
+  :: Member (Embed IO) r
   => TChan BranchNotification
-  -> Sem r a
-  -> Sem r a
-storageNotify chan = intercept $ \case
-  CreateBranch name -> send (CreateBranch name)
-  DeleteBranch name -> send (DeleteBranch name)
-  ListBranches      -> send ListBranches
-  SetRef name mtid  -> send (SetRef name mtid)
-  UpdateReferences mapping -> do
-    result <- send (UpdateReferences mapping)
-    announce mapping
-    return result
-  AnnounceRemap mapping -> do
-    result <- send (AnnounceRemap mapping)
-    announce mapping
-    return result
-  where
-    announce :: [(TickId, TickId)] -> Sem r ()
-    announce mapping = if null mapping then return () else
-      embed $ atomically $ writeTChan chan $
-        TicksRemapped (map (\(o, n) -> (unTickId o, unTickId n)) mapping)
+  -> [(TickId, TickId)]
+  -> Sem r ()
+notifyRemaps chan mapping = if null mapping then return () else
+  embed $ atomically $ writeTChan chan $
+    TicksRemapped (map (\(o, n) -> (unTickId o, unTickId n)) mapping)
 
 -- | Logging interpreter that calls an IO callback for each log entry.
 --   Use this to forward logs to a WebSocket connection or any other IO sink.
@@ -168,8 +149,7 @@ actionStack env action =
       . loggingIO
       . failLog
       . runInfrastructureWith (runGitViaWorker (envGitWorker env))
-      . runStoryStorageGit
-      . storageNotify (envNotifyChan env)
+      . runStoryStorageGitNotify (notifyRemaps (envNotifyChan env))
       . interpretPromptStorageFS
       . runConfig (StreamingEnabled True)
       . agentRunner

@@ -58,7 +58,7 @@ spec runner = do
     -- decodable as a 'Prompt', with the same file and the new text.
     it "the edited tick still decodes as a Prompt, with its file preserved and text updated" $ do
       let result = withFile_ runner (BranchName "b") $ do
-            (h, _) <- runStorage @Main (Tick.storeAs (Prompt "chat/f.md" "old text"))
+            h <- runStorage @Main (Tick.storeAs (Prompt "chat/f.md" "old text"))
             let tid = TickId (Core.unObjectHash h)
             editChatPrompt tid "new text"
             -- 'editChatPrompt' rebases the tick onto a new hash -- resolve
@@ -69,4 +69,4 @@ spec runner = do
             runStorage @Main (Core.resolveId h >>= Tick.readTypesTick)
       case result of
         Left err -> expectationFailure err
-        Right (typed, _) -> fromTick @Prompt typed `shouldBe` Just (Prompt "chat/f.md" "new text")
+        Right typed -> fromTick @Prompt typed `shouldBe` Just (Prompt "chat/f.md" "new text")

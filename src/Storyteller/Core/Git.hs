@@ -38,6 +38,7 @@
 module Storyteller.Core.Git
   ( -- * Interpreters
     runStoryStorageGit
+  , runStoryStorageGitNotify
   , withStorage
   , withStorageDiscard
 
@@ -55,14 +56,12 @@ module Storyteller.Core.Git
     -- both modules just to run one against real git.
   , BranchOp(..)
   , runStorage
-  , queryStorage
   , runBranchOpGit
   , runStoryFSGit
   , runBranchAndFS
 
     -- * Generic rebase (for inner actions that interleave other effects)
   , atGeneric
-  , atGenericSeeded
 
     -- * Cross-branch reference cascade (exported for its own unit tests --
     -- see 'Storyteller.GitCascadeSpec')
@@ -97,7 +96,7 @@ import qualified System.FilePath.Glob as Glob
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
-import Storyteller.Core.Branch (BranchOp(..), runStorage, queryStorage)
+import Storyteller.Core.Branch (BranchOp(..), runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
@@ -140,47 +139,61 @@ emptyTree = ObjectHash "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 type RefWrite = (BranchName, Maybe TickId)
 
 -- | Everything one run of 'withStorageWithCallback' buffers: pending ref
---   writes (last write per branch wins — see 'overlayRefs') and every
---   tick id 'UpdateReferences' has renamed so far, oldest first. Kept as a
---   single overlay (rather than two stacked 'State' effects) so 'handle'
---   only ever has one thing to thread through 'get'/'modify'.
+--   writes (last write per branch wins — see 'overlayRefs'), plus the
+--   scope's remap state, in two transitively-closed maps that only
+--   diverge at the root: 'ovTable' is everything this scope has ever been
+--   told (what 'ResolveTick' answers from), 'ovPending' is the part not
+--   yet physically applied (what the next flush cascades, and what a
+--   buffered scope hands its parent at exit). A buffered scope never
+--   applies anything itself, so for it the two are always identical; the
+--   root's flush moves entries out of pending but deliberately keeps them
+--   in the table, so an id from before an earlier, already-applied flush
+--   still resolves for as long as the scope lives.
 data Overlay = Overlay
-  { ovRefs  :: [RefWrite]
-  , ovRemap :: [(TickId, TickId)]
+  { ovRefs    :: [RefWrite]
+  , ovTable   :: Map TickId TickId
+  , ovPending :: Map TickId TickId
   }
+
+-- | What a scope does about remaps — the one axis 'runStoryStorageGit'
+--   and 'withStorage'\/'withStorageDiscard' actually differ on:
+--
+--   * 'ApplyOnFlush': this scope is the real boundary. 'FlushRemaps'
+--     physically applies everything pending (one 'cascadeReplace' with
+--     the whole batch) and reports the applied mapping — pending entries
+--     plus the cascade's own discoveries (a descendant reparented onto a
+--     renamed commit isn't itself a key of the mapping — see
+--     'cascadeReplace') — to the supplied callback, the one channel a
+--     client tracking any of those ids learns where it went.
+--   * 'HoldForScope': this scope buffers. 'FlushRemaps' is a no-op (the
+--     scope's own exit is its boundary), and a 'ResolveTick' miss is
+--     forwarded to the supplied parent resolver, so a nested scope
+--     transparently sees renames pending in the scope it nests in.
+data RemapMode r
+  = ApplyOnFlush ([(TickId, TickId)] -> Sem r ())
+  | HoldForScope (TickId -> Sem r TickId)
 
 -- | The one real implementation of 'StoryStorage'. Every ref mutation calls
 --   the supplied @onRef@ callback (in order) and is recorded into the
 --   returned overlay, last write per branch wins. Reads ('ListBranches')
 --   see real git refs with any pending overlay entries from this same run
 --   applied on top, so a read-after-write within one run observes its own
---   writes.
---
---   'runStoryStorageGit' instantiates this with a callback that writes
---   straight to git and discards the overlay (today's eager behaviour).
---   'withStorage' instantiates it with a no-op callback and replays the
---   overlay into the parent 'StoryStorage' only once the wrapped action has
---   fully succeeded — nothing is written anywhere if it fails.
---
---   The returned tick-id remap is every rename 'UpdateReferences' was ever
---   called with here, in order, *plus* everything 'cascadeReplace'
---   separately discovers while rewriting other branches' ancestry (a
---   descendant reparented onto a renamed commit, which isn't itself a key
---   of the mapping it was called with — see 'cascadeReplace's own doc).
---   Both pieces matter: dropping the input mapping loses the direct
---   renames (a cascade that touches no other branch never calls
---   'rewriteChain' on them at all — see its short-circuit for exactly this
---   case), and dropping cascadeReplace's own discoveries loses everything
---   it found *beyond* what it was told.
+--   writes. Renames are only ever *recorded* here ('UpdateReferences' →
+--   'ovTable'\/'ovPending'); whether 'FlushRemaps' then applies them is
+--   the 'RemapMode''s call. Returns the final pending table alongside the
+--   result — what a buffered caller folds into its parent; empty at an
+--   'ApplyOnFlush' root that ends on a flush.
 withStorageWithCallback
   :: forall r a
   .  Members '[Git, Fail] r
   => (BranchName -> Maybe TickId -> Sem r ())
+  -> RemapMode r
   -> Sem (StoryStorage : r) a
-  -> Sem r (a, [RefWrite], [(TickId, TickId)])
-withStorageWithCallback onRef action = do
-  (Overlay refs remap, a) <- runState (Overlay [] []) (reinterpret handle action)
-  return (a, refs, remap)
+  -> Sem r (a, [RefWrite], Map TickId TickId)
+withStorageWithCallback onRef mode action = do
+  (Overlay refs _ pending, a) <-
+    runState (Overlay [] Map.empty Map.empty) (reinterpret handle action)
+  return (a, refs, pending)
   where
     handle :: StoryStorage m x -> Sem (State Overlay : r) x
     handle = \case
@@ -207,40 +220,57 @@ withStorageWithCallback onRef action = do
         pending <- ovRefs <$> get
         return $ overlayRefs (map resolveToHead pairs) pending
 
-      -- Reads each branch's *current* head — real git overlaid with this
-      -- transaction's own pending writes so far (same computation as
-      -- 'ListBranches') — rather than raw, possibly-stale git refs. A
-      -- caller's own branch is typically already at its correct final
-      -- head by this point (a rewrite publishes via 'SetRef' before
-      -- calling this), so it naturally can't still match any of
-      -- 'mapping's superseded ids and won't be redundantly reprocessed.
-      -- Reading raw git refs instead would see that branch still at its
-      -- *pre-rewrite* head under 'withStorage' (nothing lands in real git
-      -- until the transaction replays), matching entries it shouldn't and
-      -- rebuilding a second, wrong chain from stale ancestry alongside the
-      -- correct one already built — this is what actually caused a moved
-      -- tick's sibling to be duplicated in the chain.
-      UpdateReferences mapping -> do
-        pairs   <- raise $ listRefs storyRefPrefix
-        pending <- ovRefs <$> get
-        let current = [ (storyRef (branchName b), ObjectHash (unTickId (branchHead b)))
-                      | b <- overlayRefs (map resolveToHead pairs) pending ]
-            hashMapping = Map.fromList
-              [ (ObjectHash (unTickId o), ObjectHash (unTickId n)) | (o, n) <- mapping ]
-        discovered <- cascadeReplace current applyRef hashMapping
-        let extra = [ (TickId (unObjectHash o), TickId (unObjectHash n))
-                    | (o, n) <- Map.toList discovered, o /= n ]
-        modify (\ov -> ov { ovRemap = ovRemap ov ++ mapping ++ extra })
+      -- Record only — fold into both maps, transitively closed. Nothing
+      -- is cascaded, written, or announced here; that's 'FlushRemaps''s
+      -- job, which is what lets a whole transaction's renames (however
+      -- many operations produced them) be applied as one batch.
+      UpdateReferences mapping -> modify $ \ov -> ov
+        { ovTable   = Core.composeMapping (ovTable ov) mapping
+        , ovPending = Core.composeMapping (ovPending ov) mapping
+        }
+
+      ResolveTick tid -> do
+        table <- ovTable <$> get
+        case Map.lookup tid table of
+          Just new -> return new
+          Nothing  -> raise (resolveMiss tid)
+
+      FlushRemaps -> case mode of
+        HoldForScope _       -> return ()
+        ApplyOnFlush onRemap -> do
+          pending <- ovPending <$> get
+          when (not (Map.null pending)) $ do
+            -- Each branch's current head: real git overlaid with this
+            -- scope's own pending ref writes, so a branch already moved
+            -- within this scope is cascaded from where it actually is —
+            -- never from a stale pre-rewrite head that would match
+            -- superseded ids and rebuild a second, wrong chain (the bug
+            -- that once duplicated a moved tick's sibling).
+            pairs       <- raise $ listRefs storyRefPrefix
+            pendingRefs <- ovRefs <$> get
+            let current = [ (storyRef (branchName b), ObjectHash (unTickId (branchHead b)))
+                          | b <- overlayRefs (map resolveToHead pairs) pendingRefs ]
+                hashMapping = Map.fromList
+                  [ (ObjectHash (unTickId o), ObjectHash (unTickId n))
+                  | (o, n) <- Map.toList pending ]
+            discovered <- cascadeReplace current applyRef hashMapping
+            let extra = [ (TickId (unObjectHash o), TickId (unObjectHash n))
+                        | (o, n) <- Map.toList discovered, o /= n ]
+            -- Applied entries leave pending but stay resolvable (and the
+            -- discoveries join them): an id from before this flush is
+            -- still an id someone may hold.
+            modify $ \ov -> ov
+              { ovTable   = Core.composeMapping (ovTable ov) extra
+              , ovPending = Map.empty
+              }
+            raise (onRemap (Map.toList pending ++ extra))
 
       SetRef name mtid -> applyRef name mtid
 
-      -- No cascade, no ref writes — 'AnnounceRemap' names a rename that
-      -- already happened. Under 'runStoryStorageGit' (nothing further
-      -- listening) that's simply nothing to do; under a *nested*
-      -- 'withStorage' it still has to be deferred like everything else
-      -- here, so it's folded into this scope's own accumulator rather than
-      -- forwarded immediately.
-      AnnounceRemap mapping -> modify (\ov -> ov { ovRemap = ovRemap ov ++ mapping })
+    resolveMiss :: TickId -> Sem r TickId
+    resolveMiss = case mode of
+      HoldForScope parent -> parent
+      ApplyOnFlush _      -> pure   -- nothing above the root to ask
 
     -- Appended, not prepended: 'overlayRefs' and 'withStorage's replay both
     -- rely on later entries for the same branch winning over earlier ones.
@@ -266,52 +296,60 @@ overlayRefs base pending =
   in applied ++ newOnes
 
 -- | Eager 'StoryStorage' interpreter: every ref mutation lands in git
---   immediately. This is the default used everywhere except inside 'withStorage'.
-runStoryStorageGit
+--   immediately, and every 'FlushRemaps' physically applies whatever
+--   renames are pending (see 'RemapMode'). This is the root every
+--   'withStorage' transaction eventually folds into — and the default
+--   used everywhere on its own. @onRemap@ is called once per flush with
+--   the full applied mapping (pending entries plus cascade discoveries);
+--   the server passes the client-notification broadcast here (see
+--   'Server.Writer.Run'), everything else passes nothing.
+runStoryStorageGitNotify
   :: Members '[Git, Fail] r
-  => Sem (StoryStorage : r) a
+  => ([(TickId, TickId)] -> Sem r ())
+  -> Sem (StoryStorage : r) a
   -> Sem r a
-runStoryStorageGit = fmap (\(a, _, _) -> a) . withStorageWithCallback applyToGit
+runStoryStorageGitNotify onRemap action =
+  fmap (\(a, _, _) -> a) $
+    withStorageWithCallback applyToGit (ApplyOnFlush onRemap) $
+      -- A final boundary at end-of-run, so renames recorded by code that
+      -- never passed a boundary of its own (a bare eager caller with no
+      -- 'withStorage', no 'runBranchOpGit' dispatch after its last edit)
+      -- still land before the interpreter is gone.
+      action <* flushRemaps
   where
     applyToGit name (Just tid) = updateRef (storyRef name) (ObjectHash (unTickId tid))
     applyToGit name Nothing    = deleteRef (storyRef name)
 
--- | Transactional 'StoryStorage': ref mutations made by the wrapped action
---   are buffered in memory (never touch git) and, only once the action
---   succeeds, replayed into the parent 'StoryStorage' as a single batch of
---   'setRef' calls plus (if anything was renamed) one combined
---   'updateReferences' call. If the action fails, nothing is replayed and
---   nothing was ever written — same effect as if the action never ran.
---
---   Refs are replayed as at most one 'setRef' per branch, keeping only
---   each branch's last buffered write ('lastPerBranch') — the same last-
---   write-wins collapse 'overlayRefs' already applies for reads. Renames
---   are replayed as every one accumulated (see 'withStorageWithCallback's
---   'ovRemap' — no analogous collapse: unlike a ref position, an id rename
---   isn't superseded by a later one for the *same* id in the way two
---   writes to the same branch are, so nothing here should be dropped). A
---   single logical mutation (e.g. a chain move that rebases a whole tail,
---   which nests two 'at' calls and a multi-entry 'updateReferences'
---   cascade) buffers several intermediate writes; replaying every one of
---   them individually into the parent 'StoryStorage' would make each
---   intermediate state real and independently observable — one eager ref
---   write (and one rename notification), per intermediate step instead of
---   one for the whole transaction. Collapsing first ensures only the
---   final, coherent state is ever published — and gives a client tracking
---   an id through this rebase exactly the mapping it needs, no more.
+-- | 'runStoryStorageGitNotify' with nobody listening for applied renames.
+runStoryStorageGit
+  :: Members '[Git, Fail] r
+  => Sem (StoryStorage : r) a
+  -> Sem r a
+runStoryStorageGit = runStoryStorageGitNotify (\_ -> pure ())
+
+-- | Transactional 'StoryStorage': ref mutations and renames made by the
+--   wrapped action are buffered in memory (never touch git — and, unlike
+--   before, never trigger a cascade either: nothing is physically
+--   rewritten anywhere while the action runs, reads simply resolve
+--   through the pending table). Only once the action succeeds is the
+--   whole batch folded into the parent 'StoryStorage': at most one
+--   'setRef' per branch (last write wins, 'lastPerBranch' — the same
+--   collapse 'overlayRefs' already applies for reads), the pending remap
+--   table as one 'updateReferences', and one 'flushRemaps' to mark the
+--   boundary — at the root that's one cascade and one client
+--   notification for the entire transaction, however many operations ran
+--   inside it. If the action fails, nothing is folded and nothing was
+--   ever written — same effect as if the action never ran.
 withStorage
   :: Members '[StoryStorage, Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
 withStorage action = do
-  (a, refs, remap) <- withStorageWithCallback (\_ _ -> pure ()) action
+  (a, refs, pending) <- withStorageWithCallback (\_ _ -> pure ()) (HoldForScope resolveTick) action
   mapM_ (uncurry setRef) (lastPerBranch refs)
-  -- 'announceRemap', not 'updateReferences' — every rename here was already
-  -- cascaded (or already known, for direct 'UpdateReferences' calls) while
-  -- buffered; re-running 'UpdateReferences' against the parent StoryStorage
-  -- would cascade the very same, already-correct refs a second time. See
-  -- 'AnnounceRemap's own doc.
-  when (not (null remap)) $ announceRemap remap
+  when (not (Map.null pending)) $ do
+    updateReferences (Map.toList pending)
+    flushRemaps
   return a
 
 -- | Keep only the last buffered write per branch — see 'withStorage'.
@@ -322,16 +360,20 @@ lastPerBranch = Map.toList . Map.fromList
 
 -- | Speculative 'StoryStorage': like 'withStorage', ref mutations never
 --   touch git while the action runs — but unlike 'withStorage', the
---   accumulated overlay is discarded instead of replayed, even if the
---   action succeeds. Content objects/commits the action wrote are still
---   real git objects (cheap and harmless to leave unreferenced), but no
---   ref anywhere ever moves — a dry run with a hard guarantee, not just a
---   rolled-back transaction.
+--   accumulated overlay (refs and remap table both) is discarded instead
+--   of folded into a parent, even if the action succeeds. Content
+--   objects/commits the action wrote are still real git objects (cheap
+--   and harmless to leave unreferenced), but no ref anywhere ever moves
+--   and no rename is ever applied or announced — a dry run with a hard
+--   guarantee, not just a rolled-back transaction. (No parent
+--   'StoryStorage' is required, so a 'ResolveTick' miss here has nowhere
+--   further to ask — a discard scope resolves only its own renames.)
 withStorageDiscard
   :: Members '[Git, Fail] r
   => Sem (StoryStorage : r) a
   -> Sem r a
-withStorageDiscard = fmap (\(a, _, _) -> a) . withStorageWithCallback (\_ _ -> pure ())
+withStorageDiscard =
+  fmap (\(a, _, _) -> a) . withStorageWithCallback (\_ _ -> pure ()) (HoldForScope pure)
 
 -- ---------------------------------------------------------------------------
 -- Cross-branch reference cascade
@@ -494,19 +536,33 @@ fromCoreEntry :: Core.TreeEntry -> TreeEntry
 fromCoreEntry (Core.BlobEntry n h) = BlobEntry n (fromCoreHash h)
 fromCoreEntry (Core.SubTree n h)   = SubTree n (fromCoreHash h)
 
--- | Any 'Sem' stack able to read/write git objects and fail is a
---   'Core.MonadStore' for free -- the instance every "Storage.Core"\/
---   "Storage.Ops"\/"Storage.Tick" operation runs against once dispatched
---   through 'runBranchOpGit'. Method names are qualified in this instance
---   body -- 'Storage.Core' deliberately reuses "Runix.Git"'s own
---   unqualified names ('readCommit'\/'writeCommit'\/'readObject'\/
---   'writeObject'), unlike a @git@-prefixed naming scheme above, so
---   qualification is the only way to say which one is meant here.
-instance Members '[Git, Fail] r => Core.MonadStore (Sem r) where
+-- | Any 'Sem' stack able to read/write git objects, reach the shared
+--   'StoryStorage' remap table, and fail is a 'Core.MonadStore' for free
+--   -- the instance every "Storage.Core"\/"Storage.Ops"\/"Storage.Tick"
+--   operation runs against once dispatched through 'runBranchOpGit'.
+--   'Core.resolveHash'\/'Core.recordRemap' bottom out in 'ResolveTick'\/
+--   'UpdateReferences' — the transaction scope in effect (buffered or
+--   root, see 'withStorageWithCallback') is what actually holds the
+--   table, which is exactly what makes every branch scope inside one
+--   transaction see every other's renames with nothing passed around by
+--   hand. Method names are qualified in this instance body --
+--   'Storage.Core' deliberately reuses "Runix.Git"'s own unqualified
+--   names ('readCommit'\/'writeCommit'\/'readObject'\/'writeObject'),
+--   unlike a @git@-prefixed naming scheme above, so qualification is the
+--   only way to say which one is meant here.
+instance Members '[Git, StoryStorage, Fail] r => Core.MonadStore (Sem r) where
   readCommit  h  = toCoreCommit <$> RG.readCommit (fromCoreHash h)
   writeCommit cd = toCoreHash <$> RG.writeCommit (fromCoreCommit cd)
   readObject  h  = toCoreObject <$> RG.readObject (fromCoreHash h)
   writeObject o  = toCoreHash <$> RG.writeObject (fromCoreObject o)
+  resolveHash h  = coreHashOfTick <$> resolveTick (tickOfCoreHash h)
+  recordRemap o n = updateReferences [(tickOfCoreHash o, tickOfCoreHash n)]
+
+tickOfCoreHash :: Core.ObjectHash -> TickId
+tickOfCoreHash = TickId . Core.unObjectHash
+
+coreHashOfTick :: TickId -> Core.ObjectHash
+coreHashOfTick = Core.ObjectHash . unTickId
 
 -- | Interpret 'BranchOp branch' (declared, backend-agnostically, in
 --   'Storyteller.Core.Branch') against real git. Seeds the scope's
@@ -514,18 +570,19 @@ instance Members '[Git, Fail] r => Core.MonadStore (Sem r) where
 --   forward across every dispatch via 'Core.runStoreTFrom' (rather than
 --   reloading fresh each time) — so a pending, uncommitted ambient-tree
 --   edit from one dispatch (e.g. one Runix 'FileSystem' tool call) is
---   still there for the next one on the same scope, and the remap table
---   accumulates across the whole scope's lifetime too, not just one
---   dispatch. Publishes the final head via 'setRef' whenever a dispatch
---   actually advanced it, and broadcasts via @updateReferences@ exactly
---   what the dispatch itself added to the remap table — the *delta*
---   against the table as it stood before, never the accumulated whole,
---   which would re-announce every earlier dispatch's renames again on
---   every dispatch that follows. When a broadcast did happen, the
---   branch's head is re-resolved from 'StoryStorage' afterward, since
---   that cascade can rewrite *this* branch's own ref a second time (e.g.
---   a tick between a merged run and the original head carrying a ref
---   into the merged range).
+--   still there for the next one on the same scope. Publishes the head
+--   via 'setRef' whenever a dispatch actually advanced it, then marks a
+--   'flushRemaps' boundary — a no-op inside a 'withStorage' transaction
+--   (whose own exit is the real boundary), a batched apply of everything
+--   the dispatch recorded when running bare over the eager root.
+--
+--   Head is re-resolved through the shared table at the *start* of every
+--   dispatch, not patched up after the fact: the only way it can be
+--   stale is a physical rewrite by some other scope's flush (bare eager
+--   mode — inside a transaction nothing is ever rewritten mid-flight),
+--   and any such rewrite is in the table. Only head needs this: a
+--   cascade rewrites parent links, never trees, so the scope's ambient
+--   tree — including pending, uncommitted edits — stays valid as-is.
 runBranchOpGit
   :: forall branch r a
   .  Members '[Git, StoryStorage, Fail] r
@@ -540,40 +597,13 @@ runBranchOpGit branch action = do
   evalState seed0 $ interpret
     (\case
         RunStorage comp -> do
-          scope@(h, _, tableBefore) <- get @Core.ScopeState
-          (result, scope'@(h', wt', table)) <- Core.runStoreTFrom scope comp
+          (h0, wt) <- get @Core.ScopeState
+          h <- coreHashOfTick <$> resolveTick (tickOfCoreHash h0)
+          (result, scope'@(h', _)) <- Core.runStoreTFrom (h, wt) comp
           put @Core.ScopeState scope'
-          -- Only what this dispatch itself added or redirected. The table
-          -- accumulates for the scope's whole lifetime (deliberately --
-          -- see 'Core.runStoreTFrom'), so gating or broadcasting on the
-          -- accumulated whole would re-announce every earlier dispatch's
-          -- renames -- and re-trigger the reload below -- on every
-          -- dispatch that follows, remap or not.
-          let newEntries = [ (o, n) | (o, n) <- Map.toList table
-                                    , Map.lookup o tableBefore /= Just n ]
-              mapping = [ (TickId (Core.unObjectHash o), TickId (Core.unObjectHash n))
-                        | (o, n) <- newEntries ]
-          -- Publish the ref whenever this dispatch actually advanced head
-          -- -- unconditionally, regardless of whether any remap happened.
           when (h' /= h) $ setRef branch (Just (TickId (Core.unObjectHash h')))
-          -- Only broadcast/reload when *this dispatch* produced a remap --
-          -- a plain append or edit with nothing to cascade has no reason
-          -- to distrust its own, already-correct 'scope''.
-          when (not (null newEntries)) $ do
-            updateReferences mapping
-            -- The cascade just broadcast may have rewritten *this*
-            -- branch's ref a second time -- re-resolve rather than trust
-            -- 'h'' itself. Only head needs re-reading: the cascade
-            -- rewrites parent links, never trees, so the scope's own
-            -- ambient tree -- including any pending, uncommitted edits
-            -- for files 'comp' never touched -- is exactly as valid for
-            -- the re-resolved head as it was for 'h''.
-            mB <- getBranch branch
-            case mB of
-              Just b' -> put @Core.ScopeState
-                (Core.ObjectHash (unTickId (branchHead b')), wt', table)
-              Nothing -> return ()
-          return (result, mapping)
+          flushRemaps
+          return result
     )
     (raiseUnder @(State Core.ScopeState) action)
 
@@ -627,19 +657,19 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       GetCwd ->
         return $ Right "/"
       ListFiles dir ->
-        Right . fst <$> runStorage @branch (FS.listChildren dir)
+        Right <$> runStorage @branch (FS.listChildren dir)
       FileExists path ->
-        Right . fst <$> runStorage @branch
+        Right <$> runStorage @branch
           ((||) <$> Ops.exists path <*> FS.isDirectory path)
       IsDirectory path ->
-        Right . fst <$> runStorage @branch (FS.isDirectory path)
+        Right <$> runStorage @branch (FS.isDirectory path)
       -- Working-tree paths carry a leading @/@, but glob patterns are
       -- written relative (@\"chapters/*.md\"@), so that leading slash is
       -- stripped before matching — only for the match, not for what's
       -- returned, so callers keep seeing the same path shape 'ListFiles'
       -- and friends already give them.
       Glob base pat ->
-        Right . filter (Glob.match (Glob.compile pat) . dropWhile (== '/')) . fst
+        Right . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
           <$> runStorage @branch (listAllUnder base)
 
     interpretFSRead
@@ -648,7 +678,7 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       -> Sem r' a'
     interpretFSRead = interpret $ \case
       ReadFile path ->
-        fst <$> runStorage @branch (do
+        runStorage @branch (do
           exists <- Ops.exists path
           isDir  <- FS.isDirectory path
           if isDir then return (Left (path <> ": is a directory"))
@@ -661,11 +691,11 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
       -> Sem r' a'
     interpretFSWrite = interpret $ \case
       WriteFile path content ->
-        Right . fst <$> runStorage @branch (FS.writeFile path content)
+        Right <$> runStorage @branch (FS.writeFile path content)
       CreateDirectory _recursive path ->
-        Right . fst <$> runStorage @branch (FS.createDirectory path)
+        Right <$> runStorage @branch (FS.createDirectory path)
       Remove recursive path ->
-        Right . fst <$> runStorage @branch (if recursive then FS.removeRecursive path else FS.remove path)
+        Right <$> runStorage @branch (if recursive then FS.removeRecursive path else FS.remove path)
 
 -- | Interpret 'BranchOp branch' and all three filesystem effects for a
 --   branch together — takes a 'Branch' obtained from 'StoryStorage' — the
@@ -702,55 +732,34 @@ runBranchAndFS name = runBranchOpGit @branch name . runStoryFSGit @branch name
 -- 'runStorage' dispatch per tick popped ('runBranchOpGit' carries the
 -- scope's state across those dispatches), 'inner' runs at the bottom as
 -- perfectly ordinary in-between 'Sem' code, and the whole tail is then
--- replayed in a single 'Core.StoreT' computation — one dispatch, so the
--- cross-branch cascade fires once with the full old->new mapping instead
--- of once per replayed tick (see 'replayBack').
-
--- | 'atGenericSeeded' with an empty seed -- the common case, and the only
---   one every pre-existing call site needs: no behaviour change from
---   before this had a seed parameter at all.
-atGeneric
-  :: forall branch r a
-  .  Members '[BranchOp branch, Git, Fail] r
-  => TickId -> Sem r a -> Sem r a
-atGeneric tid inner = fst <$> atGenericSeeded @branch Map.empty tid inner
+-- replayed in a single 'Core.StoreT' computation.
 
 -- | Move to @tid@'s position, run an arbitrary inner action there, then
 --   replay everything after it back onto whatever the action produced.
---   Descent pops one tick per 'runStorage' dispatch; the replay is a
---   single 'StoreT' dispatch (see 'replayBack') that hands the whole
---   old->new remap table to 'runBranchOpGit' at once, so the cross-branch
---   cascade fires exactly once for the entire tail.
---
---   @seed@ primes the replay's own remap table (via 'Core.logRemap') before
---   any of this branch's own popped ticks are re-stored -- so 'Core.store's
---   existing, generic ref-resolution (@resolveId@, see "Storage.Core") also
---   rewrites any of *this* branch's 'Core.tickRefs' that happen to point at
---   a hash some other branch's own rebase already remapped, exactly as if
---   that remap had happened in this same scope. This is how a connected
---   branch (e.g. a character's journal, holding cross-branch refs into a
---   scene -- see 'Storyteller.Writer.Agent.Tracker') gets its stale
---   cross-references fixed when the scene it refs is rebased: the scene's
---   own rebase produces a mapping, and replaying the journal branch's own
---   tail with that mapping seeded in (this function, called again with
---   @branch@ instantiated to the journal) is what actually rewrites them.
---   An empty seed (see 'atGeneric') makes this identical to before.
---
---   Returns the *full* resulting mapping -- @seed@ composed with whatever
---   new remaps this call's own replay produced -- so a caller chaining a
---   third branch off of this one's result has the complete picture, same
---   spirit as 'rewriteChain's own memo.
-atGenericSeeded
+--   Descent pops one tick per 'runStorage' dispatch — each publishes the
+--   wound-back head into the transaction's ref overlay, so any *other*
+--   scope 'inner' opens on this branch (an agent reading it by name)
+--   sees the branch at the wound-back position, exactly as "run this as
+--   if @tid@ were HEAD" promises. The replay is a single 'StoreT'
+--   dispatch whose renames land in the transaction's shared remap table
+--   as they happen; propagating them — to other branches' refs, to other
+--   open scopes, to clients — is entirely the transaction boundary's
+--   business now, so there is no seed to thread in and no mapping to
+--   hand back (both existed here once; see 'StoryStorage' for the
+--   machinery that made them unnecessary). @tid@ itself is resolved
+--   through that same table first, so an id from before an earlier
+--   rename in the same transaction still lands on the right tick.
+atGeneric
   :: forall branch r a
-  .  Members '[BranchOp branch, Git, Fail] r
-  => Map Core.ObjectHash Core.ObjectHash -> TickId -> Sem r a -> Sem r (a, Map Core.ObjectHash Core.ObjectHash)
-atGenericSeeded seed tid inner = goDown []
+  .  Member (BranchOp branch) r
+  => TickId -> Sem r a -> Sem r a
+atGeneric tid inner = do
+  target <- runStorage @branch (Core.resolveId (Core.ObjectHash (unTickId tid)))
+  goDown target []
   where
-    target = Core.ObjectHash (unTickId tid)
-
-    goDown :: [(Core.ObjectHash, Core.Tick)] -> Sem r (a, Map Core.ObjectHash Core.ObjectHash)
-    goDown poppedRev = do
-      (current, _) <- runStorage @branch Core.headHash
+    goDown :: Core.ObjectHash -> [(Core.ObjectHash, Core.Tick)] -> Sem r a
+    goDown target poppedRev = do
+      current <- runStorage @branch Core.headHash
       if current == target
         then do
           -- "As if @target@ were HEAD" includes the plain ambient file
@@ -764,27 +773,18 @@ atGenericSeeded seed tid inner = goDown []
           -- rebase do not survive it, exactly as with 'Core.syncTo'.
           _ <- runStorage @branch Core.reset
           a <- inner
-          newMapping <- replayBack poppedRev
+          -- One 'StoreT' dispatch for the whole tail: each 'store' builds
+          -- on the previous, each rename is logged as it happens, and the
+          -- dispatch's closing 'flushRemaps' boundary means a bare eager
+          -- caller still gets exactly one cascade for the entire tail.
+          _ <- runStorage @branch $
+            mapM_ (\(oldHash, t) -> Core.store t >>= Core.logRemap oldHash) poppedRev
           _ <- runStorage @branch Core.reset
-          return (a, Map.union newMapping seed)
+          return a
         else do
-          (t, _) <- runStorage @branch $ do
+          t <- runStorage @branch $ do
             cd <- lift (Core.readCommit current)
             case Core.commitParents cd of
               [] -> fail $ "atGeneric: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
               (_ : _) -> Core.drop
-          goDown ((current, t) : poppedRev)
-
-    -- One 'StoreT' dispatch for the whole tail: each 'store' builds on the
-    --   previous (its head advances via 'Core.putHead' inside the 'StateT'),
-    --   so 'runBranchOpGit' receives a single remap table covering every
-    --   replayed tick and runs the cross-branch cascade once with it --
-    --   rather than once per tick (O(N) cascades, O(N^2) remap entries).
-    --   @seed@ is folded in first, in the same dispatch, so 'Core.store's
-    --   ref-resolution sees it for every tick replayed here.
-    replayBack :: [(Core.ObjectHash, Core.Tick)] -> Sem r (Map Core.ObjectHash Core.ObjectHash)
-    replayBack popped = do
-      (_, tickIdMapping) <- runStorage @branch $ do
-        mapM_ (uncurry Core.logRemap) (Map.toList seed)
-        mapM_ (\(oldHash, t) -> Core.store t >>= \newHash -> Core.logRemap oldHash newHash) popped
-      return (Map.fromList [ (Core.ObjectHash (unTickId o), Core.ObjectHash (unTickId n)) | (o, n) <- tickIdMapping ])
+          goDown target ((current, t) : poppedRev)

@@ -24,10 +24,11 @@ import Storage.Core
 data MockState = MockState
   { msObjects :: Map T.Text StoreObject
   , msCommits :: Map T.Text CommitData
+  , msRemaps  :: Map ObjectHash ObjectHash
   }
 
 emptyMock :: MockState
-emptyMock = MockState Map.empty Map.empty
+emptyMock = MockState Map.empty Map.empty Map.empty
 
 newtype Mock a = Mock (StateT MockState (Either String) a)
   deriving (Functor, Applicative, Monad, MonadState MockState)
@@ -69,6 +70,12 @@ instance MonadStore Mock where
     case Map.lookup (unObjectHash h) m of
       Just cd -> return cd
       Nothing -> fail ("commit not found: " <> T.unpack (unObjectHash h))
+
+  -- The store owns the remap table (see 'MonadStore'); 'composeMapping'
+  -- is the required transitive closure, so a resolve is one lookup.
+  resolveHash h = gets (\s -> Map.findWithDefault h h (msRemaps s))
+  recordRemap old new =
+    modify (\s -> s { msRemaps = composeMapping (msRemaps s) [(old, new)] })
 
 runMockGit :: Mock a -> Either String a
 runMockGit (Mock m) = fst <$> runStateT m emptyMock

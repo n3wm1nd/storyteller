@@ -42,7 +42,7 @@ trackBranch
   -> (FilePath, FilePath)   -- ^ (source file on trackee, dest file on tracker)
   -> Sem r [TickId]
 trackBranch atomFilter (fromFile, toFile) = do
-  (trackeeTicks, _) <- runStorage @trackeeBranch $ do
+  trackeeTicks <- runStorage @trackeeBranch $ do
     hashes <- Core.follow [] $ \acc h _t -> (h : acc, True)
     mapM Tick.readTypesTick hashes
 
@@ -50,14 +50,14 @@ trackBranch atomFilter (fromFile, toFile) = do
   -- are 'Core.ObjectHash', not the 'TickId' this module (and
   -- 'dropUntilAfterLastSynced') deal in -- coerce at the one point they
   -- meet (same underlying 'Text', see "Storage.Tick").
-  (syncedRefs, _) <- runStorage @trackerBranch $
+  syncedRefs <- runStorage @trackerBranch $
     Core.follow Set.empty $ \acc _h t ->
       (foldr (Set.insert . coerceRef) acc (Core.tickRefs t), True)
 
   let contentTicks = filter ((/= Nothing) . tickParent) trackeeTicks
       newTicks     = dropUntilAfterLastSynced syncedRefs contentTicks
 
-  (kept, _) <- runStorage @trackeeBranch (catMaybes <$> mapM atomFilter newTicks)
+  kept <- runStorage @trackeeBranch (catMaybes <$> mapM atomFilter newTicks)
   mapM (copyAtom @trackerBranch fromFile toFile) kept
   where
     coerceRef (Core.ObjectHash h) = TickId h
@@ -85,5 +85,5 @@ copyAtom
 copyAtom fromFile toFile tick = do
   let content = contentFor fromFile tick
       ref     = Core.ObjectHash (unTickId (tickId tick))
-  (newHash, _) <- runStorage @trackerBranch (Ops.addAtomWithRefs [ref] toFile content)
+  newHash <- runStorage @trackerBranch (Ops.addAtomWithRefs [ref] toFile content)
   return (TickId (Core.unObjectHash newHash))

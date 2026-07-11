@@ -21,12 +21,10 @@
 module Storyteller.Core.Branch
   ( BranchOp(..)
   , runStorage
-  , queryStorage
   ) where
 
 import Polysemy
 
-import Storyteller.Core.Types (TickId)
 import qualified Storage.Core as Core
 
 -- | A single first-order effect boundary per branch scope: the
@@ -39,15 +37,16 @@ import qualified Storage.Core as Core
 --   plain monadic bind per level rather than one Polysemy effect
 --   interpretation per level.
 --
---   Always returns the old->new id mapping alongside the result — the
---   renames *this* computation itself produced (empty when it changed
---   nothing), so unlike the old @RunStorage@\/@RunStorageEdit@ split this
---   replaces, there's no separate "editing" mode to opt into: a caller
---   that doesn't need the mapping just ignores it, and the interpreter
---   (see 'Storyteller.Core.Git.runBranchOpGit') broadcasts exactly that
---   same delta via @updateReferences@ whenever it's non-empty.
+--   This used to also return the old->new id mapping the computation
+--   produced, for the caller (or the interpreter) to propagate by hand.
+--   It doesn't anymore, because nothing needs propagating by hand: every
+--   rename a computation makes lands in the transaction's shared remap
+--   table as it happens ('Storage.Core.logRemap' bottoms out in
+--   'Storyteller.Core.Storage.updateReferences'), where every reader
+--   already resolves against it and the transaction boundary applies it —
+--   see 'Storyteller.Core.Storage.StoryStorage'.
 data BranchOp (branch :: k) m a where
-  RunStorage :: (forall n. Core.StoreM n => Core.StoreT n a) -> BranchOp branch m (a, [(TickId, TickId)])
+  RunStorage :: (forall n. Core.StoreM n => Core.StoreT n a) -> BranchOp branch m a
 
 -- | Run a "Storage.Core" computation against the named branch. The whole
 --   computation — however many nested 'Core.at' calls it makes — is
@@ -55,19 +54,5 @@ data BranchOp (branch :: k) m a where
 runStorage
   :: forall branch r a
   .  Member (BranchOp branch) r
-  => (forall n. Core.StoreM n => Core.StoreT n a) -> Sem r (a, [(TickId, TickId)])
-runStorage comp = send @(BranchOp branch) (RunStorage comp)
-
--- | 'runStorage', for callers who only want the result and have no use for
---   the rename mapping — which in practice means a computation that
---   doesn't call 'Storage.Core.store'\/'Storage.Ops.editAtomAt'\/etc. at
---   all, since anything that never mints or rebases a tick always comes
---   back with an empty mapping anyway. Doesn't (and can't, short of a
---   separate read-only fragment of 'Core.StoreT') stop a computation from
---   writing here; it only relieves the caller of the @fst <$>@ they'd
---   otherwise write at every one of these call sites.
-queryStorage
-  :: forall branch r a
-  .  Member (BranchOp branch) r
   => (forall n. Core.StoreM n => Core.StoreT n a) -> Sem r a
-queryStorage comp = fst <$> runStorage @branch comp
+runStorage comp = send @(BranchOp branch) (RunStorage comp)

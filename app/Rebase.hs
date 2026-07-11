@@ -34,7 +34,7 @@ import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Runtime (Main, runInfrastructure, runStoryStorageGit)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Types (BranchName(..), TickId(..))
+import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv)
 
 main :: IO ()
@@ -55,8 +55,7 @@ main = do
 
   case result of
     Left err      -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
-    Right mapping ->
-      TIO.putStrLn $ "Rebase complete. " <> T.pack (show (length mapping)) <> " tick(s) remapped."
+    Right ()      -> TIO.putStrLn "Rebase complete."
 
 rebaseAction
   :: Members '[ FileSystem      (BranchTag Main)
@@ -65,5 +64,5 @@ rebaseAction
               , BranchOp Main
               , StoryStorage
               , Logging, Fail ] r
-  => Sem r [(TickId, TickId)]
-rebaseAction = snd <$> runStorage @Main Ops.commitWorktree
+  => Sem r ()
+rebaseAction = runStorage @Main Ops.commitWorktree

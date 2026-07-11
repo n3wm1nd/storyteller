@@ -24,7 +24,7 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
-import Storyteller.Core.Git (BranchOp, runStorage, queryStorage)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -57,7 +57,7 @@ recordPresence
 recordPresence file character@(Character branch) event =
   getBranch branch >>= \case
     Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName branch))
-    Just _  -> fst <$> runStorage @branch (do
+    Just _  -> runStorage @branch (do
       mTrailing <- trailingPresenceFor file character
       priorActive <- case mTrailing of
         Nothing  -> presentOn file character
@@ -95,7 +95,7 @@ activeCharactersFor
   .  Members '[BranchOp branch, Fail] r
   => FilePath -> Sem r [Character]
 activeCharactersFor file = do
-  ticks <- queryStorage @branch (Tick.fileTicksOf file)
+  ticks <- runStorage @branch (Tick.fileTicksOf file)
   pure (Set.toList (activeCharacters ticks))
 
 -- | Is @character@ currently present on @file@ -- a universal, composable

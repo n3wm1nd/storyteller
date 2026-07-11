@@ -33,7 +33,7 @@ import Storyteller.Writer.Presence (recordPresence, activeCharactersFor, present
 -- "Storage.Tick"-based counterpart of @followChain@\/@fileTicksOf@ used
 -- throughout this spec.
 allTicks :: Members '[BranchOp Story] r => Sem r [Tick]
-allTicks = fst <$> runStorage @Story (do
+allTicks = runStorage @Story (do
   hashes <- Core.follow [] (\acc h _t -> (h : acc, True))
   mapM Tick.readTypesTick hashes)
 
@@ -78,7 +78,7 @@ writeAtom
   => FilePath -> Text -> Sem r TickId
 writeAtom path content = do
   appendFile @(BranchTag Story) path (TE.encodeUtf8 content)
-  (h, _) <- runStorage @Story (Tick.storeAs (Atom path content))
+  h <- runStorage @Story (Tick.storeAs (Atom path content))
   return (TickId (Core.unObjectHash h))
 
 -- ---------------------------------------------------------------------------
@@ -122,10 +122,10 @@ spec = do
       -- presence tick, not two, and not zero (the character is genuinely
       -- meant to end up active).
       let result = runStory True $ do
-            ticksBefore <- fst <$> runStorage @Story (Tick.fileTicksOf "scene.md")
+            ticksBefore <- runStorage @Story (Tick.fileTicksOf "scene.md")
             _           <- recordPresence @Story "scene.md" alice Enter
             mtid2       <- recordPresence @Story "scene.md" alice Enter
-            ticksAfter  <- fst <$> runStorage @Story (Tick.fileTicksOf "scene.md")
+            ticksAfter  <- runStorage @Story (Tick.fileTicksOf "scene.md")
             return (mtid2, length ticksAfter - length ticksBefore)
       case result of
         Right (Just _, 1) -> return ()
@@ -140,7 +140,7 @@ spec = do
       let result = runStory True $ do
             _      <- recordPresence @Story "scene.md" alice Enter
             mtl    <- recordPresence @Story "scene.md" alice Leave
-            ticks  <- fst <$> runStorage @Story (Tick.fileTicksOf "scene.md")
+            ticks  <- runStorage @Story (Tick.fileTicksOf "scene.md")
             return (mtl, ticks)
       case result of
         Right (Nothing, ticks) -> ticks `shouldBe` []
@@ -160,7 +160,7 @@ spec = do
             _      <- recordPresence @Story "scene.md" alice Enter
             mtl    <- recordPresence @Story "scene.md" alice Leave
             mtid2  <- recordPresence @Story "scene.md" alice Enter
-            ticks  <- fst <$> runStorage @Story (Tick.fileTicksOf "scene.md")
+            ticks  <- runStorage @Story (Tick.fileTicksOf "scene.md")
             return (mtl, mtid2, [ ft | ft <- ticks, Tick.ftKind ft == "presence" ])
       case result of
         Right (Nothing, Just tid2, [presenceTick]) -> do
@@ -217,7 +217,7 @@ spec = do
             _     <- recordPresence @Story "scene.md" alice Enter
             mtb   <- recordPresence @Story "scene.md" bob   Enter
             mtl   <- recordPresence @Story "scene.md" alice Leave
-            ticks <- fst <$> runStorage @Story (Tick.fileTicksOf "scene.md")
+            ticks <- runStorage @Story (Tick.fileTicksOf "scene.md")
             let presenceTicks = [ ft | ft <- ticks, Tick.ftKind ft == "presence" ]
             return (mtb, mtl, map (lookup "character" . Tick.ftFields) presenceTicks)
       case result of
@@ -227,19 +227,19 @@ spec = do
   describe "presentOn" $ do
 
     it "is False on a file nobody has entered" $
-      runStory True (fst <$> runStorage @Story (presentOn "scene.md" alice))
+      runStory True (runStorage @Story (presentOn "scene.md" alice))
         `shouldBe` Right False
 
     it "is True after Enter" $
       runStory True (do
         _ <- recordPresence @Story "scene.md" alice Enter
-        fst <$> runStorage @Story (presentOn "scene.md" alice))
+        runStorage @Story (presentOn "scene.md" alice))
         `shouldBe` Right True
 
     it "does not leak across files -- entering in one file leaves another untouched" $
       runStory True (do
         _ <- recordPresence @Story "chapters/ch1.md" alice Enter
-        fst <$> runStorage @Story (presentOn "chapters/ch2.md" alice))
+        runStorage @Story (presentOn "chapters/ch2.md" alice))
         `shouldBe` Right False
 
   describe "presentAt" $ do
@@ -249,7 +249,7 @@ spec = do
             beforeTid <- writeAtom "scene.md" "absent."
             _         <- recordPresence @Story "scene.md" alice Enter
             afterTid  <- writeAtom "scene.md" "\n\npresent."
-            fst <$> runStorage @Story
+            runStorage @Story
               ( (,) <$> presentAt beforeTid "scene.md" alice
                     <*> presentAt afterTid  "scene.md" alice )
       result `shouldBe` Right (False, True)
@@ -258,5 +258,5 @@ spec = do
       let result = runStory True $ do
             _   <- recordPresence @Story "chapters/ch1.md" alice Enter
             tid <- writeAtom "chapters/ch2.md" "elsewhere."
-            fst <$> runStorage @Story (presentAt tid "chapters/ch2.md" alice)
+            runStorage @Story (presentAt tid "chapters/ch2.md" alice)
       result `shouldBe` Right False

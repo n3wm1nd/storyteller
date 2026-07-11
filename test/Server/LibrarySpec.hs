@@ -87,7 +87,7 @@ spec = describe "libraryTree" $ do
   it "trusts a supplied cache instead of recomputing an unchanged chapter" $ do
     let result = withLibraryBranch "story" $ do
           chapterCreate "chapters/ch1.md" "Chapter One"
-          (afterCh1, _) <- runStorage @Main Core.headHash
+          afterCh1 <- runStorage @Main Core.headHash
           chapterCreate "chapters/ch2.md" "Chapter Two"
           let wrongCache = [(afterCh1, Map.singleton "chapters/ch1.md" "WRONG\n")]
           (tree, _, _) <- libraryTree wrongCache

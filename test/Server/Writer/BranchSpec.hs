@@ -102,13 +102,13 @@ spec runner = describe "uploadFiles" $ do
     let result = withBranch_ runner (BranchName "test") $ do
           _       <- uploadFiles [("portrait.png", bytes)]
           content <- readFile @(BranchTag Main) "portrait.png"
-          (tracked, _) <- runStorage @Main (Ops.hasAnyAtom "portrait.png")
+          tracked <- runStorage @Main (Ops.hasAnyAtom "portrait.png")
           return (content, tracked)
     result `shouldBe` Right (bytes, False)
 
   it "a plain-text upload is also not atom-tracked -- it stays an opaque asset until explicitly ingested" $ do
     let result = withBranch_ runner (BranchName "test") $ do
           _ <- uploadFiles [("notes.md", "hello")]
-          (tracked, _) <- runStorage @Main (Ops.hasAnyAtom "notes.md")
+          tracked <- runStorage @Main (Ops.hasAnyAtom "notes.md")
           return tracked
     result `shouldBe` Right False

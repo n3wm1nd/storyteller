@@ -43,10 +43,9 @@ import Runix.Git
 import Storyteller.Core.Types (BranchName(..), TickId(..), branchHead)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch, setRef)
 import Storyteller.Core.Branch (BranchOp, runStorage)
-import qualified Data.Map.Strict as Map
 
 import Storyteller.Core.Git
-  ( atGeneric, atGenericSeeded, runBranchOpGit, runStoryStorageGit, storyRefPrefix, withStorage )
+  ( atGeneric, runBranchOpGit, runStoryStorageGit, storyRefPrefix, withStorage )
 import qualified Storage.Core as Core
 
 -- | Local phantom branch tag. 'atGeneric'/'runBranchOpGit'/'runStorage' are
@@ -97,9 +96,9 @@ buildChain
   => Sem r (Core.ObjectHash, Core.ObjectHash)
 buildChain = do
   _ <- createBranch mainBranch
-  (a1, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "A\n")))
-  _ <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "B\n")))
-  (a3, _) <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "C\n")))
+  a1 <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "A\n")))
+  _  <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "B\n")))
+  a3 <- runBranchOpGit @Main mainBranch (runStorage @Main (Core.store (Core.Atom [] "a.md" [] "C\n")))
   return (a1, a3)
 
 -- | Descend from head a3 to a1, run @inner@ there, replay a2\/a3 back --
@@ -173,17 +172,16 @@ journalBranch = BranchName "journal"
 
 -- | Rebase 'mainBranch' from a3 to a1 with 'markerInner' (so a3 really does
 --   get a new hash, not just an identity replay -- see its own Haddock),
---   producing main's own old->new mapping; then build a separate
---   'journalBranch' with a tick whose cross-branch ref points at the
---   *original* a3, and replay that branch's own tail (from its own first
---   tick) seeded with main's mapping -- the same two-branch shape
---   'Server.Writer.File.Dispatch's multi-branch 'At' case runs in
---   production, just with 'atGenericSeeded' called directly instead of
---   through 'runBranchAndFS' for a dynamically-named branch. Returns the
---   journal tick's ref after replay, and what a3 became, so the test can
---   check they now agree.
-runCrossBranchSeededRemap :: Either String (Core.ObjectHash, Core.ObjectHash)
-runCrossBranchSeededRemap =
+--   with a separate 'journalBranch' already holding a tick whose
+--   cross-branch ref points at the *original* a3. Nothing touches the
+--   journal branch during or after the rebase -- no seeded fixup replay,
+--   no per-branch handling of any kind: the boundary flush's cascade alone
+--   is what must rewrite its ref (this branch shape used to need
+--   @atGenericSeeded@ + an explicit replay per connected branch). Returns
+--   the journal tick's ref afterwards, and main's final head (= what a3
+--   became, the deepest replayed tick), so the test can check they agree.
+runCrossBranchRemap :: Either String (Core.ObjectHash, Core.ObjectHash)
+runCrossBranchRemap =
   run
   . runFail
   . evalState emptyGitState
@@ -195,22 +193,20 @@ runCrossBranchSeededRemap =
   $ do
     (target, origA3) <- buildChain
     _ <- createBranch journalBranch
-    (j1, _) <- runBranchOpGit @Main journalBranch (runStorage @Main (Core.store (Core.NonAtom [] "type:note\nj1")))
+    _ <- runBranchOpGit @Main journalBranch (runStorage @Main (Core.store (Core.NonAtom [] "type:note\nj1")))
     _ <- runBranchOpGit @Main journalBranch
            (runStorage @Main (Core.store (Core.NonAtom [origA3] "type:note\nabout scene's a3")))
-    (_, mainMapping) <- runBranchOpGit @Main mainBranch $
-      atGenericSeeded @Main mempty (TickId (Core.unObjectHash target)) markerInner
-    _ <- runBranchOpGit @Main journalBranch $
-      atGenericSeeded @Main mainMapping (TickId (Core.unObjectHash j1)) (pure ())
+    _ <- runBranchOpGit @Main mainBranch $
+      atGeneric @Main (TickId (Core.unObjectHash target)) markerInner
+    newA3 <- getBranch mainBranch >>= \case
+      Nothing -> fail "main branch has no head"
+      Just b  -> return (Core.ObjectHash (unTickId (branchHead b)))
     journalHead <- (branchHead <$>) <$> getBranch journalBranch
     case journalHead of
       Nothing -> fail "journal branch has no head"
       Just h  -> do
-        (tick, _) <- runBranchOpGit @Main journalBranch $ runStorage @Main $
+        tick <- runBranchOpGit @Main journalBranch $ runStorage @Main $
           lift (Core.readTick (Core.ObjectHash (unTickId h)))
-        newA3 <- case Map.lookup origA3 mainMapping of
-          Nothing -> fail "main's own rebase produced no mapping for a3"
-          Just n  -> return n
         case Core.tickRefs tick of
           [refId] -> return (refId, newA3)
           other   -> fail ("expected exactly one ref, got " <> show (length other))
@@ -295,8 +291,8 @@ runInnerAmbientRead =
     (target, _origHead) <- buildChain
     runBranchOpGit @Main mainBranch $
       atGeneric @Main (TickId (Core.unObjectHash target)) $ do
-        (ambient, _)   <- runStorage @Main (Core.readFile "a.md")
-        (committed, _) <- runStorage @Main (Core.inWorktree (Core.readFile "a.md"))
+        ambient <- runStorage @Main (Core.readFile "a.md")
+        committed <- runStorage @Main (Core.inWorktree (Core.readFile "a.md"))
         return (ambient, committed)
 
 spec :: Spec
@@ -362,10 +358,10 @@ spec = describe "atGeneric" $ do
   -- The gap this closes: a connected branch's cross-branch ref (e.g. a
   -- character journal atom's ref into the scene, see
   -- 'Storyteller.Writer.Agent.Tracker') used to go stale the moment the
-  -- scene it points at got rebased, because that branch's own replay never
-  -- ran with the scene's remap table in scope. 'atGenericSeeded' fixes it
-  -- by threading one branch's own resulting mapping into another's replay.
-  it "atGenericSeeded fixes a connected branch's stale cross-branch ref after a sibling branch's rebase" $
-    case runCrossBranchSeededRemap of
+  -- scene it points at got rebased, unless that branch was explicitly
+  -- replayed with the scene's mapping seeded in. Now the boundary flush's
+  -- cascade covers every branch, whether anything ever opened it or not.
+  it "the boundary cascade fixes a connected branch's cross-branch ref with no per-branch handling at all" $
+    case runCrossBranchRemap of
       Left err -> expectationFailure err
       Right (journalRef, newA3) -> journalRef `shouldBe` newA3

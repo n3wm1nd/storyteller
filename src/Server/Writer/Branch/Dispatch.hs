@@ -29,16 +29,15 @@ module Server.Writer.Branch.Dispatch
   ( runCommand
   ) where
 
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Polysemy (Sem)
 
 import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
 import Server.Writer.Branch (trackFiles, charGen)
 import Server.Writer.Branch.Protocol
-import Server.Writer.File.Dispatch (runConnectedBranch)
+import Server.Writer.File.Dispatch (atBranches)
 import Server.Core.Run (SessionEffects)
-import Storyteller.Core.Git (atGenericSeeded)
+import Storyteller.Core.Git (atGeneric)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 
 runCommand
@@ -70,12 +69,10 @@ runCommand branch cmd =
     -- Rebase 'inner' at 'tid': wind the chain back, run it against that
     -- tick's filesystem snapshot, then replay the tail on top of whatever it
     -- produced, same shape as 'Server.Writer.File.Dispatch's own 'At' case
-    -- (including 'branches': connected branches replayed with the mapping
-    -- this rebase produces seeded in -- see 'runConnectedBranch').
-    At _mid tid inner branches -> do
-      (events, mainMapping) <- atGenericSeeded @Main Map.empty (TickId tid) (runCommand branch inner)
-      mapM_ (runConnectedBranch mainMapping) branches
-      return events
+    -- (including 'branches': connected branches wound to their chosen
+    -- points around the whole thing -- see 'atBranches').
+    At _mid tid inner branches ->
+      atBranches branches $ atGeneric @Main (TickId tid) (runCommand branch inner)
 
 -- ---------------------------------------------------------------------------
 -- Helpers

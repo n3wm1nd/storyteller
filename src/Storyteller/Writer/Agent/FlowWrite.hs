@@ -55,7 +55,7 @@ flowWriteAgent
   -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
   -> Sem r ([TickId], Prose)
 flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
-  (allTicks, _) <- runStorage @branch (fileTicksOf path)
+  allTicks <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0

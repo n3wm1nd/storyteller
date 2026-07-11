@@ -98,11 +98,11 @@ runScope act =
 --   ambient-only write, then a read-back of that write.
 remapThenPendingWrite :: Members '[BranchOp M, Fail] r => Sem r Bool
 remapThenPendingWrite = do
-  (a1, _) <- runStorage @M (Core.store (Core.Atom [] "a.md" [] "A\n"))
+  a1 <- runStorage @M (Core.store (Core.Atom [] "a.md" [] "A\n"))
   _       <- runStorage @M (Core.store (Core.Atom [] "a.md" [] "B\n"))
   _       <- runStorage @M (Ops.editAtomAt a1 "A2\n")
   _       <- runStorage @M (Core.writeFile "pending.md" "draft")
-  (ex, _) <- runStorage @M (Ops.exists "pending.md")
+  ex <- runStorage @M (Ops.exists "pending.md")
   return ex
 
 spec :: Spec
@@ -112,7 +112,7 @@ spec = describe "runBranchOpGit: scope state across dispatches" $ do
     let result = runScope $ do
           _       <- runStorage @M (Core.store (Core.Atom [] "a.md" [] "A\n"))
           _       <- runStorage @M (Core.writeFile "pending.md" "draft")
-          (ex, _) <- runStorage @M (Ops.exists "pending.md")
+          ex <- runStorage @M (Ops.exists "pending.md")
           return ex
     fmap fst result `shouldBe` Right True
 

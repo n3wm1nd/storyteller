@@ -59,7 +59,7 @@ hideBinaryFiles
   => Sem r a -> Sem r a
 hideBinaryFiles action = do
   paths  <- listAllFiles @project "/"
-  binary <- filterM (\p -> not . fst <$> runStorage @branch (Ops.hasAnyAtom p)) paths
+  binary <- filterM (\p -> not <$> runStorage @branch (Ops.hasAnyAtom p)) paths
   let resolved = Set.fromList (map (Path.resolveRelative "/") binary)
       filt = PathFilter
         { shouldInclude = \p -> not (Set.member p resolved)

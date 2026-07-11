@@ -24,29 +24,27 @@
 -- FileError push rather than ending the connection.
 module Server.Writer.File.Dispatch
   ( runCommand
-  , runConnectedBranch
+  , atBranches
   ) where
 
-import Control.Monad (void)
-import qualified Data.Map.Strict as Map
-import Polysemy (Member, Sem)
+import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
 import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
 import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
-import qualified Storage.Core as Core
 import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Runtime (Main)
-import Storyteller.Core.Git (atGenericSeeded, runBranchAndFS)
+import Storyteller.Core.Git (atGeneric, runBranchAndFS)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 -- | Phantom tag for opening one connected branch (a character's journal —
---   see 'AtBranch') at a time, dynamically. Only ever used one branch at a
---   time, sequentially (see 'runConnectedBranch'), so a single shared tag
---   is fine — same role 'Server.Writer.Branch.CharBranch' plays there.
+--   see 'AtBranch') at a time, dynamically. The scopes 'atBranches' opens
+--   nest, but each 'atGeneric'\/'runStorage' call is lexically inside
+--   exactly one 'runBranchAndFS' layer, so a single shared tag is fine —
+--   same role 'Server.Writer.Branch.CharBranch' plays there.
 data ConnectedBranch
 
 runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r [FileEvent]
@@ -128,36 +126,39 @@ runCommand path cmd = case cmd of
 
   -- Rebase 'inner' at 'tid': wind the chain back, run it against that
   -- tick's filesystem snapshot, then replay the tail on top of whatever it
-  -- produced. 'atGenericSeeded' (unseeded here — 'Map.empty' — for the
-  -- main branch, which is never itself a "connected" branch relative to
-  -- anything) is the one operation still built on generic recursion rather
-  -- than a single closed-form "Storage.Core" computation, since 'inner' can
-  -- recurse into arbitrary Writer commands (LLM calls, other effects) — see
-  -- 'Storyteller.Core.Git.atGenericSeeded'. Each of its own navigation
-  -- steps is its own dispatch, so each already broadcasts its own remap
-  -- entry as it goes — nothing left to do for the main branch itself once
-  -- it returns.
+  -- produced. 'atGeneric' is the one operation still built on generic
+  -- recursion rather than a single closed-form "Storage.Core" computation,
+  -- since 'inner' can recurse into arbitrary Writer commands (LLM calls,
+  -- other effects) — see 'Storyteller.Core.Git.atGeneric'.
   --
   -- 'branches' (see 'AtBranch') are connected branches -- e.g. an active
   -- character's journal -- the client has picked its own explicit position
   -- for (there is no reliable way to infer one server-side: story time and
-  -- a character branch's own position aren't in lock-step). Each is wound
-  -- back and replayed in turn, seeded with the mapping the main branch's
-  -- own rebase just produced, so any of that branch's cross-branch refs
-  -- (see 'Storyteller.Writer.Agent.Tracker') into the now-rebased region
-  -- get corrected as its own tail replays — no inner command runs there,
-  -- since there's nothing else to do.
-  At _mid tid inner branches -> do
-    (events, mainMapping) <- atGenericSeeded @Main Map.empty (TickId tid) (runCommand path inner)
-    mapM_ (runConnectedBranch mainMapping) branches
-    return events
+  -- a character branch's own position aren't in lock-step). They are wound
+  -- back *around* the main rebase — see 'atBranches' — so 'inner' runs in
+  -- a world where every chosen branch, opened or not, sits at its chosen
+  -- point.
+  At _mid tid inner branches ->
+    atBranches branches $ atGeneric @Main (TickId tid) (runCommand path inner)
 
--- | Wind back and replay one connected branch (see 'AtBranch') at its own
---   given position, seeded with @mainMapping@ so any of its own
---   cross-branch refs into the rebase that just happened get fixed up.
---   Exported for 'Server.Writer.Branch.Dispatch's own 'At' case, which needs
---   exactly the same connected-branch handling.
-runConnectedBranch :: SessionEffects r => Map.Map Core.ObjectHash Core.ObjectHash -> AtBranch -> Sem r ()
-runConnectedBranch mainMapping (AtBranch name tid) =
-  void $ runBranchAndFS @ConnectedBranch (BranchName name)
-       $ atGenericSeeded @ConnectedBranch mainMapping (TickId tid) (pure ())
+-- | Run @act@ with every listed connected branch (see 'AtBranch') wound
+--   back to its user-chosen position: each is wound down *before* @act@
+--   runs and its tail replayed after @act@ returns, nesting around the
+--   main branch's own rebase — so an agent @act@ invokes that opens one of
+--   these branches by name sees it at the chosen point (the wound-back
+--   head is visible through the transaction's ref overlay), not at its
+--   final head. The branch needn't be "open" anywhere: a fresh scope is
+--   entered here per branch, by name.
+--
+--   Cross-branch ref fixup is no concern of this function's (it used to
+--   be — a seeded fixup replay per listed branch): every rename any of
+--   these replays records lands in the transaction's shared remap table,
+--   and the transaction boundary applies the lot to *all* branches,
+--   listed here or not. Exported for 'Server.Writer.Branch.Dispatch's own
+--   'At' case, which needs exactly the same handling.
+atBranches :: SessionEffects r => [AtBranch] -> Sem r a -> Sem r a
+atBranches [] act = act
+atBranches (AtBranch name tid : rest) act =
+  runBranchAndFS @ConnectedBranch (BranchName name) $
+    atGeneric @ConnectedBranch (TickId tid) $
+      raise $ raise $ raise $ raise $ atBranches rest act
