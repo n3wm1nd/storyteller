@@ -60,12 +60,64 @@ import { basenameNoExt } from "@/lib/utils";
 
 const DEFAULT_FILTER: ContextFilter = { tags: [] };
 
-function collectLeaves(nodes: LoreNode[], acc: LoreNode[]): LoreNode[] {
+// Flatten a lore tree into its leaves, depth-first — used both for card
+// grouping below and by mention-autocomplete.tsx, which wants a flat,
+// searchable list rather than the folder tree.
+export function flattenLore(nodes: LoreNode[], acc: LoreNode[] = []): LoreNode[] {
   for (const n of nodes) {
-    if (n.children.length > 0) collectLeaves(n.children, acc);
+    if (n.children.length > 0) flattenLore(n.children, acc);
     else acc.push(n);
   }
   return acc;
+}
+
+// This branch's live codex tree, via its own /lore/{branch} connection —
+// owned locally (connect on mount, reconnect on `branch` change, close on
+// unmount) rather than a global serverCacheStore singleton, since several
+// callers (the Codex tab, one per expanded character card, and the
+// composer's mention search) can all want a different branch's tree at
+// once. Exported so mention-autocomplete.tsx can reuse the exact same
+// connection lifecycle instead of forking a second copy.
+export function useLoreTree(branch: string | null): LoreNode[] {
+  const [loreTree, setLoreTree] = useState<LoreNode[]>([]);
+
+  useEffect(() => {
+    if (!branch) { setLoreTree([]); return; }
+    const connLabel = `lore:${branch}`;
+    setConnStatus(connLabel, "connecting");
+    setLoreTree([]);
+
+    const conn = loreConn(branch);
+    conn.onStatus((s) => {
+      if (s !== "connected") setConnStatus(connLabel, "connecting");
+    });
+    conn.subscribe((evt) => {
+      bumpActivity(connLabel);
+      if (evt.type === "lore.tree") {
+        setLoreTree(evt.nodes);
+        setConnStatus(connLabel, "connected");
+      } else if (evt.type === "error") {
+        setError(evt.message);
+      }
+    });
+
+    (async () => {
+      try {
+        await conn.connect();
+        setConnStatus(connLabel, "connected");
+      } catch (err) {
+        setConnStatus(connLabel, "error");
+        setError(String(err));
+      }
+    })();
+
+    return () => {
+      conn.close();
+      removeConn(connLabel);
+    };
+  }, [branch]);
+
+  return loreTree;
 }
 
 interface LoreGroup {
@@ -81,7 +133,7 @@ function groupByTopFolder(tree: LoreNode[]): LoreGroup[] {
   const groups: LoreGroup[] = [];
   const other: LoreNode[] = [];
   for (const node of tree) {
-    if (node.children.length > 0) groups.push({ label: node.name, entries: collectLeaves(node.children, []) });
+    if (node.children.length > 0) groups.push({ label: node.name, entries: flattenLore(node.children) });
     else other.push(node);
   }
   groups.sort((a, b) => a.label.localeCompare(b.label));
@@ -133,7 +185,7 @@ export function LoreSelector({ branch, sourceId, compact }: {
   sourceId: string;
   compact?: boolean;
 }) {
-  const [loreTree, setLoreTree] = useState<LoreNode[]>([]);
+  const loreTree = useLoreTree(branch);
   const filterKey = branch ? contextFilterKey(branch, sourceId) : null;
   const filter = useSettings((s) => (filterKey ? s.contextFilters[filterKey] : undefined) ?? DEFAULT_FILTER);
   const setContextFilter = useSettings((s) => s.setContextFilter);
@@ -146,43 +198,6 @@ export function LoreSelector({ branch, sourceId, compact }: {
       slots: [{ label: "lore-selector", mode: "on-demand", layout: toContextLayout(f) }],
     });
   }
-
-  // Candidate list — this component's own /lore/{branch} connection.
-  useEffect(() => {
-    if (!branch) { setLoreTree([]); return; }
-    const connLabel = `lore:${branch}`;
-    setConnStatus(connLabel, "connecting");
-    setLoreTree([]);
-
-    const conn = loreConn(branch);
-    conn.onStatus((s) => {
-      if (s !== "connected") setConnStatus(connLabel, "connecting");
-    });
-    conn.subscribe((evt) => {
-      bumpActivity(connLabel);
-      if (evt.type === "lore.tree") {
-        setLoreTree(evt.nodes);
-        setConnStatus(connLabel, "connected");
-      } else if (evt.type === "error") {
-        setError(evt.message);
-      }
-    });
-
-    (async () => {
-      try {
-        await conn.connect();
-        setConnStatus(connLabel, "connected");
-      } catch (err) {
-        setConnStatus(connLabel, "error");
-        setError(String(err));
-      }
-    })();
-
-    return () => {
-      conn.close();
-      removeConn(connLabel);
-    };
-  }, [branch]);
 
   // Assignment — this component's own context.preview connection.
   useEffect(() => {

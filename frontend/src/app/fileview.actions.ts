@@ -14,6 +14,7 @@ import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview }
 import { tickChain, activeCharacterBranches } from "@/lib/utils";
 import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
 import { WRITER_STORY_SOURCE_ID, CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
+import { resolveMentions } from "@/lib/mentions";
 
 export async function openFile(path: string): Promise<void> {
   const { activeBranch, openFiles } = getServerCache();
@@ -317,9 +318,18 @@ function activeCharacterLayouts(path: string): Record<string, PickerRule[]> {
 
 export function chatWrite(path: string, text: string) {
   const context = buildContextItems(path);
-  const contextLayout = writerContextLayout();
+  const { cleanText, paths } = resolveMentions(text);
+  const baseLayout = writerContextLayout();
+  // An empty base layout already means "show everything" — a mention adds
+  // nothing there. Only a curated (non-empty) layout needs the mention
+  // force-included, prepended so it claims ahead of whatever the curated
+  // layout would otherwise do (first-match-wins, see
+  // Storyteller.Writer.Agent.ContextFilter.classifyPath).
+  const contextLayout = baseLayout.length === 0
+    ? []
+    : [...paths.map((p) => ({ pattern: p, bucket: 1 })), ...baseLayout];
   const characterLayouts = activeCharacterLayouts(path);
-  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text, context, contextLayout, flowTid, characterLayouts }));
+  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text: cleanText, context, contextLayout, flowTid, characterLayouts }));
 }
 
 export function chatFix(path: string, text: string) {

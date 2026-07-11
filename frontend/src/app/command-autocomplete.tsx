@@ -1,15 +1,27 @@
 "use client";
 
-// Drives the "/command @param=value" autocomplete popup for InputBar's
-// textarea (fileview.tsx). Recomputes suggestions from the textarea's
-// actual caret position via commandSuggestions (lib/commands.ts) — not just
-// the trailing text — so completion still works after the caret has moved
-// back into an earlier token.
-import { useEffect, useRef, useState } from "react";
+// Drives InputBar's suggestion popups (fileview.tsx): "/command @param=value"
+// completion here, "@mention" completion in mention-autocomplete.tsx — both
+// thin wrappers over the same cursor/accept/dismiss/arrow-key machinery,
+// parameterized only by which function turns (text, cursor) into
+// Suggestion[]. Recomputes from the textarea's actual caret position, not
+// just the trailing text, so completion still works after the caret has
+// moved back into an earlier token.
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { COMMANDS, commandSuggestions, type CommandDef, type Suggestion } from "@/lib/commands";
 
-export function useCommandAutocomplete(text: string, setText: (t: string) => void, commands: CommandDef[] = COMMANDS) {
-  const taRef = useRef<HTMLTextAreaElement>(null);
+export function useSuggestionAutocomplete(
+  text: string,
+  setText: (t: string) => void,
+  suggestionsFn: (text: string, cursor: number) => Suggestion[],
+  // Only one textarea DOM node actually exists — when InputBar mounts more
+  // than one of these hooks against it (see mention-autocomplete.tsx), the
+  // second must reuse the first's ref rather than owning its own, or its
+  // accept()'s post-insert focus/selection restore would silently no-op.
+  sharedRef?: RefObject<HTMLTextAreaElement | null>,
+) {
+  const ownRef = useRef<HTMLTextAreaElement>(null);
+  const taRef = sharedRef ?? ownRef;
   const [cursor, setCursor] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
   // Escape hides the popup for the current token without altering text;
@@ -17,7 +29,7 @@ export function useCommandAutocomplete(text: string, setText: (t: string) => voi
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => { setDismissed(false); }, [text]);
 
-  const suggestions = dismissed ? [] : commandSuggestions(text, cursor, commands);
+  const suggestions = dismissed ? [] : suggestionsFn(text, cursor);
   useEffect(() => { setActiveIndex(0); }, [suggestions.map((s) => s.display).join("|")]);
 
   function accept(idx: number = activeIndex): boolean {
@@ -52,6 +64,12 @@ export function useCommandAutocomplete(text: string, setText: (t: string) => voi
 
   return { taRef, suggestions, activeIndex, onKeyDown, onSelect, pick: (i: number) => accept(i) };
 }
+
+export function useCommandAutocomplete(text: string, setText: (t: string) => void, commands: CommandDef[] = COMMANDS) {
+  return useSuggestionAutocomplete(text, setText, (t, c) => commandSuggestions(t, c, commands));
+}
+
+export type Autocomplete = ReturnType<typeof useSuggestionAutocomplete>;
 
 export function CommandSuggestionPopup({ suggestions, activeIndex, onPick }: {
   suggestions: Suggestion[];

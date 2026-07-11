@@ -84,7 +84,9 @@ export interface Suggestion {
 // The token the caret sits in: scan back to the nearest whitespace (or
 // start of input). Completion only ever edits this token, never anything
 // after the caret — a param typed earlier in the text is left alone.
-function currentToken(text: string, cursor: number): { start: number; word: string } {
+// Exported for lib/mentions.ts's mentionSuggestions, which needs the exact
+// same "what token is the caret in" scan for its own '@' trigger.
+export function currentToken(text: string, cursor: number): { start: number; word: string } {
   let start = cursor;
   while (start > 0 && !/\s/.test(text[start - 1])) start--;
   return { start, word: text.slice(start, cursor) };

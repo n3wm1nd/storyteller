@@ -583,6 +583,7 @@ export default function Home() {
               <AgentLogStrip logs={agentLogs} onClear={clearAgentLogs} />
               <InputBar
                 enabled={selectedFile !== null}
+                activeBranch={activeBranch}
                 contextAtomCount={contextAtoms.size} contextAnnotationCount={contextAnnotations.size}
                 rebasing={rebaseMarker !== null}
                 onClearRebase={() => setRebaseMarker(null)}

@@ -12,6 +12,8 @@ import { type AnnotationMode, characterDisplayName, characterColor, splitQuestio
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
+import { useMentionAutocomplete } from "./mention-autocomplete";
+import { useLoreTree, flattenLore } from "./lore-selector";
 import { branchFileUrl, saveRawFile } from "@/lib/ws";
 
 // A character's presence, as a set of this file's own atom tickIds — not
@@ -1153,8 +1155,11 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   regen:  { label: "Regen",  title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
 };
 
-export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk }: {
+export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk }: {
   enabled: boolean;
+  // The active branch's own /lore data feeds '@mention' completion (see
+  // lib/mentions.ts) — current-branch-only for now, no cross-branch search.
+  activeBranch: string | null;
   contextAtomCount: number;
   contextAnnotationCount: number;
   rebasing: boolean;
@@ -1183,6 +1188,15 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
   // in sync afterward: once you've picked a mode, it's yours until you pick
   // a different one, not silently swapped out from under you.
   const [mode, setMode] = useState<AgentId>(() => (hasContext ? "fix" : "write"));
+
+  // Mentions only make sense for Write (the one mode with a contextLayout
+  // channel — see fileview.actions.ts's chatWrite) and only outside a
+  // '/command' line ('@' there is already command-param syntax, see
+  // lib/commands.ts). Passing an empty entries list is how this hook gets
+  // disabled — mentionSuggestions itself doesn't know about modes.
+  const loreEntries = flattenLore(useLoreTree(activeBranch));
+  const mentionsEnabled = mode === "write" && !text.trimStart().startsWith("/");
+  const mentionAuto = useMentionAutocomplete(text, setText, mentionsEnabled ? loreEntries : [], auto.taRef);
 
   function cycleMode(dir: 1 | -1) {
     setMode((m) => {
@@ -1268,14 +1282,16 @@ export function InputBar({ enabled, contextAtomCount, contextAnnotationCount, re
       <div style={{ flex: 1, display: "flex", gap: 8, alignItems: "stretch", padding: "4px 16px 10px", minHeight: 0 }}>
         <div style={{ position: "relative", flex: 1, display: "flex" }}>
           <CommandSuggestionPopup suggestions={auto.suggestions} activeIndex={auto.activeIndex} onPick={auto.pick} />
+          <CommandSuggestionPopup suggestions={mentionAuto.suggestions} activeIndex={mentionAuto.activeIndex} onPick={mentionAuto.pick} />
           <textarea
             ref={auto.taRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onSelect={auto.onSelect}
-            onClick={auto.onSelect}
+            onSelect={(e) => { auto.onSelect(e); mentionAuto.onSelect(e); }}
+            onClick={(e) => { auto.onSelect(e); mentionAuto.onSelect(e); }}
             onKeyDown={(e) => {
               if (auto.onKeyDown(e)) return;
+              if (mentionAuto.onKeyDown(e)) return;
               if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleMode(1); return; }
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); fire(); }
             }}
