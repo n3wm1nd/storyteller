@@ -138,6 +138,17 @@ export function presentDuringAtoms(ticks: Record<string, WireTick>, head: string
   return result;
 }
 
+// A path's own filename, extension stripped — the fallback title for
+// anything that doesn't have a more specific display name of its own (a
+// chapter with no heading yet, a codex entry), same "a filename was never
+// meant to be read as a title, but it's what's left when there's nothing
+// better" role library.tsx's chapter rows and codex.tsx's cards both need.
+export function basenameNoExt(path: string): string {
+  const base = path.split("/").pop() ?? path;
+  const idx = base.lastIndexOf(".");
+  return idx > 0 ? base.slice(0, idx) : base;
+}
+
 // Display name for a character/{id} branch. Per WRITER.md's convention, the
 // real name is the first Markdown H1 line in sheet.md — a nickname or a
 // rename the branch id itself can't hold verbatim (spaces, special

@@ -31,6 +31,7 @@ module Storyteller.Writer.Agent.ContextPreview
   , ContextSlotPreview(..)
   , buildSlotPreview
   , buildPreview
+  , blurb
   ) where
 
 import Data.Maybe (listToMaybe)

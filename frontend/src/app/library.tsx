@@ -4,6 +4,7 @@ import { useState } from "react";
 import { BookOpen, ListTree, FileText, FileWarning, Plus } from "lucide-react";
 import type { LibraryNode, ChapterUnit } from "@/lib/ws";
 import { branchFileUrl } from "@/lib/ws";
+import { basenameNoExt } from "@/lib/utils";
 
 // ── Library tab (LeftSidebar) ─────────────────────────────────────────────────
 //
@@ -28,12 +29,6 @@ import { branchFileUrl } from "@/lib/ws";
 // still goes through the ordinary file connection, same as
 // FileTree/CharacterSidebar's journal both do — this tab never opens its
 // own file view, it reuses 'onSelectFile'.
-
-function basenameNoExt(path: string): string {
-  const base = path.split("/").pop() ?? path;
-  const idx = base.lastIndexOf(".");
-  return idx > 0 ? base.slice(0, idx) : base;
-}
 
 function pathNoExt(path: string): string {
   const idx = path.lastIndexOf(".");
@@ -72,7 +67,9 @@ function collectLeaves(nodes: LibraryNode[], acc: LibraryNode[]): LibraryNode[] 
   return acc;
 }
 
-function SectionHeader({ label, count, muted }: { label: string; count: number; muted?: boolean }) {
+// Exported for reuse by codex.tsx's card grid — same "group with a small
+// muted count" header, no reason to fork a second copy.
+export function SectionHeader({ label, count, muted }: { label: string; count: number; muted?: boolean }) {
   return (
     <div style={{
       padding: "8px 10px 4px", fontSize: 10, fontWeight: 600, textTransform: "uppercase",

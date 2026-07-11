@@ -29,6 +29,7 @@ import type {
   FileCommand,    FileEvent,
   CharacterEvent, CharacterSummary,
   LibraryCommand, LibraryEvent, LibraryNode, ChapterUnit,
+  LoreEvent, LoreNode,
   WireUndoEntry,
 } from "./ws";
 
@@ -85,6 +86,13 @@ export interface ServerCacheState {
   // — this client never reconstructs that pairing itself; see library.tsx.
   libraryChapters: ChapterUnit[];
 
+  // The active branch's codex tree (freeform lore/notes/world content, with
+  // chapters/outlines/chat/binaries already excluded server-side — see
+  // Storyteller.Writer.Lore) — kept live by /lore/{name}'s own notifier,
+  // same lifecycle as 'libraryTree' above (see sidebar.actions.ts's
+  // selectBranch).
+  loreTree: LoreNode[];
+
   // Open file connections keyed by path
   openFiles: Record<string, FileConn>;
 
@@ -112,6 +120,7 @@ export interface ServerCacheState {
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
   _library: StoryWS<LibraryCommand, LibraryEvent> | null;
+  _lore:    StoryWS<never, LoreEvent> | null;
 }
 
 const _store = create<ServerCacheState>(() => ({
@@ -124,6 +133,7 @@ const _store = create<ServerCacheState>(() => ({
   branchHead: null,
   libraryTree: [],
   libraryChapters: [],
+  loreTree: [],
   openFiles: {},
   openCharacters: {},
   openJournals: {},
@@ -131,6 +141,7 @@ const _store = create<ServerCacheState>(() => ({
   _session: null,
   _branch: null,
   _library: null,
+  _lore: null,
 }));
 
 // Read access — a hook (optionally with a selector, same convention as

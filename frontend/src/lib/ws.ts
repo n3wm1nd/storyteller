@@ -414,6 +414,27 @@ export type LibraryEvent =
   | { type: "library.tree"; nodes: LibraryNode[]; chapters: ChapterUnit[] }
   | ErrorEvent;
 
+// ── Lore protocol ─────────────────────────────────────────────────────────────
+
+// One node in the branch's codex tree (see WS-PROTOCOL.md's /lore/{name} and
+// Storyteller.Writer.Lore). A leaf here is already known to be codex-eligible
+// content (server excludes chapters/outlines/chat/binaries — see
+// Storyteller.Writer.Lore.isLoreEligible), so unlike LibraryNode there's no
+// 'kind' to branch on client-side. 'blurb' is a file's raw first non-blank
+// line, same "server hands over raw text, client decides" contract as
+// LibraryNode's 'heading'.
+export interface LoreNode {
+  path: string;
+  name: string;
+  blurb: string;
+  children: LoreNode[];
+}
+
+// Read-only connection — no commands.
+export type LoreEvent =
+  | { type: "lore.tree"; nodes: LoreNode[] }
+  | ErrorEvent;
+
 // ── Connection ────────────────────────────────────────────────────────────────
 
 type Listener<E> = (event: E) => void;
@@ -532,6 +553,11 @@ export function characterConn(branch: string) {
 
 export function libraryConn(name: string) {
   return new StoryWS<LibraryCommand, LibraryEvent>(`${wsBase()}/library/${encodeURIComponent(name)}`);
+}
+
+// No commands, so 'Cmd' is 'never' — nothing can be sent on this connection.
+export function loreConn(name: string) {
+  return new StoryWS<never, LoreEvent>(`${wsBase()}/lore/${encodeURIComponent(name)}`);
 }
 
 // Stateless: send a full slot list whenever the filter changes, get a full

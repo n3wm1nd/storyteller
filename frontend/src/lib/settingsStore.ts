@@ -78,6 +78,41 @@ export function defaultBucket(): number | null {
   return null;
 }
 
+// Pure tag-list mutations shared by every ContextFilter editor (currently
+// context-source.tsx's typed-pattern/tree editor and codex.tsx's card
+// grid) — each view calls these instead of forking its own copy, so "how a
+// tag gets added/removed/bucketed" can't drift between them.
+
+// Add a new tag for `pattern` (a typed glob, or an exact file path — both
+// are just patterns as far as ContextFilter is concerned), no-op if already
+// present. New tags start with `bucket: undefined` (falls back to
+// `defaultBucket()`, i.e. trash) — same as clicking an unclaimed file in
+// the tree editor.
+export function addPatternTag(filter: ContextFilter, pattern: string): ContextFilter {
+  if (!pattern || filter.tags.some((t) => t.pattern === pattern)) return filter;
+  return { tags: [...filter.tags, { pattern }] };
+}
+
+export function removeFilterTag(filter: ContextFilter, pattern: string): ContextFilter {
+  return { tags: filter.tags.filter((t) => t.pattern !== pattern) };
+}
+
+export function toggleFilterTag(filter: ContextFilter, pattern: string): ContextFilter {
+  return filter.tags.some((t) => t.pattern === pattern)
+    ? removeFilterTag(filter, pattern)
+    : addPatternTag(filter, pattern);
+}
+
+export function cycleFilterTagBucket(filter: ContextFilter, pattern: string, next: (b: number | null) => number | null): ContextFilter {
+  return {
+    tags: filter.tags.map((t) => {
+      if (t.pattern !== pattern) return t;
+      const current = t.bucket !== undefined ? t.bucket : defaultBucket();
+      return { ...t, bucket: next(current) };
+    }),
+  };
+}
+
 // Compile a persisted {tags} filter into the PickerRule[] layout actually
 // sent over the wire (chat.writer's contextLayout, or context.preview's
 // slot layout) — the one place this translation happens, so the preview a

@@ -52,6 +52,7 @@ library
                   , Storyteller.Writer.Types
                   , Storyteller.Writer.Presence
                   , Storyteller.Writer.Library
+                  , Storyteller.Writer.Lore
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run
@@ -69,6 +70,7 @@ library
                   , Server.Writer.File
                   , Server.Writer.Character
                   , Server.Writer.Library
+                  , Server.Writer.Lore
                   , Server.Writer.Branch.Protocol
                   , Server.Writer.Branch.Connection
                   , Server.Writer.Branch.Dispatch
@@ -82,6 +84,8 @@ library
                   , Server.Writer.Library.Protocol
                   , Server.Writer.Library.Connection
                   , Server.Writer.Library.Dispatch
+                  , Server.Writer.Lore.Protocol
+                  , Server.Writer.Lore.Connection
   other-modules:
   build-depends:    base >=4.18 && <5
                   , runix

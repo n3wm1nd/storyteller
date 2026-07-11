@@ -50,42 +50,20 @@
 // without a global store slice to mirror into.
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw, X, Trash2 } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, FileText, RefreshCw, X } from "lucide-react";
 import { contextViewConn } from "@/lib/ws";
 import type { ContextSlotPreview, ContextMode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import {
   useSettings, contextFilterKey, defaultBucket, toContextLayout,
-  type ContextFilter, type FilterTag,
+  addPatternTag, removeFilterTag, toggleFilterTag, cycleFilterTagBucket,
+  type ContextFilter,
 } from "@/lib/settingsStore";
 import { buildTree, type TreeNode } from "./filetree";
+import { BucketBadge } from "./BucketBadge";
+import { nextBucket } from "./bucket";
 
 const DEFAULT_FILTER: ContextFilter = { tags: [] };
-
-// Cycle order for a tag badge click: trash, then bucket 1..MAX_BUCKET, then
-// back to trash. Small on purpose — this is for "a handful of named
-// groups" (WRITER.md's outline/notes/chapters split has three), not a
-// general-purpose numbering scheme; nothing stops a bucket above this from
-// being reached by editing settings storage directly; a badge can only
-// reach one via serial clicks.
-const MAX_BUCKET = 4;
-
-// Stable colour per bucket number, cycling through a small palette — used
-// for both a tag's own badge and a matching file's badge in the tree, so
-// the two are visually the same group at a glance. Trash gets its own fixed
-// (muted/red) treatment, never one of these.
-const BUCKET_HUES = [65, 200, 320, 140]; // amber, blue, magenta, green
-
-function bucketColor(bucket: number, alpha = 1): string {
-  const hue = BUCKET_HUES[(bucket - 1) % BUCKET_HUES.length];
-  return `oklch(0.75 0.13 ${hue} / ${alpha})`;
-}
-
-function nextBucket(current: number | null): number | null {
-  if (current === null) return 1;
-  if (current >= MAX_BUCKET) return null;
-  return current + 1;
-}
 
 function isHidden(name: string): boolean {
   return name.startsWith(".");
@@ -93,32 +71,6 @@ function isHidden(name: string): boolean {
 
 function countFiles(node: TreeNode): number {
   return node.isDir ? node.children.reduce((n, c) => n + countFiles(c), 0) : 1;
-}
-
-// Small round badge shared by tag chips and tree entries — a number on its
-// bucket's colour, or a trash icon in a muted/red treatment. `onClick`
-// absent renders it inert (used in the tree, which only ever displays a
-// file's resolved bucket, never edits it directly).
-function BucketBadge({ bucket, onClick, title }: {
-  bucket: number | null;
-  onClick?: () => void;
-  title: string;
-}) {
-  const interactive = !!onClick;
-  const style: React.CSSProperties = {
-    display: "flex", alignItems: "center", justifyContent: "center",
-    width: 15, height: 15, borderRadius: "50%", flexShrink: 0,
-    fontSize: 9, fontWeight: 700, fontFamily: "monospace",
-    border: "none", padding: 0, cursor: interactive ? "pointer" : "default",
-    background: bucket === null ? "oklch(0.55 0.15 25 / 0.18)" : bucketColor(bucket, 0.22),
-    color: bucket === null ? "oklch(0.65 0.18 25)" : bucketColor(bucket),
-  };
-  const content = bucket === null ? <Trash2 style={{ width: 9, height: 9 }} /> : bucket;
-  return interactive ? (
-    <button onClick={onClick} title={title} style={style}>{content}</button>
-  ) : (
-    <span title={title} style={style}>{content}</span>
-  );
 }
 
 function PreviewTreeNode({ node, depth, bucketOf, onToggleFile, onToggleFolder }: {
@@ -257,26 +209,19 @@ export function ContextSourceConfig({ activeBranch, path, sourceId, label, mode 
   }
 
   function addPattern(val: string) {
-    if (!val || tags.some((t) => t.pattern === val)) return;
-    commitFilter({ tags: [...tags, { pattern: val }] });
+    commitFilter(addPatternTag(filter, val));
   }
 
   function removeTag(pattern: string) {
-    commitFilter({ tags: tags.filter((t) => t.pattern !== pattern) });
+    commitFilter(removeFilterTag(filter, pattern));
   }
 
   function togglePattern(val: string) {
-    if (tags.some((t) => t.pattern === val)) removeTag(val); else addPattern(val);
+    commitFilter(toggleFilterTag(filter, val));
   }
 
   function cycleTagBucket(pattern: string) {
-    commitFilter({
-      tags: tags.map((t) => {
-        if (t.pattern !== pattern) return t;
-        const current = t.bucket !== undefined ? t.bucket : defaultBucket();
-        return { ...t, bucket: nextBucket(current) };
-      }),
-    });
+    commitFilter(cycleFilterTagBucket(filter, pattern, nextBucket));
   }
 
   function addDraft() {

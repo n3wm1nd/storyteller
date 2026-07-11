@@ -65,6 +65,7 @@ import Server.Writer.File.Connection (runFile)
 import Server.Writer.ContextView.Connection (runContextView)
 import Server.Writer.Character.Connection (runCharacter)
 import Server.Writer.Library.Connection (runLibrary)
+import Server.Writer.Lore.Connection (runLore)
 import Server.Writer.Run (runAction)
 import Server.Writer.Session.Connection (runSession)
 
@@ -93,6 +94,7 @@ wsRouter env pending =
                                            (joinPath path)
     ["character", name]      -> accept $ runCharacter env (T.pack (BC.unpack (urlDecode False name)))
     ["library", name]        -> accept $ runLibrary   env (T.pack (BC.unpack (urlDecode False name)))
+    ["lore", name]           -> accept $ runLore      env (T.pack (BC.unpack (urlDecode False name)))
     _                        -> rejectRequest pending "not found"
   where
     accept handler = do

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode, Pilcrow } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode, Pilcrow, BookMarked } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
@@ -23,6 +23,7 @@ import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, 
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
+import { CodexTab } from "./codex";
 import { AgentsTab } from "./agentstab";
 import { isOutlineFile, isChatFile } from "@/lib/agents";
 import { UndoTimeline } from "./undo-timeline";
@@ -174,6 +175,11 @@ export default function Home() {
   const [rightWidth, setRightWidth] = useState(260);
   const [isResizingRight, setIsResizingRight] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "branches" | "characters" | "library">("branches");
+  // Which of the right panel's two switchable views is showing — scene
+  // presence (the panel's original, and still default, content) or the
+  // codex card grid (see codex.tsx). A plain local switch for now, same
+  // as LeftSidebar's own tab strip, not yet promoted to a shared type.
+  const [rightTab, setRightTab] = useState<"characters" | "codex">("characters");
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -629,22 +635,49 @@ export default function Home() {
                 transition: "background 0.15s",
               }}
             />
-            <CharacterSidebar
-              selectedFile={selectedFile}
-              characterBranches={characterBranches}
-              ticks={fileChainTicks} head={fileChainHead} rebaseMarker={rebaseMarker}
-              openCharacters={openCharacters}
-              openCharacter={openCharacter} closeCharacter={closeCharacter}
-              openJournals={openJournals}
-              openJournal={openJournal} closeJournal={closeJournal}
-              journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
-              trackJournal={trackJournal} editJournalAtom={editJournalAtom} cycleJournalSwipe={cycleJournalSwipe} appendJournal={appendJournal}
-              contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
-              toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
-              onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}
-              enterScene={enterScene} leaveScene={leaveScene}
-              askCharacter={askCharacter} characterAnswers={characterAnswers}
-            />
+            <div style={{ flexShrink: 0, padding: "8px 8px 0" }}>
+              <div style={{
+                display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1,
+                background: "var(--surface)", borderRadius: 6, padding: 2,
+              }}>
+                {(["characters", "codex"] as const).map((t) => (
+                  <button key={t} onClick={() => setRightTab(t)} style={{
+                    height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+                    gap: 5, fontSize: 11, borderRadius: 4, border: "none", cursor: "pointer",
+                    background: rightTab === t ? "var(--surface-raised)" : "transparent",
+                    color: rightTab === t ? "var(--amber)" : "var(--text-disabled)",
+                    transition: "background 0.15s, color 0.15s",
+                  }}>
+                    {t === "characters" ? <Users style={{ width: 12, height: 12 }} /> : <BookMarked style={{ width: 12, height: 12 }} />}
+                    {t === "characters" ? "Characters" : "Codex"}
+                  </button>
+                ))}
+              </div>
+              <div style={{ height: 8 }} />
+            </div>
+
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              {rightTab === "characters" ? (
+                <CharacterSidebar
+                  selectedFile={selectedFile}
+                  characterBranches={characterBranches}
+                  ticks={fileChainTicks} head={fileChainHead} rebaseMarker={rebaseMarker}
+                  openCharacters={openCharacters}
+                  openCharacter={openCharacter} closeCharacter={closeCharacter}
+                  openJournals={openJournals}
+                  openJournal={openJournal} closeJournal={closeJournal}
+                  journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
+                  trackJournal={trackJournal} editJournalAtom={editJournalAtom} cycleJournalSwipe={cycleJournalSwipe} appendJournal={appendJournal}
+                  contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
+                  toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
+                  onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}
+                  enterScene={enterScene} leaveScene={leaveScene}
+                  askCharacter={askCharacter} characterAnswers={characterAnswers}
+                />
+              ) : (
+                <CodexTab activeBranch={activeBranch} />
+              )}
+            </div>
           </div>
         )}
       </div>
