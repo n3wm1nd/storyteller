@@ -39,6 +39,17 @@ export const COMMANDS: CommandDef[] = [
     name: "ask", label: "Ask", description: "Ask a character a question, answered from only their own branch.",
     params: [{ name: "character", description: "Which character to ask (their branch id, e.g. character/alice)." }],
   },
+  // Same shape as /ask, but the opposite direction: append the text
+  // verbatim to that character's own journal (character-sidebar.tsx's
+  // JournalPanel append box, just reached without leaving the composer) —
+  // a quick structured way to correct/inform a character, alongside (not
+  // instead of) writing to their journal by hand. Requires that
+  // character's journal connection already open, same precondition the
+  // manual append box has (see appendJournal in character-sidebar.actions.ts).
+  {
+    name: "inform", label: "Inform", description: "Append a fact directly to a character's journal, without leaving the composer.",
+    params: [{ name: "character", description: "Which character to inform (their branch id, e.g. character/alice)." }],
+  },
 ];
 
 // ChatView's input only ever sends a conversational turn (chatConverse) —

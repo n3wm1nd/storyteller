@@ -10,7 +10,7 @@ import {
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
-  chatConverse, chatConverseRegen, cycleSwipe,
+  chatConverse, chatConverseRegen, cycleSwipe, correctAtom,
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
@@ -367,6 +367,10 @@ export default function Home() {
     }
   }
 
+  function handleCorrect(tickId: string) {
+    if (selectedFile) correctAtom(selectedFile, tickId);
+  }
+
   function onSidebarResizeMouseDown(e: React.MouseEvent) {
     e.preventDefault();
     setIsResizing(true);
@@ -575,6 +579,8 @@ export default function Home() {
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}
                 onCycleSwipe={(tickId) => selectedFile && cycleSwipe(selectedFile, tickId)}
+                onCorrect={handleCorrect}
+                onEditPrompt={(tickId, content) => selectedFile && editPrompt(selectedFile, tickId, content)}
               />
             )}
 
@@ -594,6 +600,7 @@ export default function Home() {
                 onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
                 onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
                 onAsk={(character, question) => selectedFile && askCharacter(selectedFile, character, question)}
+                onInform={(character, fact) => appendJournal(character, fact, journalMarkers[character] ?? null)}
               />
             </>}
           </>}

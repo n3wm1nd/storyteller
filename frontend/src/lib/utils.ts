@@ -74,6 +74,34 @@ export function tailLeadTicks(chain: WireTick[]): Map<string, string> {
   return leads;
 }
 
+// Every atom generated from the same instruction as `atomTickId` — the
+// group "Correct this" (fileview.tsx's AtomBlock) regenerates as a unit.
+// Generalizes chatview.tsx's exchangesFromChain (which pairs a chat.md
+// prompt with exactly one atom, always) to prose written via chat.writer,
+// where one instruction can produce several atoms (Ops.append per
+// splitAtoms result) — so this walks the chain to find the nearest
+// preceding "prompt" tick, then collects every contiguous "atom" tick
+// after it, not just one. Returns null if no prompt tick precedes the atom
+// at all (shouldn't happen for anything chat.writer produced, but a
+// hand-authored/appended atom has no instruction to regenerate from).
+export function promptGroupForAtom(ticks: Record<string, WireTick>, head: string | null, atomTickId: string): { promptTick: WireTick; atomTickIds: string[] } | null {
+  const chain = tickChain(ticks, head);
+  const atomIndex = chain.findIndex((t) => t.tickId === atomTickId);
+  if (atomIndex === -1) return null;
+
+  let promptIndex = -1;
+  for (let i = atomIndex; i >= 0; i--) {
+    if (chain[i].kind === "prompt") { promptIndex = i; break; }
+  }
+  if (promptIndex === -1) return null;
+
+  const atomTickIds: string[] = [];
+  for (let i = promptIndex + 1; i < chain.length && chain[i].kind === "atom"; i++) {
+    atomTickIds.push(chain[i].tickId);
+  }
+  return { promptTick: chain[promptIndex], atomTickIds };
+}
+
 export function tickPayload(msg: string): string {
   const nl = msg.indexOf("\n");
   return nl >= 0 ? msg.slice(nl + 1) : msg;

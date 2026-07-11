@@ -11,7 +11,7 @@ import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
-import { tickChain, activeCharacterBranches } from "@/lib/utils";
+import { tickChain, promptGroupForAtom, activeCharacterBranches } from "@/lib/utils";
 import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
 import { WRITER_STORY_SOURCE_ID, CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
 import { resolveMentions } from "@/lib/mentions";
@@ -330,6 +330,56 @@ export function chatWrite(path: string, text: string) {
     : [...paths.map((p) => ({ pattern: p, bucket: 1 })), ...baseLayout];
   const characterLayouts = activeCharacterLayouts(path);
   sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text: cleanText, context, contextLayout, flowTid, characterLayouts }));
+}
+
+// "Correct this" — regenerate the whole instruction-group a given atom
+// belongs to (see lib/utils.promptGroupForAtom), via the same agent/context
+// chatWrite already uses, landing back at the same position instead of
+// appending at file end. One plain action, not three: all three DESIGN.md
+// correction cases (bad roll, narrator misunderstood, character was wrong)
+// reduce to this same call — a bad roll just calls it as-is; "narrator
+// misunderstood" is editing the group's own Prompt tick first (see
+// editPrompt, and fileview.tsx's PromptHeader — an independent action, no
+// regeneration side-effect of its own) then calling this; "character was
+// wrong" is appending to their journal first (manually, or via the
+// /inform command — see lib/commands.ts) then calling this, so the fresh
+// activeCharacterContext chatWrite pulls in already reflects it. Reading
+// the prompt fresh here rather than taking it as a parameter is what makes
+// that composition work — this always regenerates from whatever's
+// currently saved, not a stale snapshot from when the button was drawn.
+//
+// Reuses the exact rebase-marker mechanism drag-and-drop already drives
+// (wsHelpers.atRebase / uiStore.setRebaseMarker) — nothing new server-side.
+// Deletes don't rewrite history, they pop a tombstone tick on top (same as
+// every other delete.atom use), and the delete + chat.writer commands are
+// sent on the same connection, processed strictly in order — so by the
+// time chat.writer's wind-down runs, the group is already gone from the
+// chain it's popping back through.
+//
+// The marker itself must be resolved from the group's *own* tickId, not
+// (say) tailLeadTicks of its last atom: atRebase computes the pivot as
+// `ticks[marker]?.parent` from the client's local tick store at send
+// time, and the deletes are still in flight (their 'update' echo hasn't
+// landed yet) when chat.writer is sent — so any pivot that depends on
+// post-delete re-parenting would race and resolve stale. `promptTick`'s
+// own `.parent` is a fixed historical fact, true before and after its
+// (or its atoms') deletion, so it's immune to that race.
+export function correctAtom(path: string, atomTickId: string) {
+  const fc = getServerCache().openFiles[path];
+  if (!fc) return;
+  const group = promptGroupForAtom(fc.ticks, fc.head, atomTickId);
+  if (!group) return;
+
+  // The marker is sticky by design (see uiStore.rebaseMarker's own doc
+  // comment) — restore whatever the user had set before this one-shot use
+  // rather than clearing it, in case they were already mid-rebase on
+  // something else.
+  const previousMarker = useUI.getState().rebaseMarker;
+  const promptText = group.promptTick.message;
+  [group.promptTick.tickId, ...group.atomTickIds].forEach((tid) => deleteAtom(path, tid));
+  useUI.getState().setRebaseMarker(group.promptTick.tickId);
+  chatWrite(path, promptText);
+  useUI.getState().setRebaseMarker(previousMarker);
 }
 
 export function chatFix(path: string, text: string) {

@@ -83,15 +83,14 @@ const compactMdComponents: React.ComponentProps<typeof ReactMarkdown>["component
 
 // ── Atom block ────────────────────────────────────────────────────────────────
 
-const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount, onEdit, onToggleContext, onCycleSwipe, onHoverAtom, onHoverEnd, compact }: {
+const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount, onEdit, onToggleContext, onCycleSwipe, onHoverAtom, onHoverEnd, compact, onCorrect }: {
   atom: WireTick;
   isLast: boolean;
   inContext: boolean;
   // How many alternates (see Storyteller.Common.Swipe) sit in this atom's
-  // own carousel — 0 hides the cycle control entirely. Display-only in
-  // this pass: there's no way yet to *generate* a fresh alternative for a
-  // plain prose atom (unlike chat's Regenerate), only to cycle through
-  // ones that already exist.
+  // own carousel — 0 hides the cycle control entirely. Cycling only
+  // rotates what's already stored; generating a genuinely fresh
+  // alternative is "Correct this" below.
   swipeCount: number;
   onEdit: (tickId: string, content: string) => void;
   onToggleContext: (tickId: string) => void;
@@ -107,6 +106,17 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
   // always-visible bar is the part that isn't worth the width here), and no
   // tickId debug label. Everything else (edit, select, hover) is unchanged.
   compact?: boolean;
+  // "Correct this" (see fileview.actions.ts's correctAtom) — one plain
+  // click, no menu: regenerates the whole instruction-group this atom
+  // belongs to, via the same agent/context that produced it, reading
+  // whatever the group's Prompt tick currently says (independently
+  // editable via PromptHeader above the group — edit that first if the
+  // instruction itself was wrong, then click this). Omitted
+  // (journal/compact views) hides the trigger entirely, same convention as
+  // onHoverAtom. Fixing a character's journal first is likewise a separate
+  // action (character-sidebar.tsx's Context/Journal panel) — regenerating
+  // afterward is this same button, once the journal reflects the fix.
+  onCorrect?: (tickId: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -224,6 +234,22 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
           {swipeCount}
         </button>
       )}
+      {!compact && onCorrect && !editing && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCorrect(atom.tickId); }}
+          title="Correct this — regenerate with the same instruction and context (edit the prompt above first if that was the problem)"
+          style={{
+            position: "absolute", bottom: 0, right: swipeCount > 0 ? 95 : 60,
+            display: "flex", alignItems: "center", padding: "1px 5px", borderRadius: 3, cursor: "pointer",
+            background: "transparent",
+            border: hovered ? "1px solid var(--border-subtle)" : "1px solid transparent",
+            color: hovered ? "var(--text-dim)" : "transparent",
+            transition: "color 0.15s, border-color 0.15s",
+          }}
+        >
+          <RefreshCw style={{ width: 9, height: 9 }} />
+        </button>
+      )}
       {!compact && (
         <span style={{
           position: "absolute", bottom: 0, right: 0,
@@ -247,10 +273,9 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  const isNote   = tick.kind === "note";
-  const isPrompt = tick.kind === "prompt";
-  const isAsk    = tick.kind === "character-answer";
-  if (!isNote && !isPrompt && !isAsk) return null;
+  const isNote = tick.kind === "note";
+  const isAsk  = tick.kind === "character-answer";
+  if (!isNote && !isAsk) return null;
 
   // An ask has its own two-part shape (who was asked + the question, then
   // the answer). Which character answered is a field (same wire convention
@@ -299,10 +324,11 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
     );
   }
 
-  const accentColor = isNote ? "oklch(0.55 0.15 240)" : "var(--amber)";
-  const bgColor     = isNote ? "oklch(0.22 0.01 240 / 0.6)" : "oklch(0.78 0.10 65 / 0.08)";
-  const borderColor = isNote ? "oklch(0.35 0.04 240 / 0.4)" : "oklch(0.78 0.10 65 / 0.25)";
-  const Icon        = isNote ? StickyNote : Sparkles;
+  // isAsk already returned above, so this is always a note by now.
+  const accentColor = "oklch(0.55 0.15 240)";
+  const bgColor     = "oklch(0.22 0.01 240 / 0.6)";
+  const borderColor = "oklch(0.35 0.04 240 / 0.4)";
+  const Icon        = StickyNote;
   const expandable  = tick.message.length > 60;
   const preview     = expandable ? tick.message.slice(0, 60) + "…" : tick.message;
 
@@ -322,7 +348,111 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 10px" }}>
         <Icon style={{ width: 11, height: 11, color: accentColor, flexShrink: 0 }} />
-        <span style={{ fontSize: 12, color: isNote ? "var(--text-muted)" : "var(--amber)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85 }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85 }}>
+          {expanded ? tick.message : preview}
+        </span>
+        {expandable && (
+          <ChevronDown style={{
+            width: 10, height: 10, color: "var(--text-ghost)", flexShrink: 0,
+            transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s",
+          }} />
+        )}
+      </div>
+    </div>
+  );
+});
+
+// ── Prompt header ─────────────────────────────────────────────────────────────
+//
+// The instruction that generated the atom group it leads (see
+// WireTickList's promptBefore map) — rendered *above* that group, chat-
+// style, rather than trailing the previous one the way note/ask
+// annotations do; a prompt reads as "here's what was asked for next", not
+// as commentary on what came before. Editable in place, same
+// textarea-then-Save pattern AtomBlock's own atom editing uses — saves via
+// the plain edit.prompt command (no regeneration side-effect; regenerating
+// is a separate, explicit action on the atoms themselves).
+
+const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }: {
+  tick: WireTick;
+  // "dots" mode: one quiet line, chat-style. "expanded" mode: full card,
+  // matching AnnotationCard's own visual weight for consistency.
+  compact: boolean;
+  onEditPrompt: (tickId: string, content: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [expanded, setExpanded] = useState(false);
+
+  function startEdit() {
+    setDraft(tick.message);
+    setEditing(true);
+  }
+  function commitEdit() {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== tick.message.trim()) onEditPrompt(tick.tickId, trimmed);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div style={{ margin: "4px 0 8px 12px" }}>
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitEdit(); }
+            if (e.key === "Escape") setEditing(false);
+          }}
+          rows={compact ? 2 : 4}
+          style={{
+            width: "100%", boxSizing: "border-box", resize: "vertical", fontSize: compact ? 11 : 12, fontFamily: "inherit",
+            background: "var(--surface-deep)", border: "1px solid oklch(0.78 0.10 65 / 0.4)", borderRadius: 4,
+            padding: "4px 6px", color: "var(--text-primary)", outline: "none",
+          }}
+        />
+        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+          <button onClick={() => setEditing(false)} style={{ background: "none", border: "1px solid var(--border-subtle)", borderRadius: 3, color: "var(--text-ghost)", fontSize: 10.5, padding: "2px 8px", cursor: "pointer" }}>Cancel</button>
+          <button onClick={commitEdit} style={{ background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.4)", borderRadius: 3, color: "var(--text-secondary)", fontSize: 10.5, padding: "2px 8px", cursor: "pointer" }}>Save</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (compact) {
+    const preview = tick.message.length > 140 ? tick.message.slice(0, 140) + "…" : tick.message;
+    return (
+      <div
+        onDoubleClick={startEdit}
+        title="Double-click to edit — the instruction that generated what follows"
+        style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0 4px 12px", cursor: "text" }}
+      >
+        <Sparkles style={{ width: 10, height: 10, color: "var(--amber)", flexShrink: 0, opacity: 0.7 }} />
+        <span style={{
+          fontSize: 11, color: "var(--amber)", fontStyle: "italic", opacity: 0.75,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {preview}
+        </span>
+      </div>
+    );
+  }
+
+  const expandable = tick.message.length > 80;
+  const preview = expandable ? tick.message.slice(0, 80) + "…" : tick.message;
+  return (
+    <div
+      onDoubleClick={startEdit}
+      style={{
+        margin: "4px 0 10px 12px", borderRadius: 5, padding: "5px 10px",
+        background: "oklch(0.78 0.10 65 / 0.08)", border: "1px solid oklch(0.78 0.10 65 / 0.25)",
+        cursor: expandable ? "pointer" : "text",
+      }}
+    >
+      <div onClick={() => expandable && setExpanded((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <Sparkles style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85 }}>
           {expanded ? tick.message : preview}
         </span>
         {expandable && (
@@ -345,9 +475,12 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  // "prompt"-kind ticks never reach here — they're excluded from the
+  // trailing-annotation grouping entirely and rendered by PromptHeader
+  // instead, leading the atom group they generated (see WireTickList's
+  // promptBefore map).
   function dotColor(ann: WireTick): string {
     if (ann.kind === "note")             return "oklch(0.55 0.15 240)";
-    if (ann.kind === "prompt")           return "var(--amber)";
     if (ann.kind === "character-answer") return characterColor(ann.fields?.character ?? "");
     return "var(--text-dim)";
   }
@@ -489,7 +622,7 @@ export function WireTickList({
   ticks, annotationMode, contextAtoms, contextAnnotations, resetKey,
   rebaseMarker, onSetRebaseMarker, presenceBars,
   onEdit, onToggleContextAtom, onToggleContextAnnotation, onCycleSwipe,
-  onHoverAtom, onHoverEnd, compact,
+  onHoverAtom, onHoverEnd, compact, onCorrect, onEditPrompt,
 }: {
   ticks: WireTick[];
   annotationMode: AnnotationMode;
@@ -511,6 +644,12 @@ export function WireTickList({
   // element sizes to its content; the embedding container is expected to
   // supply its own maxHeight + overflow for the (rare) long-journal case.
   compact?: boolean;
+  // "Correct this" (AtomBlock) / prompt editing (PromptHeader) — see their
+  // own docs. Omitted entirely by the journal panel's compact usage
+  // (compact mode hides both triggers regardless, but not passing these at
+  // all keeps that call site honest about not supporting them).
+  onCorrect?: (tickId: string) => void;
+  onEditPrompt?: (tickId: string, content: string) => void;
 }) {
   const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[ticks.length - 1].tickId}` : 0;
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
@@ -608,11 +747,21 @@ export function WireTickList({
   const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
 
   const annotationsFor = new Map<string, WireTick[]>();
+  // The Prompt tick leading each atom group, keyed by that group's first
+  // atom — unlike note/character-answer, a prompt reads forward ("here's
+  // what was asked for next"), not as commentary trailing what came
+  // before, so it's excluded from annotationsFor's backward-anchored
+  // bucket entirely and rendered by PromptHeader instead (see below).
+  const promptBefore = new Map<string, WireTick>();
   const leading: WireTick[] = [];
   let lastAtomId: string | null = null;
+  let pendingPrompt: WireTick | null = null;
   for (const tick of ticks) {
     if (tick.kind === "atom") {
+      if (pendingPrompt) { promptBefore.set(tick.tickId, pendingPrompt); pendingPrompt = null; }
       lastAtomId = tick.tickId;
+    } else if (tick.kind === "prompt") {
+      pendingPrompt = tick;
     } else {
       const refAtom = [...tick.refs].reverse().find((r) => atomIds.has(r));
       const anchor = refAtom ?? lastAtomId;
@@ -729,6 +878,13 @@ export function WireTickList({
                   pointerEvents: suppressed ? "none" : "auto",
                   transition: "opacity 0.15s, filter 0.15s",
                 }}>
+                  {annotationMode !== "hidden" && onEditPrompt && promptBefore.get(atom.tickId) && (
+                    <PromptHeader
+                      tick={promptBefore.get(atom.tickId)!}
+                      compact={annotationMode === "dots"}
+                      onEditPrompt={onEditPrompt}
+                    />
+                  )}
                   <AtomBlock
                     atom={atom} isLast={isLast}
                     inContext={contextAtoms.has(atom.tickId)}
@@ -739,6 +895,7 @@ export function WireTickList({
                     onHoverAtom={onHoverAtom}
                     onHoverEnd={onHoverEnd}
                     compact={compact}
+                    onCorrect={onCorrect}
                   />
                   {annotationMode === "dots" && anns.length > 0 && (
                     <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
@@ -1155,7 +1312,7 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   regen:  { label: "Regen",  title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
 };
 
-export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk }: {
+export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk, onInform }: {
   enabled: boolean;
   // The active branch's own /lore data feeds '@mention' completion (see
   // lib/mentions.ts) — current-branch-only for now, no cross-branch search.
@@ -1173,6 +1330,8 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
   // Not a mode in AGENT_META (this doesn't edit the file) — only reachable
   // via the "/ask @character=..." command, never the mode pill/dropdown.
   onAsk:    (character: string, question: string) => void;
+  // Same — only reachable via "/inform @character=..." (see lib/commands.ts).
+  onInform: (character: string, fact: string) => void;
 }) {
   const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
@@ -1215,6 +1374,7 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
     write: (t) => onWrite(t), fix: (t) => onFix(t), append: (t) => onAppend(t), note: (t) => onNote(t),
     regen: (t, p) => onRegen(t, p.beat !== undefined),
     ask: (t, p) => { if (p.character) onAsk(p.character, t); },
+    inform: (t, p) => { if (p.character) onInform(p.character, t); },
   };
 
   function fire() {
