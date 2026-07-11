@@ -57,6 +57,7 @@ module Runix.Git
   , runGitIOPerCall
   , runGitFFI
   , runGitFFIPerCall
+  , runGitFFIPerCallWith
 
     -- * Object cache interceptor
   , withGitCache
@@ -361,13 +362,29 @@ runGitIOPerCall repo action = do
 -- handle open for its whole process lifetime (one 'FFI.openRepository'
 -- call, not one per job), not opened and closed around each interpreted
 -- action the way every CLI executable\/test does via 'runGitFFIPerCall'.
+--
+-- Always opens with 'FFI.defaultFFIOptions' -- this codebase's own
+-- production choice (see that value's own doc). Use
+-- 'runGitFFIPerCallWith' to open with different libgit2 strict-mode
+-- settings instead, e.g. to benchmark 'FFI.defaultFFIOptions' against
+-- 'FFI.libgit2DefaultFFIOptions' directly.
 runGitFFIPerCall
   :: Members '[Fail, Resource, Embed IO] r
   => FilePath
   -> Sem (Git : r) a
   -> Sem r a
-runGitFFIPerCall repo action =
-  bracket (embedBatch (FFI.openRepository repo)) (embed . FFI.closeRepository) $ \repoPtr ->
+runGitFFIPerCall = runGitFFIPerCallWith FFI.defaultFFIOptions
+
+-- | Like 'runGitFFIPerCall', but with explicit 'FFI.FFIOptions' instead
+-- of always using 'FFI.defaultFFIOptions' -- see that function's own doc.
+runGitFFIPerCallWith
+  :: Members '[Fail, Resource, Embed IO] r
+  => FFI.FFIOptions
+  -> FilePath
+  -> Sem (Git : r) a
+  -> Sem r a
+runGitFFIPerCallWith opts repo action =
+  bracket (embedBatch (FFI.openRepository opts repo)) (embed . FFI.closeRepository) $ \repoPtr ->
     runGitFFI repoPtr action
 
 runGitFFI

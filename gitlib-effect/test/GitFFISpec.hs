@@ -63,7 +63,7 @@ spec = do
       withSystemTempDirectory "gitlib-effect-ffi-spec" $ \parent -> do
         let repo = parent </> "repo"
         existsBefore <- doesDirectoryExist repo
-        FFI.withRepository repo (const (return ()))
+        FFI.withRepository FFI.defaultFFIOptions repo (const (return ()))
         existsAfter <- doesDirectoryExist (repo </> "objects")
         existsBefore `shouldBe` False
         existsAfter `shouldBe` True
@@ -72,7 +72,7 @@ spec = do
       withSystemTempDirectory "gitlib-effect-ffi-spec" $ \parent -> do
         let repo = parent </> "repo"
             content = "hello from libgit2 FFI"
-        (hash, readBack) <- FFI.withRepository repo $ \r -> do
+        (hash, readBack) <- FFI.withRepository FFI.defaultFFIOptions repo $ \r -> do
           h <- FFI.writeBlob r content
           c <- FFI.readBlob r h
           return (h, c)
@@ -82,7 +82,7 @@ spec = do
     it "resolves a nonexistent ref to Nothing" $
       withSystemTempDirectory "gitlib-effect-ffi-spec" $ \parent -> do
         let repo = parent </> "repo"
-        result <- FFI.withRepository repo $ \r -> FFI.resolveRef r "refs/heads/does-not-exist"
+        result <- FFI.withRepository FFI.defaultFFIOptions repo $ \r -> FFI.resolveRef r "refs/heads/does-not-exist"
         result `shouldBe` Nothing
 
   describe "runGitFFIPerCall vs runGitIOPerCall (differential)" $ do

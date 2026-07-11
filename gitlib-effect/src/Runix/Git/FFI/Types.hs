@@ -10,6 +10,7 @@ module Runix.Git.FFI.Types
   , OdbObject
   , Reference
   , RefIterator
+  , RevWalk
   , GitOid
   , GitError
   , oidSize
@@ -27,6 +28,7 @@ data Odb
 data OdbObject
 data Reference
 data RefIterator
+data RevWalk
 data GitOid
 data GitError
 

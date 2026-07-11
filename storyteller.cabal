@@ -392,3 +392,36 @@ benchmark real-git-perf
                     -O2
                     -fplugin=Polysemy.Plugin
 
+-- | Reproduces the live merge.atoms/split.atoms report directly: real
+-- Storage.Ops.mergeAtoms/splitTick, real tracker branches, one
+-- persistently-open interpreter per backend across repeated requests --
+-- see MergeSplitPerf.hs's own doc for why this differs from
+-- gitlib-effect's synthetic linear-chain benches. Not a correctness
+-- check; never fails the build.
+benchmark storyteller-mergesplit-perf
+  type:             exitcode-stdio-1.0
+  main-is:          MergeSplitPerf.hs
+  build-depends:    base >=4.18 && <5
+                  , storyteller
+                  , gitlib-effect
+                  , polysemy
+                  , polysemy-plugin
+                  , containers
+                  , text
+                  , temporary
+                  , filepath
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -threaded
+                    -rtsopts
+                    -with-rtsopts=-N
+                    -O2
+                    -fplugin=Polysemy.Plugin
+
+

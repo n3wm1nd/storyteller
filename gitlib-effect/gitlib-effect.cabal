@@ -164,3 +164,103 @@ benchmark gitlib-effect-ffi-bench
                     -Wredundant-constraints
                     -fwarn-tabs
                     -O2
+
+-- | Tests whether 'Runix.Git.withGitCache' delivers the same speedup for
+-- both backends, and whether ObjectHash text identity is stable across
+-- write/resolve round trips per backend -- see CacheBench.hs's own doc.
+-- Not a correctness check; never fails the build.
+benchmark gitlib-effect-cache-bench
+  type:             exitcode-stdio-1.0
+  main-is:          CacheBench.hs
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , filepath
+                  , process
+                  , temporary
+                  , polysemy
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2
+
+-- | Sweeps blob size to check per-byte write/read cost scaling -- the
+-- angle that found libgit2's default strict-hash-verification cost (see
+-- BlobSizeBench.hs's own doc and gitlib-effect-stricthash-bench).
+-- Not a correctness check; never fails the build.
+benchmark gitlib-effect-blobsize-bench
+  type:             exitcode-stdio-1.0
+  main-is:          BlobSizeBench.hs
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , filepath
+                  , process
+                  , temporary
+                  , polysemy
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2
+
+-- | Compares libgit2's own defaults (both strict-mode checks on) against
+-- this codebase's choice ('Runix.Git.FFI.defaultFFIOptions', both off)
+-- via 'Runix.Git.runGitFFIPerCallWith' -- see StrictHashBench.hs's own
+-- doc. Not a correctness check; never fails the build.
+benchmark gitlib-effect-stricthash-bench
+  type:             exitcode-stdio-1.0
+  main-is:          StrictHashBench.hs
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , filepath
+                  , process
+                  , temporary
+                  , polysemy
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2
+
+-- | Regression guard for the actual root cause of a live-production
+-- slowdown: 'Runix.Git.IsAncestorOfAny' scaling with target-list size --
+-- see AncestryBench.hs's own doc. Not a correctness check; never fails
+-- the build.
+benchmark gitlib-effect-ancestry-bench
+  type:             exitcode-stdio-1.0
+  main-is:          AncestryBench.hs
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , filepath
+                  , process
+                  , temporary
+                  , polysemy
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2

@@ -20,6 +20,16 @@
 -- (a bug, not an ordinary 'Fail') takes the whole server down instead of
 -- silently wedging git access -- see the module-level design doc for why
 -- that's the right failure mode here.
+--
+-- Uses 'Runix.Git.runGitFFI' (libgit2), not the CLI interpreter this once
+-- ran through as a live A/B check: the FFI interpreter measured slower in
+-- production despite winning every isolated gitlib-effect-ffi-bench
+-- throughput number, traced to libgit2's default
+-- @GIT_OPT_ENABLE_STRICT_HASH_VERIFICATION@ paying a redundant SHA1
+-- re-check on every object read (5-8x read-throughput loss on
+-- realistically-sized blobs -- see gitlib-effect-stricthash-bench and
+-- 'Runix.Git.FFI.libgit2Init's own doc for why disabling it is safe for
+-- this content-addressed store). With that off, FFI wins outright.
 module Server.Writer.GitWorker
   ( GitWorkerQueue
   , startGitWorker
@@ -34,7 +44,6 @@ import Control.Monad (forever, void)
 import Polysemy (Embed, Member, Members, Sem, embed, interpret, runM)
 import Polysemy.Error (Error, catch, runError)
 import Polysemy.Fail (Fail, failToError)
-import Runix.Cmd (cmdsIO, interpretCmd)
 import Runix.Git
   ( Git(..)
   , RefName
@@ -46,13 +55,13 @@ import Runix.Git
   , readCommit
   , readObject
   , resolveRef
-  , runGitIO
+  , runGitFFI
   , updateRef
   , withGitCache
   , writeCommit
   , writeObject
   )
-import qualified Runix.Git.Batch as Batch
+import qualified Runix.Git.FFI as FFI
 
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.Git (refBranchName)
@@ -65,27 +74,21 @@ data GitJob = forall a. GitJob (Git IO a) (MVar (Either String a))
 
 newtype GitWorkerQueue = GitWorkerQueue (TQueue GitJob)
 
--- | Start the worker: open the one @git cat-file --batch@ reader this
+-- | Start the worker: open the one libgit2 repository handle this
 -- process will ever use, then fork the loop that owns it for the rest of
 -- the process's life. Linked to the calling thread so an unexpected crash
 -- propagates rather than silently stopping git access for the whole
 -- server.
---
--- TEMPORARY: reverted to the CLI interpreter to isolate whether a live
--- production slowdown is actually caused by the FFI interpreter --
--- 'Runix.Git.runGitFFI'/'Runix.Git.FFI.openRepository' proved faster in
--- every isolated gitlib-effect-ffi-bench measurement (writes, reads, ref
--- writes), so this is a live A/B check, not a rollback decision.
 startGitWorker :: FilePath -> TChan BranchNotification -> IO GitWorkerQueue
 startGitWorker repo notifyChan = do
   queue <- newTQueueIO
-  br <- Batch.openBatchReader repo
-  worker <- async (gitWorkerLoop repo br notifyChan queue)
+  repoHandle <- FFI.openRepository FFI.defaultFFIOptions repo
+  worker <- async (gitWorkerLoop repoHandle notifyChan queue)
   link worker
   return (GitWorkerQueue queue)
 
 -- | The whole worker lifetime is one Polysemy interpretation, not one per
--- job: 'withGitCache' and 'runGitIO' are applied once, outside 'forever',
+-- job: 'withGitCache' and 'runGitFFI' are applied once, outside 'forever',
 -- so the content-object cache they install is shared and kept warm across
 -- every job from every client for as long as the process runs -- the same
 -- objects/commits get re-requested constantly (tick chains overlap across
@@ -94,22 +97,20 @@ startGitWorker repo notifyChan = do
 -- interpreter stack per 'submitGitJob' call) would reset on every single
 -- request and never see a hit.
 --
--- 'Fail' (what 'runGitIO' itself raises internally, e.g. "object not
+-- 'Fail' (what 'runGitFFI' itself raises internally, e.g. "object not
 -- found") is bridged to 'Error String' via 'failToError' instead of being
 -- discharged with a fresh 'Polysemy.Fail.runFail' per job -- 'runFail'
 -- fully consumes the effect, which only works once per interpreter
 -- lifetime; 'Polysemy.Error.catch' recovers from it locally, per
 -- iteration, without discharging 'Error' from the row, so the outer
 -- interpreters ('withGitCache' included) never need to be re-applied.
-gitWorkerLoop :: FilePath -> Batch.BatchReader -> TChan BranchNotification -> TQueue GitJob -> IO ()
-gitWorkerLoop repo br notifyChan queue =
+gitWorkerLoop :: FFI.RepoHandle -> TChan BranchNotification -> TQueue GitJob -> IO ()
+gitWorkerLoop repoHandle notifyChan queue =
   void
   . runM
   . runError @String
   . failToError id
-  . cmdsIO
-  . interpretCmd @"git"
-  . runGitIO repo (\k -> k br)
+  . runGitFFI repoHandle
   . withGitCache
   $ forever handleOneJob
   where

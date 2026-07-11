@@ -7,6 +7,10 @@
 -- 'Runix.Git.embedBatch' already wraps those.
 module Runix.Git.FFI
   ( libgit2Init
+  , FFIOptions(..)
+  , defaultFFIOptions
+  , libgit2DefaultFFIOptions
+  , applyFFIOptions
   , RepoHandle
   , openRepository
   , closeRepository
@@ -28,6 +32,7 @@ import Control.Exception (bracket, throwIO)
 import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Text (Text)
 import Foreign.C.String (CString, withCString, peekCString)
@@ -60,6 +65,15 @@ import Runix.Git.Hash (ObjectKind(..))
 -- redo backend setup (re-scanning loose\/pack directories) instead of
 -- reusing what's already open -- paid on literally every 'ReadObject'\/
 -- 'WriteObject'\/'ReadCommit'\/'WriteCommit'.
+--
+-- Writes go through @git_odb_write@ (see 'writeObjectRaw') rather than a
+-- hand-rolled direct loose-object writer -- a real alternative was tried
+-- (self-hashing, bypassing libgit2 entirely, mirroring
+-- 'Runix.Git.Store') and measured no better once the actual dominant
+-- cost ('isAncestorOfAny's old per-target @git_graph_descendant_of@
+-- walk, see that function's own doc) was fixed; letting libgit2 own
+-- writes end to end is simpler to reason about than maintaining a
+-- second, hand-rolled object-writing path in parallel with it.
 data RepoHandle = RepoHandle (Ptr Repository) (Ptr Odb)
 
 -- | libgit2 requires a one-time, process-global initialization before any
@@ -70,6 +84,51 @@ data RepoHandle = RepoHandle (Ptr Repository) (Ptr Odb)
 {-# NOINLINE initGuard #-}
 initGuard :: MVar Bool
 initGuard = unsafePerformIO (newMVar False)
+
+-- | Toggles for the two libgit2 strict-validation options this codebase
+-- disables by default (see 'defaultFFIOptions') -- redundant integrity
+-- checks for a content-addressed store that never takes an
+-- externally-claimed hash on faith, but real, measured, opt-outable
+-- costs (see 'applyFFIOptions's own doc for the mechanism each guards).
+-- A plain record (not baked into 'libgit2Init' unconditionally) so a
+-- benchmark can compare libgit2's own defaults against this codebase's
+-- choice directly, instead of only ever being able to measure one side
+-- (see gitlib-effect-stricthash-bench, which did this ad hoc with its
+-- own local FFI import before this existed).
+data FFIOptions = FFIOptions
+  { ffiStrictHashVerification :: Bool
+    -- ^ 'gitOptEnableStrictHashVerification'. libgit2 default: 'True'.
+  , ffiStrictObjectCreation :: Bool
+    -- ^ 'gitOptEnableStrictObjectCreation'. libgit2 default: 'True'.
+  } deriving (Show, Eq)
+
+-- | This codebase's production choice: both strict checks off. Every
+-- object this module ever reads was named by a hash it (or an equally
+-- trusted writer -- see 'Runix.Git.Store', the CLI interpreter's own
+-- direct loose-object writer) computed from the content itself, and
+-- every ref this module ever points somewhere targets a hash this
+-- process itself just computed and wrote -- there is no
+-- externally-claimed hash or target to validate in either case.
+-- Disabling strict hash verification specifically was the actual root
+-- cause of a live-production report that this FFI interpreter ran
+-- slower than the CLI one it replaced despite winning every other
+-- isolated measurement (a measured 5-8x read-throughput loss on
+-- realistically-sized (hundreds of KB+) blobs -- see
+-- gitlib-effect-stricthash-bench).
+defaultFFIOptions :: FFIOptions
+defaultFFIOptions = FFIOptions
+  { ffiStrictHashVerification = False
+  , ffiStrictObjectCreation   = False
+  }
+
+-- | libgit2's own out-of-the-box defaults (both checks on) -- pass this
+-- to 'openRepository'\/'Runix.Git.runGitFFIPerCall' instead of
+-- 'defaultFFIOptions' to benchmark against it directly.
+libgit2DefaultFFIOptions :: FFIOptions
+libgit2DefaultFFIOptions = FFIOptions
+  { ffiStrictHashVerification = True
+  , ffiStrictObjectCreation   = True
+  }
 
 libgit2Init :: IO ()
 libgit2Init = modifyMVar_ initGuard $ \initialized ->
@@ -83,6 +142,32 @@ libgit2Init = modifyMVar_ initGuard $ \initialized ->
       unless (rc >= 0) (throwLastError "git_libgit2_init" rc)
       return True
 
+-- | Applies 'FFIOptions' -- @git_libgit2_opts@ options are process-global
+-- and mutable at any time (not just once at process init), so this can
+-- run again with different values later in the same process, e.g. to
+-- compare 'defaultFFIOptions' against 'libgit2DefaultFFIOptions' within
+-- one benchmark run.
+applyFFIOptions :: FFIOptions -> IO ()
+applyFFIOptions opts = do
+  -- See 'defaultFFIOptions's own doc for why this codebase disables
+  -- this by default, and 'gitOptEnableStrictHashVerification's own doc
+  -- (@git_odb_read@ pays a redundant SHA1 re-check on every read when
+  -- this is on) for the mechanism.
+  rcOpts <- c_git_libgit2_opts_set_int gitOptEnableStrictHashVerification (boolToOpt (ffiStrictHashVerification opts))
+  unless (rcOpts >= 0) (throwLastError "git_libgit2_opts(GIT_OPT_ENABLE_STRICT_HASH_VERIFICATION)" rcOpts)
+  -- Same story for ref writes: 'createOrUpdateRef' -> @git_reference_create@
+  -- validates its target object exists (@git_object__is_valid@,
+  -- @vendor/libgit2/src/libgit2/refs.c@) before writing the ref --
+  -- another real @git_odb_read_header@ call, with the exact same
+  -- freshen\/refresh-on-miss cost strict hash verification guards
+  -- against on the read side, paid on every single ref write when this
+  -- is on.
+  rcOpts2 <- c_git_libgit2_opts_set_int gitOptEnableStrictObjectCreation (boolToOpt (ffiStrictObjectCreation opts))
+  unless (rcOpts2 >= 0) (throwLastError "git_libgit2_opts(GIT_OPT_ENABLE_STRICT_OBJECT_CREATION)" rcOpts2)
+  where
+    boolToOpt True  = 1
+    boolToOpt False = 0
+
 -- | Open the repository at @path@, creating a bare repository there first
 -- if none exists yet -- the FFI-native, subprocess-free equivalent of
 -- 'Runix.Git.ensureRepoExists'. Frees the repository handle when the
@@ -90,17 +175,24 @@ libgit2Init = modifyMVar_ initGuard $ \initialized ->
 -- separately for 'Runix.Git.runGitFFIPerCall', which needs a
 -- 'Polysemy.Resource.bracket' (a 'Sem'-level bracket, not this plain-'IO'
 -- one) around the open handle.
-withRepository :: FilePath -> (RepoHandle -> IO a) -> IO a
-withRepository path = bracket (openRepository path) closeRepository
+withRepository :: FFIOptions -> FilePath -> (RepoHandle -> IO a) -> IO a
+withRepository opts path = bracket (openRepository opts path) closeRepository
 
 closeRepository :: RepoHandle -> IO ()
 closeRepository (RepoHandle repo odb) = do
   c_git_odb_free odb
   c_git_repository_free repo
 
-openRepository :: FilePath -> IO RepoHandle
-openRepository path = do
+-- | 'applyFFIOptions' runs every call (cheap -- see its own doc for why
+-- that's safe), not just the first, so opening a second repository with
+-- different 'FFIOptions' later in the same process actually takes
+-- effect -- these are process-global libgit2 settings, so the most
+-- recent 'openRepository' call's choice always wins for every repository
+-- open at once, not just its own.
+openRepository :: FFIOptions -> FilePath -> IO RepoHandle
+openRepository opts path = do
   libgit2Init
+  applyFFIOptions opts
   repo <-
     withCString path $ \pathPtr ->
       alloca $ \repoPtrPtr -> do
@@ -153,7 +245,11 @@ readObjectRaw (RepoHandle _ odb) hex =
 -- libgit2 computes the hash itself here (unlike 'Runix.Git.Store', which
 -- precomputes it to avoid a round trip through the CLI) -- see
 -- 'GitFFISpec' for the check that it agrees with
--- 'Runix.Git.Hash.hashObject' on the same content.
+-- 'Runix.Git.Hash.hashObject' on the same content. A hand-rolled,
+-- @git_odb_write@-bypassing direct loose-object writer (mirroring
+-- 'Runix.Git.Store') was tried and measured no better once
+-- 'isAncestorOfAny's real dominant cost was fixed (see its own doc) --
+-- not worth maintaining two object-writing paths for.
 writeObjectRaw :: RepoHandle -> ObjectKind -> ByteString -> IO Text
 writeObjectRaw (RepoHandle _ odb) kind content =
   allocaBytes oidSize $ \oidPtr ->
@@ -251,13 +347,45 @@ isDescendantOfOrEqual (RepoHandle repo _) commitHex ancestorHex
             else throwLastError "git_graph_descendant_of" rc
 
 -- | @True@ if any of @targets@ is an ancestor of (or equal to) @headHex@
--- -- 'Runix.Git.IsAncestorOfAny's full check, short-circuiting on the
--- first hit rather than computing every target's answer.
+-- -- 'Runix.Git.IsAncestorOfAny's full check. ONE @git_revwalk@ pass over
+-- @headHex@'s ancestry, checked against every target incrementally
+-- (short-circuiting the walk itself on the first hit) -- NOT one
+-- 'isDescendantOfOrEqual' (@git_graph_descendant_of@) call per target,
+-- which is what this did until a real-repo profile found it responsible
+-- for 72% of total wall-clock in a live cascade: each call walks the
+-- ancestry graph again from scratch, so N targets meant N full walks
+-- instead of one. Mirrors 'Runix.Git.runGitIOWith's own 'IsAncestorOfAny'
+-- case, which already gets this for free from a single @git rev-list@
+-- call -- the actual, measured root cause of a live-production report
+-- that this FFI interpreter still ran far slower than the CLI one on
+-- real, ancestry-check-heavy cascades, despite every raw read/write
+-- benchmark favouring it.
 isAncestorOfAny :: RepoHandle -> [Text] -> Text -> IO Bool
 isAncestorOfAny _ [] _ = return False
-isAncestorOfAny repo (t : ts) headHex = do
-  hit <- isDescendantOfOrEqual repo headHex t
-  if hit then return True else isAncestorOfAny repo ts headHex
+isAncestorOfAny (RepoHandle repo _) targets headHex =
+  allocaBytes oidSize $ \nextOidPtr ->
+    alloca $ \walkPtrPtr ->
+      bracket
+        (do checkCall "git_revwalk_new" =<< c_git_revwalk_new walkPtrPtr repo
+            peek walkPtrPtr)
+        c_git_revwalk_free
+        (\walk ->
+          withOid headHex $ \headOidPtr -> do
+            checkCall "git_revwalk_push" =<< c_git_revwalk_push walk headOidPtr
+            go walk nextOidPtr targetSet)
+  where
+    targetSet = Set.fromList targets
+
+    go walk oidPtr targetSet' = do
+      rc <- c_git_revwalk_next oidPtr walk
+      if rc == gitITEROVER
+        then return False
+        else do
+          checkCall "git_revwalk_next" rc
+          hex <- oidToBytes <$> BS.packCStringLen (castPtr oidPtr, oidSize)
+          if Set.member hex targetSet'
+            then return True
+            else go walk oidPtr targetSet'
 
 -- ---------------------------------------------------------------------------
 -- Internal helpers
