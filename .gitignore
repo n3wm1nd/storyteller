@@ -22,3 +22,4 @@ CLAUDE.md
 # explicitly (!.foo) if something dotfile-shaped should actually be tracked.
 .*
 !.gitignore
+test/fixtures/llm-agent-cache/
