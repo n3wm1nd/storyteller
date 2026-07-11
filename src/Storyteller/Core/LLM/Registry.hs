@@ -47,6 +47,7 @@ import Runix.Config (Config)
 import Runix.HTTP (HTTP, HTTPStreaming)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLM, interpretLLMWith, LlamaCppAuth(..), OpenRouterAuth(..))
+import Runix.Logging (Logging)
 import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent, StreamingEnabled)
 import Runix.RestAPI (RestEndpoint, RestAPI, restapiHTTP, llmRetry)
 import Runix.StreamChunk (StreamChunk)
@@ -119,7 +120,7 @@ data LLMRunner model r = LLMRunner
 modelInterpreter
   :: forall model r
   .  ( ModelName model, Provider model, Routing model, Default (RoutingState model)
-     , Members '[HTTP, Fail, Time, Sleep] r )
+     , Members '[HTTP, Fail, Time, Sleep, Logging] r )
   => ModelID -> model -> [ModelConfig model] -> IO (LLMRunner model r)
 modelInterpreter ViaLlamaCpp model configs = do
   endpoint <- maybe "http://localhost:8080/v1" id <$> lookupEnv "LLAMACPP_ENDPOINT"
@@ -156,7 +157,7 @@ resolveRoleRunner (KnownModel ViaOpenRouter model configs) = do
 streamingChain
   :: forall model p r a
   .  ( ModelName model, Provider model, Routing model, Default (RoutingState model), EnableStreaming model
-     , RestEndpoint p, Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r )
+     , RestEndpoint p, Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging] r )
   => p -> model -> [ModelConfig model] -> Sem (LLM model : r) a -> Sem r a
 streamingChain auth model configs =
     restapiHTTP auth
@@ -171,7 +172,7 @@ streamingChain auth model configs =
 --   (but fully capability-equipped) type variable, same shape as e.g.
 --   @Data.Some.withSome@.
 withKnownModel
-  :: Members '[HTTP, Fail, Time, Sleep] r
+  :: Members '[HTTP, Fail, Time, Sleep, Logging] r
   => KnownModel
   -> (forall model. ( ModelName model, Provider model, Routing model, Default (RoutingState model)
                      , HasTools model, HasJSON model, HasReasoning model, SupportsSystemPrompt (ProviderOf model)
@@ -198,6 +199,6 @@ data SomeLLMRunner where
   SomeLLMRunner :: ( HasTools model, HasJSON model, HasReasoning model
                    , SupportsSystemPrompt (ProviderOf model)
                    , SupportsMaxTokens (ProviderOf model), SupportsTemperature (ProviderOf model) )
-                => (forall r a. Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled] r
+                => (forall r a. Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging] r
                     => Sem (LLM model : r) a -> Sem r a)
                 -> SomeLLMRunner
