@@ -16,6 +16,16 @@ import { useMentionAutocomplete } from "./mention-autocomplete";
 import { useLoreTree, flattenLore } from "./lore-selector";
 import { branchFileUrl, saveRawFile } from "@/lib/ws";
 
+// tiptap-markdown's Markdown extension adds `storage.markdown` at runtime
+// (see TextEditPanel below) but ships no type augmentation for it, so
+// @tiptap/core's own Storage interface has no idea it exists — declared
+// once here rather than casting `editor.storage as any` at each call site.
+declare module "@tiptap/core" {
+  interface Storage {
+    markdown: { getMarkdown: () => string };
+  }
+}
+
 // A character's presence, as a set of this file's own atom tickIds — not
 // fromTickId/toTickId, since a character can enter/leave more than once
 // within one file, producing more than one bar. The file view doesn't care
@@ -169,10 +179,9 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
         </div>
       )}
       {hidden && (
-        <EyeOff
-          title="Hidden from an agent's context"
-          style={{ position: "absolute", top: 2, left: compact ? -2 : 12, width: 11, height: 11, color: "var(--text-ghost)" }}
-        />
+        <span title="Hidden from an agent's context" style={{ position: "absolute", top: 2, left: compact ? -2 : 12 }}>
+          <EyeOff style={{ width: 11, height: 11, color: "var(--text-ghost)" }} />
+        </span>
       )}
 
       {editing ? (

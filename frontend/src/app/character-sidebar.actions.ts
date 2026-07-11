@@ -168,18 +168,26 @@ export function trackJournal(characterBranch: string, fromPath: string) {
 // view sends, just addressed at the journal's own connection. 'marker' is
 // the journal's own local time-travel position (see character-sidebar.tsx
 // / lib/utils.nearestJournalMarker), not the store's global 'rebaseMarker'
-// (which is scoped to whichever scene file is open).
+// (which is scoped to whichever scene file is open). atRebase needs the
+// journal's own current ticks to resolve the marker's pivot fresh (see
+// wsHelpers.atRebase) — read from the same open connection record the
+// send itself goes through, not threaded in as a separate parameter. A
+// journal has no sub-journals of its own, so its own 'journalMarkers'
+// argument is always empty.
 export function appendJournal(branch: string, content: string, marker: string | null) {
-  getServerCache().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.append", content }, {}));
+  const jc = getServerCache().openJournals[branch];
+  jc?.conn.send(atRebase(marker, jc.ticks, { type: "chat.append", content }, {}));
 }
 
 export function editJournalAtom(branch: string, tickId: string, content: string, marker: string | null) {
-  getServerCache().openJournals[branch]?.conn.send(atRebase(marker, { type: "edit.atom", tickId, content }, {}));
+  const jc = getServerCache().openJournals[branch];
+  jc?.conn.send(atRebase(marker, jc.ticks, { type: "edit.atom", tickId, content }, {}));
   dropFromSelection([tickId]);
 }
 
 export function deleteJournalAtom(branch: string, tickId: string, marker: string | null) {
-  getServerCache().openJournals[branch]?.conn.send(atRebase(marker, { type: "delete.atom", tickId }, {}));
+  const jc = getServerCache().openJournals[branch];
+  jc?.conn.send(atRebase(marker, jc.ticks, { type: "delete.atom", tickId }, {}));
   dropFromSelection([tickId]);
 }
 
@@ -187,7 +195,8 @@ export function deleteJournalAtom(branch: string, tickId: string, marker: string
 // atom.swipe.cycle command the main file view sends (see fileview.actions.ts's
 // cycleSwipe), just addressed at the journal's own connection.
 export function cycleJournalSwipe(branch: string, tickId: string, marker: string | null) {
-  getServerCache().openJournals[branch]?.conn.send(atRebase(marker, { type: "atom.swipe.cycle", tickId }, {}));
+  const jc = getServerCache().openJournals[branch];
+  jc?.conn.send(atRebase(marker, jc.ticks, { type: "atom.swipe.cycle", tickId }, {}));
 }
 
 // Fix, scoped to the journal itself — this is what "rewrite to exclude
@@ -196,5 +205,6 @@ export function cycleJournalSwipe(branch: string, tickId: string, marker: string
 // character-sidebar.tsx's selection-intersection), sent as a chat.fixer
 // on the journal's connection, same shape as the main view's chatFix.
 export function journalFix(branch: string, text: string, targets: string[], marker: string | null) {
-  getServerCache().openJournals[branch]?.conn.send(atRebase(marker, { type: "chat.fixer", text, targets }, {}));
+  const jc = getServerCache().openJournals[branch];
+  jc?.conn.send(atRebase(marker, jc.ticks, { type: "chat.fixer", text, targets }, {}));
 }

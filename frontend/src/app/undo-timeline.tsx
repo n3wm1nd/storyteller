@@ -99,7 +99,7 @@ const TINT_HUE: Record<string, number> = {
   root:     30,   // branch creation, structural not content
 };
 function kindColor(kind: string | null, alpha?: number): string {
-  const targetH = (kind && TINT_HUE[kind]) ?? BASE_H;
+  const targetH = kind ? (TINT_HUE[kind] ?? BASE_H) : BASE_H;
   const h = BASE_H + (targetH - BASE_H) * TINT_AMOUNT;
   const triple = `${BASE_L} ${BASE_C} ${h.toFixed(1)}`;
   return alpha === undefined ? `oklch(${triple})` : `oklch(${triple} / ${alpha})`;

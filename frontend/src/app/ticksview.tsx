@@ -49,11 +49,11 @@ function TickRow({
   const [addingNote, setAddingNote] = useState(false);
   const [noteText, setNoteText] = useState("");
 
-  const refsOf = (t: WireTick): string[] => t.refs ?? [];
+  const refsOf = (t: WireTick | undefined): string[] => t?.refs ?? [];
 
   // Ordering invariant: refs must be older (below); things that ref you must be newer (above).
   const canMoveUp   = !isFirst && !refsOf(prevTick).includes(tick.tickId);
-  const canMoveDown = !isLast  && !refsOf(nextTick).includes(tick.tickId) && !refsOf(tick).includes(nextTick?.tickId);
+  const canMoveDown = !isLast  && !refsOf(nextTick).includes(tick.tickId) && (!nextTick || !refsOf(tick).includes(nextTick.tickId));
 
   const tickContent = () => {
     if (tick.kind === "note") return (

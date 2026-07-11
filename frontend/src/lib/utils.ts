@@ -9,7 +9,7 @@ export function tickChain(ticks: Record<string, WireTick>, head: string | null):
   const seen = new Set<string>();
   while (cur && ticks[cur] && !seen.has(cur)) {
     seen.add(cur);
-    const t = ticks[cur];
+    const t: WireTick = ticks[cur];
     if (t.kind !== "root") chain.push(t);
     cur = t.parent;
   }
