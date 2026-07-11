@@ -21,6 +21,7 @@
 module Storyteller.Core.Branch
   ( BranchOp(..)
   , runStorage
+  , queryStorage
   ) where
 
 import Polysemy
@@ -56,3 +57,17 @@ runStorage
   .  Member (BranchOp branch) r
   => (forall n. Core.StoreM n => Core.StoreT n a) -> Sem r (a, [(TickId, TickId)])
 runStorage comp = send @(BranchOp branch) (RunStorage comp)
+
+-- | 'runStorage', for callers who only want the result and have no use for
+--   the rename mapping — which in practice means a computation that
+--   doesn't call 'Storage.Core.store'\/'Storage.Ops.editAtomAt'\/etc. at
+--   all, since anything that never mints or rebases a tick always comes
+--   back with an empty mapping anyway. Doesn't (and can't, short of a
+--   separate read-only fragment of 'Core.StoreT') stop a computation from
+--   writing here; it only relieves the caller of the @fst <$>@ they'd
+--   otherwise write at every one of these call sites.
+queryStorage
+  :: forall branch r a
+  .  Member (BranchOp branch) r
+  => (forall n. Core.StoreM n => Core.StoreT n a) -> Sem r a
+queryStorage comp = fst <$> runStorage @branch comp

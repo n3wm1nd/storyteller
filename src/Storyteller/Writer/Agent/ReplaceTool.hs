@@ -187,8 +187,10 @@ reworkAtomsAt path instruction idxs = catMaybes <$> mapM oneAt idxs
           case mProposal of
             Nothing -> return Nothing
             Just (ReplaceProposal newText reason) -> do
-              (newHash, _) <- runStorage @branch (Ops.editAtomAt (Core.ObjectHash tid) newText)
-              let newTid = TickId (Core.unObjectHash newHash)
-              _ <- runStorage @branch (Tick.storeAs (Fixup [newTid] reason))
+              (newTid, _) <- runStorage @branch (do
+                newHash <- Ops.editAtomAt (Core.ObjectHash tid) newText
+                let tid' = TickId (Core.unObjectHash newHash)
+                _ <- Tick.storeAs (Fixup [tid'] reason)
+                return tid')
               return (Just newTid)
         _ -> return Nothing

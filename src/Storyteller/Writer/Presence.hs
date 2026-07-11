@@ -17,18 +17,21 @@ module Storyteller.Writer.Presence
   , presentAt
   ) where
 
+import Control.Monad (join)
+import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
-import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, runStorage, queryStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
-import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
+import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick)
 import Storyteller.Writer.Types (Character(..), Presence(..), PresenceEvent(..))
 
 -- | Record a character entering or leaving the scene on @file@, on
@@ -54,47 +57,23 @@ recordPresence
 recordPresence file character@(Character branch) event =
   getBranch branch >>= \case
     Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName branch))
-    Just _  -> do
-      (ticks, _) <- runStorage @branch (Tick.fileTicksOf file)
-      priorActive <- case trailingPresenceFor character ticks of
-        Nothing  -> pure (presentIn character ticks)
+    Just _  -> fst <$> runStorage @branch (do
+      mTrailing <- trailingPresenceFor file character
+      priorActive <- case mTrailing of
+        Nothing  -> presentOn file character
         Just tid -> do
-          _           <- runStorage @branch (Ops.deleteTick (toHash tid))
-          (ticks', _) <- runStorage @branch (Tick.fileTicksOf file)
-          pure (presentIn character ticks')
+          _ <- Ops.deleteTick (toHash tid)
+          presentOn file character
       let wantsActive = event == Enter
       if wantsActive == priorActive
         then pure Nothing
-        else Just . fst <$> runStorage @branch (fmap toTickId (Tick.storeAs (Presence file character event)))
+        else Just . toTickId <$> Tick.storeAs (Presence file character event))
   where
     toHash (TickId t) = Core.ObjectHash t
     toTickId (Core.ObjectHash t) = TickId t
 
--- | Whether @character@ is present as of the end of @ticks@ (already
---   whatever file *and* point in that file's history the caller cares
---   about -- see 'presentOn'\/'presentAt', which supply both), found by
---   walking backward until the first presence tick that mentions this
---   character specifically. Enter means present, Leave means not; running
---   out of ticks without finding one means not present either -- a fresh
---   file starts with nobody in it (see 'Storyteller.Writer.Types.Presence'),
---   so there is no earlier state to fall back to, only empty.
---
---   Deliberately single-character: answering for one character only ever
---   needs that character's own last word, not a fold that has to also
---   track every other character's state to get there (contrast
---   'activeCharacters', which genuinely needs all of them, for the
---   "list everyone present" query 'activeCharactersFor' answers).
-presentIn :: Character -> [FileTick] -> Bool
-presentIn (Character branch) = go . reverse
-  where
-    go [] = False
-    go (ft : rest)
-      | ftKind ft /= "presence"                                        = go rest
-      | lookup "character" (ftFields ft) /= Just (unBranchName branch) = go rest
-      | otherwise = lookup "event" (ftFields ft) == Just "enter"
-
 -- | Every character active as of the end of @ticks@ -- the "list everyone
---   present" counterpart to 'presentIn's "is this one character present":
+--   present" counterpart to 'presentOn's "is this one character present":
 --   genuinely needs to fold every character's own state, since the answer
 --   *is* the set of characters. Mirrors the frontend's
 --   'activeCharacterBranches' (@lib/utils.ts@).
@@ -116,7 +95,7 @@ activeCharactersFor
   .  Members '[BranchOp branch, Fail] r
   => FilePath -> Sem r [Character]
 activeCharactersFor file = do
-  (ticks, _) <- runStorage @branch (Tick.fileTicksOf file)
+  ticks <- queryStorage @branch (Tick.fileTicksOf file)
   pure (Set.toList (activeCharacters ticks))
 
 -- | Is @character@ currently present on @file@ -- a universal, composable
@@ -150,45 +129,41 @@ presentOn file character = do
 presentAt :: Core.StoreM m => TickId -> FilePath -> Character -> Core.StoreT m Bool
 presentAt (TickId tid) = presentAsOf (Core.ObjectHash tid)
 
--- | The walk both 'presentOn' and 'presentAt' are built on: read @start@'s
---   own tick, and if it's a presence tick naming @character@ on @file@,
---   that's the answer (Enter -> present, Leave -> not) -- stop right there,
---   nothing earlier can still be relevant since a later word always wins.
---   Otherwise follow 'tickParent' to the previous tick and repeat; running
---   out of chain (root, no parent) means not present -- a fresh file
---   starts with nobody in it (see 'Storyteller.Writer.Types.Presence'),
---   so there is no earlier state to fall back to, only empty. Each step is
---   exactly one 'Tick.readTypesTick' -- no upfront pass over the rest of
---   the chain, so a character whose last word was one tick back costs one
---   read, not a read of everything that ever happened on @file@.
+-- | The walk both 'presentOn' and 'presentAt' are built on, via
+--   'Tick.findTickFrom': stop at the first presence tick naming
+--   @character@ on @file@ (Enter -> present, Leave -> not) -- nothing
+--   earlier can still be relevant since a later word always wins. Running
+--   out of chain (root, no parent) without finding one means not present
+--   either -- a fresh file starts with nobody in it (see
+--   'Storyteller.Writer.Types.Presence'), so there is no earlier state to
+--   fall back to, only empty. Each step is exactly one
+--   'Tick.readTypesTick' -- no upfront pass over the rest of the chain, so
+--   a character whose last word was one tick back costs one read, not a
+--   read of everything that ever happened on @file@.
 presentAsOf :: Core.StoreM m => Core.ObjectHash -> FilePath -> Character -> Core.StoreT m Bool
-presentAsOf start file character = go start
+presentAsOf start file character = fromMaybe False <$> Tick.findTickFrom start step
   where
-    go h = do
-      t <- Tick.readTypesTick h
-      case fromTick @Presence t of
-        Just p | presenceFile p == file, presenceCharacter p == character ->
-          pure (presenceEvent p == Enter)
-        _ -> case tickParent t of
-          Nothing          -> pure False
-          Just (TickId ph) -> go (Core.ObjectHash ph)
+    step _ t = case fromTick @Presence t of
+      Just p | presenceFile p == file, presenceCharacter p == character ->
+        Just (presenceEvent p == Enter)
+      _ -> Nothing
 
 -- | The most recent presence tick for @character@ on this file, if nothing
 --   since it has actually changed the file's content — i.e. it's still the
 --   "trailing" event for this character since the last atom. Walks newest
---   to oldest: stops (no trailing tick) the moment an atom is hit, since
---   that means real content was written after whatever this character's
---   state last was; stops (found) the moment a presence tick for this
---   exact character is hit; skips anything else (other characters'
---   presence ticks, prompts, notes — none of them represent "an atom
---   happened" or say anything about this character).
-trailingPresenceFor :: Character -> [FileTick] -> Maybe TickId
-trailingPresenceFor (Character branch) ticks = go (reverse ticks)
+--   to oldest (via 'Tick.findTick'): stops (no trailing tick) the moment
+--   an atom on @file@ is hit, since that means real content was written
+--   after whatever this character's state last was; stops (found) the
+--   moment a presence tick for this exact character on @file@ is hit;
+--   skips anything else (atoms on other files, other characters' presence
+--   ticks, prompts, notes — none of them represent "an atom happened on
+--   this file" or say anything about this character) and keeps walking.
+trailingPresenceFor :: Core.StoreM m => FilePath -> Character -> Core.StoreT m (Maybe TickId)
+trailingPresenceFor file character = join <$> Tick.findTick step
   where
-    go [] = Nothing
-    go (ft : rest)
-      | ftKind ft == "atom" = Nothing
-      | ftKind ft == "presence"
-      , lookup "character" (ftFields ft) == Just (unBranchName branch)
-      = Just (TickId (ftTickId ft))
-      | otherwise = go rest
+    step h t
+      | Just a <- fromTick @Atom t, atomFile a == file = Just Nothing
+      | Just p <- fromTick @Presence t
+      , presenceFile p == file, presenceCharacter p == character
+      = Just (Just (TickId (Core.unObjectHash h)))
+      | otherwise = Nothing

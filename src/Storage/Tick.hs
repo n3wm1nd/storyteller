@@ -15,6 +15,8 @@ module Storage.Tick
   ( storeAs
   , getTypesTick
   , readTypesTick
+  , findTickFrom
+  , findTick
   , FileTick(..)
   , fileTicksOf
   , encodeTickData
@@ -176,6 +178,33 @@ readTypesTick h = do
 -- | Head's own tick, decoded.
 getTypesTick :: StoreM m => StoreT m ST.Tick
 getTypesTick = headHash >>= readTypesTick
+
+-- | Walk the chain backward from @start@, decoding one tick at a time via
+--   'readTypesTick' and stopping at the first one @f@ answers with a
+--   'Just' -- the short-circuiting counterpart to 'fileTicksOf': when the
+--   answer only ever depends on the most recent matching tick (a "what's
+--   this character's last word" or "is there a trailing X" query),
+--   this pays for one read per step until found, rather than
+--   materializing -- and cross-referencing -- the whole chain up front the
+--   way 'fileTicksOf' always must (it answers a different question: not
+--   "what's true as of here", but "everything relevant to this path,
+--   across the whole history"). Runs out (returns 'Nothing') at root, the
+--   same "no earlier state to fall back to" endpoint every hand-rolled
+--   walk of this shape already assumed.
+findTickFrom :: StoreM m => ObjectHash -> (ObjectHash -> ST.Tick -> Maybe a) -> StoreT m (Maybe a)
+findTickFrom start f = go start
+  where
+    go h = do
+      t <- readTypesTick h
+      case f h t of
+        Just a  -> return (Just a)
+        Nothing -> case ST.tickParent t of
+          Nothing              -> return Nothing
+          Just (TickId parent) -> go (ObjectHash parent)
+
+-- | 'findTickFrom', starting at head.
+findTick :: StoreM m => (ObjectHash -> ST.Tick -> Maybe a) -> StoreT m (Maybe a)
+findTick f = headHash >>= \h -> findTickFrom h f
 
 -- ---------------------------------------------------------------------------
 -- File-tick projection -- ported from "Storyteller.Core.StorageMonad"'s

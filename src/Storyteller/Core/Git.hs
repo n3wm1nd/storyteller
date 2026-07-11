@@ -55,6 +55,7 @@ module Storyteller.Core.Git
     -- both modules just to run one against real git.
   , BranchOp(..)
   , runStorage
+  , queryStorage
   , runBranchOpGit
   , runStoryFSGit
   , runBranchAndFS
@@ -96,7 +97,7 @@ import qualified System.FilePath.Glob as Glob
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
-import Storyteller.Core.Branch (BranchOp(..), runStorage)
+import Storyteller.Core.Branch (BranchOp(..), runStorage, queryStorage)
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
