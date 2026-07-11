@@ -1,0 +1,166 @@
+cabal-version:      3.0
+name:               gitlib-effect
+version:            0.1.0.0
+synopsis:           General-purpose git effect + libgit2 FFI interpreter.
+description:        Pure git vocabulary as a Polysemy effect, with a CLI
+                    -callout interpreter and a libgit2 FFI interpreter.
+                    Intended to migrate to runix proper once stable.
+license:            MIT
+author:             storyteller authors
+maintainer:         authors@storyteller.dev
+category:           Development
+build-type:         Custom
+
+-- | 'Setup.hs' shells out to 'cbits/build-libgit2.sh' in 'preBuild' to
+-- produce the static @libgit2.a@ this package's FFI bindings link
+-- against, before GHC needs it -- see 'Setup.hs' and the build script's
+-- own module doc for why (vendored + statically built with no network
+-- transports, rather than depending on a system libgit2 install).
+custom-setup
+  setup-depends: base >=4.18 && <5
+               , Cabal >=3.0
+               , process
+               , directory
+               , filepath
+
+library
+  exposed-modules: Runix.Git
+                  , Runix.Git.Hash
+                  , Runix.Git.Batch
+                  , Runix.Git.Store
+                  , Runix.Git.FFI
+  other-modules:    Runix.Git.FFI.Raw
+                  , Runix.Git.FFI.Types
+  build-depends:    base >=4.18 && <5
+                  , polysemy
+                  , polysemy-plugin
+                  , text
+                  , bytestring
+                  , containers
+                  , runix
+                  , crypton
+                  , memory
+                  , process
+                  , directory
+                  , filepath
+                  , zlib
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  -- Declared relative (resolved against this package's directory) so
+  -- configure's foreign-library check and normal compilation work; Cabal's
+  -- final package-db registration step rejects relative library-dirs
+  -- outright, so Setup.hs's confHook rewrites these to absolute paths
+  -- (computed at configure time, since the repo may be cloned anywhere)
+  -- on the resolved LocalBuildInfo before returning it.
+  include-dirs:     cbits/build/install/include
+  extra-lib-dirs:   cbits/build/install/lib
+  extra-libraries:  git2
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+
+-- | Property tests for 'Runix.Git.Hash': checks the in-process hash
+-- computation against real @git hash-object@ as the oracle ('GitCliHash').
+test-suite gitlib-effect-test
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  other-modules:    GitCliHash
+                  , GitHashSpec
+                  , GitIOSpec
+                  , GitBatchSpec
+                  , GitStoreSpec
+                  , GitFFISpec
+                  , TestTempRepo
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , process
+                  , temporary
+                  , directory
+                  , filepath
+                  , containers
+                  , polysemy
+                  , runix
+                  , hspec >=2.11
+                  , QuickCheck >=2.14
+  hs-source-dirs:   test
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+
+-- | Throughput comparison: in-process hashing ('Runix.Git.Hash') vs
+-- shelling out to @git hash-object@ per call (the implementation it
+-- replaces) -- puts real ops/s numbers on the round-trip this is meant to
+-- remove. Not a correctness check (see 'gitlib-effect-test' for that).
+benchmark gitlib-effect-hash-bench
+  type:             exitcode-stdio-1.0
+  main-is:          HashBench.hs
+  other-modules:    GitCliHash
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , process
+  hs-source-dirs:   test, bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2
+
+-- | Throughput comparison: reading objects through a persistent
+-- @git cat-file --batch@ process vs one-shot @git cat-file@ calls (the
+-- approach 'Runix.Git.runGitIO' uses today). Not a correctness check --
+-- see @GitBatchSpec@ (gitlib-effect-test) for that.
+benchmark gitlib-effect-batch-bench
+  type:             exitcode-stdio-1.0
+  main-is:          BatchBench.hs
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , process
+                  , temporary
+                  , polysemy
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2
+
+-- | Throughput comparison: 'Runix.Git.runGitIOPerCall' (CLI) vs
+-- 'Runix.Git.runGitFFIPerCall' (libgit2 FFI), isolated from the live
+-- server, for the write/read pattern production workloads are actually
+-- dominated by. Not a correctness check -- see @GitFFISpec@ for that.
+benchmark gitlib-effect-ffi-bench
+  type:             exitcode-stdio-1.0
+  main-is:          FFIBench.hs
+  build-depends:    base >=4.18 && <5
+                  , gitlib-effect
+                  , bytestring
+                  , text
+                  , filepath
+                  , process
+                  , temporary
+                  , polysemy
+                  , runix
+  hs-source-dirs:   bench
+  default-language: Haskell2010
+  ghc-options:      -Wall
+                    -Wcompat
+                    -Widentities
+                    -Wredundant-constraints
+                    -fwarn-tabs
+                    -O2

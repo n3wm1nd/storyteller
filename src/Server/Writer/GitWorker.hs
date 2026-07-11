@@ -9,12 +9,13 @@
 {-# LANGUAGE GADTs #-}
 
 -- | A single git-storage worker thread for the whole server process,
--- replacing one interpreter stack (and one @git cat-file --batch@ reader)
--- per connection with one shared thread every connection and HTTP request
--- submits jobs to. See PLAN-git-storage-worker.md for the full design and
--- why this belongs here rather than in @gitlib-effect@.
+-- replacing one interpreter stack (formerly one @git cat-file --batch@
+-- reader, now one open libgit2 repository handle) per connection with one
+-- shared thread every connection and HTTP request submits jobs to. See
+-- PLAN-git-storage-worker.md for the full design and why this belongs
+-- here rather than in @gitlib-effect@.
 --
--- 'startGitWorker' opens the one 'Batch.BatchReader' this process will ever
+-- 'startGitWorker' opens the one repository handle this process will ever
 -- use, forks the worker loop, and links it to its caller so a worker crash
 -- (a bug, not an ordinary 'Fail') takes the whole server down instead of
 -- silently wedging git access -- see the module-level design doc for why
@@ -64,10 +65,17 @@ data GitJob = forall a. GitJob (Git IO a) (MVar (Either String a))
 
 newtype GitWorkerQueue = GitWorkerQueue (TQueue GitJob)
 
--- | Start the worker: open the one 'Batch.BatchReader' this process will
--- ever use, then fork the loop that owns it for the rest of the process's
--- life. Linked to the calling thread so an unexpected crash propagates
--- rather than silently stopping git access for the whole server.
+-- | Start the worker: open the one @git cat-file --batch@ reader this
+-- process will ever use, then fork the loop that owns it for the rest of
+-- the process's life. Linked to the calling thread so an unexpected crash
+-- propagates rather than silently stopping git access for the whole
+-- server.
+--
+-- TEMPORARY: reverted to the CLI interpreter to isolate whether a live
+-- production slowdown is actually caused by the FFI interpreter --
+-- 'Runix.Git.runGitFFI'/'Runix.Git.FFI.openRepository' proved faster in
+-- every isolated gitlib-effect-ffi-bench measurement (writes, reads, ref
+-- writes), so this is a live A/B check, not a rollback decision.
 startGitWorker :: FilePath -> TChan BranchNotification -> IO GitWorkerQueue
 startGitWorker repo notifyChan = do
   queue <- newTQueueIO

@@ -19,6 +19,9 @@ module GitIOSpec (spec) where
 import Polysemy
 import Polysemy.Fail (Fail, runFail)
 import Polysemy.Resource (Resource, runResource)
+import System.Directory (doesDirectoryExist)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
 import Runix.Cmd (Cmd, Cmds, cmdsIO, interpretCmd)
@@ -85,6 +88,18 @@ spec = describe "runGitIO (real git subprocess interpreter)" $ do
         cd <- readCommit child
         return (commitParents cd, root)
       fst parents `shouldBe` [snd parents]
+
+  it "creates a bare repo at construction time when the path doesn't exist yet, then writes to it" $
+    withSystemTempDirectory "gitlib-effect-spec-missing" $ \parent -> do
+      let repo = parent </> "repo"
+      existsBefore <- doesDirectoryExist repo
+      content <- runInRepo repo $ do
+        h <- writeBlob "bootstrapped bare repo"
+        readBlob h
+      existsAfter <- doesDirectoryExist (repo </> "objects")
+      existsBefore `shouldBe` False
+      existsAfter `shouldBe` True
+      content `shouldBe` "bootstrapped bare repo"
 
   it "isAncestorOfAny finds a target several generations back, including the head itself" $
     withTempRepo $ \repo -> do

@@ -12,34 +12,6 @@ category:           Development
 build-type:         Simple
 data-files:         test/fixtures/minimal.yaml
 
--- | General-purpose git effect + libgit2 interpreter.
---   Intended to migrate to runix proper once stable.
-library gitlib-effect
-  exposed-modules:  Runix.Git
-                  , Runix.Git.Hash
-                  , Runix.Git.Batch
-                  , Runix.Git.Store
-  build-depends:    base >=4.18 && <5
-                  , polysemy
-                  , polysemy-plugin
-                  , text
-                  , bytestring
-                  , containers
-                  , runix
-                  , crypton
-                  , memory
-                  , process
-                  , directory
-                  , filepath
-                  , zlib
-  hs-source-dirs:   gitlib-effect/src
-  default-language: Haskell2010
-  ghc-options:      -Wall
-                    -Wcompat
-                    -Widentities
-                    -Wredundant-constraints
-                    -fwarn-tabs
-
 library
   exposed-modules:  Storage.Core
                   , Storage.FS
@@ -123,7 +95,7 @@ library
                   , Glob
                   , polysemy
                   , template-haskell
-                  , storyteller:gitlib-effect
+                  , gitlib-effect
                   , polysemy-plugin
                   , aeson
                   , autodocodec
@@ -157,7 +129,7 @@ library
 common exe-common
   build-depends:    base >=4.18 && <5
                   , storyteller
-                  , storyteller:gitlib-effect
+                  , gitlib-effect
                   , runix
                   , universal-llm
                   , text
@@ -276,7 +248,7 @@ test-suite storyteller-test
   autogen-modules:  Paths_storyteller
   build-depends:    base >=4.18 && <5
                   , storyteller
-                  , storyteller:gitlib-effect
+                  , gitlib-effect
                   , polysemy
                   , polysemy-plugin
                   , containers
@@ -340,7 +312,7 @@ executable storyteller-agent-integration-test
   autogen-modules:  Paths_storyteller
   build-depends:    base >=4.18 && <5
                   , storyteller
-                  , storyteller:gitlib-effect
+                  , gitlib-effect
                   , polysemy
                   , polysemy-plugin
                   , text
@@ -371,7 +343,7 @@ benchmark storyteller-cascade-perf
   other-modules:    Git.Mock
   build-depends:    base >=4.18 && <5
                   , storyteller
-                  , storyteller:gitlib-effect
+                  , gitlib-effect
                   , polysemy
                   , polysemy-plugin
                   , containers
@@ -401,7 +373,7 @@ benchmark real-git-perf
   main-is:          RealGitPerf.hs
   build-depends:    base >=4.18 && <5
                   , storyteller
-                  , storyteller:gitlib-effect
+                  , gitlib-effect
                   , polysemy
                   , polysemy-plugin
                   , containers
@@ -420,77 +392,3 @@ benchmark real-git-perf
                     -O2
                     -fplugin=Polysemy.Plugin
 
--- | Property tests for 'Runix.Git.Hash': checks the in-process hash
--- computation against real @git hash-object@ as the oracle ('GitCliHash').
-test-suite gitlib-effect-test
-  type:             exitcode-stdio-1.0
-  main-is:          Main.hs
-  other-modules:    GitCliHash
-                  , GitHashSpec
-                  , GitIOSpec
-                  , GitBatchSpec
-                  , GitStoreSpec
-                  , TestTempRepo
-  build-depends:    base >=4.18 && <5
-                  , storyteller:gitlib-effect
-                  , bytestring
-                  , text
-                  , process
-                  , temporary
-                  , polysemy
-                  , runix
-                  , hspec >=2.11
-                  , QuickCheck >=2.14
-  hs-source-dirs:   gitlib-effect/test
-  default-language: Haskell2010
-  ghc-options:      -Wall
-                    -Wcompat
-                    -Widentities
-                    -Wredundant-constraints
-                    -fwarn-tabs
-
--- | Throughput comparison: in-process hashing ('Runix.Git.Hash') vs
--- shelling out to @git hash-object@ per call (the implementation it
--- replaces) -- puts real ops/s numbers on the round-trip this is meant to
--- remove. Not a correctness check (see 'gitlib-effect-test' for that).
-benchmark gitlib-effect-hash-bench
-  type:             exitcode-stdio-1.0
-  main-is:          HashBench.hs
-  other-modules:    GitCliHash
-  build-depends:    base >=4.18 && <5
-                  , storyteller:gitlib-effect
-                  , bytestring
-                  , text
-                  , process
-  hs-source-dirs:   gitlib-effect/test, gitlib-effect/bench
-  default-language: Haskell2010
-  ghc-options:      -Wall
-                    -Wcompat
-                    -Widentities
-                    -Wredundant-constraints
-                    -fwarn-tabs
-                    -O2
-
--- | Throughput comparison: reading objects through a persistent
--- @git cat-file --batch@ process vs one-shot @git cat-file@ calls (the
--- approach 'Runix.Git.runGitIO' uses today). Not a correctness check --
--- see @GitBatchSpec@ (gitlib-effect-test) for that.
-benchmark gitlib-effect-batch-bench
-  type:             exitcode-stdio-1.0
-  main-is:          BatchBench.hs
-  build-depends:    base >=4.18 && <5
-                  , storyteller:gitlib-effect
-                  , bytestring
-                  , text
-                  , process
-                  , temporary
-                  , polysemy
-                  , runix
-  hs-source-dirs:   gitlib-effect/bench
-  default-language: Haskell2010
-  ghc-options:      -Wall
-                    -Wcompat
-                    -Widentities
-                    -Wredundant-constraints
-                    -fwarn-tabs
-                    -O2

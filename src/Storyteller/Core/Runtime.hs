@@ -33,7 +33,6 @@ import Polysemy
 import Polysemy.Fail
 import Polysemy.Error (Error, runError)
 import Polysemy.Resource (Resource, runResource)
-import Runix.Cmd (Cmds, Cmd, cmdsIO, interpretCmd)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
@@ -44,7 +43,7 @@ import Runix.HTTP (HTTP, HTTPStreaming, httpIOStreaming)
 import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
-import Runix.Git (Git, runGitIOPerCall, withGitCache)
+import Runix.Git (Git, runGitFFIPerCall, withGitCache)
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
@@ -138,32 +137,31 @@ runInfrastructureWith runGit action =
 --   Every CLI executable uses this as its base; branch/storage/LLM go on
 --   top. The server uses 'runInfrastructureWith' directly instead, with
 --   'Server.Writer.GitWorker.runGitViaWorker' in place of the
---   'runGitIOPerCall' below -- see PLAN-git-storage-worker.md.
+--   'runGitFFIPerCall' below -- see PLAN-git-storage-worker.md.
 --
---   'runGitIOPerCall' opens a persistent @git cat-file --batch@ process
---   for reads and closes it when this call finishes ('Resource'/'bracket',
---   see 'Runix.Git.runGitIOPerCall') -- scoped to one 'runInfrastructure'
+--   'runGitFFIPerCall' opens the repo via libgit2 (no subprocess, no
+--   @git@ binary dependency at all -- see 'Runix.Git.FFI') and closes it
+--   when this call finishes ('Resource'/'bracket', see
+--   'Runix.Git.runGitFFIPerCall') -- scoped to one 'runInfrastructure'
 --   invocation, not shared across calls; fine for a short-lived CLI
 --   process, which is all that still uses this function.
 --   'runResource' interprets that here so nothing above this layer
 --   (agents, handlers, executables) needs to know 'Resource' exists.
---   'runGitIOPerCall' converts every failure from the reader into 'Fail'
---   rather than a raw IO exception (see its module), which is what lets
---   'runResource's purely-'Sem'-level bracket -- it has no IO awareness at
---   all -- still guarantee the reader gets closed on that path.
+--   'runGitFFIPerCall' converts every failure into 'Fail' rather than a
+--   raw IO exception (see its module), which is what lets 'runResource's
+--   purely-'Sem'-level bracket -- it has no IO awareness at all -- still
+--   guarantee the repo handle gets closed on that path.
 runInfrastructure
   :: Members '[Error String, Embed IO] r
   => FilePath
   -> String
-  -> Sem (Random : HTTP : HTTPStreaming : Sleep : Time : Git : Cmd "git" : Cmds : Resource : Fail : Logging : r) a
+  -> Sem (Random : HTTP : HTTPStreaming : Sleep : Time : Git : Resource : Fail : Logging : r) a
   -> Sem r a
 runInfrastructure repoPath _endpoint =
     loggingIO
   . failLog
   . runResource
-  . cmdsIO
-  . interpretCmd @"git"
-  . runInfrastructureWith (runGitIOPerCall repoPath . withGitCache)
+  . runInfrastructureWith (runGitFFIPerCall repoPath . withGitCache)
   -- No CLI executable needs 'Undo' in its own row -- 'raise' adds it at the
   -- head for free, matching where 'runInfrastructureWith' now expects it.
   . raise

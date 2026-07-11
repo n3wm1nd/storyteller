@@ -15,9 +15,13 @@
 -- Pure git vocabulary: object hashes, refs, commits, trees, blobs.
 -- No storyteller concepts leak in here.
 --
--- The interpreter uses @Cmd "git"@ from runix. When a maintained libgit2
--- binding becomes available for the current GHC, the interpreter can be
--- swapped without touching the effect or anything above it.
+-- Two interpreters exist: 'runGitIO'/'runGitIOPerCall' (@Cmd "git"@
+-- subprocess callouts, with the hottest paths already bypassing the
+-- subprocess -- see 'Runix.Git.Hash'/'Runix.Git.Store'/'Runix.Git.Batch')
+-- and 'Runix.Git.FFI's libgit2-backed interpreter, which replaces the
+-- remaining subprocess calls (refs, tree/commit parsing, ancestry) with
+-- in-process libgit2 calls. Both satisfy the same 'Git' effect, so
+-- anything above this module is interpreter-agnostic.
 --
 -- Intended to move to runix proper once stable.
 module Runix.Git
@@ -51,17 +55,20 @@ module Runix.Git
     -- * Interpreter
   , runGitIO
   , runGitIOPerCall
+  , runGitFFI
+  , runGitFFIPerCall
 
     -- * Object cache interceptor
   , withGitCache
   ) where
 
 import qualified Control.Exception as Exception
+import Control.Monad (unless)
 import qualified Data.ByteArray.Encoding as BA
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
-import Data.List (sortBy)
+import Data.List (find, sortBy)
 import Data.Ord (comparing)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -70,6 +77,7 @@ import Data.Maybe (mapMaybe)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import System.Directory (doesDirectoryExist)
 
 import Polysemy
 import Polysemy.Fail
@@ -78,6 +86,7 @@ import Polysemy.State (get, modify, evalState)
 
 import Runix.Cmd (Cmd, callIn, CmdOutput(..))
 import qualified Runix.Git.Batch as Batch
+import qualified Runix.Git.FFI as FFI
 import qualified Runix.Git.Hash as Hash
 import qualified Runix.Git.Store as Store
 
@@ -182,12 +191,27 @@ runGitIO
   -> Sem (Git : r) a
   -> Sem r a
 runGitIO repo withReader action = do
+  ensureRepoExists repo
   -- Resolved once per interpreter run (a single subprocess call), not per
   -- write: every write below needs the actual @.git@ directory (not the
   -- worktree root) to write loose objects directly, and this covers bare
   -- repos and worktrees, not just the common "repo/.git" layout.
   gitDir <- resolveGitDir repo
   runGitIOWith repo gitDir withReader action
+
+-- | Not an effect operation -- a plain, one-shot check, called wherever a
+-- @.git@-path-scoped subprocess is about to be spawned against @repo@ for
+-- the first time (both here and in 'runGitIOPerCall', which opens its own
+-- batch reader -- itself a subprocess spawned with @repo@ as its cwd --
+-- before 'runGitIO' ever gets a chance to run this). Mirrors what the FFI
+-- interpreter does natively via @git_repository_init@ with no subprocess
+-- at all. Only triggers when @repo@ doesn't exist yet (e.g. the server's
+-- first run against a fresh path); an existing path is assumed to already
+-- be a valid repo, exactly as every other operation here always has.
+ensureRepoExists :: Members '[Cmd "git", Embed IO] r => FilePath -> Sem r ()
+ensureRepoExists repo = do
+  exists <- embed (doesDirectoryExist repo)
+  unless exists $ git_ "." ["init", "-q", "--bare", repo]
 
 resolveGitDir :: Members '[Cmd "git", Fail] r => FilePath -> Sem r FilePath
 resolveGitDir repo = do
@@ -238,15 +262,7 @@ runGitIOWith repo gitDir withReader =
       -- is the dominant real-world cost a deep tail-replay pays -- see
       -- 'Runix.Git.Store's own module doc.
       WriteCommit cd -> do
-        let parentLines = T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
-            raw = "tree " <> unObjectHash (commitTree cd) <> "\n"
-               <> parentLines
-               <> "author . <.> 0 +0000\n"
-               <> "committer . <.> 0 +0000\n"
-               <> "\n"
-               <> commitMessage cd <> "\n"
-            rawBytes = TE.encodeUtf8 raw
-        hash <- embedBatch (Store.writeLooseObject gitDir Hash.Commit rawBytes)
+        hash <- embedBatch (Store.writeLooseObject gitDir Hash.Commit (commitPreimage cd))
         return (ObjectHash hash)
 
       ReadObject hash -> do
@@ -324,9 +340,116 @@ runGitIOPerCall
   => FilePath
   -> Sem (Git : r) a
   -> Sem r a
-runGitIOPerCall repo action =
+runGitIOPerCall repo action = do
+  -- Must run before 'Batch.openBatchReader' below, not just inside
+  -- 'runGitIO' -- that open is itself a subprocess spawned with @repo@ as
+  -- its cwd, which fails outright if @repo@ doesn't exist yet, before
+  -- 'runGitIO' ever gets a chance to run its own copy of this check.
+  ensureRepoExists repo
   bracket (embedBatch (Batch.openBatchReader repo)) (embed . Batch.closeBatchReader) $ \br ->
     runGitIO repo (\k -> k br) action
+
+-- | Interpret 'Git' using 'Runix.Git.FFI's libgit2 bindings against a
+-- repository at @repo@ -- creating a bare one there first if none exists
+-- yet ('FFI.openRepository', no subprocess involved either way, unlike
+-- 'ensureRepoExists'). Full parity with 'runGitIOPerCall' -- see
+-- 'GitFFISpec' for the differential checks against it.
+--
+-- Split into 'runGitFFI' (given an already-open repo handle) and this
+-- bracket-wrapping convenience, the same way 'runGitIO'\/'runGitIOPerCall'
+-- split for the same reason: 'Server.Writer.GitWorker' needs one repo
+-- handle open for its whole process lifetime (one 'FFI.openRepository'
+-- call, not one per job), not opened and closed around each interpreted
+-- action the way every CLI executable\/test does via 'runGitFFIPerCall'.
+runGitFFIPerCall
+  :: Members '[Fail, Resource, Embed IO] r
+  => FilePath
+  -> Sem (Git : r) a
+  -> Sem r a
+runGitFFIPerCall repo action =
+  bracket (embedBatch (FFI.openRepository repo)) (embed . FFI.closeRepository) $ \repoPtr ->
+    runGitFFI repoPtr action
+
+runGitFFI
+  :: Members '[Fail, Embed IO] r
+  => FFI.RepoHandle
+  -> Sem (Git : r) a
+  -> Sem r a
+runGitFFI repoPtr =
+    interpret (\case
+        ResolveRef (RefName name) ->
+          fmap ObjectHash <$> embedBatch (FFI.resolveRef repoPtr name)
+
+        CreateRef (RefName name) hash ->
+          embedBatch (FFI.createOrUpdateRef repoPtr name (unObjectHash hash))
+
+        UpdateRef (RefName name) hash ->
+          embedBatch (FFI.createOrUpdateRef repoPtr name (unObjectHash hash))
+
+        DeleteRef (RefName name) ->
+          embedBatch (FFI.deleteRef repoPtr name)
+
+        ListRefs prefix -> do
+          entries <- embedBatch (FFI.listRefsGlob repoPtr prefix)
+          return [ (RefName n, ObjectHash h) | (n, h) <- entries ]
+
+        ReadCommit hash -> do
+          (kind, bytes) <- embedBatch (FFI.readObjectRaw repoPtr (unObjectHash hash))
+          case kind of
+            Hash.Commit -> parseCommit (TE.decodeUtf8 bytes)
+            _ -> fail $ "ReadCommit: not a commit: " <> T.unpack (unObjectHash hash)
+
+        WriteCommit cd ->
+          ObjectHash <$> embedBatch (FFI.writeObjectRaw repoPtr Hash.Commit (commitPreimage cd))
+
+        ReadObject hash -> do
+          (kind, bytes) <- embedBatch (FFI.readObjectRaw repoPtr (unObjectHash hash))
+          case kind of
+            Hash.Blob -> return (BlobObject bytes)
+            Hash.Tree -> return (TreeObject (parseTreeBytes bytes))
+            Hash.Commit -> fail $ "ReadObject: hash is a commit: " <> T.unpack (unObjectHash hash)
+
+        WriteObject (BlobObject content) ->
+          ObjectHash <$> embedBatch (FFI.writeObjectRaw repoPtr Hash.Blob content)
+
+        WriteObject (TreeObject entries) ->
+          ObjectHash <$> embedBatch (FFI.writeObjectRaw repoPtr Hash.Tree (serializeTree entries))
+
+        LookupPath hash path -> lookupPathViaFFI repoPtr hash path
+
+        IsAncestorOfAny targets headHash ->
+          embedBatch (FFI.isAncestorOfAny repoPtr (map unObjectHash targets) (unObjectHash headHash))
+      )
+
+-- | Walks a tree by path, one component at a time, reading each subtree
+-- directly via 'FFI.readObjectRaw' + 'parseTreeBytes' -- the FFI
+-- equivalent of the CLI interpreter's single @git ls-tree -r@ call, which
+-- has no native libgit2 one-shot counterpart to lean on instead.
+lookupPathViaFFI
+  :: Members '[Fail, Embed IO] r
+  => FFI.RepoHandle -> ObjectHash -> FilePath -> Sem r (Maybe ObjectHash)
+lookupPathViaFFI repoPtr rootHash path = go rootHash (splitPathSegments path)
+  where
+    go hash [] = return (Just hash)
+    go hash (seg : rest) = do
+      (kind, bytes) <- embedBatch (FFI.readObjectRaw repoPtr (unObjectHash hash))
+      case kind of
+        Hash.Tree ->
+          case find ((== seg) . entryName) (parseTreeBytes bytes) of
+            Nothing -> return Nothing
+            Just e
+              | null rest -> return (Just (entryHash e))
+              | otherwise -> case e of
+                  SubTree _ subHash -> go subHash rest
+                  BlobEntry {}      -> return Nothing
+        _ -> return Nothing
+
+splitPathSegments :: FilePath -> [String]
+splitPathSegments = filter (not . null) . go
+  where
+    go s = case break (== '/') s of
+      (a, [])       -> [a]
+      (a, _ : rest) -> a : go rest
 
 -- ---------------------------------------------------------------------------
 -- Object cache interceptor
@@ -422,6 +545,20 @@ parseLine line = case T.words line of
 -- Parsers
 -- ---------------------------------------------------------------------------
 
+-- | The raw commit object preimage 'Runix.Git.Hash.hashObject' hashes and
+-- both interpreters write byte-for-byte identically -- factored out so
+-- the CLI interpreter's direct loose-object write ('Runix.Git.Store') and
+-- the FFI interpreter's @git_odb_write@ call can't drift apart on format.
+commitPreimage :: CommitData -> ByteString
+commitPreimage cd =
+  TE.encodeUtf8 $
+       "tree " <> unObjectHash (commitTree cd) <> "\n"
+    <> T.unlines [ "parent " <> unObjectHash p | p <- commitParents cd ]
+    <> "author . <.> 0 +0000\n"
+    <> "committer . <.> 0 +0000\n"
+    <> "\n"
+    <> commitMessage cd <> "\n"
+
 parseCommit :: Member Fail r => Text -> Sem r CommitData
 parseCommit raw = do
   let ls = T.lines raw
@@ -480,3 +617,20 @@ serializeTree entries = BS.concat (map entryBytes (sortBy (comparing sortKey) en
     rawHash (ObjectHash hex) = case BA.convertFromBase BA.Base16 (TE.encodeUtf8 hex) of
       Right bytes -> bytes
       Left err    -> error ("Runix.Git.serializeTree: malformed object hash: " <> err)
+
+-- | The inverse of 'serializeTree': parses git's raw binary tree preimage
+-- (as returned by @git_odb_read@/@git cat-file --batch@ for a tree object)
+-- back into 'TreeEntry's. Used by the FFI interpreter's tree reads, which
+-- get this exact format directly from libgit2's object database with no
+-- @ls-tree@-equivalent parsing helper of its own to lean on.
+parseTreeBytes :: ByteString -> [TreeEntry]
+parseTreeBytes bs
+  | BS.null bs = []
+  | otherwise =
+      let (modeBytes, afterMode) = BS8.break (== ' ') bs
+          (nameBytes, afterName) = BS8.break (== '\0') (BS.drop 1 afterMode)
+          (hashBytes, rest)      = BS.splitAt 20 (BS.drop 1 afterName)
+          name = BS8.unpack nameBytes
+          hash = ObjectHash (TE.decodeUtf8 (BA.convertToBase BA.Base16 hashBytes))
+          entry = if modeBytes == "40000" then SubTree name hash else BlobEntry name hash
+      in entry : parseTreeBytes rest
