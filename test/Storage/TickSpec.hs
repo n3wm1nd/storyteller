@@ -7,6 +7,7 @@ module Storage.TickSpec (spec) where
 
 import Prelude hiding (drop, readFile, writeFile)
 
+import qualified Data.Text as T
 import Test.Hspec
 
 import Storage.Core
@@ -189,3 +190,97 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right (ticks, _finalState) -> map ftKind ticks `shouldBe` ["atom", "note"]
+
+  describe "recentAtomsOf" $ do
+    it "keeps every atom when all are reference-free and both bounds have room to spare" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "journal.md" "a1"
+            _ <- addAtom "journal.md" "a2"
+            _ <- addAtom "journal.md" "a3"
+            recentAtomsOf "journal.md" 30 10 1)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "a1", Just "a2", Just "a3"]
+
+    it "drops an atom that's a verbatim, unedited copy of its reference (padding 0)" $ do
+      let result = fst <$> runChain (do
+            h1 <- addAtom "scene.md" "witness content"
+            _  <- addAtomWithRefs [h1] "journal.md" "witness content"
+            recentAtomsOf "journal.md" 30 10 0)
+      result `shouldBe` Right []
+
+    it "keeps an atom whose content has diverged from its reference" $ do
+      let result = fst <$> runChain (do
+            h1 <- addAtom "scene.md" "orig"
+            _  <- addAtomWithRefs [h1] "journal.md" "orig, but embellished"
+            recentAtomsOf "journal.md" 30 10 0)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "orig, but embellished"]
+
+    it "keeps an atom whose reference target no longer resolves to matching content, even with no divergence check possible (empty refs after deletion is out of scope; this checks non-atom refs are simply never a match)" $ do
+      -- A reference to a *non-atom* tick (nothing this scheme could ever
+      -- copy verbatim from) can never equal this atom's own content, so it
+      -- always counts as diverged -- same as having no reference at all.
+      let result = fst <$> runChain (do
+            noteId <- store (NonAtom [] "type:note\n\nsome note")
+            _      <- addAtomWithRefs [noteId] "journal.md" "original journal text"
+            recentAtomsOf "journal.md" 30 10 0)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "original journal text"]
+
+    it "pulls in padding neighbours (otherwise-excluded copies) on both sides of a diverged atom" $ do
+      let result = fst <$> runChain (do
+            s1 <- addAtom "scene.md" "s1"
+            _  <- addAtomWithRefs [s1] "journal.md" "s1"                 -- unqualified copy
+            s2 <- addAtom "scene.md" "s2"
+            _  <- addAtomWithRefs [s2] "journal.md" "s2, edited"          -- qualifies
+            s3 <- addAtom "scene.md" "s3"
+            _  <- addAtomWithRefs [s3] "journal.md" "s3"                 -- unqualified copy
+            recentAtomsOf "journal.md" 30 10 1)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "s1", Just "s2, edited", Just "s3"]
+
+    it "without padding, only the diverged atom itself survives from the same sequence" $ do
+      let result = fst <$> runChain (do
+            s1 <- addAtom "scene.md" "s1"
+            _  <- addAtomWithRefs [s1] "journal.md" "s1"
+            s2 <- addAtom "scene.md" "s2"
+            _  <- addAtomWithRefs [s2] "journal.md" "s2, edited"
+            s3 <- addAtom "scene.md" "s3"
+            _  <- addAtomWithRefs [s3] "journal.md" "s3"
+            recentAtomsOf "journal.md" 30 10 0)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "s2, edited"]
+
+    it "caps output at maxOut, keeping the most recent atoms" $ do
+      let result = fst <$> runChain (do
+            mapM_ (\n -> addAtom "journal.md" (T.pack ("a" <> show n))) [1 .. (5 :: Int)]
+            recentAtomsOf "journal.md" 30 2 1)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "a4", Just "a5"]
+
+    it "stops examining once lookback on-path atoms have been seen, never reaching further back" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "journal.md" "too-old-1"
+            _ <- addAtom "journal.md" "too-old-2"
+            _ <- addAtom "journal.md" "recent-1"
+            _ <- addAtom "journal.md" "recent-2"
+            recentAtomsOf "journal.md" 2 10 0)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "recent-1", Just "recent-2"]
+
+    it "skips atoms on other paths without counting them against lookback" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "journal.md" "j1"
+            _ <- addAtom "scene.md" "unrelated"
+            _ <- addAtom "journal.md" "j2"
+            recentAtomsOf "journal.md" 2 10 0)
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftContent ticks `shouldBe` [Just "j1", Just "j2"]

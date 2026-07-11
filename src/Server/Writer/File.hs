@@ -47,7 +47,7 @@ import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, classifyPath)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
@@ -63,7 +63,7 @@ import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, toDraft)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage)
+import Storyteller.Core.Git (BranchTag, runBranchAndFS, runBranchOpGit, runStorage)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -78,21 +78,28 @@ data ActiveChar
 --   ('Storyteller.Writer.Presence.activeCharactersFor') are the sole source
 --   of truth for "who's in this scene"; there is no separate client-supplied
 --   signal, so this is the one place that decides which character branches
---   an agent sees. Each active branch is opened dynamically (same
---   'runBranchAndFS' pattern 'Server.Writer.Branch.charGen'\/'trackFiles'
---   use for a runtime-named branch) and summarized via 'charSummaryAgent'.
+--   an agent sees. Each active branch is opened dynamically (same pattern
+--   'Server.Writer.Branch.charGen'\/'trackFiles' use for a runtime-named
+--   branch, minus the 'FileSystem' effects neither this nor
+--   'charSummaryWithJournal' needs) and summarized via
+--   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' -- one
+--   'runStorage' dispatch per character, not two.
 --
 --   @sheet.md@ and @journal.md@ are never lore-gated by @charLayouts@ --
 --   both are excluded from 'Storyteller.Writer.Lore.isLoreEligible' (so
 --   they never even appear as a codex entry a user could toggle), and this
 --   function enforces the same two facts unconditionally at the read
 --   layer, independent of whatever a user has curated for everything else:
---   the sheet is core identity, always sent; the journal is long, mostly a
---   copy of what the scene's own history already says, sometimes stale or
---   contradictory, and not written for a narrator to read, so always
---   excluded here (full journal access is still available on request, via
+--   the sheet is core identity, always sent verbatim; the journal is long,
+--   mostly a copy of what the scene's own history already says, and not
+--   written for a narrator to read, so the plain read always excludes it
+--   -- but a curated slice of only its *unique* recent content (see
+--   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' and
+--   'Storage.Tick.recentAtomsOf') is folded back in, separately labelled as
+--   the character's own viewpoint. Full, uncurated journal access is still
+--   available on request, via
 --   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' -- the
---   sidebar's Ask panel). Everything else on the branch is real codex
+--   sidebar's Ask panel. Everything else on the branch is real codex
 --   content: an absent or empty entry in @charLayouts@ for a branch means
 --   "no override configured", which reads as "show everything" -- the same
 --   convention 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
@@ -114,9 +121,19 @@ activeCharacterContext charLayouts path = do
             | p == journalPath = False
             | null layout      = True
             | otherwise        = isJust (classifyPath layout p)
-      blocks <- runBranchAndFS @ActiveChar (BranchName name) (charSummaryAgent @(BranchTag ActiveChar) keep)
+      blocks <- runBranchOpGit @ActiveChar (BranchName name) $
+        runStorage @ActiveChar (charSummaryWithJournal keep journalPath journalLookback journalMaxOut journalPadding)
       let label = maybe name id (T.stripPrefix "character/" name)
       pure (CharLabel label, blocks)
+
+-- | Bounds for the curated journal slice 'activeCharacterContext' folds
+--   back into ambient context -- see 'Storyteller.Writer.Agent.CharContext.
+--   charSummaryWithJournal'\/'Storage.Tick.recentAtomsOf' for what each
+--   knob actually does.
+journalLookback, journalMaxOut, journalPadding :: Int
+journalLookback = 30
+journalMaxOut   = 10
+journalPadding  = 2
 
 -- | A character branch's own account, in fiction-time order (see
 --   WRITER.md's "Character structure" section) -- excluded from

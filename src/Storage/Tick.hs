@@ -19,6 +19,7 @@ module Storage.Tick
   , findTick
   , FileTick(..)
   , fileTicksOf
+  , recentAtomsOf
   , encodeTickData
   ) where
 
@@ -26,7 +27,7 @@ import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
 import qualified Data.List as List
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -247,7 +248,7 @@ fileTicksOf path = do
 
     go :: StoreM m => [(ObjectHash, CommitData)] -> StoreT m [FileTick]
     go raw = do
-      allTicks <- mapM (uncurry toFileTick) raw
+      allTicks <- mapM (uncurry (toFileTick path)) raw
       let fileHint   = T.pack path
           atomIds    = [ ftTickId ft | ft <- allTicks, ftContent ft /= Nothing ]
           memberIds  = expandRefs atomIds allTicks
@@ -272,32 +273,139 @@ fileTicksOf path = do
                            , any (`elem` ms) (ftRefs ft) ]
       in step (step members)
 
-    toFileTick :: StoreM m => ObjectHash -> CommitData -> StoreT m FileTick
-    toFileTick h cd = do
+-- | Decode a single commit as a 'FileTick', without regard to whether it's
+--   relevant to @path@ at all -- 'ftContent' carries that verdict
+--   ('Just' iff this is an atom on exactly @path@), everything else about
+--   the shape mirrors 'readTypesTick's per-kind decoding. Shared by
+--   'fileTicksOf' (which decodes the whole chain up front) and
+--   'recentAtomsOf' (which decodes one commit at a time, lazily, and never
+--   further back than it needs to).
+toFileTick :: StoreM m => FilePath -> ObjectHash -> CommitData -> StoreT m FileTick
+toFileTick path h cd = do
+  t <- lift (readTick h)
+  let refs = List.drop 1 (commitParents cd)
+      (kind, fields, msg, mContent) = case t of
+        Atom _ p tags content ->
+          ( "atom", ("file", T.pack p) : tags, content
+          , if p == path then Just content else Nothing )
+        Binary _ p -> ( "binary", [("file", T.pack p)], "", Nothing )
+        Opaque _   -> ( "opaque", [], "", Nothing )
+        NonAtom _ raw ->
+          let td = decodeTickData raw
+              -- "type" is exposed via 'ftKind' already -- dropped from
+              -- the outward-facing fields so it isn't duplicated on
+              -- the wire, same as 'Atom'\/'Binary'\/'Opaque' above
+              -- (none of which ever put "type" in their own fields
+              -- either).
+              otherFields = filter ((/= "type") . fst) (ST.tickFields td)
+          in ( fromMaybe "unknown" (lookup "type" (ST.tickFields td))
+             , otherFields, ST.tickMessage td, Nothing )
+  return FileTick
+    { ftTickId  = unObjectHash h
+    , ftKind    = kind
+    , ftRefs    = map unObjectHash refs
+    , ftFields  = fields
+    , ftMessage = msg
+    , ftContent = mContent
+    , ftParent  = case commitParents cd of { [] -> Nothing; (p : _) -> Just (unObjectHash p) }
+    }
+
+-- | A curated recent slice of @path@'s own atom history: enough to tell a
+--   reader what's changed lately without either its full length or its
+--   redundant, already-known-elsewhere bulk. Written for a character's
+--   @journal.md@ (see 'Storyteller.Writer.Agent.CharContext'), but nothing
+--   here is journal-specific -- it's a general "atoms on this path that
+--   carry unique information, in their recent timeline context" query.
+--
+--   Walks backward from head one commit at a time via 'toFileTick',
+--   stopping the moment it has enough rather than materializing the whole
+--   chain the way 'fileTicksOf' always must -- the two answer different
+--   questions (see 'fileTicksOf's own Haddock), and this one's answer only
+--   ever depends on a bounded recent window.
+--
+--   An atom on @path@ is judged to carry unique information -- and kept --
+--   iff it has no cross-reference at all (original content typed directly
+--   here, or a reference whose target has since been deleted -- either
+--   way, nothing else records this text), or it has one but its content no
+--   longer matches any referenced atom's (the user edited a copy, and the
+--   /divergence/ from the source is itself the unique part). An atom that
+--   still matches a reference verbatim is a plain, unmodified copy --
+--   recoverable from its source, so it's dropped on its own, though it may
+--   still be pulled in as another atom's padding (below).
+--
+--   Every kept atom brings up to @padding@ immediate neighbours on each
+--   side along -- including ones that don't themselves carry unique
+--   information -- purely so the result reads as a coherent span instead
+--   of disconnected quotes. Overlapping padding windows from separate kept
+--   atoms merge for free: this is a single forward-only walk, not N
+--   independent lookups.
+--
+--   Bounded on two independent axes, whichever is hit first ending the
+--   walk: @lookback@ caps how many atoms *on @path@* are ever examined (a
+--   hard ceiling on how far into history this looks, however little it's
+--   found), and @maxOut@ caps how many atoms the result can ever contain
+--   (a hard ceiling on how much lands in a prompt, however much
+--   qualifies). In the common case @maxOut@ is hit first, well short of
+--   @lookback@ -- which is the point.
+--
+--   Returned oldest-first, same convention as 'fileTicksOf'.
+recentAtomsOf
+  :: forall m. StoreM m
+  => FilePath  -- ^ file to scan, e.g. "journal.md"
+  -> Int       -- ^ lookback: max on-@path@ atoms to examine
+  -> Int       -- ^ maxOut: max atoms to return
+  -> Int       -- ^ padding: atoms kept on each side of a kept atom
+  -> StoreT m [FileTick]
+recentAtomsOf path lookback maxOut padding
+  | maxOut <= 0 = return []
+  | otherwise   = headHash >>= \h -> trimOverflow <$> go h 0 [] [] 0
+  where
+    trimOverflow acc = let over = length acc - maxOut in if over > 0 then List.drop over acc else acc
+
+    -- @acc@: kept atoms so far, oldest-first (a newly-decided, older
+    -- segment is always prepended in front of it -- see the two branches
+    -- below). @pending@: the last (at most @padding@) skipped on-@path@
+    -- atoms, oldest-first among themselves, held in case the next kept
+    -- atom wants them as its newer-side padding. @forceLeft@: atoms still
+    -- owed as some earlier kept atom's older-side padding, regardless of
+    -- their own status.
+    go :: ObjectHash -> Int -> [FileTick] -> [FileTick] -> Int -> StoreT m [FileTick]
+    go h examined acc pending forceLeft = do
+      cd <- lift (readCommit h)
+      ft <- toFileTick path h cd
+      let next = case commitParents cd of { [] -> Nothing; (p : _) -> Just p }
+      (examined', acc', pending', forceLeft') <-
+        if not (isJust (ftContent ft))
+          then return (examined, acc, pending, forceLeft)
+          else do
+            unique <- carriesUniqueInfo ft
+            if forceLeft > 0 || unique
+              then return
+                ( examined + 1
+                , (ft : pending) ++ acc
+                , []
+                , if unique then padding else max 0 (forceLeft - 1)
+                )
+              else return
+                ( examined + 1
+                , acc
+                , take padding (ft : pending)
+                , forceLeft
+                )
+      if length acc' >= maxOut || examined' >= lookback
+        then return acc'
+        else maybe (return acc') (\p -> go p examined' acc' pending' forceLeft') next
+
+    carriesUniqueInfo :: FileTick -> StoreT m Bool
+    carriesUniqueInfo ft
+      | null (ftRefs ft) = return True
+      | otherwise = do
+          refContents <- mapM (atomContentAt . ObjectHash) (ftRefs ft)
+          return (not (any (== Just (ftMessage ft)) refContents))
+
+    atomContentAt :: ObjectHash -> StoreT m (Maybe Text)
+    atomContentAt h = do
       t <- lift (readTick h)
-      let refs = List.drop 1 (commitParents cd)
-          (kind, fields, msg, mContent) = case t of
-            Atom _ p tags content ->
-              ( "atom", ("file", T.pack p) : tags, content
-              , if p == path then Just content else Nothing )
-            Binary _ p -> ( "binary", [("file", T.pack p)], "", Nothing )
-            Opaque _   -> ( "opaque", [], "", Nothing )
-            NonAtom _ raw ->
-              let td = decodeTickData raw
-                  -- "type" is exposed via 'ftKind' already -- dropped from
-                  -- the outward-facing fields so it isn't duplicated on
-                  -- the wire, same as 'Atom'\/'Binary'\/'Opaque' above
-                  -- (none of which ever put "type" in their own fields
-                  -- either).
-                  otherFields = filter ((/= "type") . fst) (ST.tickFields td)
-              in ( fromMaybe "unknown" (lookup "type" (ST.tickFields td))
-                 , otherFields, ST.tickMessage td, Nothing )
-      return FileTick
-        { ftTickId  = unObjectHash h
-        , ftKind    = kind
-        , ftRefs    = map unObjectHash refs
-        , ftFields  = fields
-        , ftMessage = msg
-        , ftContent = mContent
-        , ftParent  = case commitParents cd of { [] -> Nothing; (p : _) -> Just (unObjectHash p) }
-        }
+      return $ case t of
+        Atom _ _ _ content -> Just content
+        _                  -> Nothing

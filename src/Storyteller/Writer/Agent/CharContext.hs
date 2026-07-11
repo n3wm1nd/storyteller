@@ -21,6 +21,7 @@ module Storyteller.Writer.Agent.CharContext
   ( charSummaryAgent
   , readCharFiles
   , renderCharContext
+  , charSummaryWithJournal
   ) where
 
 import qualified Data.List as List
@@ -30,6 +31,10 @@ import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
+
+import qualified Storage.Core as Core
+import qualified Storage.FS as FS
+import qualified Storage.Tick as Tick
 
 import Storyteller.Writer.Agent (CharContextBlock(..))
 
@@ -69,3 +74,51 @@ charSummaryAgent
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
   => (FilePath -> Bool) -> Sem r [CharContextBlock]
 charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
+
+-- | 'charSummaryAgent's read, plus a curated slice of @journalPath@'s own
+--   recent atom history (see 'Storage.Tick.recentAtomsOf'), composed into
+--   one 'Core.StoreT' computation rather than two separate calls a caller
+--   would otherwise dispatch back-to-back -- one 'Storyteller.Core.Git.
+--   runStorage' pays for both reads.
+--
+--   Lives at the 'Core.StoreT' level directly (unlike 'charSummaryAgent',
+--   which goes through the 'FileSystem' Polysemy effects) precisely so it
+--   composes this way; a caller opens the branch scope once (e.g. via
+--   'Storyteller.Core.Git.runBranchOpGit') and passes this straight to
+--   'Storyteller.Core.Git.runStorage'.
+--
+--   @keep@ is expected to already exclude @journalPath@ from the plain
+--   read, same convention 'Server.Writer.File.activeCharacterContext'
+--   already follows for 'charSummaryAgent' -- this is what puts a curated
+--   slice of it back, under its own labelled section rather than blended
+--   in with the rest, so a reader can tell it's the character's own
+--   (possibly biased, possibly stale) account rather than the wider
+--   record.
+charSummaryWithJournal
+  :: forall m
+  .  Core.StoreM m
+  => (FilePath -> Bool)  -- ^ files to read verbatim (already excluding @journalPath@)
+  -> FilePath             -- ^ journal path, e.g. @"journal.md"@
+  -> Int                  -- ^ lookback: max journal atoms to examine (see 'Tick.recentAtomsOf')
+  -> Int                  -- ^ maxOut: max journal atoms to include
+  -> Int                  -- ^ padding: journal atoms kept on each side of a kept one
+  -> Core.StoreT m [CharContextBlock]
+charSummaryWithJournal keep journalPath lookback maxOut padding = do
+  files    <- filter keep . List.sort <$> FS.list
+  fileCtx  <- renderCharContext <$> mapM (\p -> (,) p . TE.decodeUtf8 <$> Core.readFile p) files
+  journal  <- Tick.recentAtomsOf journalPath lookback maxOut padding
+  return (fileCtx ++ renderJournalContext journal)
+
+-- | A non-empty journal slice becomes one block, not one per atom: the
+--   header names what this is (so a model doesn't mistake it for
+--   objective narration) once, and the kept atoms -- which may span real
+--   timeline gaps, since unremarkable ones in between were dropped -- are
+--   joined by a plain divider rather than left looking like one
+--   continuous entry.
+renderJournalContext :: [Tick.FileTick] -> [CharContextBlock]
+renderJournalContext [] = []
+renderJournalContext ticks =
+  [ CharContextBlock $
+      "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
+      <> T.intercalate "\n\n---\n\n" (map Tick.ftMessage ticks)
+  ]
