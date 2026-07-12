@@ -25,15 +25,17 @@
 -- changed it.
 module Server.Writer.GitWorkerSpec (spec) where
 
-import Control.Concurrent.STM (newBroadcastTChanIO, atomically, dupTChan, tryReadTChan)
+import Control.Concurrent.STM (TChan, newBroadcastTChanIO, atomically, dupTChan, readTChan)
+import Control.Exception (bracket)
 import Polysemy (Embed, Sem, runM)
 import Polysemy.Fail (Fail, runFail)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (callProcess)
+import System.Timeout (timeout)
 import Test.Hspec
 
 import Runix.Git
-import Server.Writer.GitWorker (GitWorkerQueue, runGitViaWorker, startGitWorker)
+import Server.Writer.GitWorker (GitWorkerQueue, runGitViaWorker, startGitWorker, stopGitWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.Git (storyRefPrefix)
 import Storyteller.Core.Undo (undoLogRef)
@@ -43,6 +45,16 @@ withTempRepo action = withSystemTempDirectory "git-worker-spec" $ \dir -> do
   callProcess "git" ["-C", dir, "init", "-q"]
   action dir
 
+-- | The worker posts a notification asynchronously, strictly after
+-- replying to the job that triggered it (see 'Server.Writer.GitWorker's
+-- 'handleOneJob') -- a real consumer ('Server.Writer.Session.Connection's
+-- notifier) just blocks on 'readTChan' forever, so that ordering is
+-- invisible to it. A non-blocking read right after 'runViaWorker' returns
+-- would race that same gap and flake; block with a generous timeout
+-- instead so the wait is for the notification, not the scheduler.
+expectNotify :: TChan BranchNotification -> IO (Maybe BranchNotification)
+expectNotify reader = timeout 1000000 (atomically (readTChan reader))
+
 -- | One "client": its own fresh 'Fail'/'Embed IO' stack, exactly the shape
 -- 'runGitViaWorker' is used at in the real server -- but every call here
 -- shares the one 'GitWorkerQueue' passed in, same as every real connection
@@ -50,64 +62,74 @@ withTempRepo action = withSystemTempDirectory "git-worker-spec" $ \dir -> do
 runViaWorker :: GitWorkerQueue -> Sem '[Git, Fail, Embed IO] a -> IO (Either String a)
 runViaWorker queue = runM . runFail . runGitViaWorker queue
 
+-- | Every 'it' below starts its own worker, unlike the real server's one
+-- process-lifetime instance -- so, unlike the real server, each one must be
+-- torn down explicitly. Left running, a worker's queue goes unreachable
+-- the moment its 'it' block returns, and the GC eventually throws
+-- 'BlockedIndefinitelyOnSTM' into the (still-'link'ed) worker thread at
+-- some later, unpredictable point -- surfacing as a spurious failure in
+-- whatever unrelated test happens to be running when the GC gets to it.
+withWorker :: FilePath -> TChan BranchNotification -> (GitWorkerQueue -> IO a) -> IO a
+withWorker repo notifyChan = bracket (startGitWorker repo notifyChan) stopGitWorker
+
 spec :: Spec
 spec = around withTempRepo $ describe "runGitViaWorker" $ do
 
   it "lets one client see a ref another client created through the same shared queue" $ \repo -> do
     notifyChan <- newBroadcastTChanIO
-    queue <- startGitWorker repo notifyChan
-    written <- runViaWorker queue $ do
-      h      <- writeBlob "hello"
-      tree   <- writeTree [BlobEntry "a.md" h]
-      commit <- writeCommit CommitData { commitParents = [], commitTree = tree, commitMessage = "first" }
-      createRef (RefName "refs/heads/test") commit
-      return commit
-    seen <- runViaWorker queue $ resolveRef (RefName "refs/heads/test")
-    seen `shouldBe` fmap Just written
+    withWorker repo notifyChan $ \queue -> do
+      written <- runViaWorker queue $ do
+        h      <- writeBlob "hello"
+        tree   <- writeTree [BlobEntry "a.md" h]
+        commit <- writeCommit CommitData { commitParents = [], commitTree = tree, commitMessage = "first" }
+        createRef (RefName "refs/heads/test") commit
+        return commit
+      seen <- runViaWorker queue $ resolveRef (RefName "refs/heads/test")
+      seen `shouldBe` fmap Just written
 
   it "a failing job doesn't affect a job submitted afterwards on the same queue" $ \repo -> do
     notifyChan <- newBroadcastTChanIO
-    queue <- startGitWorker repo notifyChan
-    failing <- runViaWorker queue $ readBlob (ObjectHash "0000000000000000000000000000000000000000")
-    failing `shouldSatisfy` \case
-      Left _ -> True
-      Right _ -> False
-    ok <- runViaWorker queue $ writeBlob "still works after a failed job"
-    ok `shouldSatisfy` \case
-      Right _ -> True
-      Left _ -> False
+    withWorker repo notifyChan $ \queue -> do
+      failing <- runViaWorker queue $ readBlob (ObjectHash "0000000000000000000000000000000000000000")
+      failing `shouldSatisfy` \case
+        Left _ -> True
+        Right _ -> False
+      ok <- runViaWorker queue $ writeBlob "still works after a failed job"
+      ok `shouldSatisfy` \case
+        Right _ -> True
+        Left _ -> False
 
   it "posts RefMoved for a story branch ref, but UndoMoved (not RefMoved) for the undo log's own ref" $ \repo -> do
     notifyChan <- newBroadcastTChanIO
-    queue <- startGitWorker repo notifyChan
-    reader <- atomically (dupTChan notifyChan)
+    withWorker repo notifyChan $ \queue -> do
+      reader <- atomically (dupTChan notifyChan)
 
-    _ <- runViaWorker queue $ do
-      h <- writeBlob "hello"
-      createRef (RefName (storyRefPrefix <> "main")) h
-    branchNote <- atomically (tryReadTChan reader)
-    branchNote `shouldBe` Just (RefMoved "main" True)
+      _ <- runViaWorker queue $ do
+        h <- writeBlob "hello"
+        createRef (RefName (storyRefPrefix <> "main")) h
+      branchNote <- expectNotify reader
+      branchNote `shouldBe` Just (RefMoved "main" True)
 
-    _ <- runViaWorker queue $ do
-      h <- writeBlob "an undo-log entry commit"
-      createRef undoLogRef h
-    undoNote <- atomically (tryReadTChan reader)
-    undoNote `shouldBe` Just UndoMoved
+      _ <- runViaWorker queue $ do
+        h <- writeBlob "an undo-log entry commit"
+        createRef undoLogRef h
+      undoNote <- expectNotify reader
+      undoNote `shouldBe` Just UndoMoved
 
   it "RefMoved's existence flag is True for createRef/deleteRef but False for an ordinary updateRef" $ \repo -> do
     notifyChan <- newBroadcastTChanIO
-    queue <- startGitWorker repo notifyChan
-    reader <- atomically (dupTChan notifyChan)
-    let ref = RefName (storyRefPrefix <> "main")
+    withWorker repo notifyChan $ \queue -> do
+      reader <- atomically (dupTChan notifyChan)
+      let ref = RefName (storyRefPrefix <> "main")
 
-    _ <- runViaWorker queue $ writeBlob "hello" >>= createRef ref
-    created <- atomically (tryReadTChan reader)
-    created `shouldBe` Just (RefMoved "main" True)
+      _ <- runViaWorker queue $ writeBlob "hello" >>= createRef ref
+      created <- expectNotify reader
+      created `shouldBe` Just (RefMoved "main" True)
 
-    _ <- runViaWorker queue $ writeBlob "hello again" >>= updateRef ref
-    moved <- atomically (tryReadTChan reader)
-    moved `shouldBe` Just (RefMoved "main" False)
+      _ <- runViaWorker queue $ writeBlob "hello again" >>= updateRef ref
+      moved <- expectNotify reader
+      moved `shouldBe` Just (RefMoved "main" False)
 
-    _ <- runViaWorker queue $ deleteRef ref
-    deleted <- atomically (tryReadTChan reader)
-    deleted `shouldBe` Just (RefMoved "main" True)
+      _ <- runViaWorker queue $ deleteRef ref
+      deleted <- expectNotify reader
+      deleted `shouldBe` Just (RefMoved "main" True)

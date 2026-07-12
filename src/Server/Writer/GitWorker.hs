@@ -33,10 +33,11 @@
 module Server.Writer.GitWorker
   ( GitWorkerQueue
   , startGitWorker
+  , stopGitWorker
   , runGitViaWorker
   ) where
 
-import Control.Concurrent.Async (async, link)
+import Control.Concurrent.Async (Async, async, cancel, link)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
   (TChan, TQueue, atomically, newTQueueIO, readTQueue, writeTChan, writeTQueue)
@@ -72,7 +73,7 @@ import Storyteller.Core.Undo (undoLogRef)
 -- parameter is phantom, see 'toIOGitOp') and where to deliver the answer.
 data GitJob = forall a. GitJob (Git IO a) (MVar (Either String a))
 
-newtype GitWorkerQueue = GitWorkerQueue (TQueue GitJob)
+data GitWorkerQueue = GitWorkerQueue (TQueue GitJob) (Async ())
 
 -- | Start the worker: open the one libgit2 repository handle this
 -- process will ever use, then fork the loop that owns it for the rest of
@@ -85,7 +86,20 @@ startGitWorker repo notifyChan = do
   repoHandle <- FFI.openRepository FFI.defaultFFIOptions repo
   worker <- async (gitWorkerLoop repoHandle notifyChan queue)
   link worker
-  return (GitWorkerQueue queue)
+  return (GitWorkerQueue queue worker)
+
+-- | Tear down a worker started with 'startGitWorker'. The real server
+-- never calls this -- its one worker lives for the process's whole life --
+-- but anything that starts short-lived workers of its own (tests, mainly)
+-- needs it: leaving a worker's thread parked forever on 'readTQueue' after
+-- its 'GitWorkerQueue' goes out of scope lets the GC eventually decide the
+-- queue is unreachable and throw 'BlockedIndefinitelyOnSTM' into it, which
+-- -- since the worker is 'link'ed -- surfaces asynchronously in whatever
+-- thread happens to be running at the time, not the test that leaked it.
+-- 'cancel' is safe here: 'async' doesn't re-throw 'AsyncCancelled' through
+-- a 'link'.
+stopGitWorker :: GitWorkerQueue -> IO ()
+stopGitWorker (GitWorkerQueue _ worker) = cancel worker
 
 -- | The whole worker lifetime is one Polysemy interpretation, not one per
 -- job: 'withGitCache' and 'runGitFFI' are applied once, outside 'forever',
@@ -186,7 +200,7 @@ toIOGitOp = \case
   IsAncestorOfAny targets hash -> IsAncestorOfAny targets hash
 
 submitGitJob :: GitWorkerQueue -> Git IO a -> IO (Either String a)
-submitGitJob (GitWorkerQueue queue) op = do
+submitGitJob (GitWorkerQueue queue _) op = do
   replyVar <- newEmptyMVar
   atomically $ writeTQueue queue (GitJob op replyVar)
   takeMVar replyVar
