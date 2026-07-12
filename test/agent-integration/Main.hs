@@ -125,7 +125,10 @@ main = do
               . fileSystemLocal (CacheProject agentCacheDir)
               . timeIO
               . sleepIO
-              . httpIO (withRequestTimeout 600)
+              -- 1800s, not 600s: a local model (llama.cpp, CPU-bound) can
+              -- take much longer per call than a hosted one, especially for
+              -- the bulk/whole-chapter calls with the largest MaxTokens.
+              . httpIO (withRequestTimeout 1800)
               . interpretPromptStorageMap mempty
               . runLLMRunner runStoryAgent
               -- '.' -- 'fileSystemLocal' above already chroots to its own
