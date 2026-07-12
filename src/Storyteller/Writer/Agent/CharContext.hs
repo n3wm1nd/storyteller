@@ -36,7 +36,7 @@ import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Tick as Tick
 
-import Storyteller.Writer.Agent (CharContextBlock(..))
+import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
 
 import Prelude hiding (readFile)
 
@@ -75,11 +75,12 @@ charSummaryAgent
   => (FilePath -> Bool) -> Sem r [CharContextBlock]
 charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
 
--- | 'charSummaryAgent's read, plus a curated slice of @journalPath@'s own
---   recent atom history (see 'Storage.Tick.recentAtomsOf'), composed into
---   one 'Core.StoreT' computation rather than two separate calls a caller
---   would otherwise dispatch back-to-back -- one 'Storyteller.Core.Git.
---   runStorage' pays for both reads.
+-- | 'charSummaryAgent's read, split into 'CharSummary's three independently
+--   placeable shapes, plus a curated slice of @journalPath@'s own recent
+--   atom history (see 'Storage.Tick.recentAtomsOf') -- all composed into
+--   one 'Core.StoreT' computation rather than several calls a caller would
+--   otherwise dispatch back-to-back: one 'Storyteller.Core.Git.runStorage'
+--   pays for every read here.
 --
 --   Lives at the 'Core.StoreT' level directly (unlike 'charSummaryAgent',
 --   which goes through the 'FileSystem' Polysemy effects) precisely so it
@@ -87,27 +88,37 @@ charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
 --   'Storyteller.Core.Git.runBranchOpGit') and passes this straight to
 --   'Storyteller.Core.Git.runStorage'.
 --
---   @keep@ is expected to already exclude @journalPath@ from the plain
---   read, same convention 'Server.Writer.File.activeCharacterContext'
---   already follows for 'charSummaryAgent' -- this is what puts a curated
---   slice of it back, under its own labelled section rather than blended
---   in with the rest, so a reader can tell it's the character's own
---   (possibly biased, possibly stale) account rather than the wider
---   record.
+--   If a caller only ever wanted 'csSheet' (see its own Haddock on
+--   'CharSummary' for when that's the right call), reach for
+--   'readCharFiles'\/'charSummaryAgent' directly instead of computing all
+--   three shapes here and discarding two of them -- this function's whole
+--   point is composing reads a caller actually needs together, not being
+--   the one path in for a single file.
 charSummaryWithJournal
   :: forall m
   .  Core.StoreM m
-  => (FilePath -> Bool)  -- ^ files to read verbatim (already excluding @journalPath@)
+  => FilePath             -- ^ sheet path, e.g. @"sheet.md"@ -- included verbatim if present
   -> FilePath             -- ^ journal path, e.g. @"journal.md"@
+  -> (FilePath -> Bool)   -- ^ which other files to include (caller's layout policy; never sheet or journal, regardless of what it answers for either)
   -> Int                  -- ^ lookback: max journal atoms to examine (see 'Tick.recentAtomsOf')
   -> Int                  -- ^ maxOut: max journal atoms to include
   -> Int                  -- ^ padding: journal atoms kept on each side of a kept one
-  -> Core.StoreT m [CharContextBlock]
-charSummaryWithJournal keep journalPath lookback maxOut padding = do
-  files    <- filter keep . List.sort <$> FS.list
-  fileCtx  <- renderCharContext <$> mapM (\p -> (,) p . TE.decodeUtf8 <$> Core.readFile p) files
-  journal  <- Tick.recentAtomsOf journalPath lookback maxOut padding
-  return (fileCtx ++ renderJournalContext journal)
+  -> Core.StoreT m CharSummary
+charSummaryWithJournal sheetPath journalPath keep lookback maxOut padding = do
+  files <- List.sort <$> FS.list
+  let otherFiles = [ p | p <- files, p /= sheetPath, p /= journalPath, keep p ]
+  sheetCtx   <- if sheetPath `elem` files
+                  then renderCharContext . (: []) <$> readPair sheetPath
+                  else return []
+  contextCtx <- renderCharContext <$> mapM readPair otherFiles
+  journal    <- Tick.recentAtomsOf journalPath lookback maxOut padding
+  return CharSummary
+    { csSheet   = sheetCtx
+    , csContext = contextCtx
+    , csJournal = renderJournalContext journal
+    }
+  where
+    readPair p = (,) p . TE.decodeUtf8 <$> Core.readFile p
 
 -- | A non-empty journal slice becomes one block, not one per atom: the
 --   header names what this is (so a model doesn't mistake it for

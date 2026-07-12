@@ -15,6 +15,8 @@ module Storyteller.Writer.Agent
   , Prose(..)
   , CharContextBlock(..)
   , CharLabel(..)
+  , CharSummary(..)
+  , flattenCharSummary
   , ContextBlock(..)
   , ExistingContent(..)
   , WordCount(..)
@@ -68,6 +70,40 @@ newtype CharContextBlock = CharContextBlock Text
 --   differs from its branch name, and labels are presentation-only.
 newtype CharLabel = CharLabel Text
   deriving (Show, Eq)
+
+-- | A character's context, kept in the three shapes a chapter-aware
+--   '[Message]' assembly needs to place independently rather than one flat
+--   list a caller would otherwise have to re-derive positions from:
+--
+--     * 'csSheet' and 'csContext' are mostly-stable -- they may still be
+--       edited, or grow as a new character enters the scene, but don't
+--       change every call the way 'csJournal' does -- so they belong once,
+--       near a chapter's own start, where an edit only costs reprocessing
+--       from that point forward rather than the whole history.
+--     * 'csJournal' is recomputed fresh every call (see
+--       'Storage.Tick.recentAtomsOf') and belongs at a shallow depth near
+--       the live edge of the conversation -- close enough to inform the
+--       current turn, not so close it reads as the thing to continue
+--       writing.
+--
+--   A caller that only wants a character reduced to its bare minimum can
+--   take just 'csSheet' -- but see 'Storyteller.Writer.Agent.CharContext.
+--   charSummaryWithJournal's own Haddock: if you didn't already need the
+--   rest, call the cheaper read directly instead of computing all three and
+--   throwing two away.
+data CharSummary = CharSummary
+  { csSheet   :: [CharContextBlock]
+  , csContext :: [CharContextBlock]
+  , csJournal :: [CharContextBlock]
+  } deriving (Show, Eq)
+
+-- | Collapse a 'CharSummary' back into the flat list shape a single-shot
+--   prompt (everything in one message) still expects -- a transitional
+--   adapter for callers not yet rebuilt around a real per-chapter
+--   '[Message]' history. Order matches 'CharSummary's own field order:
+--   sheet, then other context, then journal.
+flattenCharSummary :: CharSummary -> [CharContextBlock]
+flattenCharSummary (CharSummary sheet ctx journal) = sheet ++ ctx ++ journal
 
 -- | A formatted block of branch context (e.g. "### path\n\ncontent"), ready
 --   for inclusion in an LLM prompt alongside character and file content.

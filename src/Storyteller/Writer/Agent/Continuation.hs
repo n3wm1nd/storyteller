@@ -22,6 +22,8 @@
 module Storyteller.Writer.Agent.Continuation
   ( proseAgent
   , gatherFileContext
+  , defaultWriterSystemPrompt
+  , defaultWriterConfig
   ) where
 
 import qualified Data.List as List
@@ -50,12 +52,17 @@ import Prelude hiding (readFile)
 --   Always the 'ProseModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
 --
 --   Logs immediately before the one 'queryLLM' call it makes -- this is the
---   single call every plain write ('writeAgent'), in-flight revision-free
---   continuation, and single-shot 'Storyteller.Writer.Agent.Outline'
---   generation (@chapterProse@\/@reconcileChapter@) funnels through, so
---   without it a slow model response looks identical, from the log, to a
---   hang: nothing at all between whatever "starting" line the caller logged
---   and either the result or a very long silence.
+--   single call single-shot 'Storyteller.Writer.Agent.Outline' generation
+--   (@chapterProse@\/@reconcileChapter@) funnels through, so without it a
+--   slow model response looks identical, from the log, to a hang: nothing
+--   at all between whatever "starting" line the caller logged and either
+--   the result or a very long silence. 'Storyteller.Writer.Agent.Write.
+--   writeAgent' makes its own separate 'queryLLM' call now (a real
+--   per-chapter @[Message]@, not this module's single flattened user
+--   message) -- it logs the same way at its own call site, but shares
+--   'defaultWriterSystemPrompt'\/'defaultWriterConfig' with this module so
+--   the two prose personas stay one persona under one @"agent.writer"@
+--   prompt-storage key.
 proseAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)

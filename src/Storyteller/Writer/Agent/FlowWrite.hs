@@ -25,12 +25,14 @@ module Storyteller.Writer.Agent.FlowWrite
   ( flowWriteAgent
   ) where
 
+import qualified Data.Text as T
+
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Logging (Logging)
 
 import Storyteller.Core.LLM.Role (LLMs)
-import Storyteller.Writer.Agent (Instruction(..), Prose, CharContextBlock, CharLabel, ContextBlock, ExistingContent)
+import Storyteller.Writer.Agent (Instruction(..), Prose, CharLabel, CharSummary, ContextBlock)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -39,8 +41,9 @@ import Storyteller.Core.Storage (ticksSince)
 import Storage.Tick (fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
--- | See module header. @charBlocks@ is the same @(label, resolved summary
---   blocks)@ shape 'writeAgent' takes.
+-- | See module header. Everything besides @path@\/@flowTid@ is the same
+--   already-gathered context 'writeAgent' itself takes -- passed straight
+--   through to it once the in-flight span (if any) has been reworked.
 --
 --   The one place in production where 'ProseModel' (the new continuation)
 --   and 'AgentModel' (the in-flight revision) genuinely run side by side in
@@ -50,12 +53,14 @@ flowWriteAgent
   .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
   => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
-  -> ExistingContent
-  -> [ContextBlock]                                  -- ^ extra context (e.g. user's pinned selection)
+  -> [ContextBlock]                                  -- ^ world lore
+  -> [ContextBlock]                                  -- ^ standing style guide
+  -> [(CharLabel, CharSummary)]                       -- ^ every active character's summary
+  -> [ContextBlock]                                  -- ^ pinned/short-term context
+  -> [T.Text]                                        -- ^ earlier chapters, oldest-first
   -> Instruction
-  -> [(CharLabel, [CharContextBlock])]                -- ^ (label, resolved blocks) per active char branch
   -> Sem r ([TickId], Prose)
-flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
+flowWriteAgent path flowTid lore style chars pinned earlierChapters instruction = do
   allTicks <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
@@ -63,7 +68,12 @@ flowWriteAgent path flowTid existing extraContext instruction charBlocks = do
     then return []
     else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
 
-  generated <- writeAgent existing extraContext instruction charBlocks
+  -- Reworked atoms get new ids/content, so the pre-rework snapshot is
+  -- stale the moment reworkAtomsAt commits -- re-read only when something
+  -- actually changed.
+  currentTicks <- if inFlightCount == 0 then return allTicks else runStorage @branch (fileTicksOf path)
+
+  generated <- writeAgent lore style chars pinned earlierChapters currentTicks instruction
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

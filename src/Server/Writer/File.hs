@@ -42,12 +42,14 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharContextBlock, CharLabel(..), WordCount(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary, flattenCharSummary, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, classifyPath)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
+import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
+import qualified Storyteller.Writer.Agent.ChapterContext as ChapterContext
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
@@ -109,7 +111,13 @@ data ActiveChar
 --   'Storyteller.Writer.Agent.ContextFilter.classifyPath' -- the identical
 --   picker semantics 'chatWriter's own @layout@ parameter already applies
 --   to the story branch itself, through 'gatherFileContext'.
-activeCharacterContext :: (FileOpen r, SessionEffects r) => Map.Map T.Text ContextLayout -> FilePath -> Sem r [(CharLabel, [CharContextBlock])]
+--   Returns the full 'CharSummary' split per character, not a flattened
+--   list -- 'chatWriter', still a single-shot prompt, collapses it back via
+--   'flattenCharSummary' at its own call site; a future per-chapter
+--   '[Message]' assembly (see 'Storyteller.Writer.Agent.CharSummary's own
+--   Haddock) is what actually wants 'csSheet'\/'csContext'\/'csJournal'
+--   placed independently, and can consume this function's result directly.
+activeCharacterContext :: (FileOpen r, SessionEffects r) => Map.Map T.Text ContextLayout -> FilePath -> Sem r [(CharLabel, CharSummary)]
 activeCharacterContext charLayouts path = do
   active <- activeCharactersFor @Main path
   mapM summarize active
@@ -117,14 +125,12 @@ activeCharacterContext charLayouts path = do
     summarize (Character (BranchName name)) = do
       let layout = fromMaybe [] (Map.lookup name charLayouts)
           keep p
-            | p == "sheet.md"  = True
-            | p == journalPath = False
-            | null layout      = True
-            | otherwise        = isJust (classifyPath layout p)
-      blocks <- runBranchOpGit @ActiveChar (BranchName name) $
-        runStorage @ActiveChar (charSummaryWithJournal keep journalPath journalLookback journalMaxOut journalPadding)
+            | null layout = True
+            | otherwise   = isJust (classifyPath layout p)
+      summary <- runBranchOpGit @ActiveChar (BranchName name) $
+        runStorage @ActiveChar (charSummaryWithJournal "sheet.md" journalPath keep journalLookback journalMaxOut journalPadding)
       let label = maybe name id (T.stripPrefix "character/" name)
-      pure (CharLabel label, blocks)
+      pure (CharLabel label, summary)
 
 -- | Bounds for the curated journal slice 'activeCharacterContext' folds
 --   back into ambient context -- see 'Storyteller.Writer.Agent.CharContext.
@@ -145,26 +151,34 @@ journalPath = "journal.md"
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Writer.Agent.FlowWrite'). Context (existing file content,
---   branch files, character summaries) is gathered here and handed to the
---   agents as plain data; they append nothing themselves, so appending the
+--   'Storyteller.Writer.Agent.FlowWrite'). Context (world lore, earlier
+--   chapters, character summaries, pinned/short-term context, and this
+--   chapter's own tick history) is gathered here and handed to the agents
+--   as plain data -- see 'Storyteller.Writer.Agent.Write.writeAgent' for
+--   how it turns into a real @['UniversalLLM.Message']@ rather than one
+--   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Map.Map T.Text ContextLayout -> Sem r ()
 chatWriter path prompt context layout mFlowTid charLayouts = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
-  (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)
+  (_existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)
+  (loreBlocks, styleBlocks, earlierChapters) <- runStorage @Main $ do
+    (WorldContext.WorldLore lore, WorldContext.SystemContext style) <- WorldContext.worldContextOf
+    earlier <- ChapterContext.earlierChaptersOf path
+    return (lore, style, earlier)
   charBlocks <- activeCharacterContext charLayouts path
-  let extraContext = toContextBlocks context <> fileCtx
-      instruction  = Instruction prompt
+  let pinned      = toContextBlocks context <> fileCtx
+      instruction = Instruction prompt
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid existing extraContext instruction charBlocks
+      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid loreBlocks styleBlocks charBlocks pinned earlierChapters instruction
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
-      Prose generated <- writeAgent existing extraContext instruction charBlocks
+      currentTicks <- runStorage @Main (Tick.fileTicksOf path)
+      Prose generated <- writeAgent loreBlocks styleBlocks charBlocks pinned earlierChapters currentTicks instruction
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
@@ -306,7 +320,7 @@ chatChapterRegen mode path prompt context = do
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
-      charBlocks <- flattenCharBlocks <$> activeCharacterContext Map.empty path
+      charBlocks <- flattenCharBlocks . map (fmap flattenCharSummary) <$> activeCharacterContext Map.empty path
       let extraContext = toContextBlocks context <> fileCtx
           instruction  = Instruction prompt
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path

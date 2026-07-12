@@ -1,0 +1,38 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
+-- | Story-branch context for continuing one chapter: the prose of every
+-- chapter that comes before it, and its own tick history so far. Both are
+-- 'Storyteller.Writer.Library' questions ("which chapter is this, and
+-- what's earlier") answered against real file content, which is why this
+-- lives beside 'Storyteller.Writer.Agent.WorldContext' rather than inside
+-- that pure, IO-free module.
+module Storyteller.Writer.Agent.ChapterContext
+  ( earlierChaptersOf
+  ) where
+
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+
+import qualified Storage.Core as Core
+import qualified Storage.FS as FS
+
+import Storyteller.Writer.Library (LibraryKind(..), ChapterUnit(..), classifyPath, buildLibraryTree, chapterUnits)
+
+-- | Every chapter that comes before @path@, oldest-first, as its full
+--   current prose (not tick history -- a chapter's working-tree content
+--   already IS just its atoms' concatenated text, nothing else ever lands
+--   in a chapter file, so there's no "strip the prompts back out" step
+--   needed the way there would be for a tick-history read).
+--
+--   @[]@ if @path@ doesn't classify as a chapter at all ('Storyteller.
+--   Writer.Library.classifyPath') -- writing into some other kind of file
+--   has no "earlier chapters" concept, and that's a normal, not an error,
+--   case.
+earlierChaptersOf :: forall m. Core.StoreM m => FilePath -> Core.StoreT m [T.Text]
+earlierChaptersOf path = case classifyPath path of
+  Chapter n -> do
+    files <- FS.list
+    let units = chapterUnits (buildLibraryTree files)
+        earlierPaths = [ p | u <- units, cuNumber u < n, Just p <- [cuChapterPath u] ]
+    mapM (\p -> TE.decodeUtf8 <$> Core.readFile p) earlierPaths
+  _ -> return []

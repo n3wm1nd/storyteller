@@ -25,7 +25,7 @@ import qualified Storage.FS as FS
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent (CharContextBlock(..))
+import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
 import Storyteller.Writer.Agent.CharContext (readCharFiles, charSummaryWithJournal)
 
 data CharBranch
@@ -57,15 +57,18 @@ spec = describe "readCharFiles" $ do
     result `shouldBe` Right ["sheet.md"]
 
   describe "charSummaryWithJournal" $ do
-    it "renders sheet.md plainly and adds no journal section when the journal is empty" $ do
+    it "renders sheet.md as csSheet and adds no journal section when the journal is empty" $ do
       let result = fst <$> runChain (do
             _ <- addAtom "sheet.md" "# Alice\n"
-            charSummaryWithJournal (/= "journal.md") "journal.md" 30 10 2)
+            charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
       case result of
         Left err -> expectationFailure err
-        Right blocks -> blocks `shouldBe` [CharContextBlock "### sheet.md\n\n# Alice\n"]
+        Right summary -> do
+          csSheet summary `shouldBe` [CharContextBlock "### sheet.md\n\n# Alice\n"]
+          csContext summary `shouldBe` []
+          csJournal summary `shouldBe` []
 
-    it "folds in a curated journal section after the plain files, labelled as the character's own viewpoint" $ do
+    it "puts a curated journal entry in csJournal, separate from csSheet, labelled as the character's own viewpoint" $ do
       let result = fst <$> runChain (do
             _  <- addAtom "sheet.md" "# Alice\n"
             -- The referenced source atom really lives on a different
@@ -76,23 +79,28 @@ spec = describe "readCharFiles" $ do
             s1 <- addAtom "scene.md" "witnessed line"
             _  <- FS.remove "scene.md"
             _  <- addAtomWithRefs [s1] "journal.md" "witnessed line, but I embellished it"
-            charSummaryWithJournal (/= "journal.md") "journal.md" 30 10 2)
+            charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
       case result of
         Left err -> expectationFailure err
-        Right blocks -> do
-          length blocks `shouldBe` 2
-          blocks !! 0 `shouldBe` CharContextBlock "### sheet.md\n\n# Alice\n"
-          let CharContextBlock journalText = blocks !! 1
-          journalText `shouldSatisfy` T.isInfixOf "witnessed line, but I embellished it"
-          journalText `shouldSatisfy` T.isInfixOf "private viewpoint"
+        Right summary -> do
+          csSheet summary `shouldBe` [CharContextBlock "### sheet.md\n\n# Alice\n"]
+          csContext summary `shouldBe` []
+          case csJournal summary of
+            [CharContextBlock journalText] -> do
+              journalText `shouldSatisfy` T.isInfixOf "witnessed line, but I embellished it"
+              journalText `shouldSatisfy` T.isInfixOf "private viewpoint"
+            other -> expectationFailure ("expected exactly one journal block, got " <> show other)
 
-    it "drops a journal entry that's still a verbatim copy of its source, keeping the plain files unaffected" $ do
+    it "drops a journal entry that's still a verbatim copy of its source, keeping csSheet unaffected" $ do
       let result = fst <$> runChain (do
             _  <- addAtom "sheet.md" "# Alice\n"
             s1 <- addAtom "scene.md" "same content"
             _  <- FS.remove "scene.md"
             _  <- addAtomWithRefs [s1] "journal.md" "same content"
-            charSummaryWithJournal (/= "journal.md") "journal.md" 30 10 2)
+            charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
       case result of
         Left err -> expectationFailure err
-        Right blocks -> blocks `shouldBe` [CharContextBlock "### sheet.md\n\n# Alice\n"]
+        Right summary -> do
+          csSheet summary `shouldBe` [CharContextBlock "### sheet.md\n\n# Alice\n"]
+          csContext summary `shouldBe` []
+          csJournal summary `shouldBe` []

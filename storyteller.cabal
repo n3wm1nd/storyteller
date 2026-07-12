@@ -34,6 +34,8 @@ library
                   , Storyteller.Writer.Agent.ContextFilter
                   , Storyteller.Writer.Agent.Chat
                   , Storyteller.Writer.Agent.CharContext
+                  , Storyteller.Writer.Agent.WorldContext
+                  , Storyteller.Writer.Agent.ChapterContext
                   , Storyteller.Writer.Agent.AskCharacter
                   , Storyteller.Common.Splitter
                   , Storyteller.Writer.Agent.Tracker
@@ -230,8 +232,10 @@ test-suite storyteller-test
                   , Storyteller.TrackerSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
+                  , Storyteller.WorldContextSpec
                   , Storyteller.PresenceSpec
                   , Storyteller.Writer.CharacterAnswerSpec
+                  , Storyteller.Writer.WriteSpec
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec
