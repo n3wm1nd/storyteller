@@ -8,17 +8,37 @@
 
 -- | Shared per-atom "should this change, and if so how" tool call.
 --
--- The tool the model is given is deliberately narrow: it takes the
--- replacement text plus a short reason and hands both straight back as data
--- — it does not itself decide *whether* to apply anything, so it needs no
--- filesystem or storage effect at all, only enough to construct a value.
--- This is what @Storyteller.Writer.Agent.Fix@ and @Storyteller.Writer.Agent.FlowWrite@
+-- The model gets two tools, not one: @replace_atom@ (retype the whole
+-- atom) and @replace_text@ (an exact-match-once span swap, the same
+-- find-and-replace-exactly-one-occurrence safety rule
+-- @Runix.Tools.editFile@ already applies to a whole file, just against one
+-- atom's in-memory text instead of a filesystem path). A small, localized
+-- fix — one word, one clause — only needs @replace_text@: the model names
+-- the exact span and its replacement instead of retyping the entire atom
+-- around it, which is both cheaper and removes the chance of an
+-- unrelated, un-asked-for rewrite creeping in elsewhere in the atom the way
+-- a full retype always risks. @replace_atom@ stays available for a change
+-- that's genuinely broader than one contiguous span. Neither tool decides
+-- *whether* to apply anything itself, so neither needs a filesystem or
+-- storage effect at all, only enough to construct a value (or, for
+-- @replace_text@, run the substitution against the atom text closed over
+-- from 'reworkAtom's own argument) — this is what
+-- @Storyteller.Writer.Agent.Fix@ and @Storyteller.Writer.Agent.FlowWrite@
 -- both reduce to: "here is one atom, here is an instruction, does it need
 -- to change, and if so to what — and why".
 --
 -- 'reworkAtom' is the pure decision core: given one atom's text and an
 -- instruction, it asks the model and returns the proposed replacement (or
--- 'Nothing' if no change is warranted) — needing only 'LLM'/'Fail'.
+-- 'Nothing' if no change is warranted) — needing only 'LLM'/'Fail'. A
+-- @replace_text@ call whose @old_text@ doesn't match the atom exactly once
+-- (missing, or ambiguous) comes back as a proposal identical to the
+-- original content; 'reworkAtom' treats that the same as "no proposal" —
+-- see its own Haddock — rather than writing a no-op edit and a Fixup tick
+-- that explains nothing. This is a single-turn decision, not a retry loop
+-- (unlike 'Storyteller.Writer.Agent.Outline.splitOutlineAgent'\/'Agent.
+-- Integration.Judge.judge'): a model that gets @old_text@ wrong doesn't get
+-- a second attempt in the same call, it just falls back to leaving the
+-- atom untouched, the same as if it hadn't called anything.
 --
 -- 'reworkAtomsAt' is the machinery around that core: it walks the file's
 -- tick chain, and for every atom 'reworkAtom' proposes a change for, applies
@@ -102,6 +122,30 @@ instance ToolParameter FixDescription where
 proposeReplacement :: forall r. T.Text -> FixDescription -> Sem r ReplaceProposal
 proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newText reason)
 
+-- | The @replace_text@ tool: given the atom's own current content (closed
+--   over, not a model-supplied parameter -- the model names a span, it
+--   doesn't retype the whole atom just to hand it back unchanged), run
+--   'replaceOnce' and package whichever text comes out. A failed match
+--   (see 'replaceOnce') comes back as @content@ unchanged, not an error —
+--   'reworkAtom' is what turns "unchanged" into "no proposal" for this
+--   call.
+proposeTextReplacement :: forall r. T.Text -> T.Text -> T.Text -> FixDescription -> Sem r ReplaceProposal
+proposeTextReplacement content oldText newText (FixDescription reason) =
+  pure $ ReplaceProposal (maybe content id (replaceOnce oldText newText content)) reason
+
+-- | Replace the one occurrence of @old@ in @haystack@ with @new@ -- 'Nothing'
+--   if @old@ is empty, absent, or ambiguous (appears more than once).
+--   Mirrors @Runix.Tools.editFile@\/@replaceAndCount@'s own
+--   exactly-once-or-refuse rule, just against an atom's in-memory text
+--   rather than a whole file on disk: an unambiguous single match is
+--   required precisely so the model can't accidentally touch a second,
+--   unintended occurrence of the same phrase elsewhere in the atom.
+replaceOnce :: T.Text -> T.Text -> T.Text -> Maybe T.Text
+replaceOnce old new haystack
+  | T.null old            = Nothing
+  | T.count old haystack /= 1 = Nothing
+  | otherwise              = Just (T.replace old new haystack)
+
 -- | Ask the model whether one atom needs to change given an instruction.
 --   The pure decision core: only 'LLM'/'Fail', no filesystem or storage
 --   access — applying a proposal is 'reworkAtomsAt's job.
@@ -115,13 +159,20 @@ reworkAtom content (Instruction instr) = do
   configsWithPrompt <- getConfigWithPrompt "agent.fixer" defaultFixerSystemPrompt defaultFixerConfig
   Prompt guidance   <- getPrompt "agent.fixer.instructions" defaultFixerInstructions
 
-  let tool = mkToolWithMeta
+  let replaceAtomTool = mkToolWithMeta
                "replace_atom"
-               "Replace this one atom's text with a corrected version. Only call this if the atom actually needs to change because of the instruction; otherwise don't call it."
+               "Replace this one atom's text with a corrected version, retyping the whole atom. Only call this if the atom actually needs to change because of the instruction, and prefer replace_text instead for a small, localized fix; use this only for a change broader than one contiguous span."
                (proposeReplacement @r)
                "new_text" "The full corrected replacement text for this atom, replacing it entirely"
                "reason"   "Brief explanation of why this atom needed to change, for later tracing"
-      tools = [LLMTool tool]
+      replaceTextTool = mkToolWithMeta
+               "replace_text"
+               "Replace one exact, contiguous span of this atom's text with a corrected version, leaving the rest of the atom untouched. Prefer this over replace_atom for a small, localized fix (e.g. correcting one detail). old_text must match the atom's text exactly once -- if it's missing or ambiguous, the atom is left unchanged, so make old_text specific enough to be unambiguous."
+               (proposeTextReplacement @r content)
+               "old_text" "The exact text to find in the atom -- must match exactly once"
+               "new_text" "The text to replace it with"
+               "reason"   "Brief explanation of why this atom needed to change, for later tracing"
+      tools = [LLMTool replaceAtomTool, LLMTool replaceTextTool]
       prompt = "Atom under review:\n\n" <> content <> "\n\nInstruction: " <> instr <> "\n\n" <> guidance
 
   response <- queryLLM
@@ -132,8 +183,15 @@ reworkAtom content (Instruction instr) = do
       result <- executeToolCallFromList tools call
       case toolResultOutput result of
         Right value -> case parseEither parseJSONViaCodec value of
-          Right proposal -> return (Just proposal)
-          Left _         -> return Nothing
+          -- A 'replace_text' call whose 'old_text' didn't uniquely match
+          -- comes back as @content@ unchanged (see 'proposeTextReplacement'
+          -- / 'replaceOnce') -- treated the same as no proposal at all,
+          -- rather than applying a no-op edit with a Fixup tick that
+          -- explains nothing.
+          Right proposal
+            | rpNewText proposal == content -> return Nothing
+            | otherwise                     -> return (Just proposal)
+          Left _ -> return Nothing
         Left _ -> return Nothing
     [] -> return Nothing
 
@@ -152,9 +210,11 @@ defaultFixerSystemPrompt = "You are a careful copy editor."
 --   are even valid.
 defaultFixerInstructions :: Prompt
 defaultFixerInstructions =
-  "If this atom needs to change because of the instruction, call replace_atom \
-  \with the corrected text and a brief reason why. If it is already fine as-is, just \
-  \reply briefly and do not call the tool."
+  "If this atom needs to change because of the instruction, call replace_text with the \
+  \exact old text and its replacement for a small, localized fix, or replace_atom with the \
+  \full corrected text for a change broader than one contiguous span -- either way, include \
+  \a brief reason why. If it is already fine as-is, just reply briefly and do not call \
+  \either tool."
 
 -- | Compiled-in sampling default for @agent.fixer@ -- see @$key.llmsettings.
 --   yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'. Deciding
