@@ -236,6 +236,7 @@ test-suite storyteller-test
                   , Storyteller.PresenceSpec
                   , Storyteller.Writer.CharacterAnswerSpec
                   , Storyteller.Writer.WriteSpec
+                  , Storyteller.Writer.ReplaceToolSpec
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec

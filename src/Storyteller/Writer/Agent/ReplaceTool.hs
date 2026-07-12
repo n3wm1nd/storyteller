@@ -58,6 +58,7 @@ module Storyteller.Writer.Agent.ReplaceTool
   ( ReplaceProposal(..)
   , reworkAtom
   , reworkAtomsAt
+  , replaceOnce
   ) where
 
 import Autodocodec (HasCodec(..), dimapCodec, object, requiredField, parseJSONViaCodec, (.=))
