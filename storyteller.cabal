@@ -318,6 +318,10 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.WorldLoreSpec
                   , Agent.Integration.JournalInstructionSpec
                   , Agent.Integration.JournalIronySpec
+                  , Agent.Integration.WriterStyleGuideSpec
+                  , Agent.Integration.WriterPinnedContextSpec
+                  , Agent.Integration.WriterEarlierChaptersSpec
+                  , Agent.Integration.WriterConversationHistorySpec
                   , Agent.Integration.ToolCallQuality
                   , Git.Mock
                   , Paths_storyteller

@@ -83,10 +83,14 @@ instruction = Instruction $ T.unwords
 
 judgeQuestion :: T.Text
 judgeQuestion = T.unwords
-  [ "Does this text show the character Mira declining, avoiding, or"
-  , "reacting negatively to being offered fish, in a way consistent with"
-  , "a stated aversion to fish in her background? Praising the fish or"
-  , "eating it happily should fail this question."
+  [ "Does this text show the character Mira reacting to being offered fish"
+  , "with a restrained, avoidant reaction -- declining, going quiet,"
+  , "physically distancing herself from the food (e.g. pushing the plate"
+  , "away), or changing the subject -- rather than casually accepting,"
+  , "praising, or eating it? The text does not need to explain why, or"
+  , "state any prior aversion outright -- a consistent avoidant reaction by"
+  , "itself is enough to pass. Praising the fish or eating it happily"
+  , "should fail this question."
   ]
 
 spec

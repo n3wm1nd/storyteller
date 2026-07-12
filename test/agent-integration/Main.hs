@@ -44,6 +44,10 @@ import qualified Agent.Integration.CharacterPresenceSpec
 import qualified Agent.Integration.WorldLoreSpec
 import qualified Agent.Integration.JournalInstructionSpec
 import qualified Agent.Integration.JournalIronySpec
+import qualified Agent.Integration.WriterStyleGuideSpec
+import qualified Agent.Integration.WriterPinnedContextSpec
+import qualified Agent.Integration.WriterEarlierChaptersSpec
+import qualified Agent.Integration.WriterConversationHistorySpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
 --   env vars -- see 'Agent.Integration.Harness.knownModels') and build the
@@ -157,3 +161,7 @@ main = do
         describe "Agent.Integration.WorldLoreSpec"            (Agent.Integration.WorldLoreSpec.spec @judgeTy runner)
         describe "Agent.Integration.JournalInstructionSpec"   (Agent.Integration.JournalInstructionSpec.spec @judgeTy runner)
         describe "Agent.Integration.JournalIronySpec"         (Agent.Integration.JournalIronySpec.spec @judgeTy runner)
+        describe "Agent.Integration.WriterStyleGuideSpec"        (Agent.Integration.WriterStyleGuideSpec.spec @judgeTy runner)
+        describe "Agent.Integration.WriterPinnedContextSpec"     (Agent.Integration.WriterPinnedContextSpec.spec @judgeTy runner)
+        describe "Agent.Integration.WriterEarlierChaptersSpec"   (Agent.Integration.WriterEarlierChaptersSpec.spec @judgeTy runner)
+        describe "Agent.Integration.WriterConversationHistorySpec" (Agent.Integration.WriterConversationHistorySpec.spec @judgeTy runner)

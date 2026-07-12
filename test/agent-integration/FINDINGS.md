@@ -40,6 +40,20 @@ here" as "proven forever."
   literalism-contract section. It's still a real, working check; it just
   needs a scenario with nothing legitimate to trip it
   (`OutlineSplitEscapingSpec`, a plain pirate outline) to mean anything.
+- **A judge rubric can fail a generation that actually did the right
+  thing, if its wording is ambiguous about what "counts."**
+  `CharContextWriteSpec`'s question asked whether the text was "consistent
+  with a stated aversion to fish"; Mira's sheet says she "goes quiet, pushes
+  the plate a small distance away, and changes the subject" when served
+  fish, and the generated scene did exactly that, near-verbatim — but the
+  judge failed it anyway, reading "stated" as "must be narrated/explained
+  in-scene" rather than "behaviorally consistent with." Reworded the
+  question to describe the concrete behavioral pattern directly (declining,
+  going quiet, physically distancing, changing the subject) and say
+  explicitly that the text doesn't need to explain why. Reran live: passes
+  now, and the judge's own reasoning cites the actual behavioral markers —
+  confirms this was a rubric-wording gap, not the judge becoming more
+  lenient in general (`judge`'s system prompt/mechanism is untouched).
 
 ## Working hypothesis, one round of evidence
 
@@ -126,6 +140,51 @@ still the right shape for incrementally filling in missing/added chapters
 later, where the model needs to name one specific gap rather than continue
 a sequence from scratch. `splitOutlineFreeform` is for the first,
 whole-outline split; the two aren't in competition for the same job.
+
+## Context assembly rework: first live pass, three findings
+
+`writeAgent`'s per-chapter `[Message]` rework (lore/style/per-character
+`CharSummary`/pinned/earlier-chapters/tick-history, replacing one flattened
+prompt) needed its own real-model pass — four new scenarios
+(`CharacterPresenceSpec`, `WorldLoreSpec`, `JournalInstructionSpec`,
+`JournalIronySpec`) all pass live against `deepseek-v4-flash`, confirming
+character presence, world lore, and both journal mechanisms (a manually
+appended private resolve, and a retroactively *edited* journal atom) all
+reach the model and shape its output correctly. Running the full suite
+after that turned up three pre-existing failures, unrelated to each other.
+One (`CharContextWriteSpec`'s rubric wording) is fixed and moved to
+"Settled, shipped" above; the other two are real model findings, left as
+failing on purpose rather than loosened:
+
+- **`writeAgent`'s fixed "~300 words" length hint can force a chapter to
+  drop entire beats rather than compress them — working hypothesis, one
+  data point (`JourneySpec`).** Chapter 1's beat sheet had 5 beats (its own
+  estimate: ~12 pages worth); the generated prose landed right on its
+  ~300-word target, but got there by dropping Beat 1 (the opening "bean
+  dilemma" scene) and Beat 5 (the shipboard coda) entirely, and reordering
+  Beat 2's own internal sequence. The judge caught this accurately — verified
+  directly against the prose, not just trusting the verdict. Same shape as
+  the already-settled `defaultSplitConfig` `MaxTokens` finding above (a fixed
+  budget too small for a real beat sheet), but on the prose side and against
+  a word count rather than a token budget — `buildChapterMessages`'
+  instruction message hardcodes "approximately 300 words" regardless of how
+  much the beat sheet actually asks for.
+- **A counter-example to the bulk-split table above, from a fixture already
+  tracked in this doc.** `OutlineSplitBulkSpec`'s "non-chapter lead-in and
+  bracketed author's asides" fixture (`codeFenceAndBackslashes`) — previously
+  reported 3/3 clean for `deepseek-v4-flash` in the table above — failed on
+  this run: the outline's Chapter 2 ends right as a phone call connects
+  ("she calls it anyway, and someone picks up"), with the conversation itself
+  ("knows her father's name... it's a promise") explicitly Chapter 3's
+  content. The model's ch2 beat sheet pulled that whole conversation forward
+  into ch2, then, with nothing left for ch3, **invented a new scene wholesale**
+  — an in-person café meeting with a new character ("Miriam") appearing
+  nowhere in the outline. Confirmed directly against the cached response,
+  not just the judge's summary. This is content invention, not just boundary
+  drift, and it's a genuine counter-example to "bulk beats sequential" as a
+  general claim — that hypothesis was already flagged above as needing a
+  second round; this is that second data point, and it points the other way
+  for at least this fixture/model pairing.
 
 ## Provider-level quirks observed, not ullm bugs
 
