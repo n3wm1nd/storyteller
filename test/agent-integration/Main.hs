@@ -7,6 +7,8 @@
 
 module Main where
 
+import System.Environment (lookupEnv)
+
 import Polysemy
 import Polysemy.Fail (runFail)
 import Polysemy.State (evalState)
@@ -14,6 +16,7 @@ import Runix.FileSystem (fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 import Runix.HTTP (httpIO)
 import Runix.LLM.Cache (cacheLLM, fileSystemLookup, fileSystemStore)
+import Runix.Logging (Logging, loggingNull)
 import Runix.Runner (withRequestTimeout)
 import Runix.Time (timeIO, sleepIO)
 import Test.Hspec
@@ -80,22 +83,39 @@ import qualified Agent.Integration.JournalIronySpec
 --   seeded on every 'runner' call, so scenarios stay hermetic from each
 --   other. 'Agent.Integration.Harness.mainBranch' is created up front so a
 --   scenario can start working against it immediately.
+-- | Whether to run in "verbose mode" -- @VERBOSE@ set to anything but
+--   @0@\/@false@\/empty -- which keeps 'loggingPretty' (the agents' own
+--   step-by-step 'Runix.Logging.info' noise, see @../PLAN.md@'s "keep the
+--   caller informed": for a normal debugging run against a live model, that
+--   noise is the point, since these are long-running calls with otherwise
+--   no visible progress). Compact -- 'Runix.Logging.loggingNull', stdout is
+--   just hspec's own pass\/fail output -- is the default: skimming a whole
+--   suite's pass\/fail shape at a glance, e.g. after the first live run
+--   already cached every response and a rerun is just confirming replay
+--   still passes, is the common case; opt into the noise with @VERBOSE=1@
+--   when actually debugging one scenario.
+isVerbose :: IO Bool
+isVerbose = maybe False (`notElem` ["", "0", "false"]) <$> lookupEnv "VERBOSE"
+
 main :: IO ()
 main = do
   storyKnown <- resolveKnownModel "STORY_MODEL" "qwen35-40b"
   judgeKnown <- resolveKnownModel "JUDGE_MODEL" "deepseek-v4-flash"
   agentCacheDir <- resolveFixture "test/fixtures/llm-agent-cache"
+  verbose <- isVerbose
 
   case (storyKnown, judgeKnown) of
     (KnownModel storyID (story :: storyTy) storyConfigs, KnownModel judgeID (judgeVal :: judgeTy) judgeConfigs) -> do
       runStoryProse <- modelInterpreter storyID story storyConfigs
       runStoryAgent <- modelInterpreter storyID story storyConfigs
       runJudge      <- modelInterpreter judgeID judgeVal judgeConfigs
-      let runner :: Runner judgeTy
+      let logInterpreter :: Member (Embed IO) r => Sem (Logging : r) a -> Sem r a
+          logInterpreter = if verbose then loggingPretty else loggingNull
+          runner :: Runner judgeTy
           runner action =
               runM
               . runFail
-              . loggingPretty
+              . logInterpreter
               . splitMarkdownAware
               . filesystemIO
               . fileSystemLocal (CacheProject agentCacheDir)
