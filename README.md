@@ -71,15 +71,9 @@ When a character drifts, you fix it at the root — amend their branch at the po
 
 Open a project: file tree on the left, prose in the center, an instruction field at the bottom. It looks like a text editor. For most workflows, that's all you interact with.
 
-The structure reveals itself as you need it. The character knowledge panel, the branch view, the consistency checker — they're one interaction away, not in your face on day one.
+The structure reveals itself as you need it. The character sidebar, the codex, the undo timeline — they're one interaction away, not in your face on day one.
 
-The interface comes in three flavors optimized for different workflows:
-
-- **Writer** — structured novel and scene writing, with hierarchical navigation and character knowledge tracking
-- **RP** — cooperative storytelling and character interaction, closer to the SillyTavern model but with persistent state and a real data model underneath
-- **Wiki** — encyclopedia-style reference for lore, characters, arcs, and mysteries, with cross-references and annotation
-
-All three share the same storage backend. A campaign run in RP mode and documented in Wiki mode are looking at the same underlying story.
+The **Writer** surface is built and working today: a file tree, per-file prose/chat views, a character sidebar with live presence, a codex for lore, and an agent selector (write, fix, append, note, regenerate) behind the input bar instead of a prose/agent/discussion mode switch. **RP** (cooperative, SillyTavern-adjacent character interaction) and **Wiki** (encyclopedia-style cross-referenced reference) are the other two surfaces this architecture is meant to support — same storage backend, same character branches, same context assembly underneath — but neither is built yet; Writer is where the design gets proven out first.
 
 The backend is frontend-agnostic: a WebSocket server exposes the full agent and storage layer, and any frontend can connect to it. The WebSocket model is a natural fit — each window opens a connection scoped to a branch, receives a full snapshot on connect, and stays live for the duration of the session. Multiple windows on the same branch all receive updates as they happen.
 
@@ -95,4 +89,8 @@ The LLM is still the one writing. Storyteller is the framework that makes what i
 
 ## Status
 
-Early development. The data model and design are documented in `DESIGN.md` and `DATA-MODEL.md`. A UI mockup exists in `mockup/`. The backend is being built in Haskell using the `runix` effect system. Currently in progress: a WebSocket server (`story-server`) and CLI tools for individual agent operations.
+Working, not finished. The data model and design are documented in `DESIGN.md` and `DATA-MODEL.md`; the wire protocol in `WS-PROTOCOL.md`; frontend/backend conventions in `WRITER.md`. The backend is Haskell (`runix` effect system, git-backed storage); `story-server` is a live WebSocket server with a working Next.js frontend (`frontend/`) connected to it — this isn't a mockup-only stage anymore, though `mockup/` still exists for UI exploration ahead of building something for real.
+
+Built and working: character branches (`sheet.md`/`journal.md`) with scene-scoped presence tracking; full context assembly for prose generation (world lore, a style guide, per-character sheet/context/journal, pinned short-term context, earlier-chapter continuity, and the current file's own conversation history, assembled into a real per-call message list rather than one flattened prompt); the outline → beat-sheet → chapter pipeline; a fixer agent that can target one atom with either a full rewrite or an exact-match span replacement; a flow-aware writer that revises in-flight prose before continuing; a read-only discuss-the-story chat agent; undo; and an agent-integration test suite that runs these agents against real models (cached, replayable) rather than only mocked unit tests.
+
+Not built yet, despite being described in `DESIGN.md`: semantic/RAG search, the consistency-checker/merge/synthesis/task-tracking agents, manuscript/character-card import and EPUB/PDF export, and the RP/Wiki surfaces mentioned above. Treat anything in `DESIGN.md` not corroborated by this section as a direction, not a status.

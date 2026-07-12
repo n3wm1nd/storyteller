@@ -46,13 +46,15 @@ Storyteller doesn't make LLM output better or faster. It provides a framework th
 
 ### What's Fixed
 
-**`.storyteller/` — System files only**
+**`.storyteller/` — System files only** *(design; not how configuration actually works today)*
 ```
 .storyteller/
   config.yaml      # Optional configuration
   cache/           # Derived data (not in git)
     embeddings/    # RAG index (rebuilt from git)
 ```
+
+What actually configures a run today is environment variables read at process/connection start — `STORY_REPO`, `STORY_BRANCH`, `LLAMACPP_ENDPOINT`, `STORY_MODEL`/`JUDGE_MODEL` (see `Storyteller.Core.LLM.Registry.knownModels`), `ACTIVE_CHARS` — not a `.storyteller/` project directory. No embeddings cache exists, since no RAG index exists yet (see Open Questions). Whether a project-local config file is ever worth adding on top of env vars is still open.
 
 ### Everything Else: Your Choice
 
@@ -126,7 +128,7 @@ Entity branches exist on a spectrum:
 - **Standard:** Character sheet + biography tracking significant events
 - **Deep:** Structured file tree, frequently updated, selectively loaded per scene
 
-The author decides. The system doesn't require any particular depth. "Entity" is an abstract concept — most commonly characters, but also institutions, and occasionally locations or objects when tracking their evolving state from a particular perspective is useful. See DATA-MODEL.md.
+The author decides. The system doesn't require any particular depth. "Entity" is an abstract concept — most commonly characters, but also institutions, and occasionally locations or objects when tracking their evolving state from a particular perspective is useful. See DATA-MODEL.md. What's actually built today is characters specifically (`character/{id}` branches, `sheet.md`/`journal.md`, presence tracking) — nothing about the mechanism is character-specific in principle, but a non-character entity branch hasn't been exercised in practice yet.
 
 ---
 
@@ -165,7 +167,7 @@ The core axis is: **how is input interpreted, and what does it produce?**
 | Discussion | Planning, questions, analysis | Chat response only, nothing committed |
 | Character | Text directed at a specific character | Character's response, not added to prose |
 
-These are input modes, not separate agents. Switching between them can be via commands (`/as alice`, `(( instruction ))`), key prefixes, or explicit mode switches. Multiple modes can coexist in a session — a director instruction followed by verbatim prose followed by an out-of-character question is a normal authoring sequence.
+These are input modes, not separate agents. This table is the original conceptual axis; see "Interaction Modes" below for how it actually resolved once built — a per-message agent selector plus a `chat/` file convention, not the `/as alice`/`(( instruction ))` command syntax sketched here, which was never implemented. Multiple modes can coexist in a session — a director instruction followed by verbatim prose followed by an out-of-character question is a normal authoring sequence.
 
 The writing style within instruction mode is also configurable on a spectrum:
 
@@ -180,52 +182,39 @@ Custom styles are pluggable for specialized output (screenplays, poetry, game di
 
 ### Utility Agents
 
-Specialized agents for specific pipeline tasks:
+What's actually built today, in `src/Storyteller/Writer/Agent/`:
 
-**Knowledge Filter Agent** *(optional)*
-- Input: New main branch commits, target entity
-- Process: Routing agent (cheap) selects relevant branch files; filter agent (capable) determines what the entity would have experienced and how, writes the update
-- Output: Commits to entity branch at correct fiction-time position
-- Runs: Lazily, in batches, or as a maintenance task — git branch state shows exactly what's pending
-- Baseline alternative: copy produced prose to active character branches directly, no LLM needed; refine selectively or post-hoc
+**Write/FlowWrite** (`Write.hs`, `FlowWrite.hs`) — the main prose-continuation agent. Given already-gathered context (see Context Assembly below), builds a real per-call `[Message]` history and generates the next passage. `FlowWrite` is the same agent aware that a generation may already have been in flight when a new instruction arrived: it revises whatever was written provisionally since the user started typing (via the Fixer, below) before continuing on top of it.
 
-The baseline (carbon-copy) is already doing real work: a character who was present for a scene has that scene's prose in their branch, which is enough for the LLM to write them consistently in subsequent scenes. LLMs have contextual understanding of what a character notices based on how the prose is written — a character written as oblivious will be treated as oblivious even if the information they're missing appears nearby. Knowledge leaks that do occur are caught on author read and fixed by amending the entity branch at the point of the leak; the fix is permanent. Whether a leak goes unnoticed... if it doesn't cause a visible problem in the prose, it doesn't matter.
+**Fixer** (`Fix.hs`, `ReplaceTool.hs`) — given an instruction and a set of already-written atoms flagged as its target, decides per-atom whether it needs to change, and if so how: a full rewrite (`replace_atom`) or a targeted, exact-match-once span swap (`replace_text`) that leaves the rest of the atom untouched. Records its own reasoning as a `Fixup` tick, distinct from a user's `Note`, so a later reader can trace why an atom changed.
 
-**Summarizer Agent**
-- Input: Set of commits (paragraphs, scenes, chapters) and the applicable summarization rule
-- Process: Generate summary at the boundary defined by the rule (chapter, scene, N-commit span, etc.)
-- Output: Summary checkpoint commit (identical tree, summary as commit message)
-- Runs: As a background task when content is complete and stable — a chapter closes, a character exits, an arc resolves. Never blocks the writing workflow.
-- Navigation: Agents traverse the resulting summary tree dynamically, drilling from chapter summaries down to individual commits only as needed.
+**Chat** (`Chat.hs`) — discusses the story rather than continuing it. Read-only tool access (`glob`/`read_file`/`sed_print`) over the branch; nothing it does gets committed except the final reply, via the `chat/` file convention (see WRITER.md) that pairs prompt/reply ticks as a conversation instead of prose.
 
-**Consistency Checker Agent**
-- Input: Commit range, entity branches at relevant fiction-time positions
-- Process: For each fact in a commit, is there a prior commit in the relevant entity branch that sourced it?
-- Output: Flagged inconsistencies with references (no commits)
+**AskCharacter** (`AskCharacter.hs`) — answers a question grounded only in one character's own branch (sheet, journal, anything else tracked there), never the scene being written or any other character's material. What the correction loop's "character was wrong" case (below) actually queries against before deciding whether a branch fix is warranted.
 
-**Merge/Reconciliation Agent** (orchestrator)
-- Input: Two divergent branches
-- Process: Identify causal dependencies, launch consistency checker, generate reconciliation plan, execute scene rewrites
-- Output: Reconciled story graph — never a mechanical merge
+**Outline/Split** (`Outline.hs`) — the outline → beat-sheet → chapter pipeline (`outline.md` → `ch{N}.outline.md` → `chapters/ch{N}.md`), plus chapter reconciliation when an already-written chapter's beat sheet changes underneath it.
 
-**Synthesis Agent**
-- Input: Multiple branches, synthesis instructions ("take dialogue from A, pacing from B")
-- Process: Load branches at appropriate granularity, generate new version combining specified elements
-- Output: Synthesized commits
+**Tracker** (`Tracker.hs`) — copies new atoms from a trackee branch into a tracker branch, one tracker atom per trackee atom, with cross-branch refs recording the source. The mechanical "carbon-copy" baseline described below, as a real, working primitive rather than just a fallback story.
 
-**Task Tracking Agent**
-- Input: Story state, character goals
-- Process: Maintain task lists (story-level, per-character), track completion
-- Output: Task markdown files, auto-injected into prompts
+None of the following, despite being useful ideas, exist yet: a dedicated Knowledge Filter Agent beyond the Tracker baseline, a Consistency Checker Agent, a Merge/Reconciliation Agent for divergent branches (not to be confused with `Outline.hs`'s `reconcileChapter`, which reconciles one chapter against an edited beat sheet — a different, smaller, already-built thing), a Synthesis Agent, or a Task Tracking Agent. They're worth building; nothing below this line should be read as already true.
+
+The baseline (Tracker's carbon-copy) is already doing real work: a character who was present for a scene has that scene's prose in their branch, which is enough for the LLM to write them consistently in subsequent scenes. LLMs have contextual understanding of what a character notices based on how the prose is written — a character written as oblivious will be treated as oblivious even if the information they're missing appears nearby. Knowledge leaks that do occur are caught on author read and fixed by amending the entity branch at the point of the leak; the fix is permanent. Whether a leak goes unnoticed... if it doesn't cause a visible problem in the prose, it doesn't matter.
+
+Summary checkpoints, a routing/filter agent split for large-scale context selection, and the hierarchical navigation they'd enable are all still design, not code — see Open Questions.
 
 ### Context Assembly
 
-Agents load exactly what a scene needs — never the full story:
+What a scene's generation call actually assembles today (`Write.hs`'s `writeAgent`, `buildChapterMessages`) is a real `[Message]` history, not one flattened prompt, in a fixed order:
 
-- **Routing agent (cheap):** Given a scene and entity file index, which files are relevant? Returns ranked list.
-- **Filter agent (capable):** Loads flagged files, does the actual work.
-- **Summary checkpoints:** Free navigation anchors — find nearest checkpoint, read message, only walk individual commits if more precision is needed.
-- **Subagents:** For uncertain relevance, a micro-call reads a file and returns a relevance summary before the main agent decides whether to load it fully.
+1. **World lore** — every lore-eligible branch file (`Storyteller.Writer.Lore.isLoreEligible`), read unconditionally, not selected by relevance. One stable early message.
+2. **A style guide** (`style.md`) — appended to the system prompt, not a message; a project's standing voice/tone instructions.
+3. **Earlier chapters**, oldest first — each one's full current prose, verbatim, one message each. This is what keeps a later chapter consistent with something only an earlier one established.
+4. **Every active character's identity** — `sheet.md` plus other tracked context, one block per character, near the start since it's mostly stable for a whole chapter.
+5. **This chapter's own conversation so far** — the file's own Prompt/Atom tick pairs, reconstructed into alternating turns.
+6. **A shallow splice** — pinned/short-term context (whatever the author selected for this call) plus each active character's curated recent journal excerpt — placed close to the live edge of the conversation, since it's the most volatile part.
+7. **The new instruction** — always last.
+
+Selection *within* this — which of a branch's other files count as lore, which count as a given character's context — is author-curated today via a bucket/glob picker in the frontend (`context-source.tsx`), fully wired end to end (branch → WS message → dispatch → assembly), not a heuristic the backend guesses at. There is no relevance-ranking routing agent and no semantic/RAG selection: everything assigned to a bucket is included, every call, in full. That's the real, current form of what this section used to describe as a routing/filter agent split — deliberately simpler, and the one place this architecture doesn't yet have an answer for what happens once a story's total context stops fitting in the window at all (see Open Questions).
 
 ---
 
@@ -249,18 +238,18 @@ Saving is the only point where accumulated changes are reconciled: a diff-and-me
 
 ### Regeneration and Swipes
 
-"Regenerate" creates an alternative version — a parallel branch off the same point, not a new entry on the main story line. The user selects which version becomes canonical. Rejected alternatives are preserved in the temporal branch, eventually garbage collected from the active graph.
+"Regenerate" is built, and simpler than originally designed here: not a parallel branch off the same point, but an alternate-content carousel on the atom itself (`Storyteller.Common.Swipe`) — `pushSwipe` swaps in a new alternative, `cycleSwipe` rotates through what's been generated so far, all in place, with the tick count unchanged. No separate temporal branch, and nothing to garbage collect.
 
-### Knowledge Filter Timing
+### Knowledge Filter Timing *(design, not yet built)*
 
-Entity branch updates are lazy — the system knows what's pending from git branch state (`git log entity-branch..main`). Updates can run:
+Beyond the Tracker's mechanical carbon-copy (see Utility Agents), there's no capable filter agent deciding *what* a character would have experienced and how, nor the batching/on-demand timing model this section originally sketched. What's here is still the intended shape once one exists:
 - After each scene (default)
 - In batches (for local models where caching efficiency matters)
 - On demand before a scene that needs a specific character's current state
 
-### Merging
+### Merging *(design, not yet built)*
 
-Merges are never mechanical. The Merge/Reconciliation Agent:
+No Merge/Reconciliation Agent exists yet — divergent branches have no automated reconciliation path today. The intended shape, once built:
 1. Identifies the divergence point and all causally dependent commits
 2. Runs consistency checker on affected range
 3. Generates a reconciliation plan (which commits need rewriting, in what order)
@@ -272,31 +261,23 @@ Merges are never mechanical. The Merge/Reconciliation Agent:
 
 ## Interaction Modes
 
-The session mode controls what the LLM has access to and what it produces at the macro level. Within a mode, input modes (verbatim, instruction, discussion, character) determine how each individual input is interpreted.
+What's built is narrower and more concrete than the mode-switching model this section originally described: there's no single session-wide `<Tab>`-cycled prose/agent/discussion switch. Instead, each message picks which agent handles it, and discussion lives in its own file convention rather than a session mode.
 
-### Prose Mode (Default)
+### Agent Selector (per message)
 
-Minimal friction for linear writing. Every instruction produces prose committed immediately. The system prompt is stable for the duration of a chapter — active character sheets, scene context, recent prose — so the session is cache-friendly across many generation calls.
+The frontend's input bar carries a small, fixed set of routable agents, cycled with shift-tab: **write** (Writer, or FlowWriter if a generation was already in flight), **fix** (targets the current atom selection via the Fixer), **append** (verbatim, committed as-is), **note** (annotation, nothing generated), **regen** (swipe — an alternative off the same point). This is the practical equivalent of the old "input modes" table (verbatim/instruction/discussion/character), just resolved per-message instead of as a standing mode the whole session is in.
 
-```
-You are writing a novel. Continue the story naturally.
-Scene: [current scope]
-[active character sheets]
-Recent prose: [last paragraph or summary]
-Write the next passage. Just prose, no commentary.
-```
+### Discussion
 
-### Agentic Mode
+Not a session mode — a file convention. A file under the `chat/` path (see WRITER.md) renders its Prompt/Atom tick pairs as a conversation (user/assistant bubbles) instead of prose, backed by the same `Chat.hs` agent described under Utility Agents: read-only tool access, nothing committed but the final reply. Planning and analysis without touching the story is "open a chat file," not "switch modes and come back."
 
-Full tool access. LLM can read/write branches, search history, run consistency checks, manage entity branches. Suitable for editing passes, restructuring, maintenance tasks, and anything that needs to operate across the full story state rather than just continuing the current scene.
+### Character Mode
 
-### Discussion Mode
+Talking to a character (see Character Interaction, below) is its own thing: directed at one character's branch via `AskCharacter`, answered from what that branch alone contains, never added to prose automatically.
 
-Planning and analysis only. Read-only access. Nothing written to story or branches. Natural switching point when thinking through what should happen next before writing it.
+### What's Still Just Design
 
-### Mode Switching
-
-`<Tab>` cycles through modes. `/mode prose`, `/mode agent`, `/mode discuss`.
+A single tool-access ceiling that scales up for "editing passes, restructuring, maintenance tasks" (the old Agentic Mode) isn't built — the Fixer and FlowWriter already cover targeted, bounded revision, but nothing yet gives a model broad read/write reign across a whole story's branches at once. Worth watching whether it's ever actually needed once the narrower agents have more real usage behind them, rather than building it speculatively now.
 
 ---
 
@@ -304,7 +285,7 @@ Planning and analysis only. Read-only access. Nothing written to story or branch
 
 ### Talking to Characters
 
-Character mode is an input mode, not a separate system. Whatever you type gets the character's response based on their branch; the response is shown in the interface but not added to the prose.
+Character mode is an input mode, not a separate system. Whatever you type gets the character's response based on their branch; the response is shown in the interface but not added to the prose. The `/as`-command syntax below is the original design sketch, not implemented as such — the real mechanism is `AskCharacter.hs` (see Utility Agents), reached today via the sidebar's Ask panel rather than a typed command prefix. Meta characters (Writing Coach, Harsh Critic — full story access, no entity branch) remain design, not built.
 
 ```
 /as alice-chen       # Enter character mode — input directed at Alice, responses from her branch
@@ -316,12 +297,16 @@ Characters are oracles, not authors. They answer questions — what would they s
 
 ### Correction Loop
 
-When generated output is wrong, there are three distinct cases that route differently:
+When generated output is wrong, there are four distinct cases that route differently — the fourth is a real, tested mechanism as of this writing (`ReplaceTool.hs`, exercised live in the agent-integration suite), the rest are the original design and still the intended shape:
 
-**Character was wrong** — the prose misrepresents who the character is or what they know.
-- Add an entry to their branch explaining why they wouldn't do that, at the relevant fiction-time position
-- Regenerate — the constraint is now permanent
-- Prefix: `!` or explicit instruction ("fix this in Tony's branch and regenerate")
+**Character was wrong, at the root** — the prose misrepresents who the character is or what they know, and the fix should hold for every future scene, not just this one.
+- Append or edit an entry in their branch (`journal.md`) explaining the correction, at the relevant fiction-time position
+- Regenerate — the constraint is now permanent, because every future call to `writeAgent` reads that branch's current state
+- This is proven to actually change generated behavior, not just theorized: a manually-added journal resolve measurably changed next-scene output, and a retroactively-edited journal entry produced correct dramatic irony (the character's own behavior consistent with a secret, without leaking it) in live testing against a real model.
+
+**This one atom was wrong, locally** — a single already-written passage needs a targeted fix, but nothing about the character or the story's facts needs to change going forward.
+- The Fixer: point it at the atom, give it an instruction, it decides whether and how to change just that span (`replace_text`) or the whole atom (`replace_atom`)
+- Nothing goes to any branch — this is a prose-level fix, not a root-cause one, and is the more common case in practice
 
 **Narrator misunderstood** — the prompt was interpreted incorrectly, the wrong thing happened.
 - Edit or replace the instruction, regenerate
@@ -331,30 +316,29 @@ When generated output is wrong, there are three distinct cases that route differ
 - Swipe: regenerate with the same prompt, pick the better result
 - Arrow-up to edit the prompt slightly, or shift-arrow-up to give refinement instructions
 
-The distinction matters: routing a bad roll into a branch entry adds noise; routing a character failure to a swipe means it happens again next time.
+The distinction matters: routing a bad roll into a branch entry adds noise; routing a character failure to a swipe means it happens again next time; and reaching for a branch-level fix when a local atom fix would do costs a live regeneration of everything downstream for no reason.
 
 ---
 
-## Querying
+## Querying *(design, not yet built)*
 
-**Exact (git):**
+**Exact (git)** is real today, since a character branch is just a git branch — this works right now, with no special tooling:
 ```bash
-git log alice-knowledge                    # What does Alice know?
-git log main --not alice-knowledge         # What doesn't she know?
-git log alice-knowledge bob-knowledge      # Shared experiences
+git log character/alice                    # What does Alice know?
+git log main --not character/alice          # What doesn't she know?
+git log character/alice character/bob       # Shared experiences
 ```
 
-**Semantic (RAG):**
+**Semantic (RAG)** is not built — no embeddings index, no `storyteller search` CLI. The "one real, deliberately deferred gap" once context stops fitting in a window at all (see Context Assembly, Open Questions).
 ```bash
-storyteller search "when did Alice feel betrayed?"
-storyteller search "Bob's guilt"
+storyteller search "when did Alice feel betrayed?"   # aspirational, doesn't exist
 ```
-
-RAG index is a cache rebuilt from git at any time.
 
 ---
 
-## Consistency Checking
+## Consistency Checking *(design, not yet built)*
+
+No Consistency Checker Agent exists. What author-facing consistency checking exists today is manual: reading the prose, noticing a contradiction, and fixing it via the correction loop (see Character Interaction). The intended shape, once a dedicated checker exists:
 
 **What to check:**
 - Does this character reference knowledge not in their branch at this fiction-time position?
@@ -364,15 +348,15 @@ RAG index is a cache rebuilt from git at any time.
 
 **When:** After scene/chapter completion (optional), before merge (recommended), on demand.
 
-**How:** Consistency Checker Agent queries entity branches at the relevant fiction-time position. Flags violations with references. User reviews — stories can break rules intentionally.
+**How:** Queries entity branches at the relevant fiction-time position. Flags violations with references. User reviews — stories can break rules intentionally.
 
 Not computationally solvable. System assists, user decides.
 
 ---
 
-## Task Tracking
+## Task Tracking *(design, not yet built)*
 
-Tasks auto-injected into every LLM prompt as reminders.
+No task-tracking agent or auto-injected task files exist. The intended shape:
 
 ```markdown
 # meta/tasks/story.md
@@ -389,6 +373,8 @@ LLM can complete tasks, add tasks, and query what's pending. Prevents forgotten 
 ---
 
 ## Use Cases
+
+These describe the target vision and mix built and not-yet-built capabilities freely (e.g. "consistency checking," "merge with LLM-assisted reconciliation," and manuscript export below are all still design — see their own sections above for what's actually built in each area).
 
 ### Novel Writing
 Define structure, generate scenes, view at multiple zoom levels, branch to try story directions, consistency checking, export to manuscript.
@@ -410,18 +396,24 @@ Git branches for routes/endings, merge when routes reconverge. Consistency check
 Strong typing, good git libraries, excellent for DSLs and agent definitions, parser combinators for commit message parsing.
 
 ### Interface: Frontend-agnostic
-The backend exposes a WebSocket server that any frontend can connect to. The WebSocket model is a natural fit for the domain: sessions are stateful, connections are scoped to a branch, and the server pushes updates rather than waiting to be polled. Currently in progress: `story-server` (WebSocket) and CLI tools for individual agent operations. A React-based web UI is the primary frontend target; TUI and other surfaces remain possible without backend changes.
+The backend exposes a WebSocket server that any frontend can connect to — this is real and working today, not just a target: `story-server` plus a Next.js web frontend (`frontend/`) built against it, communicating over the protocol documented in `WS-PROTOCOL.md`. The WebSocket model fits the domain well in practice: sessions are stateful, connections are scoped to a branch, and the server pushes updates rather than waiting to be polled. TUI and other surfaces remain possible without backend changes, but none exist yet — the web frontend is the only one built.
 
 ### WebSocket Architecture
-Each connection is scoped by URL: `/session` for storage-level operations (branch management), `/branch/{name}` for branch-level operations (file access, agents). The branch name is implicit from the URL — commands never repeat it. On connect, the server sends a full snapshot of the branch's current file contents; subsequent events are deltas. Multiple connections to the same branch all receive updates, enabling multiple windows to stay in sync without coordination. Background agents write to the branch and fan out to all connected clients via STM pubsub.
+Each connection is scoped by URL: `/session` for storage-level operations (branch management), `/branch/{name}` for branch-level operations, `/branch/{name}/{path}` for one file's own operations (writer/chat/fixer commands, presence). The branch name is implicit from the URL — commands never repeat it. On connect, the server sends a full snapshot of the branch's current file contents; subsequent events are deltas. Multiple connections to the same branch all receive updates, enabling multiple windows to stay in sync without coordination. Background agents write to the branch and fan out to all connected clients via STM pubsub, backed by a dedicated git-storage worker thread for batched writes.
 
-### Import/Export
+### Testing Against Real Models
+
+Unit tests (`test/`) run against mocked, deterministic interpreters — they check plumbing, not whether an agent actually gets a real model to do the right thing. A separate suite (`test/agent-integration/`, see its own `PLAN.md`/`FINDINGS.md`) answers that second question directly: real LLM calls, cached to disk so a passing run replays without hitting the network, checking things like "does a character actually get recognized when added to a scene," "does a planted lore fact reach the model," "does editing a character's journal retroactively produce correct dramatic irony." A mismatch there is a finding about the configured model or prompt, not a bug in the suite — the suite existing and passing isn't the goal, what it reveals about the model is.
+
+### Import/Export *(design, not yet built)*
 - **Import:** Blank project (templates), existing manuscript (parse and commit), character cards
 - **Export:** `cat chapters/*/*.md > story.md`, clean manuscript, EPUB/PDF via pandoc, screenplay format
 
-### External Editor Integration
+None of this exists yet. `cat chapters/*/*.md` already works today because it's just shell against plain files, not a feature of the system.
 
-File changes detected automatically:
+### External Editor Integration *(design, not yet built)*
+
+No file-watching or auto-detection of external edits exists. The intended shape, once built:
 ```
 Detected changes in chapters/03-confrontation/chapter.md
 Diff: [shown]
@@ -433,6 +425,7 @@ Commit summary? > Sharpen Alice's dialogue
 
 ## Open Questions
 
+- **On-demand retrieval at scale:** the one real, deliberately deferred gap in Context Assembly today. Everything assigned to a bucket is read in full, every call — fine at the scale tested so far, with no answer yet for what happens once a story's total lore/chapter history stops fitting in a window at all. The mechanism this needs is smaller than "RAG" implies, though: `Chat.hs` already proves the shape works (tool calls the model can choose to make, whose results shape only that one turn and never get persisted back into history) — `writeAgent` just doesn't have that tool-calling shape yet. The missing piece is a manifest of what's *available but excluded* (path plus a short blurb) plus a bounded tool round before committing to prose, not an embeddings index. Ranking/narrowing that manifest is genuinely additive on top: a `grep`-over-blurbs tool covers it while the corpus is small, and an embeddings-backed search tool is a drop-in upgrade if it ever isn't — neither requires revisiting the underlying decision to make this a tool call. Collapsing settled chapters/sessions to one summary atom (full fidelity still reachable out-of-namespace) remains a separate, complementary idea for shrinking what's in the *included* buckets, not a substitute for this.
 - **Agent marketplace:** Community-built agents distributed as git repos (no special infrastructure needed)
 - **Voice consistency at scale:** Voice examples in character card + periodic voice-checking agent + user reviews flagged inconsistencies
 - **Image generation:** Character portraits, scene backgrounds — straightforward tool integration (ComfyUI, DALL-E, SD APIs), not essential for MVP
@@ -445,4 +438,4 @@ Commit summary? > Sharpen Alice's dialogue
 - TTS integration with character voices
 - Translation/localization with cultural adaptation
 - Franchise/shared universe management
-- Web UI (shares core library with TUI)
+- TUI (the web frontend already exists; a terminal surface against the same WebSocket protocol remains open)
