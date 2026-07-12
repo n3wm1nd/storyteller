@@ -37,6 +37,10 @@ import qualified Agent.Integration.OutlineSplitDefaultsSpec
 import qualified Agent.Integration.OutlineSplitFreeformSpec
 import qualified Agent.Integration.OutlineSplitBulkSpec
 import qualified Agent.Integration.OutlineSplitEscapingSpec
+import qualified Agent.Integration.CharacterPresenceSpec
+import qualified Agent.Integration.WorldLoreSpec
+import qualified Agent.Integration.JournalInstructionSpec
+import qualified Agent.Integration.JournalIronySpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
 --   env vars -- see 'Agent.Integration.Harness.knownModels') and build the
@@ -129,3 +133,7 @@ main = do
         describe "Agent.Integration.OutlineSplitFreeformSpec" (Agent.Integration.OutlineSplitFreeformSpec.spec @judgeTy runner)
         describe "Agent.Integration.OutlineSplitBulkSpec" (Agent.Integration.OutlineSplitBulkSpec.spec @judgeTy runner)
         describe "Agent.Integration.OutlineSplitEscapingSpec" (Agent.Integration.OutlineSplitEscapingSpec.spec @judgeTy runner)
+        describe "Agent.Integration.CharacterPresenceSpec"    (Agent.Integration.CharacterPresenceSpec.spec @judgeTy runner)
+        describe "Agent.Integration.WorldLoreSpec"            (Agent.Integration.WorldLoreSpec.spec @judgeTy runner)
+        describe "Agent.Integration.JournalInstructionSpec"   (Agent.Integration.JournalInstructionSpec.spec @judgeTy runner)
+        describe "Agent.Integration.JournalIronySpec"         (Agent.Integration.JournalIronySpec.spec @judgeTy runner)

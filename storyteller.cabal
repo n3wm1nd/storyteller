@@ -314,6 +314,10 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.OutlineSplitCheck
                   , Agent.Integration.OutlineSplitFreeformSpec
                   , Agent.Integration.OutlineSplitBulkSpec
+                  , Agent.Integration.CharacterPresenceSpec
+                  , Agent.Integration.WorldLoreSpec
+                  , Agent.Integration.JournalInstructionSpec
+                  , Agent.Integration.JournalIronySpec
                   , Agent.Integration.ToolCallQuality
                   , Git.Mock
                   , Paths_storyteller
