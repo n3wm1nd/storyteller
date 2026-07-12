@@ -162,8 +162,9 @@ writeChat
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
-  (existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
-  Prose generated <- writeAgent existing fileCtx (Instruction prompt) []
+  (_existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
+  currentTicks <- runStorage @Main (Tick.fileTicksOf path)
+  Prose generated <- writeAgent [] [] [] fileCtx [] currentTicks (Instruction prompt)
   appendGenerated path generated
   return generated
 

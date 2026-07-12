@@ -38,8 +38,9 @@ import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..), CharSummary(..))
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
@@ -85,9 +86,10 @@ writeAction outFile instruction activeChars = do
     let branchName = BranchName charBranch
     blocks <- runBranchAndFS @Char_ branchName
             $ charSummaryAgent @(BranchTag Char_) (const True)
-    return (CharLabel charBranch, blocks)
+    return (CharLabel charBranch, CharSummary { csSheet = [], csContext = blocks, csJournal = [] })
 
-  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
-  Prose generated <- writeAgent existing fileCtx instruction charBlocks
+  (_existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
+  currentTicks <- runStorage @Main (Tick.fileTicksOf outFile)
+  Prose generated <- writeAgent [] [] charBlocks fileCtx [] currentTicks instruction
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated
