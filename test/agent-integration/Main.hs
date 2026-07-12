@@ -15,7 +15,7 @@ import Polysemy.State (evalState)
 import Runix.FileSystem (fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 import Runix.HTTP (httpIO)
-import Runix.LLM.Cache (cacheLLM, fileSystemLookup, fileSystemStore)
+import Runix.LLM.Cache (cacheLLM, fileSystemStore, regeneratingLookup)
 import Runix.Logging (Logging, loggingNull)
 import Runix.Runner (withRequestTimeout)
 import Runix.Time (timeIO, sleepIO)
@@ -101,12 +101,29 @@ import qualified Agent.Integration.WriterConversationHistorySpec
 isVerbose :: IO Bool
 isVerbose = maybe False (`notElem` ["", "0", "false"]) <$> lookupEnv "VERBOSE"
 
+-- | Whether to regenerate every cached response this run -- @REGENERATE@
+--   set to anything but @0@\/@false@\/empty. Wires
+--   'Runix.LLM.Cache.regeneratingLookup' in place of
+--   'Runix.LLM.Cache.fileSystemLookup' as every 'cacheLLM' call's lookup
+--   function below, so every call becomes a live one and
+--   'Runix.LLM.Cache.fileSystemStore' overwrites the existing cache file
+--   with the fresh response -- for deliberately regenerating a fluke
+--   (a model's own non-deterministic miss on one run) rather than having to
+--   find and delete the specific cache file(s) under
+--   @test/fixtures/llm-agent-cache@ by hand. Off by default: a cache hit is
+--   the common case (see @VERBOSE@'s own Haddock above), and always live
+--   would defeat this suite's whole point of being replayable without
+--   hitting the network on every run.
+isRegenerate :: IO Bool
+isRegenerate = maybe False (`notElem` ["", "0", "false"]) <$> lookupEnv "REGENERATE"
+
 main :: IO ()
 main = do
   storyKnown <- resolveKnownModel "STORY_MODEL" "qwen35-40b"
   judgeKnown <- resolveKnownModel "JUDGE_MODEL" "deepseek-v4-flash"
   agentCacheDir <- resolveFixture "test/fixtures/llm-agent-cache"
   verbose <- isVerbose
+  regenerate <- isRegenerate
 
   case (storyKnown, judgeKnown) of
     (KnownModel storyID (story :: storyTy) storyConfigs, KnownModel judgeID (judgeVal :: judgeTy) judgeConfigs) -> do
@@ -135,15 +152,15 @@ main = do
               -- cache dir, so the cache's own lookup/store path is just the
               -- chroot root, per 'Runix.LLM.Cache.fileSystemLookup''s
               -- Haddock.
-              . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryAgent)
+              . cacheLLM (regeneratingLookup @CacheProject regenerate ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryAgent)
               . reinterpretAgent @storyTy
               . raiseUnder
               . runLLMRunner runStoryProse
-              . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryProse)
+              . cacheLLM (regeneratingLookup @CacheProject regenerate ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runStoryProse)
               . reinterpretProse @storyTy
               . raiseUnder
               . runLLMRunner runJudge
-              . cacheLLM (fileSystemLookup @CacheProject ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runJudge)
+              . cacheLLM (regeneratingLookup @CacheProject regenerate ".") (fileSystemStore @CacheProject ".") (llmRunnerModel runJudge)
               . evalState emptyGitState
               . runGitMock
               . runStoryStorageGit
