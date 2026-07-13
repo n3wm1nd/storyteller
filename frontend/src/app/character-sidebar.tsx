@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Users, UserPlus, X, ChevronDown, ChevronRight, History, RefreshCw, HelpCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Users, UserPlus, UserMinus, ChevronDown, ChevronRight, History, RefreshCw, HelpCircle } from "lucide-react";
 import { type CharacterConn, type FileConn, type WireTick } from "@/lib/serverCacheStore";
 import { type CharacterSummary } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
@@ -67,6 +67,24 @@ function JournalPanel({
     setDraft("");
   }
 
+  // Jump to the most recent entries by default, once, the first time this
+  // panel has something to show -- 'journal' arrives async (starts as
+  // "Loading…", see below, before the scrollable div even exists), so this
+  // is keyed off content actually appearing rather than mount itself.
+  // 'scrolledRef' stops it from re-firing on every later update (e.g. a
+  // Track landing new atoms while the accordion is still open), which
+  // would otherwise yank focus away from wherever the user has since
+  // scrolled to.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrolledRef = useRef(false);
+  useEffect(() => {
+    if (scrolledRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    scrolledRef.current = true;
+  }, [chain.length]);
+
   return (
     <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 6, gap: 6 }}>
@@ -99,7 +117,7 @@ function JournalPanel({
         // afford to use most of the viewport rather than a small fixed cap.
         // overflow must be "auto", not "hidden" — WireTickList's compact
         // mode (fileview.tsx) deliberately leaves scrolling to the caller.
-        <div style={{ maxHeight: "70vh", display: "flex", flexDirection: "column", overflow: "auto", borderRadius: 4 }}>
+        <div ref={scrollRef} style={{ maxHeight: "70vh", display: "flex", flexDirection: "column", overflow: "auto", borderRadius: 4 }}>
           {truncatedCount > 0 && (
             <div style={{ fontSize: 9, color: "var(--text-ghost)", fontStyle: "italic", padding: "2px 4px 6px" }}>
               {truncatedCount} earlier {truncatedCount === 1 ? "entry" : "entries"} hidden — open {branch}/journal.md directly to see the full history
@@ -264,19 +282,31 @@ function CharacterCard({
   // "read is raw-but-complete" rule). Decode the real name from the raw
   // sheet content here, same as the character list in sidebar.tsx.
   const name = displayName(branch, conn?.sheet);
+  // Same per-character color the journal panel/hover-highlight already use
+  // (lib/utils.characterColor) rather than a uniform "connected" green —
+  // this dot is the character's own identity marker, dimmed rather than
+  // recolored when the connection itself isn't up yet. Also the natural
+  // seat for a future avatar image (avatar.png/jpg, not built yet) to
+  // replace/ring this dot without disturbing anything else here.
+  const color = characterColor(branch);
+  const [hover, setHover] = useState(false);
 
   return (
-    <div style={{
-      border: "1px solid var(--border-subtle)", borderRadius: 6,
-      background: "var(--card)", padding: "8px 10px", marginBottom: 6,
-    }}>
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        border: "1px solid var(--border-subtle)", borderRadius: 6,
+        background: hover ? "var(--surface)" : "var(--card)", padding: "8px 10px", marginBottom: 6,
+      }}
+    >
       <div
         onClick={onToggleExpand}
         style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
       >
         {expanded ? <ChevronDown style={{ width: 11, height: 11, color: "var(--text-dim)", flexShrink: 0 }} />
                   : <ChevronRight style={{ width: 11, height: 11, color: "var(--text-dim)", flexShrink: 0 }} />}
-        <div style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: connected ? "var(--emerald)" : "var(--text-dim)" }} />
+        <div style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: connected ? color : "var(--text-dim)" }} />
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-heading)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {name}
         </span>
@@ -293,16 +323,18 @@ function CharacterCard({
             <RefreshCw style={{ width: 10, height: 10, color: "var(--text-dim)" }} />
           </span>
         )}
-        <button
-          onClick={(e) => { e.stopPropagation(); onLeave(); }}
-          title="Remove from scene"
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: "var(--text-dim)",
-            display: "flex", alignItems: "center", padding: 2, flexShrink: 0,
-          }}>
-          <X style={{ width: 12, height: 12 }} />
-        </button>
+        {hover && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onLeave(); }}
+            title="Leave the scene"
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              color: "var(--text-dim)",
+              display: "flex", alignItems: "center", padding: 2, flexShrink: 0,
+            }}>
+            <UserMinus style={{ width: 12, height: 12 }} />
+          </button>
+        )}
       </div>
 
       {expanded && (
