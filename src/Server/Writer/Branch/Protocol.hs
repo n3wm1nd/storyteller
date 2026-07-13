@@ -17,7 +17,6 @@
 module Server.Writer.Branch.Protocol
   ( BranchCommand(..)
   , BranchEvent(..)
-  , TrackFile(..)
   , commandKind
   ) where
 
@@ -29,22 +28,16 @@ import qualified Data.Text as T
 import Server.Core.Protocol (Update, withId)
 import Server.Writer.File.Protocol (AtBranch(..))
 
-data TrackFile = TrackFile
-  { trackFrom :: FilePath
-  , trackTo   :: FilePath
-  } deriving (Show)
-
-instance FromJSON TrackFile where
-  parseJSON = withObject "TrackFile" $ \o ->
-    TrackFile <$> o .: "from" <*> o .: "to"
-
-instance ToJSON TrackFile where
-  toJSON tf = object [ "from" .= trackFrom tf, "to" .= trackTo tf ]
-
 -- | Commands the client may send on a branch connection.
 --   Each is an intent — the server decides what ticks result.
+--
+--   Track's @bcOnlyFile@ restricts the source side to one file (the shape
+--   a manual, user-triggered track wants); omitted, it pulls every file on
+--   the source branch into @bcToFile@ (the shape an automatic,
+--   write-triggered track wants — see
+--   'Server.Writer.Branch.trackFiles'\/'Storyteller.Writer.Agent.Tracker.trackBranch').
 data BranchCommand
-  = Track      { bcId :: Maybe T.Text, bcSource :: T.Text, bcFiles :: [TrackFile] }
+  = Track      { bcId :: Maybe T.Text, bcSource :: T.Text, bcOnlyFile :: Maybe FilePath, bcToFile :: FilePath }
   | CharGen    { bcId :: Maybe T.Text, bcPath :: FilePath, bcScenario :: T.Text, bcSeed :: Maybe Int }
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
@@ -63,7 +56,7 @@ instance FromJSON BranchCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "track"       -> Track      i <$> o .: "source" <*> o .: "files"
+      "track"       -> Track      i <$> o .: "source" <*> o .:? "onlyFile" <*> o .: "to"
       "chargen"     -> CharGen    i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"

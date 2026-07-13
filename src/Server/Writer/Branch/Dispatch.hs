@@ -47,8 +47,9 @@ runCommand branch cmd =
   let name = BranchName branch
   in case cmd of
 
-    Track mid source files ->
-      map (FileAdded mid) <$> trackFiles name (BranchName source) (map toPair files)
+    Track mid source onlyFile toFile -> do
+      path <- trackFiles name (BranchName source) onlyFile toFile
+      return [FileAdded mid path]
 
     CharGen mid path scenario seed -> do
       charGen name path scenario seed
@@ -73,10 +74,3 @@ runCommand branch cmd =
     -- points around the whole thing -- see 'atBranches').
     At _mid tid inner branches ->
       atBranches branches $ atGeneric @Main (TickId tid) (runCommand branch inner)
-
--- ---------------------------------------------------------------------------
--- Helpers
--- ---------------------------------------------------------------------------
-
-toPair :: TrackFile -> (FilePath, FilePath)
-toPair tf = (trackFrom tf, trackTo tf)

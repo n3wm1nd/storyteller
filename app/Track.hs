@@ -13,8 +13,10 @@
 --   STORY_BRANCH  tracker branch name  (the entity branch receiving copies)
 --
 -- ARGS:
---   <source-branch>          trackee branch name (e.g. "story")
---   <from:to> [from:to...]   file pairs: source path in trackee, dest path in tracker
+--   <source-branch>  trackee branch name (e.g. "story")
+--   <to-file>        destination path in the tracker branch
+--   [only-file]      restrict to this one trackee file; omitted tracks
+--                     every file on the trackee branch into <to-file>
 module Main (main) where
 
 import Control.Monad (void)
@@ -41,31 +43,28 @@ main :: IO ()
 main = do
   env  <- loadEnv
   args <- getArgs
-  (sourceBranch, files) <- case args of
-    (src : pairs@(_:_)) -> return (BranchName (T.pack src), map parseFilePair pairs)
-    _ -> hPutStrLn stderr "Usage: story-track <source-branch> <from:to> [from:to...]" >> exitFailure
+  (sourceBranch, toFile, onlyFile) <- case args of
+    [src, to]        -> return (BranchName (T.pack src), to, Nothing)
+    [src, to, only]  -> return (BranchName (T.pack src), to, Just only)
+    _ -> hPutStrLn stderr "Usage: story-track <source-branch> <to-file> [only-file]" >> exitFailure
 
   let trackerBranch = BranchName (envBranch env)
 
-  result <- runTrackIO (envRepo env) (envEndpoint env) sourceBranch trackerBranch files
+  result <- runTrackIO (envRepo env) (envEndpoint env) sourceBranch trackerBranch onlyFile toFile
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
     Right tids -> TIO.putStrLn $ "Tracked " <> T.pack (show (length tids)) <> " new tick(s)"
-
-parseFilePair :: String -> (FilePath, FilePath)
-parseFilePair s = case break (== ':') s of
-  (from, ':':to) -> (from, to)
-  _              -> (s, s)
 
 runTrackIO
   :: FilePath
   -> String
   -> BranchName             -- ^ trackee (source)
   -> BranchName             -- ^ tracker (destination)
-  -> [(FilePath, FilePath)]
+  -> Maybe FilePath          -- ^ restrict to one trackee file; 'Nothing' = every file
+  -> FilePath                -- ^ destination file on the tracker branch
   -> IO (Either String [TickId])
-runTrackIO repoPath endpoint sourceBranch trackerBranch files =
+runTrackIO repoPath endpoint sourceBranch trackerBranch onlyFile toFile =
   runM . runError
   . runInfrastructure repoPath endpoint
   . runStoryStorageGit
@@ -78,4 +77,4 @@ runTrackIO repoPath endpoint sourceBranch trackerBranch files =
       -- No character/presence context at this level (a bare CLI over two
       -- named branches) -- keep every candidate tick, same as before this
       -- CLI's 'trackBranch' gained its filter parameter.
-      fmap concat $ mapM (trackBranch @Source @Tracker (\tick -> pure (Just tick))) files
+      trackBranch @Source @Tracker onlyFile (\tick -> pure (Just tick)) toFile

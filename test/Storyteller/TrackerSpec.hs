@@ -6,8 +6,6 @@
 
 module Storyteller.TrackerSpec (spec) where
 
-import qualified Data.Set as Set
-import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy
@@ -24,7 +22,7 @@ import Storyteller.Core.Storage (createBranch)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types
-import Storyteller.Writer.Agent.Tracker (trackBranch, dropUntilAfterLastSynced)
+import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 import Server.Writer.Branch (onlyWhilePresent)
@@ -67,56 +65,16 @@ runTwoTrack action =
 keepAll :: Core.StoreM m => Tick -> Core.StoreT m (Maybe Tick)
 keepAll tick = pure (Just tick)
 
-mkTick :: Int -> [TickId] -> Tick
-mkTick n refs = Tick
-  { tickPos  = TickPos
-      { posId     = TickId (T.pack (show n))
-      , posParent = if n == 0 then Nothing else Just (TickId (T.pack (show (n-1))))
-      , posRefs   = refs
-      }
-  , tickData = TickData
-      { tickRefs    = refs
-      , tickFields  = []
-      , tickMessage = "tick " <> T.pack (show n)
-      }
-  }
-
 spec :: Spec
 spec = do
-  describe "dropUntilAfterLastSynced" $ do
-    it "no synced refs: returns all ticks" $ do
-      let ticks = map (\n -> mkTick n []) [0..2]
-      dropUntilAfterLastSynced Set.empty ticks `shouldBe` ticks
-
-    it "all ticks synced: returns empty" $ do
-      let ticks = map (\n -> mkTick n []) [0..2]
-          synced = Set.fromList (map tickId ticks)
-      dropUntilAfterLastSynced synced ticks `shouldBe` []
-
-    it "last two ticks new" $ do
-      let ticks = map (\n -> mkTick n []) [0..3]
-          synced = Set.singleton (TickId "1")
-      dropUntilAfterLastSynced synced ticks `shouldBe` drop 2 ticks
-
-    it "only head synced: returns empty" $ do
-      let ticks = map (\n -> mkTick n []) [0..3]
-          synced = Set.singleton (TickId "3")
-      dropUntilAfterLastSynced synced ticks `shouldBe` []
-
-    it "last synced is second-to-last: returns only last" $ do
-      let ticks = map (\n -> mkTick n []) [0..3]
-          synced = Set.singleton (TickId "2")
-      dropUntilAfterLastSynced synced ticks `shouldBe` [mkTick 3 []]
-
-  describe "trackBranch (effect)" $ do
+  describe "trackBranch (effect), restricted to one file" $ do
     it "copies atoms from source to tracker when tracker is empty" $ do
       let result = runTwoTrack $ do
             -- Write two atoms to source.
             _ <- runStorage @Source (Ops.addAtom "story.md" "paragraph one")
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nparagraph two")
             -- Track into tracker.
-            tids <- trackBranch @Source @Tracker keepAll
-                      ("story.md", "story.md")
+            tids <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             -- Read tracker result.
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids, content)
@@ -130,13 +88,11 @@ spec = do
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "atom one")
             -- First track.
-            tids1 <- trackBranch @Source @Tracker keepAll
-                       ("story.md", "story.md")
+            tids1 <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             -- Add another atom to source.
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\natom two")
             -- Second track: should only copy the new atom.
-            tids2 <- trackBranch @Source @Tracker keepAll
-                       ("story.md", "story.md")
+            tids2 <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids1, length tids2, content)
       case result of
@@ -150,16 +106,14 @@ spec = do
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "source atom")
             -- First track.
-            _ <- trackBranch @Source @Tracker keepAll
-                   ("story.md", "story.md")
+            _ <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             -- Tracker adds its own tick (no ref to source).
             writeFile @(BranchTag Tracker) "notes.md" "author note"
             _ <- runStorage @Tracker (Core.store (Core.NonAtom [] "own tick"))
             -- Add new source atom.
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nnew atom")
             -- Second track: should only copy new source atom.
-            tids <- trackBranch @Source @Tracker keepAll
-                      ("story.md", "story.md")
+            tids <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             storyContent <- readFile @(BranchTag Tracker) "story.md"
             noteContent  <- fileExists @(BranchTag Tracker) "notes.md"
             return (length tids, storyContent, noteContent)
@@ -170,6 +124,48 @@ spec = do
           storyContent `shouldBe` "source atom\n\nnew atom"
           notesExist `shouldBe` True
 
+    it "ignores atoms on other source files even though they're new" $ do
+      let result = runTwoTrack $ do
+            _ <- runStorage @Source (Ops.addAtom "story.md" "story atom")
+            _ <- runStorage @Source (Ops.addAtom "other.md" "other atom")
+            tids <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
+            content <- readFile @(BranchTag Tracker) "story.md"
+            return (length tids, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n, content) -> do
+          n `shouldBe` 1
+          content `shouldBe` "story atom"
+
+  describe "trackBranch (effect), unrestricted (every source file)" $ do
+    it "copies atoms from every source file into the same journal file" $ do
+      let result = runTwoTrack $ do
+            _ <- runStorage @Source (Ops.addAtom "ch1.md" "chapter one")
+            _ <- runStorage @Source (Ops.addAtom "ch2.md" "chapter two")
+            tids <- trackBranch @Source @Tracker Nothing keepAll "journal.md"
+            content <- readFile @(BranchTag Tracker) "journal.md"
+            return (length tids, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n, content) -> do
+          n `shouldBe` 2
+          content `shouldBe` "chapter onechapter two"
+
+    it "a second unrestricted track only copies what's new across every file" $ do
+      let result = runTwoTrack $ do
+            _ <- runStorage @Source (Ops.addAtom "ch1.md" "chapter one")
+            tids1 <- trackBranch @Source @Tracker Nothing keepAll "journal.md"
+            _ <- runStorage @Source (Ops.addAtom "ch2.md" "chapter two")
+            tids2 <- trackBranch @Source @Tracker Nothing keepAll "journal.md"
+            content <- readFile @(BranchTag Tracker) "journal.md"
+            return (length tids1, length tids2, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n1, n2, content) -> do
+          n1 `shouldBe` 1
+          n2 `shouldBe` 1
+          content `shouldBe` "chapter onechapter two"
+
   describe "trackBranch with onlyWhilePresent (character presence-gated tracking)" $ do
     it "copies only the atom written while the character was present" $ do
       let character = Character (BranchName "tracker")
@@ -178,8 +174,7 @@ spec = do
             _ <- runStorage @Source (Ops.addAtom "story.md" "she arrived.")
             _ <- recordPresence @Source "story.md" character Leave
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nmeanwhile, elsewhere.")
-            tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
-                      ("story.md", "story.md")
+            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent character) "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids, content)
       case result of
@@ -192,8 +187,7 @@ spec = do
       let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "nobody's here.")
-            tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
-                      ("story.md", "story.md")
+            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent character) "story.md"
             return (length tids)
       result `shouldBe` Right 0
 
@@ -203,8 +197,7 @@ spec = do
             _ <- runStorage @Source (Ops.addAtom "story.md" "absent.")
             _ <- recordPresence @Source "story.md" character Enter
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\npresent.")
-            tids <- trackBranch @Source @Tracker (onlyWhilePresent character)
-                      ("story.md", "story.md")
+            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent character) "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids, content)
       case result of
@@ -216,10 +209,23 @@ spec = do
     it "nothing to track when source has no new atoms" $ do
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "atom one")
-            _ <- trackBranch @Source @Tracker keepAll
-                   ("story.md", "story.md")
+            _ <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             -- Track again with no new source atoms.
-            tids <- trackBranch @Source @Tracker keepAll
-                      ("story.md", "story.md")
+            tids <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
             return (length tids)
       result `shouldBe` Right 0
+
+    it "presence doesn't carry across files: a character present at the end of one file starts absent in the next" $ do
+      let character = Character (BranchName "tracker")
+      let result = runTwoTrack $ do
+            _ <- recordPresence @Source "ch1.md" character Enter
+            _ <- runStorage @Source (Ops.addAtom "ch1.md" "present in ch1.")
+            _ <- runStorage @Source (Ops.addAtom "ch2.md" "not present in ch2.")
+            tids <- trackBranch @Source @Tracker Nothing (onlyWhilePresent character) "journal.md"
+            content <- readFile @(BranchTag Tracker) "journal.md"
+            return (length tids, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n, content) -> do
+          n `shouldBe` 1
+          content `shouldBe` "present in ch1."

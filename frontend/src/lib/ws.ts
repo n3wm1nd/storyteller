@@ -158,7 +158,10 @@ export type SessionEvent =
 // ── Branch protocol ───────────────────────────────────────────────────────────
 
 export type BranchCommand =
-  | { type: "track";       id?: string; source: string; files: { from: string; to: string }[] }
+  // onlyFile restricts to one source file; omitted, every file on the
+  // source branch is tracked into `to` — see
+  // Storyteller.Writer.Agent.Tracker.trackBranch.
+  | { type: "track";       id?: string; source: string; onlyFile?: string; to: string }
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }

@@ -51,9 +51,16 @@ data Source
 data Tracker
 data CharBranch
 
--- | Track files from a source branch into a target branch.
---   Creates the target branch if it doesn't exist.
---   Returns the destination paths of tracked files.
+-- | Track a source branch into a single journal file on a target branch.
+--   Creates the target branch if it doesn't exist. Returns the destination
+--   path tracked into.
+--
+--   @onlyFile@ restricts the source side to one file (what a manual,
+--   user-triggered track wants — limited to whatever's open); 'Nothing'
+--   pulls every file on the source branch into the same @toFile@ (what an
+--   automatic, write-triggered track wants — a running journal that
+--   doesn't lose anything just because the user moved on to another
+--   chapter). See 'Storyteller.Writer.Agent.Tracker.trackBranch'.
 --
 --   Opens its own 'Source'/'Tracker'-tagged scopes rather than an ambient
 --   one: the source branch is a different branch entirely, known only from
@@ -61,19 +68,19 @@ data CharBranch
 --   reuse a scope that assumes the branch is already open and unchanging).
 trackFiles
   :: SessionEffects r
-  => BranchName           -- ^ target branch
-  -> BranchName           -- ^ source branch
-  -> [(FilePath, FilePath)] -- ^ (from, to) pairs
-  -> Sem r [FilePath]
-trackFiles target source pairs = do
+  => BranchName        -- ^ target branch
+  -> BranchName        -- ^ source branch
+  -> Maybe FilePath     -- ^ restrict to one source file; 'Nothing' = every file
+  -> FilePath           -- ^ destination file on the target branch
+  -> Sem r FilePath
+trackFiles target source onlyFile toFile = do
   getBranch target >>= \case
     Nothing -> void $ createBranch target
     Just _  -> return ()
-  let destPaths = map snd pairs
   runBranchAndFS @Source source
     $ runBranchAndFS @Tracker target $ do
-        mapM_ (trackBranch @Source @Tracker (onlyWhilePresent (Character target))) pairs
-        return destPaths
+        _ <- trackBranch @Source @Tracker onlyFile (onlyWhilePresent (Character target)) toFile
+        return toFile
 
 -- | Only copy an atom into @character@'s branch if that character was
 --   marked present (see 'Storyteller.Writer.Presence.presentAt') on the

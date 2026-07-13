@@ -13,7 +13,7 @@ import {
   chatConverse, chatConverseRegen, cycleSwipe, correctAtom,
 } from "./fileview.actions";
 import {
-  openCharacter, closeCharacter, openJournal, closeJournal, trackJournal,
+  openCharacter, closeCharacter, openJournal, closeJournal, trackJournal, trackAllJournals,
   editJournalAtom, deleteJournalAtom, journalFix, appendJournal, cycleJournalSwipe,
 } from "./character-sidebar.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
@@ -678,7 +678,9 @@ export default function Home() {
                   openJournals={openJournals}
                   openJournal={openJournal} closeJournal={closeJournal}
                   journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
-                  trackJournal={trackJournal} editJournalAtom={editJournalAtom} cycleJournalSwipe={cycleJournalSwipe} appendJournal={appendJournal}
+                  trackJournal={trackJournal}
+                  onTrackAll={() => trackAllJournals(characterBranches.map((c) => c.branch))}
+                  editJournalAtom={editJournalAtom} cycleJournalSwipe={cycleJournalSwipe} appendJournal={appendJournal}
                   contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
                   toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}
                   onHoverAtoms={setHoverHighlight} onHoverEnd={clearHoverHighlight}
