@@ -306,9 +306,17 @@ One deliberate asymmetry: only cross-references resolve on read — **the chain 
 inWorktree :: StoreT m a -> StoreT m a
 ```
 
+**readPathAt** — a single path's content at a given tick, directly. Every tick already carries a complete tree snapshot (that's what makes it a tick), so this needs no chain walk: it reads the target commit, then walks straight down the path's own segments, one tree object per level. Cost is proportional to the path's depth, never to how far back in the chain the tick sits.
+
+A modest but real shortcut for the "historical read" idiom below when only one path is wanted, not the whole tree. `readAt` itself is already O(1) (a direct head-pointer swap, not a walk), and `inWorktree`'s own `loadWorkingTree` never reads blob *content* for files it isn't asked about either — it only lists each directory's entries (name, hash) via one `readTreeM` per directory, recursing into subtrees. So `readAt tid (inWorktree (readFile path))` costs one tree-object read per directory in the whole branch rather than one per directory *on `path`'s own route* — real, but bounded by how many directories the branch happens to have, not by content size or file count. It adds up specifically because `Storage.Ops.foldInto` calls it once per ancestor commit it considers while walking backward, comparing each one's real content against what's left to explain to decide whether it can stop there — paying the whole-tree directory count on every one of those calls, instead of just `path`'s own depth, is the part actually worth avoiding.
+
+```haskell
+readPathAt :: ObjectHash -> FilePath -> m (Maybe ByteString)
+```
+
 **Composing them.** Everything above is a plain monadic value in `StoreT` — composition is ordinary `do`-notation, and a whole composition, however many nested rebases deep, is still one `runStorage` dispatch. Three idioms cover nearly everything:
 
-- **Historical read**: `readAt tid (inWorktree action)` — `action` sees the files exactly as committed at `tid`, and nothing anywhere changes. The composition has to be said explicitly: the ambient tree does not follow chain position on its own, so an action that wants historical file *content* must ask for it with `inWorktree`.
+- **Historical read**: `readAt tid (inWorktree action)` — `action` sees the files exactly as committed at `tid`, and nothing anywhere changes. The composition has to be said explicitly: the ambient tree does not follow chain position on its own, so an action that wants historical file *content* must ask for it with `inWorktree`. For a single known path, prefer `readPathAt` directly — see above.
 - **Historical write**: chain edits under `at` — `at tid (editTick f)` amends the atom at `tid` and replays the tail; `at tid (store t)` inserts after it. Each rewritten tail tick's rename lands in the remap table as it happens.
 - **Holding ids across steps**: safe. An id read before an `at` still lands on the right tick after it, because every operation resolves ids at the point of use (see The Remap Table). Compose freely; don't pre-resolve.
 

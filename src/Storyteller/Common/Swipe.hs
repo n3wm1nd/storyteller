@@ -61,7 +61,7 @@ pushSwipe = swapAtomContent
 cycleSwipe :: StoreM m => ObjectHash -> StoreT m ObjectHash
 cycleSwipe tid0 = do
   tid <- resolveId tid0
-  chain <- fullChain
+  chain <- chainDownTo tid
   case swipeRunAfter tid chain of
     [] -> fail "cycleSwipe: no alternates"
     run -> do
@@ -69,14 +69,23 @@ cycleSwipe tid0 = do
       Ops.deleteTick popHash
       swapAtomContent tid poppedContent
 
--- | The whole chain, oldest first, decoded via the typed layer — same
---   'follow' shape 'Storage.Ops.contentChain' already uses (prepending
---   each newly-walked, older tick onto the accumulator already leaves it
---   oldest-first; no reversal needed).
-fullChain :: StoreM m => StoreT m [(ObjectHash, Tick)]
-fullChain = do
-  hashes <- follow [] (\acc h _t -> (h : acc, True))
+-- | Every tick from head down to and including @tid@, oldest first --
+--   stops the moment @tid@ itself is reached rather than continuing all
+--   the way to root: 'swipeRunAfter' only ever needs the run between
+--   @tid@ and head, so nothing below @tid@'s own creation is relevant,
+--   and walking there anyway would cost the rest of the chain for
+--   nothing -- same 'follow' shape 'Storage.Ops.contentChain' uses
+--   (prepending each newly-walked, older tick onto the accumulator
+--   already leaves it oldest-first; no reversal needed), just with an
+--   early stop instead of running to root unconditionally.
+chainDownTo :: StoreM m => ObjectHash -> StoreT m [(ObjectHash, Tick)]
+chainDownTo tid = do
+  hashes <- follow [] step
   mapM (\h -> (,) h <$> Tick.readTypesTick h) hashes
+  where
+    step acc h _t
+      | h == tid  = (h : acc, False)
+      | otherwise = (h : acc, True)
 
 -- | The contiguous run of 'Swipe' ticks immediately following @tid@ in
 --   @chain@, oldest-first (nearest-the-atom first, closest-to-head last)

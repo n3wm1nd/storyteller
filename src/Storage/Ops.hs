@@ -1004,7 +1004,11 @@ splitTick tid pieces = at tid $ do
 --   tag, as long as the tree itself changed presence at that point. A
 --   path that was deleted and later reused at the same path has two (or
 --   more) such ticks in its history; this always finds the one closest to
---   head, i.e. the file as it currently stands.
+--   head, i.e. the file as it currently stands. Checks presence via
+--   'readPathAt' -- a direct walk down @path@'s own segments -- rather
+--   than 'loadWorkingTree', which would materialize every other file in
+--   the parent's tree just to answer a single-path question, once per
+--   atom on @path@ encountered along the way.
 findCreationTick :: StoreM m => FilePath -> StoreT m ObjectHash
 findCreationTick path = headHash >>= go
   where
@@ -1015,10 +1019,10 @@ findCreationTick path = headHash >>= go
         Atom _ p _ _ | p == path -> case commitParents cd of
           []        -> return h
           (par : _) -> do
-            parentTree <- lift (loadWorkingTree par)
-            if Map.member path parentTree
-              then descend cd
-              else return h
+            parentHas <- lift (readPathAt par path)
+            case parentHas of
+              Just _  -> descend cd
+              Nothing -> return h
         _ -> descend cd
       where
         descend cd = case commitParents cd of
