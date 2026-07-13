@@ -165,6 +165,7 @@ function buildContextItems(path: string): ContextItem[] {
 
   const crossBranch: ContextItem[] = [];
   for (const [branch, jc] of Object.entries(cache.openJournals)) {
+    if (!jc) continue;
     const jchain = tickChain(jc.ticks, jc.head);
     const jAtoms       = jchain.filter((t) => ui.contextAtoms.has(t.tickId));
     const jAnnotations = jchain.filter((t) => ui.contextAnnotations.has(t.tickId));

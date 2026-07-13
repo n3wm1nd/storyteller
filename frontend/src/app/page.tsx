@@ -347,6 +347,7 @@ export default function Home() {
         .forEach((tickId) => deleteAtom(selectedFile, tickId));
     }
     for (const [branch, jc] of Object.entries(openJournals)) {
+      if (!jc) continue;
       tickChain(jc.ticks, jc.head).filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
         .map((t) => t.tickId).reverse()
         .forEach((tickId) => deleteJournalAtom(branch, tickId, journalMarkers[branch] ?? null));
@@ -360,6 +361,7 @@ export default function Home() {
       if (hasSelection) chatFix(selectedFile, text);
     }
     for (const [branch, jc] of Object.entries(openJournals)) {
+      if (!jc) continue;
       const targets = tickChain(jc.ticks, jc.head)
         .filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
         .map((t) => t.tickId);

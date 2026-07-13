@@ -160,7 +160,6 @@ journalPath = "journal.md"
 --   result is done here too.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Map.Map T.Text ContextLayout -> Sem r ()
 chatWriter path prompt context layout mFlowTid charLayouts = do
-  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (_existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)
   (loreBlocks, styleBlocks, earlierChapters) <- runStorage @Main $ do
     (WorldContext.WorldLore lore, WorldContext.SystemContext style) <- WorldContext.worldContextOf
@@ -169,16 +168,30 @@ chatWriter path prompt context layout mFlowTid charLayouts = do
   charBlocks <- activeCharacterContext charLayouts path
   let pinned      = toContextBlocks context <> fileCtx
       instruction = Instruction prompt
+      -- Storing this turn's prompt tick has to wait until every branch
+      -- below has already read whatever tick history it needs -- both
+      -- 'writeAgent's own 'currentTicks' fetch and 'flowWriteAgent's
+      -- internal one ('Storyteller.Writer.Agent.FlowWrite.flowWriteAgent')
+      -- -- otherwise the not-yet-answered prompt shows up twice: once via
+      -- that history, once as 'Storyteller.Writer.Agent.Write.
+      -- buildChapterMessages'\'s own trailing instruction message, which
+      -- also permanently breaks that turn's cache-prefix match against
+      -- whatever a later turn reconstructs as history (see
+      -- 'Storyteller.Writer.Agent.Write''s module Haddock). Same
+      -- read-before-store discipline 'chatConverse' already follows.
+      storePrompt = runStorage @Main (Tick.storeAs (Prompt path prompt))
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
       (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid loreBlocks styleBlocks charBlocks pinned earlierChapters instruction
+      _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
       currentTicks <- runStorage @Main (Tick.fileTicksOf path)
       Prose generated <- writeAgent loreBlocks styleBlocks charBlocks pinned earlierChapters currentTicks instruction
+      _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 

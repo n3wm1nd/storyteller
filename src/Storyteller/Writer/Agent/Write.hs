@@ -26,6 +26,24 @@
 -- the current chapter's own ticks) and appending the result are the
 -- caller's job, same split 'Storyteller.Writer.Agent.Continuation' already
 -- draws between reading and generating.
+--
+-- Two things the caller ('Server.Writer.File.chatWriter') has to get right
+-- for the cache-prefix discipline below to actually hold, neither enforced
+-- by this module's own types:
+--
+--   * @currentTicks@ must be fetched /before/ this turn's own prompt is
+--     stored -- otherwise the not-yet-answered prompt shows up twice, once
+--     via 'historyFromFileTicks' and once as 'buildChapterMessages'\'s own
+--     trailing instruction message.
+--   * The instruction message is now literally @UserText instr@, the raw
+--     prompt text, unwrapped -- deliberately identical to what
+--     'historyFromFileTicks' will later replay a @\"prompt\"@ tick as, so a
+--     turn's own final message is already exactly what a later call
+--     reconstructs it to be. Per-turn boilerplate ("write ~300 words",
+--     "only the new text") that used to live in that wrapper now lives in
+--     the system prompt instead ('chapterContinuationNote') -- it never
+--     varies, so there's no reason to pay to resend it as a user message on
+--     every turn when the provider already caches the system block.
 module Storyteller.Writer.Agent.Write
   ( writeAgent
   , buildChapterMessages
@@ -40,7 +58,7 @@ import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
-import Storage.Tick (FileTick)
+import Storage.Tick (FileTick(..))
 
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent
@@ -69,13 +87,19 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --        chapter, so it sits once near its start.
 --     4. This chapter's own conversation so far, reconstructed via
 --        'historyFromFileTicks' -- alternating 'UserText' (what was
---        asked) and 'AssistantText' (what got written), oldest first.
+--        asked) and 'AssistantText' (what got written), oldest first, split
+--        at a depth between 'recentWindowMin' and 'recentWindowMax' turns
+--        from the end: the older side sits here, before the splice; the
+--        recent side sits after it (see step 5a). All of it, on one side or
+--        the other, when the splice has nothing to say.
 --     5. A shallow splice -- pinned\/short-term context plus every active
---        character's 'csJournal' excerpt -- one message, placed a beat
---        before the final instruction rather than folded into it, so the
---        model reads it as background for this turn without mistaking it
---        for the thing to continue writing.
---     6. The new instruction -- always the last message.
+--        character's 'csJournal' excerpt -- one message, inserted mid-depth
+--        rather than at either end (see 'splitByTurnWindow's Haddock).
+--     5a. The recent tail of this chapter's conversation -- same source as
+--        step 4, just the turns inside the depth window.
+--     6. The new instruction -- always the last message, literally
+--        @UserText instr@ now (no per-message boilerplate -- see
+--        'chapterContinuationNote').
 writeAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
@@ -91,15 +115,25 @@ writeAgent lore style chars pinned earlierChapters currentTicks instruction = do
   Prompt sysPrompt <- getPrompt "agent.writer" defaultWriterSystemPrompt
   configs          <- getConfig "agent.writer" defaultWriterConfig
   let styleText        = renderContextBlocks style
-      sysText
-        | T.null styleText = sysPrompt
-        | otherwise         = sysPrompt <> "\n\n" <> styleText
+      sysText           = T.intercalate "\n\n" (filter (not . T.null) [sysPrompt, styleText, chapterContinuationNote])
       configsWithPrompt = SystemPrompt sysText : configs
       messages          = buildChapterMessages lore chars pinned earlierChapters currentTicks instruction
 
   info "writeAgent: querying model..."
   response <- queryLLM configsWithPrompt messages
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
+
+-- | Standing per-turn instruction that used to be templated into every
+--   single instruction message ('buildChapterMessages'\'s old
+--   @"## Instruction..."@ wrapper). It never varies call to call, so it
+--   belongs in the system prompt -- cached there by the provider once,
+--   same as 'defaultWriterSystemPrompt' itself -- rather than being resent
+--   (and re-priced, and re-breaking the instruction message's byte-identity
+--   with its own later replay as history) on every single turn.
+chapterContinuationNote :: T.Text
+chapterContinuationNote =
+  "Write approximately 300 words per turn. Write only the new text to \
+  \append. Do not repeat or summarise existing content."
 
 -- | The pure heart of 'writeAgent': everything about message order,
 --   what's included, and what's dropped when empty, with no LLM effect
@@ -116,7 +150,7 @@ buildChapterMessages
   -> Instruction
   -> [Message m]
 buildChapterMessages lore chars pinned earlierChapters currentTicks (Instruction instr) =
-  loreMsgs ++ earlierMsgs ++ chapterStartMsgs ++ conversationMsgs ++ spliceMsgs ++ [instructionMsg]
+  loreMsgs ++ earlierMsgs ++ chapterStartMsgs ++ olderMsgs ++ spliceMsgs ++ recentMsgs ++ [instructionMsg]
   where
     loreMsgs = [ UserText (renderContextBlocks lore) | not (null lore) ]
 
@@ -130,17 +164,75 @@ buildChapterMessages lore chars pinned earlierChapters currentTicks (Instruction
       [ (label, blocks) | (label, cs) <- chars, let blocks = csSheet cs ++ csContext cs, not (null blocks) ]
     chapterStartMsgs = [ UserText (renderCharBlocks identityBlocks) | not (null identityBlocks) ]
 
-    conversationMsgs = historyFromFileTicks currentTicks
-
     journalBlocks = flattenCharBlocks [ (label, csJournal cs) | (label, cs) <- chars, not (null (csJournal cs)) ]
     spliceText = T.intercalate "\n\n" (filter (not . T.null) [renderContextBlocks pinned, renderCharBlocks journalBlocks])
     spliceMsgs = [ UserText spliceText | not (T.null spliceText) ]
 
-    instructionMsg = UserText $ mconcat
-      [ "## Instruction\n\n", instr, "\n\n"
-      , "Write approximately 300 words.\n"
-      , "Write only the new text to append. Do not repeat or summarise existing content."
-      ]
+    -- Only split when there's actually something to insert at the split
+    -- point -- an empty splice has nowhere to sit, so there's no reason to
+    -- pay for the scan (or to disturb 'historyFromFileTicks'\'s single pass
+    -- over the whole history) for nothing.
+    (olderMsgs, recentMsgs)
+      | null spliceMsgs = ([], historyFromFileTicks currentTicks)
+      | otherwise =
+          let (olderTicks, recentTicks) = splitByTurnWindow recentWindowMin recentWindowMax currentTicks
+          in (historyFromFileTicks olderTicks, historyFromFileTicks recentTicks)
+
+    instructionMsg = UserText instr
+
+-- | The splice's depth window: at least @recentWindowMin@, at most
+--   @recentWindowMax@ turns stay after it. Kept as a real range rather than
+--   a single fixed depth (that's just the @min == max@ special case) so the
+--   split point can hold /still/ across a stretch of turns instead of
+--   moving on every single one -- see 'splitByTurnWindow's Haddock for why
+--   that's what actually buys back cache hits, not just bounds the miss.
+recentWindowMin, recentWindowMax :: Int
+recentWindowMin = 2
+recentWindowMax = 4
+
+-- | Split @ticks@ at a boundary chosen so the "recent" (post-splice) side
+--   holds between @lo@ and @hi@ turns -- inclusive, a "turn" counted by
+--   prompt ticks so a prompt and the atom(s) that answered it always land
+--   on the same side of the cut.
+--
+--   The boundary is *not* recomputed as "always exactly N turns back from
+--   the end" -- that moves by one turn on every single call, which means
+--   the tick immediately before the splice is a different tick every turn,
+--   which means the splice (and everything after it) never lines up with
+--   what a previous call actually sent, so nothing after
+--   'buildChapterMessages'\'s @olderMsgs@ segment could ever be served from
+--   cache. Instead the boundary only advances once the recent side would
+--   exceed @hi@ turns, and when it does, it jumps forward by exactly
+--   @hi - lo + 1@ turns -- landing the recent side back at @lo@, not @0@.
+--   That means the boundary (and therefore every message before and
+--   including the splice) is byte-for-byte identical across a whole
+--   @(hi - lo + 1)@-turn stretch: for those turns, 'buildChapterMessages'
+--   only ever *appends* to the message list a previous call already sent,
+--   which is exactly the shape a provider's prefix cache can serve for
+--   free. One turn in every @(hi - lo + 1)@ pays the reset; the rest are
+--   free rides. @lo == hi@ degenerates to the old "always exactly N deep"
+--   behaviour -- a full reset (and full miss on the recent side) every
+--   turn, the least favourable point on this same spectrum, not a
+--   different mechanism.
+splitByTurnWindow :: Int -> Int -> [FileTick] -> ([FileTick], [FileTick])
+splitByTurnWindow lo hi ticks
+  | boundary == 0 = ([], ticks)
+  | otherwise     = splitAt (promptIdxs !! boundary) ticks
+  where
+    promptIdxs = [ i | (i, ft) <- zip [0 :: Int ..] ticks, ftKind ft == "prompt" ]
+    total      = length promptIdxs
+    boundary   = turnWindowBoundary lo hi total
+
+-- | The pure arithmetic 'splitByTurnWindow' turns into a tick index: how
+--   many turns sit before the split, given @total@ turns exist and the
+--   recent side must hold between @lo@ and @hi@. See 'splitByTurnWindow's
+--   Haddock for the shape this produces (a step function, flat across each
+--   @period@-turn stretch, jumping by @period@ at each reset).
+turnWindowBoundary :: Int -> Int -> Int -> Int
+turnWindowBoundary lo hi total
+  | total <= lo = 0
+  | otherwise   = total - (((total - lo) `mod` period) + lo)
+  where period = hi - lo + 1
 
 renderContextBlocks :: [ContextBlock] -> T.Text
 renderContextBlocks blocks = T.intercalate "\n\n" [ t | ContextBlock t <- blocks ]
