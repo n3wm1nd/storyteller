@@ -66,7 +66,14 @@ defaultAskSystemPrompt =
   "You are answering in character, grounded strictly in the material you're given about yourself."
 
 -- | Compiled-in sampling default for @agent.ask-character@ -- a short,
---   answer-the-question call, not prose generation: low budget, low
---   temperature (a consistent, grounded answer, not a creative one).
+--   answer-the-question call, not prose generation: low temperature (a
+--   consistent, grounded answer, not a creative one). @MaxTokens@ is well
+--   above what the answer itself needs, though -- 'AgentModel' declares
+--   'UniversalLLM.HasReasoning' (see "Storyteller.Core.LLM.Role"), and
+--   when the assigned model has reasoning enabled, its thinking tokens are
+--   drawn from this same budget before any answer text -- a tight cap
+--   sized only for the visible answer left nothing for the answer once
+--   reasoning ran (see "Storyteller.Core.LLM.Settings"'s @asReasoning@ for
+--   where that's toggled per-role).
 defaultAskConfig :: [ModelConfig AgentModel]
-defaultAskConfig = [MaxTokens 500, Temperature 0.4]
+defaultAskConfig = [MaxTokens 3000, Temperature 0.4]
