@@ -159,11 +159,19 @@ writerUserMessage contextBlocks charContexts existing extraInstructions instruct
       Nothing            -> ""
       Just (WordCount n) -> "Write approximately " <> T.pack (show n) <> " words.\n"
 
--- | Read the target file's existing content and every other branch file,
+-- | Read the target file's existing content and every /other/ branch file,
 --   as plain data — no LLM involved. Requires the target branch's
 --   filesystem to be in scope. This is the machinery 'proseAgent' needs fed
 --   in; composing the two is the caller's job, e.g.
 --   @gatherFileContext layout path >>= \\(existing, ctx) -> proseAgent hint chars (extra <> ctx) existing instr@.
+--
+--   @path@ itself is always excluded from the returned context blocks —
+--   its content already comes back separately as @existing@, so leaving it
+--   in too would show the model its own target file twice (once as
+--   "existing content to continue", once as an anonymous "other file"
+--   entry) and, worse, means that entry's text grows every time @path@
+--   does, right inside what's meant to be the stable "every other file"
+--   context.
 --
 --   @layout@ is the user-facing bucket-picker ordering
 --   ('Storyteller.Writer.Agent.ContextFilter.applyContextLayout') a client
@@ -180,7 +188,7 @@ gatherFileContext
   -> FilePath               -- ^ file to continue
   -> Sem r (ExistingContent, [ContextBlock])
 gatherFileContext layout path = do
-  unordered   <- listAllFiles @project "/"
+  unordered   <- filter (/= path) <$> listAllFiles @project "/"
   let files = case layout of
         [] -> List.sort unordered
         _  -> applyContextLayout layout unordered

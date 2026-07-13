@@ -41,6 +41,7 @@ library
                   , Storyteller.Writer.Agent.Tracker
                   , Storyteller.Writer.Agent.CharGen
                   , Storyteller.Writer.Agent.Write
+                  , Storyteller.Writer.Agent.MessageWindow
                   , Storyteller.Writer.Agent.FlowWrite
                   , Storyteller.Writer.Agent.Outline
                   , Storyteller.Writer.Agent.Fix
@@ -236,6 +237,7 @@ test-suite storyteller-test
                   , Storyteller.PresenceSpec
                   , Storyteller.Writer.CharacterAnswerSpec
                   , Storyteller.Writer.WriteSpec
+                  , Storyteller.Writer.MessageWindowSpec
                   , Storyteller.Writer.ReplaceToolSpec
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
