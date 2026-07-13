@@ -214,10 +214,12 @@ test-suite storyteller-test
   other-modules:    Git.Mock
                   , Paths_storyteller
                   , Storage.MockStore
+                  , Storage.OpCounting
                   , Storage.CoreSpec
                   , Storage.FSSpec
                   , Storage.OpsSpec
                   , Storage.CommitWorktreeSpec
+                  , Storage.FoldIntoOpCountSpec
                   , Storage.ChainEditSpec
                   , Storage.TickSpec
                   , Storyteller.FileAtomsSpec

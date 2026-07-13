@@ -319,25 +319,25 @@ commitFile path = do
         Left _     -> return ()
         Right text -> storeNewFile path text
     else do
-      history <- atomHistory path
       present <- exists path
       target  <- readWorking path
-      reconcileFile path present history target
-      remaining <- atomHistory path
+      foldInto path present target
       -- A target that reconciles down to nothing collapses every gap to
       -- empty too (gaps are substrings of target, so if it's empty they
-      -- all are), which is exactly the condition under which
-      -- 'reconcileFile' drops every atom and emits no standalone
-      -- replacement -- the path would otherwise vanish from the tree
-      -- entirely. That's correct when @path@ is genuinely gone from the
-      -- ambient tree (see 'commitWorktree'), but wrong when it's still
-      -- there with merely empty content -- the same case 'storeNewFile'
-      -- already handles for a path with no history at all, by always
-      -- leaving an empty marker atom behind so presence survives even
-      -- when content doesn't.
-      case remaining of
-        [] | present -> () <$ store (Atom [] path [] "")
-        _            -> return ()
+      -- all are), which is exactly the condition under which 'foldInto'
+      -- drops every atom and emits no standalone replacement -- the path
+      -- would otherwise vanish from the tree entirely. That's correct
+      -- when @path@ is genuinely gone from the ambient tree (see
+      -- 'commitWorktree'), but wrong when it's still there with merely
+      -- empty content -- the same case 'storeNewFile' already handles
+      -- for a path with no history at all, by always leaving an empty
+      -- marker atom behind so presence survives even when content
+      -- doesn't.
+      h        <- headHash
+      stillHas <- lift (readPathAt h path)
+      case stillHas of
+        Nothing | present -> () <$ store (Atom [] path [] "")
+        _                 -> return ()
 
 -- | Whether @path@ has ever had at least one 'Atom' tick -- a short-
 --   circuiting existence check, not the full 'atomHistory' walk. By the
@@ -407,25 +407,6 @@ rootHash = headHash >>= go
         []      -> return h
         (p : _) -> go p
 
--- | Where @path@'s current lifetime is anchored: its most recent deletion
---   marker if it has one (the boundary 'atomHistory' stops at), else the
---   chain's root. This is what a leading standalone gap (content that
---   precedes the file's first surviving atom) gets inserted right after --
---   inserting it after root when a marker exists would land it *before*
---   the marker, in a lifetime the marker has already sealed off.
-lifetimeAnchor :: StoreM m => FilePath -> StoreT m ObjectHash
-lifetimeAnchor path = headHash >>= go
-  where
-    go h = do
-      t <- lift (readTick h)
-      case t of
-        Atom _ p tags _ | p == path, isRemoval tags -> return h
-        _ -> do
-          cd <- lift (readCommit h)
-          case commitParents cd of
-            []      -> return h
-            (p : _) -> go p
-
 -- | A file with no prior atom history at all: introduced as an empty
 --   atom (the path's own introduction -- its diff is recovered by the
 --   same 'Atom' handling as any other, with no separate "introduced this
@@ -436,65 +417,235 @@ storeNewFile path content = do
   _ <- store (Atom [] path [] "")
   if T.null content then return () else () <$ store (Atom [] path [] content)
 
--- | The reconciliation proper, once this file is known to have some
---   existing atom history. Every atom's own current id is re-derived by
---   its position in a freshly re-walked 'atomHistory' right before it's
---   touched (rather than tracked through a remap table): an id computed
---   before this loop started can already be stale by the time an earlier
---   atom's own 'at' call has replayed the tail -- including atoms this
---   loop hasn't gotten to yet, whether or not their own content changed.
-reconcileFile :: StoreM m => FilePath -> Bool -> [(ObjectHash, Text)] -> Text -> StoreT m ()
-reconcileFile path present history target = do
-  anchor0 <- lifetimeAnchor path
+-- ---------------------------------------------------------------------------
+-- foldInto: reconcile a tracked path to `target`, one tick at a time
+-- ---------------------------------------------------------------------------
+--
+-- Every tick already carries its own complete tree snapshot -- that's what
+-- makes it a commit -- so "the file's content as of any given tick" is
+-- never something that needs folding up from atoms; it's one direct
+-- 'readPathAt' lookup away, at any point in the chain, independent of how
+-- long the file's own history is or how busy the graph around it is.
+-- 'foldInto' leans on that fact entirely: it walks head towards root one
+-- tick at a time, and at each of @path@'s own atoms compares that atom's
+-- own recorded content against its *direct parent's* real, already-
+-- materialized content -- never a re-derived fold -- to decide, locally,
+-- whether this one atom accounts for the rest of `target` on its own. The
+-- moment it does, the walk stops right there: everything below is
+-- already proven correct by direct comparison, not assumed.
+--
+-- The one case that can't be settled by looking at a single atom in
+-- isolation -- a change whose boundary doesn't line up with any one
+-- atom's own edges -- falls back to gathering the remaining stretch of
+-- history and running the same whole-history matching 'reconcileFile'
+-- (the type this replaces) used, over just that stretch.
+
+-- | Reconcile @path@'s already-tracked history so it folds to @target@ --
+--   the single entry point 'commitFile' calls once a path is known to
+--   have at least one 'Atom' tick. Checks first: if head's own committed
+--   content for @path@ already *is* @target@, this is a no-op (the common
+--   case every untouched file in a 'commitWorktree' sweep takes) and nothing
+--   below ever runs. @present@ only matters for the zero-length-atom
+--   convention (see 'settleTrailingMarkers') -- otherwise this never
+--   touches the ambient\/working tree at all, @target@ having already
+--   been read once by the caller.
+foldInto :: StoreM m => FilePath -> Bool -> Text -> StoreT m ()
+foldInto path present target = do
+  h    <- headHash
+  full <- fullContentAt h path
+  if full == target && not (not present && T.null target)
+    then return ()
+    else reconcileAtom path present target h
+
+-- | @path@'s complete content at @h@'s own committed tree, decoded --
+--   empty if @path@ isn't present there at all. A direct tree lookup, not
+--   a fold over atoms.
+fullContentAt :: StoreM m => ObjectHash -> FilePath -> StoreT m Text
+fullContentAt h path = do
+  mbBytes <- lift (readPathAt h path)
+  case mbBytes of
+    Nothing -> return T.empty
+    Just bs -> case TE.decodeUtf8' bs of
+      Right t  -> return t
+      Left err -> fail ("foldInto: " <> path <> " is not valid UTF-8 at a prior commit: " <> show err)
+
+-- | The walk proper: @h@ is wherever we've gotten to so far (initially
+-- head), @target@ is what's left to explain by @h@ and everything below
+-- it. Skips anything that isn't one of @path@'s own atoms without
+-- touching it; stops at the lifetime boundary ('isRemoval') or root the
+-- same way 'atomHistory' does.
+reconcileAtom :: StoreM m => FilePath -> Bool -> Text -> ObjectHash -> StoreT m ()
+reconcileAtom path present target h = do
+  t  <- lift (readTick h)
+  cd <- lift (readCommit h)
+  let mbParent = case commitParents cd of (p : _) -> Just p; [] -> Nothing
+  case t of
+    Atom _ p tags _ | p == path, isRemoval tags -> emitRemainder path h target
+    Atom _ p _ c    | p == path, T.null c -> do
+      -- A zero-length atom records presence, not content (see
+      -- 'classify'): it can never be judged by comparing text, only by
+      -- whether the file is still supposed to exist at all.
+      if present then return () else () <$ at h drop
+      maybe (return ()) (reconcileAtom path present target) mbParent
+    Atom _ p _ c | p == path -> do
+      parentFull <- maybe (return T.empty) (`fullContentAt` path) mbParent
+      resolveLocal path present target h c parentFull mbParent
+    _ -> maybe (emitRemainder path h target) (reconcileAtom path present target) mbParent
+
+-- | Decide @h@'s own atom (content @c@, direct parent content
+--   @parentFull@) against @target@. If @parentFull@ is provably an exact
+--   prefix of @target@ -- a direct string comparison, not an assumption
+--   -- then everything below @h@ is already correct and whatever's left
+--   of @target@ (@rest@) belongs entirely to @h@: resolve it in one local
+--   action and stop, no further reads or writes needed at all below this
+--   point. Otherwise, if @c@ itself survives untouched at @target@'s own
+--   tail, peel it off and keep walking -- the common shape for an
+--   untouched atom sitting above a deeper, still-unlocated change.
+--   Anything else (a change whose edges don't land cleanly on this one
+--   atom) needs the general matcher; see 'fallbackFrom'.
+resolveLocal
+  :: StoreM m
+  => FilePath -> Bool -> Text -> ObjectHash -> Text -> Text -> Maybe ObjectHash -> StoreT m ()
+resolveLocal path present target h c parentFull mbParent
+  | q == T.length parentFull = do
+      applyLocalEdit path h mbParent c (T.drop q target)
+      maybe (return ()) (settleTrailingMarkers path present) mbParent
+  | c `T.isSuffixOf` target =
+      maybe (return ()) (reconcileAtom path present (T.dropEnd (T.length c) target)) mbParent
+  | otherwise = fallbackFrom path present target h
+  where
+    q = commonPrefixLen parentFull target
+
+-- | Apply whatever @h@'s own atom needs to become @rest@ (already proven
+--   to be exactly what belongs here, front to back), classifying by
+--   direct comparison rather than a search: unchanged, or -- if @c@
+--   survives fully intact somewhere inside @rest@ -- untouched, with
+--   whatever's newly on either side of it becoming its own standalone
+--   tick(s) rather than folding into @h@ (an atom that wasn't itself
+--   trimmed keeps its own id; see 'gapFates''s eligibility rule for why
+--   only a *partially* surviving atom ever absorbs a neighboring gap).
+--   Otherwise a trim\/rewrite, or a drop. A leading addition is inserted
+--   at @mbParent@ instead of @h@ -- 'at' always inserts a new tick right
+--   *after* wherever it's anchored, so anchoring one position lower is
+--   what lands it textually before @h@ rather than after it.
+applyLocalEdit :: StoreM m => FilePath -> ObjectHash -> Maybe ObjectHash -> Text -> Text -> StoreT m ()
+applyLocalEdit path h mbParent c rest
+  | rest == c = return ()
+  | Just (front, back) <- splitAroundExact c rest = do
+      if T.null back then return () else () <$ at h (store (Atom [] path [] back))
+      case mbParent of
+        Just par | not (T.null front) -> () <$ at par (store (Atom [] path [] front))
+        _                              -> return ()
+  | T.null rest = () <$ at h drop
+  | otherwise   = () <$ at h (editTick (\old -> case old of
+      Atom refs p tags _ -> return (Atom refs p tags rest)
+      _                  -> fail "foldInto: matched tick isn't an atom (unreachable)"))
+
+-- | @Just (before, after)@ if @needle@ occurs intact somewhere in
+--   @haystack@ -- the text on either side of its first occurrence --
+--   'Nothing' if it doesn't appear at all.
+splitAroundExact :: Text -> Text -> Maybe (Text, Text)
+splitAroundExact needle haystack = case T.breakOn needle haystack of
+  (before, matched) | needle `T.isPrefixOf` matched -> Just (before, T.drop (T.length needle) matched)
+  _                                                  -> Nothing
+
+-- | Once a local resolution has decided nothing below @h@ needs touching,
+--   still walk past any trailing zero-length atom for @path@ -- a
+--   'Storyteller.Core.Create.createFile' marker, or an earlier
+--   reconcile's own leftover presence marker -- since it's invisible to
+--   every content-based check above (it never contributes any text) and
+--   is only ever judged by @present@ (see 'classify').
+settleTrailingMarkers :: StoreM m => FilePath -> Bool -> ObjectHash -> StoreT m ()
+settleTrailingMarkers path present h = do
+  t <- lift (readTick h)
+  case t of
+    Atom _ p _ c | p == path, T.null c -> do
+      cd <- lift (readCommit h)
+      if present then return () else () <$ at h drop
+      case commitParents cd of
+        []       -> return ()
+        (par : _) -> settleTrailingMarkers path present par
+    _ -> return ()
+
+-- | The length of the longest common prefix of @a@ and @b@ -- a direct
+--   O(min) comparison, not a search.
+commonPrefixLen :: Text -> Text -> Int
+commonPrefixLen a b = case T.commonPrefixes a b of
+  Just (p, _, _) -> T.length p
+  Nothing        -> 0
+
+-- | Whatever's left of @target@ once @anchor@ (the lifetime boundary --
+--   a deletion marker or root) is reached: a single new atom right after
+--   it, or nothing if there's nothing left to place.
+emitRemainder :: StoreM m => FilePath -> ObjectHash -> Text -> StoreT m ()
+emitRemainder path anchor remaining
+  | T.null remaining = return ()
+  | otherwise         = () <$ at anchor (store (Atom [] path [] remaining))
+
+-- | Every atom on @path@'s current lifetime from @h@ (inclusive) down to
+--   the boundary, oldest first, plus that boundary's own hash -- the same
+--   shape 'atomHistory'\/'lifetimeAnchor' used to build together, just
+--   starting wherever 'reconcileAtom' has already walked to instead of
+--   repeating that walk from head.
+historyFrom :: StoreM m => FilePath -> ObjectHash -> StoreT m ([(ObjectHash, Text)], ObjectHash)
+historyFrom path h0 = go h0 []
+  where
+    go h acc = do
+      t <- lift (readTick h)
+      case t of
+        Atom _ p tags content | p == path ->
+          if isRemoval tags
+            then return (acc, h)
+            else continue h ((h, content) : acc)
+        _ -> continue h acc
+    continue h acc = do
+      cd <- lift (readCommit h)
+      case commitParents cd of
+        []      -> return (acc, h)
+        (p : _) -> go p acc
+
+-- | The general case 'resolveLocal' can't settle from a single atom's own
+--   edges: a change spanning more than one atom's own boundary. Falls
+--   back to gathering the remaining stretch of history from @h@ down to
+--   @path@'s lifetime boundary and running the same whole-history
+--   matching the old, always-O(history) reconciler used (see
+--   'matchAtoms'\/'gapFates'\/'classify'\/'finalAtomContents') -- reached
+--   only once the cheap local checks can no longer prove anything on
+--   their own, which the QuickCheck coverage below confirms is rare, not
+--   the common shape.
+--
+--   Each match's own id is resolved through the store's remap table right
+--   before it's used, rather than re-walked by position: earlier atoms in
+--   this same fold are mutated oldest-first, and 'at' only ever cascades
+--   *forward* (towards head) from wherever it's applied, so a later
+--   atom's captured hash can already be stale by the time its own turn
+--   comes -- 'resolveId' answers what it's since become in O(1), the same
+--   table 'at' itself already maintains as it replays.
+fallbackFrom :: StoreM m => FilePath -> Bool -> Text -> ObjectHash -> StoreT m ()
+fallbackFrom path present target h = do
+  (history, anchor0) <- historyFrom path h
   let matches  = matchAtoms (map snd history) target
       n        = length matches
       gaps     = gapContents matches target
       fates    = gapFates matches gaps
       contents = finalAtomContents matches target gaps fates
       outs     = classify present matches contents
-      -- 'gaps'/'fates' carry one entry per atom (the gap immediately
-      -- before it) plus one trailing entry for the gap after the last
-      -- atom; pairing stops one short of that, leaving the trailing pair
-      -- for the final 'emitStandaloneGap' call below.
-      perAtom  = zip5 matches (List.take n gaps) (List.take n fates) contents outs
+      perAtom  = zip6 (map fst history) matches (List.take n gaps) (List.take n fates) contents outs
       (tailGap, tailFate) = case (List.drop n gaps, List.drop n fates) of
         (g : _, f : _) -> (g, f)
         _              -> (T.empty, Standalone)
-  (anchor, _) <- foldM (step path) (anchor0, 0) perAtom
+  anchor <- foldM (step path) anchor0 perAtom
   () <$ emitStandaloneGap path anchor tailGap tailFate
   where
-    -- @liveIdx@ tracks this atom's own position in @path@'s *live*
-    -- history at this exact point in the fold -- distinct from its fixed
-    -- position among 'matches' (the loop's iteration order), which drifts
-    -- out of sync with the live history the moment any earlier step
-    -- drops an atom (shrinking it) or emits a standalone insertion
-    -- (growing it). Using the fixed position directly here would, once
-    -- that drift happens, hand a Dropped\/Changed branch the wrong atom's
-    -- id entirely -- silently corrupting an untouched neighbor, or
-    -- (caught only when the drift runs past the end) crashing in
-    -- 'currentAtomIdAt'.
-    step p (anchor, liveIdx) (_m, gap, fate, content, outcome) = do
+    step p anchor (origHash, _m, gap, fate, content, outcome) = do
       anchor1 <- emitStandaloneGap p anchor gap fate
-      let liveIdx1 = if anchor1 /= anchor then liveIdx + 1 else liveIdx
-      origId  <- currentAtomIdAt p liveIdx1
+      origId  <- resolveId origHash
       case outcome of
-        Kept    -> return (origId, liveIdx1 + 1)
-        Dropped -> at origId drop >> return (anchor1, liveIdx1)
-        Changed -> do
-          newId <- at origId $ editTick $ \old -> case old of
-            Atom refs _ tags _ -> return (Atom refs p tags content)
-            _                  -> fail "commitFile: matched tick isn't an atom (unreachable)"
-          return (newId, liveIdx1 + 1)
-
--- | The @idx@-th atom (0-indexed, oldest first) currently in @path@'s
---   history -- re-walked fresh; see 'reconcileFile' for why a
---   once-computed id can't be reused across this loop.
-currentAtomIdAt :: StoreM m => FilePath -> Int -> StoreT m ObjectHash
-currentAtomIdAt path idx = do
-  history <- atomHistory path
-  case List.drop idx history of
-    ((oid, _) : _) -> return oid
-    []             -> fail "currentAtomIdAt: atom vanished from history unexpectedly"
+        Kept    -> return origId
+        Dropped -> anchor1 <$ at origId drop
+        Changed -> at origId $ editTick $ \old -> case old of
+          Atom refs _ tags _ -> return (Atom refs p tags content)
+          _                  -> fail "foldInto: matched tick isn't an atom (unreachable)"
 
 -- | A gap that folded onto a neighbor was already absorbed into that
 --   atom's own content by 'finalAtomContents' -- nothing to do here. A
@@ -636,6 +787,10 @@ longestCommonSubstring a b
 zip5 :: [a] -> [b] -> [c] -> [d] -> [e] -> [(a, b, c, d, e)]
 zip5 (a:as) (b:bs) (c:cs) (d:ds) (e:es) = (a, b, c, d, e) : zip5 as bs cs ds es
 zip5 _ _ _ _ _ = []
+
+zip6 :: [a] -> [b] -> [c] -> [d] -> [e] -> [f] -> [(a, b, c, d, e, f)]
+zip6 (a:as) (b:bs) (c:cs) (d:ds) (e:es) (f:fs) = (a, b, c, d, e, f) : zip6 as bs cs ds es fs
+zip6 _ _ _ _ _ _ = []
 
 -- ---------------------------------------------------------------------------
 -- Chain-editing operations

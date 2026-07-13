@@ -64,6 +64,7 @@ module Storage.Core
   , WorkingTree
   , emptyWorkingTree
   , loadWorkingTree
+  , readPathAt
 
     -- * The monad
   , StoreT
@@ -273,6 +274,32 @@ readTreeRecursive prefix treeHash = do
       let path = if null pfx then name else pfx <> "/" <> name
       sub <- readTreeRecursive path hash'
       return $ Map.insert path FSDir sub
+
+-- | The blob at @path@ within @commitHash@'s own committed tree snapshot
+--   -- read by walking straight down @path@'s own segments, one 'TreeEntry'
+--   list per level, rather than materializing the whole tree the way
+--   'loadWorkingTree' does. Cost is proportional to @path@'s depth, not to
+--   the size of the tree or the length of the chain leading to
+--   @commitHash@ -- since every commit already carries its own complete
+--   tree snapshot (that's what makes a commit a commit), this needs no
+--   history walk at all: any tick's content for any path is one direct
+--   lookup away. 'Nothing' if @path@ isn't present in that snapshot.
+readPathAt :: StoreM m => ObjectHash -> FilePath -> m (Maybe BS.ByteString)
+readPathAt commitHash path = do
+  cd <- readCommit commitHash
+  go (splitDirectories path) (commitTree cd)
+  where
+    go []           _        = return Nothing
+    go [name]       treeHash = do
+      entries <- readTreeM treeHash
+      case List.find ((== name) . entryName) entries of
+        Just (BlobEntry _ h) -> Just <$> readBlobM h
+        _                    -> return Nothing
+    go (seg : rest) treeHash = do
+      entries <- readTreeM treeHash
+      case List.find ((== seg) . entryName) entries of
+        Just (SubTree _ h) -> go rest h
+        _                  -> return Nothing
 
 -- | Write the 'WorkingTree' to the store, returning the root tree hash.
 --   An empty tree is written like any other -- 'buildTree' naturally

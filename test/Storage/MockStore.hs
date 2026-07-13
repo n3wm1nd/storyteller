@@ -15,8 +15,10 @@ import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict
 import qualified Data.ByteString as BS
+import Data.Hashable (hash)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Numeric (showHex)
 import qualified Data.Text as T
 
 import Storage.Core
@@ -36,17 +38,26 @@ newtype Mock a = Mock (StateT MockState (Either String) a)
 instance MonadFail Mock where
   fail = Mock . lift . Left
 
--- | The hash *is* a canonical serialization of the content -- no separate
---   hash function needed, since all that's required of a mock is the one
---   property real content-addressing guarantees and tests actually rely
---   on: identical content always yields the identical id, byte-for-byte,
---   with no side-effecting counter to make two writes of the same thing
---   look artificially distinct.
+-- | Content-addressed, like any real backend's -- identical content
+--   always yields the identical id -- but via a fixed-size digest of the
+--   content's own serialization, not the serialization itself. The
+--   earlier version used @show@ directly as the id: harmless for the
+--   small chains most specs build, but since a commit's id embeds its
+--   parent's id verbatim (it's part of 'CommitData'), that made every
+--   id's own length grow with chain depth, and a chain of @n@ commits
+--   including O(n) 'Map' comparisons against those ids O(n) total work --
+--   O(n^2) to build, independent of anything 'Storage.Ops' does. A
+--   'hash' (fixed-size regardless of input) keeps every id the same
+--   small size no matter how deep the chain gets, the same property a
+--   real 40-hex-char git SHA has.
 objectKey :: StoreObject -> T.Text
-objectKey obj = "obj:" <> T.pack (show obj)
+objectKey = hashText . show
 
 commitKey :: CommitData -> T.Text
-commitKey cd = "commit:" <> T.pack (show cd)
+commitKey = hashText . show
+
+hashText :: String -> T.Text
+hashText s = T.pack (showHex (fromIntegral (hash s) :: Word) "")
 
 instance MonadStore Mock where
   writeObject obj = do
