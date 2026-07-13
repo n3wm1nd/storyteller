@@ -4,7 +4,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff } from "lucide-react";
 import { StickyNote, HelpCircle } from "lucide-react";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
@@ -21,10 +21,34 @@ import { branchFileUrl, saveRawFile } from "@/lib/ws";
 // (see TextEditPanel below) but ships no type augmentation for it, so
 // @tiptap/core's own Storage interface has no idea it exists — declared
 // once here rather than casting `editor.storage as any` at each call site.
+// `parser`/`serializer` (undocumented, but present on every tiptap-markdown
+// build — see node_modules/tiptap-markdown/dist/tiptap-markdown.es.js) are
+// what 'snapshotOriginal'/'computeMinimalSave' below hook into: `parser.md`
+// is the raw markdown-it instance (for source-line block boundaries) and
+// `serializer` can render an arbitrary node/fragment, not just the whole
+// document.
 declare module "@tiptap/core" {
   interface Storage {
-    markdown: { getMarkdown: () => string };
+    markdown: {
+      getMarkdown: () => string;
+      parser: { md: { parse: (text: string, env: object) => MarkdownItToken[] } };
+      serializer: { serialize: (content: ProsemirrorNode | ProsemirrorFragment) => string };
+    };
   }
+}
+
+interface MarkdownItToken {
+  level: number;
+  map: [number, number] | null;
+}
+
+// Minimal structural subset of prosemirror-model's Node/Fragment used below
+// — avoids adding a direct prosemirror-model dependency just for typing.
+interface ProsemirrorNode {
+  eq(other: ProsemirrorNode): boolean;
+}
+interface ProsemirrorFragment {
+  content: ProsemirrorNode[];
 }
 
 // A character's presence, as a set of this file's own atom tickIds — not
@@ -1045,6 +1069,85 @@ export function RawEditPanel({ branch, path }: {
   );
 }
 
+// A save-time snapshot of the document's top-level blocks, kept in step
+// with whatever's actually on the branch (loaded once, then refreshed after
+// every successful save) — see 'computeMinimalSave' just below for why:
+// re-serializing the *whole* doc on every save (tiptap-markdown's own
+// canonical style — ATX headings, a fixed bullet marker, single blank
+// lines — rarely matches whatever style the stored file actually used) was
+// turning even a one-word edit into a full-document diff against the atom
+// chain server-side, since nothing lined up byte-for-byte outside the
+// edited paragraph either. 'nodes' and 'blockRanges' are parallel, one
+// entry per top-level ProseMirror node / markdown-it block token; a
+// mismatched count (HTML/DOM normalization occasionally merges or splits
+// a block) is the signal that this file isn't safely diffable this way —
+// 'snapshotOriginal' returns null, and 'save' below just falls back to
+// sending the whole re-serialized document, exactly like before.
+interface DocSnapshot {
+  text: string;
+  lines: string[];
+  blockRanges: { start: number; end: number }[];
+  nodes: ProsemirrorNode[];
+}
+
+function snapshotOriginal(editor: Editor, text: string): DocSnapshot | null {
+  try {
+    const tokens = editor.storage.markdown.parser.md.parse(text, {});
+    const blockRanges: { start: number; end: number }[] = [];
+    for (const t of tokens) {
+      if (t.level === 0 && t.map) blockRanges.push({ start: t.map[0], end: t.map[1] });
+    }
+    const nodes = [...editor.state.doc.content.content];
+    if (nodes.length !== blockRanges.length) return null;
+    return { text, lines: text.split("\n"), blockRanges, nodes };
+  } catch {
+    return null;
+  }
+}
+
+// Only the stretch of top-level blocks that actually changed gets
+// re-serialized; an unchanged head and/or tail is sliced verbatim out of
+// the last-saved text (byte-identical to what's already stored), so a
+// small edit anywhere but the very front keeps the server's cheap
+// prefix-matched reconciliation path instead of falling through to its
+// O(atoms) full-history matcher. 'original' must correspond to whatever
+// text is currently saved on the branch — the one invariant 'save' below
+// has to maintain by re-snapshotting after every successful write.
+function computeMinimalSave(editor: Editor, original: DocSnapshot): string {
+  const oldNodes = original.nodes;
+  const newNodes = editor.state.doc.content.content;
+  const maxPrefix = Math.min(oldNodes.length, newNodes.length);
+
+  let prefixLen = 0;
+  while (prefixLen < maxPrefix && oldNodes[prefixLen].eq(newNodes[prefixLen])) prefixLen++;
+
+  const maxSuffix = maxPrefix - prefixLen;
+  let suffixLen = 0;
+  while (
+    suffixLen < maxSuffix &&
+    oldNodes[oldNodes.length - 1 - suffixLen].eq(newNodes[newNodes.length - 1 - suffixLen])
+  ) suffixLen++;
+
+  if (prefixLen === oldNodes.length && prefixLen === newNodes.length) return original.text;
+
+  const head = prefixLen > 0
+    ? original.lines.slice(original.blockRanges[0].start, original.blockRanges[prefixLen - 1].end).join("\n")
+    : "";
+  const tail = suffixLen > 0
+    ? original.lines.slice(
+        original.blockRanges[oldNodes.length - suffixLen].start,
+        original.blockRanges[oldNodes.length - 1].end,
+      ).join("\n")
+    : "";
+
+  const middleNodes = newNodes.slice(prefixLen, newNodes.length - suffixLen);
+  const middle = middleNodes.length > 0
+    ? editor.storage.markdown.serializer.serialize(editor.schema.topNodeType.create(null, middleNodes))
+    : "";
+
+  return [head, middle, tail].filter((s) => s.length > 0).join("\n\n");
+}
+
 // Whole-file WYSIWYG editing — a Word-like surface (bold/strike/lists,
 // natural copy-paste) over the same raw markdown 'RawEditPanel' edits, for
 // quick editorial passes across a scene without threading through individual
@@ -1063,10 +1166,12 @@ export function TextEditPanel({ branch, path }: {
   const [dirty, setDirty] = useState(false);
   const savedContentRef = useRef<string | null>(null);
   const savingRef = useRef(false);
+  const originalRef = useRef<DocSnapshot | null>(null);
 
   function save() {
     if (!editor || savingRef.current) return;
-    const md = editor.storage.markdown.getMarkdown();
+    const original = originalRef.current;
+    const md = original ? computeMinimalSave(editor, original) : editor.storage.markdown.getMarkdown();
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -1075,6 +1180,10 @@ export function TextEditPanel({ branch, path }: {
         savedContentRef.current = md;
         setSavedContent(md);
         setDirty(false);
+        // Must correspond exactly to what's now on the branch — null (not
+        // the stale prior snapshot) on any mismatch, since a stale one
+        // would make the next save's "unchanged head/tail" claim false.
+        originalRef.current = snapshotOriginal(editor, md);
         savingRef.current = false;
         setSaving(false);
       })
@@ -1112,6 +1221,7 @@ export function TextEditPanel({ branch, path }: {
         if (cancelled) return;
         editor.commands.setContent(text);
         savedContentRef.current = text;
+        originalRef.current = snapshotOriginal(editor, text);
         setSavedContent(text);
         setDirty(false);
         setLoading(false);
