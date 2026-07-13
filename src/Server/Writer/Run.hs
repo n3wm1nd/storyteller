@@ -154,10 +154,10 @@ actionStack
 actionStack env action =
   case (envProseRunner env, envAgentRunner env) of
     ( SomeLLMRunner (proseRunner :: forall r' a'. Members
-        '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging] r'
+        '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r'
         => Sem (LLM proseChosen : r') a' -> Sem r' a')
       , SomeLLMRunner (agentRunner :: forall r' a'. Members
-        '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging] r'
+        '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r'
         => Sem (LLM agentChosen : r') a' -> Sem r' a')
       ) ->
         runError @String

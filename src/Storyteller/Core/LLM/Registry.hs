@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -39,11 +40,16 @@ module Storyteller.Core.LLM.Registry
 import Data.Default (Default)
 import Data.List (intercalate)
 import Data.Maybe (fromMaybe)
+import qualified Data.ByteString as BS
 import Polysemy
 import Polysemy.Fail (Fail)
+import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Environment (lookupEnv)
+import System.FilePath ((</>))
+import System.IO.Error (tryIOError)
 
 import Runix.Config (Config)
+import Runix.FileSystem (FileSystemWrite(..))
 import Runix.HTTP (HTTP, HTTPStreaming)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLM, interpretLLMWith, LlamaCppAuth(..), OpenRouterAuth(..))
@@ -52,6 +58,7 @@ import Runix.LLM.Streaming (llmStreamingRestAPI, StreamEvent, StreamingEnabled)
 import Runix.RestAPI (RestEndpoint, RestAPI, restapiHTTP, llmRetry)
 import Runix.StreamChunk (StreamChunk)
 import Runix.Time (Time, Sleep)
+import Runix.Tracing.FileLog (logHTTPStreamingRequests)
 import UniversalLLM
   ( EnableStreaming, HasJSON, HasReasoning, HasTools, Model(..), ModelConfig(..)
   , ModelName, Provider, ProviderOf, Routing, RoutingState
@@ -143,16 +150,21 @@ modelInterpreter ViaOpenRouter model configs = do
 --   each role's stored runner has to be usable at whatever row position it
 --   ends up peeled at, not just the one position it happened to be built
 --   for.
-resolveRoleRunner :: KnownModel -> IO SomeLLMRunner
-resolveRoleRunner (KnownModel ViaLlamaCpp model configs) = do
+--   'mLogDir', when given, is a directory (expected to be repo-local and
+--   never committed -- see 'Server.Writer.Env.loadServerEnv') that every
+--   raw HTTP request/response this role's model makes gets dumped into as
+--   one JSON file per call. Occasional-check-in tooling, not a
+--   permanent-monitoring one: see 'loggingStreamingChain'.
+resolveRoleRunner :: Maybe FilePath -> KnownModel -> IO SomeLLMRunner
+resolveRoleRunner mLogDir (KnownModel ViaLlamaCpp model configs) = do
   endpoint <- maybe "http://localhost:8080/v1" id <$> lookupEnv "LLAMACPP_ENDPOINT"
-  pure (SomeLLMRunner (streamingChain (LlamaCppAuth endpoint) model configs))
-resolveRoleRunner (KnownModel ViaOpenRouter model configs) = do
+  pure (SomeLLMRunner (loggingStreamingChain mLogDir (LlamaCppAuth endpoint) model configs))
+resolveRoleRunner mLogDir (KnownModel ViaOpenRouter model configs) = do
   mKey <- lookupEnv "OPENROUTER_API_KEY"
   key <- case mKey of
     Just k  -> pure k
     Nothing -> error "OPENROUTER_API_KEY is not set"
-  pure (SomeLLMRunner (streamingChain (OpenRouterAuth key) model configs))
+  pure (SomeLLMRunner (loggingStreamingChain mLogDir (OpenRouterAuth key) model configs))
 
 streamingChain
   :: forall model p r a
@@ -165,6 +177,48 @@ streamingChain auth model configs =
   . llmRetry @p
   . interpretLLM @p (route @model) model configs
   . raiseUnder @(RestAPI p)
+
+-- | A repo-local directory used only as 'Runix.FileSystem.HasProjectPath'
+--   chroot root for request-log JSON files -- a distinct type (rather than
+--   reusing 'FilePath' itself, which already has an instance) so this
+--   filesystem scope can never be confused with some other 'FilePath'
+--   -tagged effect that happens to be live in the same row.
+data RequestLogProject
+
+-- | Direct real-disk interpreter for 'RequestLogProject', rooted at a
+--   fixed directory -- deliberately not 'Runix.FileSystem.fileSystemLocal'
+--   (the general chroot/path-translation machinery 'Server.Core.File'-style
+--   code uses): 'logHTTPStreamingRequests' only ever writes flat,
+--   already-sanitized filenames of its own choosing, so there's no path
+--   traversal to guard against and no read/list/chroot machinery to pull
+--   in for it.
+runRequestLogFS :: Member (Embed IO) r => FilePath -> Sem (FileSystemWrite RequestLogProject : r) a -> Sem r a
+runRequestLogFS dir = interpret $ \case
+  WriteFile p d        -> embed (ioResult (BS.writeFile (dir </> p) d))
+  CreateDirectory cp p -> embed (ioResult (createDirectoryIfMissing cp (dir </> p)))
+  Remove _ p           -> embed (ioResult (removeFile (dir </> p)))
+  where
+    ioResult act = either (Left . show) Right <$> tryIOError act
+
+-- | 'streamingChain', optionally wrapped with a raw request/response JSON
+--   dump of every HTTP call the model makes (see
+--   'Runix.Tracing.FileLog.logHTTPStreamingRequests') -- kept as a thin
+--   wrapper, applied once at startup per role, rather than folded into
+--   'streamingChain' itself, so the common (logging off) path never pays
+--   for the extra 'FileSystemWrite' interpretation layer, and so
+--   'streamingChain' itself stays usable without the extra 'Embed IO'
+--   requirement logging needs.
+loggingStreamingChain
+  :: forall model p r a
+  .  ( ModelName model, Provider model, Routing model, Default (RoutingState model), EnableStreaming model
+     , RestEndpoint p, Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r )
+  => Maybe FilePath -> p -> model -> [ModelConfig model] -> Sem (LLM model : r) a -> Sem r a
+loggingStreamingChain Nothing       auth model configs action = streamingChain auth model configs action
+loggingStreamingChain (Just logDir) auth model configs action =
+    runRequestLogFS logDir
+  . logHTTPStreamingRequests @RequestLogProject
+  . raise
+  $ streamingChain auth model configs action
 
 -- | Unpack a 'KnownModel' and build its plain 'LLMRunner', continuation-style
 --   -- existentials can only be consumed within a scope, so the model's own
@@ -199,6 +253,6 @@ data SomeLLMRunner where
   SomeLLMRunner :: ( HasTools model, HasJSON model, HasReasoning model
                    , SupportsSystemPrompt (ProviderOf model)
                    , SupportsMaxTokens (ProviderOf model), SupportsTemperature (ProviderOf model) )
-                => (forall r a. Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging] r
+                => (forall r a. Members '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r
                     => Sem (LLM model : r) a -> Sem r a)
                 -> SomeLLMRunner

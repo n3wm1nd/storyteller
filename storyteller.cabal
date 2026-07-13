@@ -99,6 +99,7 @@ library
                   , containers
                   , array
                   , filepath
+                  , directory
                   , Glob
                   , polysemy
                   , template-haskell

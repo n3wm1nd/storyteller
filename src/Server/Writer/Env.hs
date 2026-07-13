@@ -13,8 +13,10 @@ module Server.Writer.Env
   ) where
 
 import Control.Concurrent.STM (TVar, TChan, newTVarIO, newBroadcastTChanIO)
+import System.Directory (createDirectoryIfMissing)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
+import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
 
 import Server.Writer.GitWorker (GitWorkerQueue, startGitWorker)
@@ -50,10 +52,11 @@ loadServerEnv = do
   state     <- newTVarIO emptyAppState
   notify    <- newBroadcastTChanIO
   worker    <- startGitWorker repo notify
+  mLogDir   <- llmLogDir repo
   proseKnown  <- resolveKnownModel "ROLE_PROSE_MODEL" "qwen35-40b"
   agentKnown  <- resolveKnownModel "ROLE_AGENT_MODEL" "qwen35-40b"
-  proseRunner <- resolveRoleRunner proseKnown
-  agentRunner <- resolveRoleRunner agentKnown
+  proseRunner <- resolveRoleRunner mLogDir proseKnown
+  agentRunner <- resolveRoleRunner mLogDir agentKnown
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint
@@ -72,3 +75,16 @@ requireEnv var = do
   case mv of
     Just v  -> return v
     Nothing -> hPutStrLn stderr ("Error: " <> var <> " is not set") >> exitFailure
+
+-- | Where to dump raw LLM request/response JSON when 'LLM_LOG_REQUESTS' is
+--   set (any non-empty value) -- @<repo>\/.git\/runix-request-logs@, so
+--   logs from different checkouts never mix and nothing here is ever
+--   committed (@.git@ itself is never tracked). Created eagerly, once, so
+--   the first request doesn't race the directory's own creation.
+llmLogDir :: FilePath -> IO (Maybe FilePath)
+llmLogDir repo = do
+  enabled <- maybe False (not . null) <$> lookupEnv "LLM_LOG_REQUESTS"
+  if not enabled then return Nothing else do
+    let dir = repo </> ".git" </> "runix-request-logs"
+    createDirectoryIfMissing True dir
+    return (Just dir)
