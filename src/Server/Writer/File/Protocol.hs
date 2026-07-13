@@ -136,6 +136,17 @@ data FileCommand
   --   whole-chapter one. A reconciliation, not a wipe — see
   --   'Server.Writer.File.chatChapterRegen'.
   | ChatRegen  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcByBeat :: Bool }
+  -- | "Correct this": delete 'fcPromptTickId' and every atom in
+  --   'fcTargets' (an instruction group's own prompt + generated output),
+  --   then regenerate from 'fcPromptText' via 'chatWriter', rebased at
+  --   'fcPromptTickId' -- all within this one command's own transaction.
+  --   Replaces composing the same effect client-side from a 'DeleteAtom'
+  --   per tick followed by a separate 'ChatWriter': that took N+1 round
+  --   trips (N distinct undo points, the group visibly vanishing atom by
+  --   atom before generation even started) for what's actually one atomic
+  --   edit. See 'Server.Writer.File.Dispatch's handler and
+  --   'frontend/src/app/fileview.actions.ts''s 'correctAtom'.
+  | CorrectGroup { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcCharacterLayouts :: Map.Map T.Text [PickerRule] }
   -- | Split this file (a whole-story outline, @outline.md@ by convention)
   --   into per-chapter beat sheets. No prompt or targets — the outline text is
   --   the whole input; the model decides the chapter breakdown. See
@@ -208,6 +219,12 @@ instance FromJSON FileCommand where
         context <- fromMaybe [] <$> o .:? "context"
         byBeat  <- fromMaybe False <$> o .:? "byBeat"
         ChatRegen i <$> o .: "text" <*> pure context <*> pure byBeat
+      "correct.group" -> do
+        context     <- fromMaybe [] <$> o .:? "context"
+        layout      <- fromMaybe [] <$> o .:? "contextLayout"
+        charLayouts <- fromMaybe Map.empty <$> o .:? "characterLayouts"
+        targets     <- fromMaybe [] <$> o .:? "targets"
+        CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text" <*> pure context <*> pure layout <*> pure charLayouts
       "chat.converse" -> ChatConverse i <$> o .: "text"
       "chat.converse.regen" ->
         ChatConverseSwipe i <$> o .: "promptTickId" <*> o .: "atomTickId" <*> o .: "text"
@@ -244,6 +261,7 @@ commandKind = \case
   ChatWriter {}   -> "chat.writer"
   ChatFixer {}    -> "chat.fixer"
   ChatRegen {}    -> "chat.regen"
+  CorrectGroup {} -> "correct.group"
   ChatConverse {} -> "chat.converse"
   ChatConverseSwipe {} -> "chat.converse.regen"
   CycleSwipe {}   -> "atom.swipe.cycle"

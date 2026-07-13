@@ -24,6 +24,7 @@ module Server.Writer.File
   , RegenMode(..)
   , setPresence
   , askCharacter
+  , correctGroup
   ) where
 
 import Control.Monad (void)
@@ -36,7 +37,7 @@ import Polysemy (Member, Sem)
 import Runix.Logging (info)
 import Runix.FileSystem (fileExists, readFile, writeFile)
 
-import Server.Core.File (FileOpen)
+import Server.Core.File (FileOpen, deleteFileAtom)
 import Server.Core.Run (SessionEffects)
 import Server.Writer.File.Protocol (ContextItem(..))
 
@@ -64,8 +65,8 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
-import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, toDraft)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runBranchOpGit, runStorage)
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, toDraft, tickParent)
+import Storyteller.Core.Git (BranchTag, runBranchAndFS, runBranchOpGit, runStorage, atGeneric)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -194,6 +195,35 @@ chatWriter path prompt context layout mFlowTid charLayouts = do
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
+
+-- | "Correct this": delete an instruction group -- 'promptTid' (a
+--   'Prompt' tick) and every atom it produced ('targets') -- then
+--   regenerate from 'prompt' via 'chatWriter', landing back in the same
+--   position, all as one transaction (the caller's own 'withStorage', see
+--   'Server.Writer.File.Dispatch').
+--
+--   The regeneration is rebased at 'promptTid''s *parent*, not
+--   'promptTid' itself: 'promptTid' is one of the ticks this same call
+--   deletes, so by the time 'atGeneric' would try to resolve it as a
+--   pivot it no longer exists anywhere in the chain (a plain delete drops
+--   a tick rather than replacing it -- see 'Storage.Ops.deleteTick' --
+--   so it never gains a remap entry pointing anywhere). The parent is
+--   read up front, before either delete runs, so this doesn't depend on
+--   deletion order the way resolving it afterward would.
+--
+--   Deleting first (rather than letting 'atGeneric' pop the group as part
+--   of its own tail) is what keeps the group *out* of the tail it
+--   replays back on top of the fresh generation -- see 'atGeneric's own
+--   Haddock: popped ticks are replayed verbatim, so anything still
+--   present when it starts winding back would simply reappear.
+correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> ContextLayout -> Map.Map T.Text ContextLayout -> Sem r ()
+correctGroup path promptTid targets prompt context layout charLayouts = do
+  typed <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash (unTickId promptTid)))
+  case tickParent typed of
+    Nothing -> fail "correctGroup: prompt tick has no parent to rebase onto"
+    Just parentTid -> do
+      mapM_ deleteFileAtom (promptTid : targets)
+      atGeneric @Main parentTid (chatWriter path prompt context layout Nothing charLayouts)
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
 --   With no targets, there's nothing to rework — that's a different policy

@@ -11,18 +11,22 @@ module Server.Writer.FileSpec (spec) where
 import Test.Hspec
 
 import Polysemy (Sem, run)
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile)
 
-import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
+import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage, atGeneric)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
-import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick)
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Writer.Agent (Prompt(..))
 import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 
+import Server.Core.File (deleteFileAtom)
 import Server.Writer.File (editChatPrompt)
 import Server.TestStack
+
+import Prelude hiding (readFile)
 
 -- | 'editChatPrompt' only needs 'Server.Core.File.FileOpen', not the full
 --   'SessionEffects' (no LLM call) — testable directly against
@@ -70,3 +74,35 @@ spec runner = do
       case result of
         Left err -> expectationFailure err
         Right typed -> fromTick @Prompt typed `shouldBe` Just (Prompt "chat/f.md" "new text")
+
+  describe "correcting an instruction group (delete group, regenerate at its captured parent)" $ do
+
+    -- Pins the assumption 'Server.Writer.File.correctGroup' depends on:
+    -- the pivot for the rebased regeneration has to be the group's own
+    -- prompt tick's *parent*, captured before any deletes run -- not the
+    -- prompt tick itself. 'deleteFileAtom' (like every plain delete) drops
+    -- a tick rather than replacing it, so it never gains a remap entry;
+    -- once the prompt tick is gone, nothing could resolve it as an
+    -- 'atGeneric' target anymore. Deleting the whole group *before*
+    -- regenerating (rather than letting 'atGeneric' pop it as part of its
+    -- own tail) is what keeps the group out of the tail that gets
+    -- replayed back on top -- a tick still present when the rebase starts
+    -- winding back would simply reappear.
+    it "excises the whole group and replays what came after it once fresh content lands at the captured parent" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            promptH <- runStorage @Main (Tick.storeAs (Prompt "f.md" "write something"))
+            atomHA  <- runStorage @Main (Ops.append "f.md" "atom A")
+            atomHB  <- runStorage @Main (Ops.append "f.md" "atom B")
+            _       <- runStorage @Main (Ops.append "f.md" "later content")
+
+            let promptTid = TickId (Core.unObjectHash promptH)
+            typed <- runStorage @Main (Tick.readTypesTick promptH)
+            case tickParent typed of
+              Nothing -> fail "correctGroup: prompt tick has no parent"
+              Just parentTid -> do
+                mapM_ deleteFileAtom [promptTid, TickId (Core.unObjectHash atomHA), TickId (Core.unObjectHash atomHB)]
+                _ <- atGeneric @Main parentTid (runStorage @Main (Ops.append "f.md" "regenerated content"))
+                readFile @(BranchTag Main) "f.md"
+      case result of
+        Left err -> expectationFailure err
+        Right content -> content `shouldBe` "regenerated content\nlater content\n"

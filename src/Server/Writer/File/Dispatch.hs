@@ -31,7 +31,7 @@ import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
 import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
-import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter)
+import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -94,6 +94,9 @@ runCommand path cmd = case cmd of
 
   ChatRegen _mid prompt context byBeat ->
     [] <$ chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt context
+
+  CorrectGroup _mid promptTid targets prompt context layout charLayouts ->
+    [] <$ correctGroup path (TickId promptTid) (map TickId targets) prompt context layout charLayouts
 
   ChatConverse _mid prompt ->
     [] <$ chatConverse path prompt

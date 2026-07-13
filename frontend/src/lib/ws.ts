@@ -234,6 +234,13 @@ export type FileCommand =
   // a wipe — unchanged prose keeps its atoms. `byBeat` selects the
   // beat-by-beat driver over the whole-chapter one.
   | { type: "chat.regen";  id?: string; text: string; context?: ContextItem[]; byBeat?: boolean }
+  // Correct: delete `promptTickId` and every atom in `targets` (an
+  // instruction group's own prompt + generated output), then regenerate
+  // from `text` via chat.writer, rebased at the prompt tick's own parent —
+  // all as one server-side transaction (one undo point, the group staying
+  // on screen untouched until the replacement lands, rather than
+  // vanishing tick-by-tick as N separate delete.atom round trips would).
+  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; characterLayouts?: Record<string, PickerRule[]> }
   // Converse: discuss, don't write. Send a message to the chat agent — see
   // WRITER.md's chat/ convention. No context/targets: a chat file has no
   // atom-selection concept of its own.
