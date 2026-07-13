@@ -15,12 +15,12 @@
 --
 -- Unlike 'Server.Writer.Character.Connection', a real incremental cache
 -- *is* worth maintaining here: 'Server.Writer.Library.libraryTree' folds
--- chapter headings via 'Storage.Core.memoFold' rather than re-reading every
--- chapter file's content on every push, so the notify thread threads its
--- own accumulator through 'watchBranch' — same mechanism
--- 'Server.Writer.Branch.Connection' already uses for its file-set
--- accumulator, just carrying a 'ChapterContentCache' checkpoint set instead
--- of a 'Set FilePath'. The command thread's own initial push starts cold
+-- both chapter headings and each leaf's binary\/tracked flag via
+-- 'Storage.Core.memoFold' rather than re-deriving either from scratch on
+-- every push, so the notify thread threads its own accumulator through
+-- 'watchBranch' — same mechanism 'Server.Writer.Branch.Connection' already
+-- uses for its file-set accumulator, just carrying a 'LibraryFoldCache'
+-- checkpoint set instead of a 'Set FilePath'. The command thread's own initial push starts cold
 -- (it only ever runs once); the notify thread seeds its own accumulator
 -- with one more push at startup, same reasoning as
 -- 'Server.Writer.Branch.Connection.runNotifier' seeding its initial file
@@ -46,7 +46,7 @@ import Polysemy.Error (catch)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Logging (logCommand)
-import Server.Writer.Library (ChapterContentCache, libraryTree)
+import Server.Writer.Library (LibraryFoldCache, libraryTree)
 import Server.Writer.Library.Dispatch (runCommand)
 import Server.Writer.Library.Protocol
 import Server.Writer.Env (ServerEnv(..))
@@ -59,7 +59,7 @@ import Server.Core.Util (withBranch)
 import Storyteller.Core.Git (withStorage)
 import qualified Storage.Core as Core
 
-type Cache = [(Core.ObjectHash, ChapterContentCache)]
+type Cache = [(Core.ObjectHash, LibraryFoldCache)]
 
 runLibrary :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runLibrary env branch conn = do

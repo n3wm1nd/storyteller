@@ -16,7 +16,7 @@
 -- interceptor 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
 -- already wraps its own reads in), and each eligible file's blurb (reusing
 -- 'Storyteller.Writer.Agent.ContextPreview.blurb'). No incremental cache
--- like 'Server.Writer.Library.ChapterContentCache' — a full codex re-read on
+-- like 'Server.Writer.Library.LibraryFoldCache' — a full codex re-read on
 -- every ref-move is cheap enough (short files, first-line-only reads) not
 -- to need one.
 module Server.Writer.Lore

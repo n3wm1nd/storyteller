@@ -16,6 +16,7 @@
 module Server.LibrarySpec (spec) where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Test.Hspec
 
@@ -29,7 +30,7 @@ import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
-import Server.Writer.Library (libraryTree, chapterCreate)
+import Server.Writer.Library (LibraryFoldCache(..), libraryTree, chapterCreate)
 import Storyteller.Writer.Library (LibraryNode(..), LibraryKind(..))
 import Server.TestStack
 
@@ -89,7 +90,13 @@ spec = describe "libraryTree" $ do
           chapterCreate "chapters/ch1.md" "Chapter One"
           afterCh1 <- runStorage @Main Core.headHash
           chapterCreate "chapters/ch2.md" "Chapter Two"
-          let wrongCache = [(afterCh1, Map.singleton "chapters/ch1.md" "WRONG\n")]
+          -- The tracked-path half is filled in correctly (unlike the
+          -- deliberately wrong chapter content below) -- this test is
+          -- about content trust specifically, not the binary flag.
+          let wrongCache = [(afterCh1, LibraryFoldCache
+                { lfcChapters = Map.singleton "chapters/ch1.md" "WRONG\n"
+                , lfcTracked  = Set.singleton "chapters/ch1.md"
+                })]
           (tree, _, _) <- libraryTree wrongCache
           return tree
     case result of
