@@ -121,18 +121,22 @@ uploadFilesSpec runner = describe "uploadFiles" $ do
 
 -- | 'summarize' is the WS 'Server.Writer.Branch.Protocol.Summarize'
 --   command's own implementation -- exercised directly here (no WS/JSON
---   layer), same as 'uploadFiles' above. Uses the current placeholder
---   generator ('Server.Writer.Branch.passthroughGenerate', not exported),
---   so this checks the wiring -- a real 'Storyteller.Common.Summary.Summary'
---   tick gets produced and is discoverable through
---   'Storyteller.Writer.Agent.SummaryAccess' -- not any real compression.
+--   layer), same as 'uploadFiles' above. Uses the generic placeholder
+--   generator ('Server.Writer.Branch.passthroughGenerate', not exported) via
+--   a kind other than @"prose/chapter"@ (which is LLM-backed now -- see
+--   'Storyteller.Writer.Agent.ChapterSummarizer' -- and so isn't exercised
+--   through this plain 'TestRunner' stack, same as no other agent's real
+--   'queryLLM' call is unit-tested), so this checks the generic wiring -- a
+--   real 'Storyteller.Common.Summary.Summary' tick gets produced and is
+--   discoverable through 'Storyteller.Writer.Agent.SummaryAccess' -- not any
+--   real compression.
 summarizeSpec :: TestRunner -> Spec
 summarizeSpec runner = describe "summarize" $ do
   it "produces a Summary tick whose content is discoverable via densest" $ do
     let result = withBranch_ runner (BranchName "test") $ do
           _    <- runStorage @Main (Ops.addAtom "story.md" "chapter one.")
-          mtid <- summarize "prose/chapter"
-          content <- densest @Main ["prose/chapter"] "story.md"
+          mtid <- summarize "raw"
+          content <- densest @Main ["raw"] "story.md"
           return (mtid, content)
     case result of
       Left err -> expectationFailure err
@@ -143,6 +147,6 @@ summarizeSpec runner = describe "summarize" $ do
   it "a second call with nothing new returns Nothing" $ do
     let result = withBranch_ runner (BranchName "test") $ do
           _ <- runStorage @Main (Ops.addAtom "story.md" "chapter one.")
-          _ <- summarize "prose/chapter"
-          summarize "prose/chapter"
+          _ <- summarize "raw"
+          summarize "raw"
     result `shouldBe` Right Nothing

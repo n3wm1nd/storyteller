@@ -52,9 +52,9 @@ collectChapters :: [LibraryNode] -> [LibraryNode]
 collectChapters = concatMap go
   where
     go n = case lnKind n of
-      Folder    -> collectChapters (lnChildren n)
-      Chapter _ -> [n]
-      _         -> []
+      Folder -> collectChapters (lnChildren n)
+      Unit   -> [n]
+      _      -> []
 
 spec :: Spec
 spec = describe "libraryTree" $ do

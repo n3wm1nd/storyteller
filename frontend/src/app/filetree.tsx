@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, FileWarning, ChevronRight, Plus, Trash2, Pencil } from "lucide-react";
+import { Folder, FolderOpen, FileText, FileWarning, BookOpen, ListTree, ChevronRight, Plus, Trash2, Pencil } from "lucide-react";
 import { branchFileUrl } from "@/lib/ws";
+import { classifyPath, naturalCompare, type LibraryKind } from "@/lib/library";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
 
@@ -19,12 +20,24 @@ export interface TreeNode {
   // 'includedPaths' (the ordinary Explorer/Library trees), which have no
   // such concept and just ignore it.
   included: boolean;
+  // "folder" for a directory node; a leaf's own lib/library.ts classification
+  // otherwise (this tab has no /library/{name} connection to ask, unlike
+  // library.tsx — see that module's header) — icon selection only, no other
+  // behavior branches on it yet.
+  kind: LibraryKind;
   children: TreeNode[];
 }
 
 export function buildTree(paths: string[], binaryPaths: Set<string> = new Set(), includedPaths?: Set<string>): TreeNode[] {
   const root: TreeNode[] = [];
-  for (const path of [...paths].sort()) {
+  // Natural order (ch2 before ch11), same as the server-side tree at
+  // /library/{name} — see lib/library.ts's naturalCompare. Sorting the full
+  // paths this way, then inserting each one's segments in that order and
+  // never re-sorting siblings afterward, is enough to get natural order at
+  // every level: two paths sharing a directory prefix compare equal on
+  // those leading segments and only diverge at the first segment that
+  // actually differs, which is exactly the sibling comparison that matters.
+  for (const path of [...paths].sort(naturalCompare)) {
     const parts = path.split("/");
     let nodes = root;
     let builtPath = "";
@@ -38,6 +51,7 @@ export function buildTree(paths: string[], binaryPaths: Set<string> = new Set(),
           name: displayName, path: builtPath, isDir: !isLast,
           isBinary: isLast && binaryPaths.has(builtPath),
           included: !includedPaths || !isLast || includedPaths.has(builtPath),
+          kind: isLast ? classifyPath(builtPath) : "folder",
           children: [],
         };
         nodes.push(node);
@@ -182,10 +196,20 @@ function FileTreeNode({
         border: "none", borderLeft: active ? "2px solid var(--amber)" : "2px solid transparent",
         cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: active ? 500 : 400,
       }}>
-      <FileText style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />
+      <LeafIcon kind={node.kind} />
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
     </button>
   );
+}
+
+// A recognized chapter/scene gets a book-page icon, its beat sheet a small
+// outline icon, everything else the plain generic file icon — see
+// lib/library.ts's header for why this tab classifies locally rather than
+// asking /library/{name}.
+function LeafIcon({ kind }: { kind: LibraryKind }) {
+  if (kind === "unit") return <BookOpen style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />;
+  if (kind === "unit-outline") return <ListTree style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />;
+  return <FileText style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />;
 }
 
 // Inline rename editor, swapped in for a leaf node's own label — edits just

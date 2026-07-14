@@ -19,7 +19,7 @@ import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
 import qualified Data.Text as T
 
-import Storyteller.Writer.Library (LibraryNode(..), LibraryKind(..), ChapterUnit(..))
+import Storyteller.Writer.Library (LibraryNode(..), LibraryKind(..), UnitInfo(..))
 
 -- | Commands the client may send on a library connection.
 --
@@ -45,34 +45,33 @@ commandKind ChapterCreate {} = "chapter.create"
 -- | Events the server sends on a library connection.
 --
 --   'LibraryTree' carries both the raw per-file organizational tree
---   ('nodes') and every chapter number already paired with its own chapter
---   file\/beat sheet ('chapters', see
---   'Storyteller.Writer.Library.chapterUnits') — computed once server-side
---   rather than left for the client to reconstruct: "which chapter does
---   this belong to" is a real domain fact (either artifact existing already
---   means the chapter exists as a concept), not a display-only grouping.
+--   ('nodes') and every prose unit already paired with its own beat sheet if
+--   any ('chapters', see 'Storyteller.Writer.Library.narrativeUnits') —
+--   computed once server-side rather than left for the client to
+--   reconstruct: "this file has a beat sheet" is a real domain fact, not a
+--   display-only grouping. A unit's heading isn't repeated here — it's
+--   already on the matching node in 'nodes' ('lnHeading'), which the client
+--   looks up by path the same way it already does for everything else.
 data LibraryEvent
-  = LibraryTree { leNodes :: [LibraryNode], leChapters :: [ChapterUnit] }
+  = LibraryTree { leNodes :: [LibraryNode], leUnits :: [UnitInfo] }
   | LibraryError T.Text
   deriving (Show)
 
 instance ToJSON LibraryEvent where
   toJSON = \case
-    LibraryTree nodes chapters ->
+    LibraryTree nodes units ->
       object
         [ "type"     .= ("library.tree" :: T.Text)
         , "nodes"    .= map nodeToJSON nodes
-        , "chapters" .= map chapterUnitToJSON chapters
+        , "chapters" .= map unitInfoToJSON units
         ]
     LibraryError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]
 
-chapterUnitToJSON :: ChapterUnit -> Value
-chapterUnitToJSON cu = object $
-  [ "number" .= cuNumber cu ]
-  <> maybe [] (\p -> ["chapterPath" .= p]) (cuChapterPath cu)
-  <> maybe [] (\h -> ["heading"     .= h]) (cuHeading cu)
-  <> maybe [] (\p -> ["outlinePath" .= p]) (cuOutlinePath cu)
+unitInfoToJSON :: UnitInfo -> Value
+unitInfoToJSON u = object $
+  maybe [] (\p -> ["path"        .= p]) (uiPath u)
+  <> maybe [] (\p -> ["outlinePath" .= p]) (uiOutlinePath u)
 
 nodeToJSON :: LibraryNode -> Value
 nodeToJSON n = object $
@@ -81,20 +80,12 @@ nodeToJSON n = object $
   , "kind"     .= kindTag (lnKind n)
   , "children" .= map nodeToJSON (lnChildren n)
   ]
-  <> maybe [] (\num -> ["number" .= num]) (kindNumber (lnKind n))
   <> maybe [] (\h -> ["heading" .= h]) (lnHeading n)
   <> (if lnBinary n then ["binary" .= True] else [])
 
 kindTag :: LibraryKind -> T.Text
 kindTag = \case
-  Folder           -> "folder"
-  Chapter _        -> "chapter"
-  ChapterOutline _ -> "chapter-outline"
-  StoryOutline     -> "story-outline"
-  OtherFile        -> "other"
-
-kindNumber :: LibraryKind -> Maybe Int
-kindNumber = \case
-  Chapter n        -> Just n
-  ChapterOutline n -> Just n
-  _                -> Nothing
+  Folder      -> "folder"
+  Unit        -> "unit"
+  UnitOutline -> "unit-outline"
+  OtherFile   -> "other"

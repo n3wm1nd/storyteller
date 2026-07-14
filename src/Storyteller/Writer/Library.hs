@@ -1,39 +1,50 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | The pure book\/chapter organizational-tree derivation behind
+-- | The pure book\/chapter\/scene organizational-tree derivation behind
 -- @\/library\/{name}@ (see WS-PROTOCOL.md). Detection is deliberately
--- freeform and by convention only: a path is recognized as a chapter or
--- outline purely from its own basename and immediate parent directory name
--- (@chapters\/ch{N}.md@, see WRITER.md), independent of how deeply that
--- sits in an otherwise arbitrary, user-chosen folder structure (a
--- @series\/epic\/book3\/act1\/chapters\/ch1.md@ nests exactly as well as a bare
--- @chapters\/ch1.md@). Nothing here prescribes or limits that surrounding
--- structure — every other folder\/file just becomes a plain tree node,
--- labeled, never filtered out or flattened away.
+-- permissive: a path is recognized as prose iff /some/ segment of it — an
+-- ancestor directory name, or the leaf's own filename stem — contains one of
+-- a small fixed set of marker words (see WRITER.md's "Story structure" for
+-- the authoritative list; keep the two in sync if it changes). No fixed
+-- folder name and no fixed depth — this is what lets a book be one flat file
+-- (@01 - the first book.md@) for one author and a deep book\/arc\/chapter\/
+-- scene tree
+-- (@books\/01 - the first book\/arc1\/chapters\/chapter 1 - the awakening\/story.md@)
+-- for another, with the identical rule. Sibling ordering is natural-sort
+-- (@ch2@ before @ch11@, @2 - the sequel@ before @14 - the finale@ — see
+-- 'naturalKey'), not plain string order and not a parsed, stored "chapter
+-- number" either: it's purely a comparator, nothing here ever attaches
+-- numeric identity to a node or uses a number to pair anything.
+--
+-- Misclassification is deliberately low-stakes: a file that doesn't match
+-- the heuristic is still a real, usable file (still read as plain context,
+-- alphabetically) — it just won't show up in the Library tree or get
+-- hierarchically summarized until renamed/moved into a recognized shape.
+-- This is a convenience heuristic, not a schema, same spirit as WRITER.md's
+-- "not a schema" framing for outlines/beat sheets.
 --
 -- Deliberately pure and IO-free: 'buildLibraryTree' only needs the branch's
 -- file *paths*, not their content, so it composes without touching any
--- effect stack. A future consumer with the identical "what belongs to which
--- chapter" question (the planned Summarizer agent, see DESIGN.md) can reuse
--- this directly instead of re-deriving it — see 'Server.Writer.Library',
--- the one caller today, for where file *content* (a chapter's own heading)
--- gets folded in afterward.
+-- effect stack. 'Storyteller.Writer.Agent.ChapterSummarizer' (the
+-- Summarizer agent) reuses 'classifyPath' directly instead of re-deriving
+-- it — see 'Server.Writer.Library', the one UI caller, for where file
+-- *content* (a chapter's own heading) gets folded in afterward.
 module Storyteller.Writer.Library
   ( LibraryKind(..)
   , LibraryNode(..)
-  , ChapterUnit(..)
+  , UnitInfo(..)
   , classifyPath
   , buildLibraryTree
-  , chapterUnits
+  , narrativeUnits
   ) where
 
+import Data.Char (isAlpha, isDigit)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.FilePath (splitDirectories, takeFileName, takeDirectory)
-import Text.Read (readMaybe)
+import System.FilePath (splitDirectories, takeFileName, takeDirectory, dropExtensions)
 
 -- | What convention (if any) a single file path matches. 'Folder' is never
 --   produced by 'classifyPath' itself — it's assigned structurally, to any
@@ -41,10 +52,9 @@ import Text.Read (readMaybe)
 --   path.
 data LibraryKind
   = Folder
-  | Chapter Int         -- ^ @chapters\/ch{N}.md@ — N is parsed for ordering.
-  | ChapterOutline Int  -- ^ @chapters\/ch{N}.outline.md@ — the beat sheet for chapter N.
-  | StoryOutline        -- ^ @outline.md@, anywhere.
-  | OtherFile           -- ^ Everything else — still a real node, just unlabeled.
+  | Unit         -- ^ A real prose leaf — a chapter, a scene, a whole book-in-one-file.
+  | UnitOutline  -- ^ A container's own beat sheet (@outline.md@), or a same-stem sibling outline (@{stem}.outline.md@).
+  | OtherFile    -- ^ No marker word anywhere on this path — still a real node, just not treated as prose.
   deriving (Show, Eq)
 
 -- | One node in the organizational tree. 'lnHeading' is always 'Nothing'
@@ -64,36 +74,81 @@ data LibraryNode = LibraryNode
   , lnChildren :: [LibraryNode]
   } deriving (Show, Eq)
 
--- | Classify a single file path by its own basename and immediate parent
---   directory name only — see the module Haddock for why the rest of the
---   path is deliberately never consulted.
+-- | The fixed marker vocabulary — see the module Haddock and WRITER.md.
+--   Singular/plural pairs are listed explicitly rather than stemmed, so
+--   this stays a plain lookup, not a rule someone has to reverse-engineer.
+storyMarkers :: [Text]
+storyMarkers =
+  [ "story", "stories"
+  , "book", "books"
+  , "text", "texts"
+  , "chapter", "chapters", "ch"
+  , "scene", "scenes"
+  ]
+
+-- | Every alpha-only "word" in a path segment, lowercased — digits and
+--   punctuation are both treated as separators (and simply vanish, rather
+--   than becoming their own tokens), so @"ch1"@ splits to @["ch"]@ and
+--   @"01 - the first book"@ splits to @["the", "first", "book"]@. Applied to
+--   the leaf's own basename, extensions are stripped first
+--   ('dropExtensions') so @"ch1.outline.md"@ is judged on @"ch1"@, not on a
+--   name still carrying its suffix.
+segmentWords :: String -> [Text]
+segmentWords = T.words . T.map spaceify . T.toLower . T.pack
+  where
+    spaceify c = if isAlpha c then c else ' '
+
+-- | Whether a single path segment (an ancestor directory name, or the
+--   leaf's own extension-stripped basename) marks the path as prose.
+isMarkerSegment :: String -> Bool
+isMarkerSegment seg = any (`elem` storyMarkers) (segmentWords seg)
+
+-- | Classify a single file path. See the module Haddock for the algorithm;
+--   this is the one place it's implemented (mirrored, not shared, in
+--   @frontend/src/lib/library.ts@ — see WRITER.md).
+--
+--   The two reserved outline shapes (@outline.md@, @{stem}.outline.md@) are
+--   self-marking — the name itself is already an unambiguous declaration,
+--   the same trust the rest of this codebase already extends to other
+--   reserved filenames (@sheet.md@, @journal.md@, @style.md@) — so they
+--   short-circuit the general marker-word scan rather than also needing an
+--   ancestor/stem marker word nearby.
 classifyPath :: FilePath -> LibraryKind
 classifyPath path
-  | base == "outline.md"                            = StoryOutline
-  | parent == "chapters", Just n <- chapterOutline base = ChapterOutline n
-  | parent == "chapters", Just n <- chapter base         = Chapter n
-  | otherwise                                        = OtherFile
+  | base == "outline.md"                = UnitOutline
+  | ".outline.md" `List.isSuffixOf` base = UnitOutline
+  | eligible                             = Unit
+  | otherwise                            = OtherFile
   where
-    base   = takeFileName path
-    parent = takeFileName (takeDirectory path)
+    base = takeFileName path
+    segs = splitDirectories (takeDirectory path) ++ [dropExtensions base]
+    eligible = any isMarkerSegment segs
 
-    chapter name = do
-      rest <- List.stripPrefix "ch" name
-      num  <- stripSuffix ".md" rest
-      readMaybe num
-
-    chapterOutline name = do
-      rest <- List.stripPrefix "ch" name
-      num  <- stripSuffix ".outline.md" rest
-      readMaybe num
-
-    stripSuffix suf s = reverse <$> List.stripPrefix (reverse suf) (reverse s)
+-- | A name broken into alternating runs of digits and non-digits, digit runs
+--   parsed to 'Int' — @"ch2"@ becomes @[Right "ch", Left 2]@, @"2 - the
+--   sequel.md"@ becomes @[Left 2, Right " - the sequel.md"]@. Comparing two
+--   names token-by-token via their 'naturalKey' ('Ord' on @['Either' 'Int'
+--   'Text']@, where a numeric token compares by value, not digit count) is
+--   what makes @ch2@ sort before @ch11@ and @2 - the sequel@ sort before
+--   @14 - the finale@ — plain string order gets both backwards once a
+--   number reaches two digits. This never attaches meaning to the number
+--   beyond that one comparison: nothing here stores it, names it a "chapter
+--   number," or uses it to pair anything (see 'narrativeUnits', which pairs
+--   purely by parent directory\/stem).
+naturalKey :: Text -> [Either Int Text]
+naturalKey t
+  | T.null t     = []
+  | isDigit (T.head t) =
+      let (digits, rest) = T.span isDigit t
+      in Left (read (T.unpack digits)) : naturalKey rest
+  | otherwise =
+      let (chars, rest) = T.break isDigit t
+      in Right chars : naturalKey rest
 
 -- | Build the organizational forest from a flat list of file paths (e.g.
 --   'Runix.FileSystem.listAllFiles'). Folders are synthesized wherever a
 --   path implies one; every leaf is classified via 'classifyPath'. Children
---   are ordered chapter-number-first (so @ch2@ sorts before @ch10@, unlike
---   plain alphabetical), then by name.
+--   sort by 'naturalKey', not plain string order — see the module Haddock.
 buildLibraryTree :: [FilePath] -> [LibraryNode]
 buildLibraryTree paths = toNodes "" (foldr insertPath Map.empty paths)
 
@@ -122,7 +177,7 @@ insertPath path = go (splitDirectories path)
     mergeLeaf new old = old { trieFile = trieFile new }
 
 toNodes :: FilePath -> Map FilePath Trie -> [LibraryNode]
-toNodes prefix forest = sortNodes [ mkNode name entry | (name, entry) <- Map.toList forest ]
+toNodes prefix forest = List.sortOn (naturalKey . lnName) [ mkNode name entry | (name, entry) <- Map.toList forest ]
   where
     mkNode name (Trie mFile children)
       | Map.null children, Just path <- mFile =
@@ -131,52 +186,54 @@ toNodes prefix forest = sortNodes [ mkNode name entry | (name, entry) <- Map.toL
           let fullPath = if null prefix then name else prefix <> "/" <> name
           in LibraryNode fullPath (T.pack name) Folder False Nothing (toNodes fullPath children)
 
-sortNodes :: [LibraryNode] -> [LibraryNode]
-sortNodes = List.sortOn sortKey
-  where
-    sortKey n = case lnKind n of
-      Chapter i        -> (0 :: Int, i, lnName n)
-      ChapterOutline i -> (0, i, lnName n)
-      _                -> (1, 0, lnName n)
-
 -- ---------------------------------------------------------------------------
--- Chapter/outline pairing
+-- Reading-order flattening
 -- ---------------------------------------------------------------------------
 
--- | One chapter number's worth of artifacts — a chapter file, its beat
---   sheet, or both. Either one existing already means the chapter itself
---   exists as a concept (a beat sheet with no prose yet is still real
---   planning content, see WRITER.md's "disposable scaffolding"), so this
---   pairs them by number rather than requiring both.
-data ChapterUnit = ChapterUnit
-  { cuNumber      :: Int
-  , cuChapterPath :: Maybe FilePath
-  , cuHeading     :: Maybe Text -- ^ the chapter file's own 'lnHeading', if it exists and has one.
-  , cuOutlinePath :: Maybe FilePath
+-- | One recognized prose unit: its own path (if the prose itself already
+--   exists), and its outline's path (if a 'UnitOutline' sibling in the same
+--   parent directory exists). Both cover the flat same-stem case
+--   (@ch1.md@ \/ @ch1.outline.md@) and the per-unit-folder case
+--   (@chapter 1\/story.md@ \/ @chapter 1\/outline.md@) with the one rule:
+--   same parent directory. 'uiPath' is 'Nothing' for a beat sheet with no
+--   prose written yet — still its own real unit (WRITER.md's "disposable
+--   scaffolding": planning content counts even before the chapter itself
+--   does), not dropped just because there's nothing to read yet.
+data UnitInfo = UnitInfo
+  { uiPath        :: Maybe FilePath
+  , uiOutlinePath :: Maybe FilePath
   } deriving (Show, Eq)
 
--- | Pair every chapter file with its beat sheet by number, walking the
---   whole tree regardless of nesting (folder position carries no meaning
---   for this pairing — see the module Haddock). This is a real domain fact
---   ("chapter N" is one thing, whichever of its two possible files exist),
---   not a display-only grouping — computed once here rather than
---   independently re-derived by every caller (a UI, and eventually the
---   planned Summarizer agent) that needs the same answer.
-chapterUnits :: [LibraryNode] -> [ChapterUnit]
-chapterUnits tree = map toUnit numbers
+-- | Every recognized unit in the tree, in document (reading) order — the
+--   whole tree is already naturally sorted by 'buildLibraryTree', so this
+--   is a plain depth-first walk, one entry per distinct parent
+--   directory that holds a 'Unit' and\/or a 'UnitOutline'. This is a real
+--   domain fact ("this file is a chapter, and here's its beat sheet if
+--   any"), not a display-only grouping — computed once here rather than
+--   independently re-derived by every caller (the Library UI,
+--   'Storyteller.Writer.Agent.ChapterContext.earlierChaptersOf', the
+--   Summarizer agent) that needs the same answer.
+narrativeUnits :: [LibraryNode] -> [UnitInfo]
+narrativeUnits tree = [ toUnit n | n <- leaves, isPrimary n ]
   where
     leaves = concatMap flatten tree
     flatten node = case lnKind node of
       Folder -> concatMap flatten (lnChildren node)
       _      -> [node]
 
-    chapters = [ (n, node) | node <- leaves, Chapter n        <- [lnKind node] ]
-    outlines = [ (n, node) | node <- leaves, ChapterOutline n <- [lnKind node] ]
-    numbers  = List.sort (List.nub (map fst chapters ++ map fst outlines))
+    dirOf = takeDirectory . lnPath
+    unitDirs = [ dirOf n | n <- leaves, lnKind n == Unit ]
 
-    toUnit n = ChapterUnit
-      { cuNumber      = n
-      , cuChapterPath = lnPath <$> lookup n chapters
-      , cuHeading     = lookup n chapters >>= lnHeading
-      , cuOutlinePath = lnPath <$> lookup n outlines
-      }
+    -- One entry per directory: the 'Unit' if it has one, else its 'UnitOutline'
+    -- (which, by definition of 'unitDirs', has no 'Unit' sibling to prefer).
+    isPrimary n = case lnKind n of
+      Unit        -> True
+      UnitOutline -> dirOf n `notElem` unitDirs
+      _           -> False
+
+    toUnit n = case lnKind n of
+      Unit -> UnitInfo
+        { uiPath        = Just (lnPath n)
+        , uiOutlinePath = lnPath <$> List.find (\o -> lnKind o == UnitOutline && dirOf o == dirOf n) leaves
+        }
+      _ -> UnitInfo { uiPath = Nothing, uiOutlinePath = Just (lnPath n) }

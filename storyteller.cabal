@@ -49,6 +49,7 @@ library
                   , Storyteller.Writer.Agent.ContextPreview
                   , Storyteller.Writer.Agent.Summarizer
                   , Storyteller.Writer.Agent.SummaryAccess
+                  , Storyteller.Writer.Agent.ChapterSummarizer
                   , Storyteller.Core.Atom
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
@@ -239,6 +240,7 @@ test-suite storyteller-test
                   , Storyteller.TrackerSpec
                   , Storyteller.SummarySpec
                   , Storyteller.SummaryAccessSpec
+                  , Storyteller.ChapterSummarizerSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
                   , Storyteller.WorldContextSpec

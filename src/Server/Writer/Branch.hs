@@ -32,11 +32,13 @@ import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (writeFile)
 import Runix.Git (Git)
+import Runix.Logging (Logging)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Core.Util (withBranch)
 
+import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryGenerate)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
@@ -44,6 +46,8 @@ import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, withStorage)
+import Storyteller.Core.LLM.Role (LLMs)
+import Storyteller.Core.Prompt (PromptStorage)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
@@ -188,18 +192,24 @@ saveFile branch path content =
 --   it extends has no branch of its own to open in the first place (see
 --   "Storyteller.Common.Summary"'s module Haddock).
 --
---   'passthroughGenerate' is a placeholder, not a real summarizer: it
---   copies each touched file's new content across verbatim, grouped by
---   path, with no actual compression. It exists so this command is
---   genuinely exercisable end-to-end (a real alternate chain, a real
---   'Summary' tick, discoverable through
---   'Storyteller.Writer.Agent.SummaryAccess') before any per-domain
---   summarizer agent (prose, character, lore -- an LLM call assembling
---   real compressed prose) exists to replace it. Swap this out, per
---   @kind@, once one does; nothing about the wiring here needs to change
---   when that happens.
-summarize :: Members '[BranchOp Main, Git, StoryStorage, Fail] r => T.Text -> Sem r (Maybe TickId)
-summarize kind = runSummarizer @Main kind passthroughGenerate
+--   @"prose/chapter"@ is the one real per-domain summarizer wired in so
+--   far -- 'Storyteller.Writer.Agent.ChapterSummarizer.chapterSummaryGenerate',
+--   an LLM call per touched chapter. Every other @kind@ still falls back to
+--   'passthroughGenerate', a placeholder that copies each touched file's
+--   new content across verbatim, grouped by path, with no actual
+--   compression -- it exists so an experimental @kind@ is genuinely
+--   exercisable end-to-end (a real alternate chain, a real 'Summary' tick,
+--   discoverable through 'Storyteller.Writer.Agent.SummaryAccess') before
+--   its own per-domain summarizer (character, lore, ...) exists to replace
+--   it. Add a new @kind@ here the same way once one does; nothing about
+--   'Storyteller.Writer.Agent.Summarizer.runSummarizer' itself ever needs
+--   to change.
+summarize
+  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail] r)
+  => T.Text -> Sem r (Maybe TickId)
+summarize kind
+  | kind == "prose/chapter" = runSummarizer @Main kind (chapterSummaryGenerate @Main kind)
+  | otherwise                = runSummarizer @Main kind passthroughGenerate
 
 passthroughGenerate :: [Tick] -> Sem r (Map.Map FilePath T.Text)
 passthroughGenerate = pure . foldl' step Map.empty

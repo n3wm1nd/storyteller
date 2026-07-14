@@ -22,8 +22,11 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFil
 import Runix.Git (Git(..))
 import Runix.Logging (loggingNull)
 
+import qualified Data.Map.Strict as Map
 import Git.Mock (GitState, emptyGitState, runGitMock)
 import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage, withStorage, runStoryStorageGit)
+import Storyteller.Core.LLM.Role (AgentModel, ProseModel)
+import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -434,6 +437,9 @@ spec runner = do
             . loggingNull
             . runState gs0
             . runGitMock
+            . interpretPromptStorageMap Map.empty
+            . stubLLM @AgentModel
+            . stubLLM @ProseModel
             . runStoryStorageGit
             $ action
 

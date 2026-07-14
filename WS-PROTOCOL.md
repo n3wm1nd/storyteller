@@ -225,39 +225,39 @@ still comes from the file connection). File-first: a unit's identity is its
 file path, same as everywhere else in this backend — there is no separate id
 space for "chapter 5" distinct from whatever file backs it.
 
-Detection is deliberately freeform, by convention, not by prescribed depth or
-folder naming — see `Storyteller.Writer.Library.classifyPath`. A path is
-recognized as a chapter (`chapters/ch{N}.md`), a beat sheet
-(`chapters/ch{N}.outline.md`), or the whole-story outline (`outline.md`,
-anywhere) purely from its own basename and immediate parent directory name —
-independent of how deep that sits in an otherwise arbitrary, user-chosen
-structure (`series/epic/book3/act1/chapters/ch1.md` is recognized exactly as
-well as a bare `chapters/ch1.md`). Every other file or folder still becomes a
-real, labeled tree node — nothing is filtered out for not matching a known
-convention; the library view *labels*, it never limits how a user chooses to
-organize.
+Detection is deliberately permissive, by convention, not by prescribed depth
+or folder naming — see `Storyteller.Writer.Library.classifyPath` and
+WRITER.md's "Story structure" (the authoritative rule; not repeated here). A
+path is recognized as a `unit` (prose) if some segment of it — any ancestor
+directory name, or the leaf's own basename stem — contains a marker word
+(`story`/`book`/`chapter`/`scene`, singular or plural, or `ch`), a `unit-
+outline` for the reserved `outline.md`/`{stem}.outline.md` shapes, and
+`other` otherwise — still a real, labeled tree node, never filtered out just
+for not matching a known convention; the library view *labels*, it never
+limits how a user chooses to organize. Ordering is always plain alphabetical
+by path — no number is ever parsed out of a name.
 
 **On connect:** two things, both derived from the same read —
 - `nodes`: the full raw organizational tree, every node carrying its path,
-  kind (`folder`/`chapter`/`chapter-outline`/`story-outline`/`other`), and
-  for chapters, the chapter number and `heading` (the chapter file's own
-  first line — see "Read side" below).
-- `chapters`: every chapter *number* that has a chapter file, a beat sheet,
-  or both, already paired by number
-  (`Storyteller.Writer.Library.chapterUnits`) — `chapterPath`/`heading`/
-  `outlinePath` each absent independently depending on which artifact(s)
-  exist. This pairing is computed once, server-side, rather than left for
-  each consumer (this connection's own UI, and eventually the planned
-  Summarizer agent) to reconstruct independently: "chapter N exists" is a
-  real domain fact — either artifact existing already means the chapter
-  exists as a concept (a beat sheet with no prose yet is still real
-  planning content, see WRITER.md's "disposable scaffolding") — not a
-  display-only grouping, so duplicating it per-consumer would risk two
-  independently-driftable answers to "what belongs to chapter N."
+  kind (`folder`/`unit`/`unit-outline`/`other`), and for a `unit`, `heading`
+  (its own first line — see "Read side" below).
+- `chapters`: every recognized unit, in the tree's own (alphabetical)
+  reading order, already paired with its own beat sheet if any
+  (`Storyteller.Writer.Library.narrativeUnits`) — `path`/`outlinePath` each
+  absent independently depending on which artifact(s) exist (a beat sheet
+  with no prose yet is still real planning content, see WRITER.md's
+  "disposable scaffolding"; a unit's `heading` isn't repeated here — look it
+  up on the matching `nodes` entry by `path`). This pairing is computed
+  once, server-side, rather than left for each consumer (this connection's
+  own UI, and the Summarizer agent) to reconstruct independently: "this
+  chapter exists" is a real domain fact, not a display-only grouping, so
+  duplicating it per-consumer would risk two independently-driftable
+  answers to "what belongs to this chapter."
 
 Payload is deliberately open-ended and expected to grow the same way
-`/character/{charBranch}`'s does: character-presence per unit, summary (once
-the Summarizer agent exists), notes, style guides — none of that exists yet.
+`/character/{charBranch}`'s does: character-presence per unit, a chapter's
+own summary preview (the Summarizer agent — WRITER.md's "Summarization" —
+exists now but isn't surfaced on this connection yet), notes, style guides.
 New fields get added additively as those features land, not as a wire
 redesign.
 

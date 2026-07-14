@@ -378,18 +378,20 @@ export type ContextViewEvent =
 
 // One node in the branch's organizational tree (see WS-PROTOCOL.md's
 // /library/{name} and Storyteller.Writer.Library). 'kind' is server-detected
-// by convention (chapters/ch{N}.md, chapters/ch{N}.outline.md, outline.md
-// anywhere — see WRITER.md) purely from a path's own basename + immediate
-// parent dirname, at any nesting depth; "other" is not an error, just an
-// unrecognized (but still shown) file/folder. 'heading' is a chapter's raw
-// first line, not a parsed/validated H1 — same "server hands over raw text,
-// client decides" contract as CharacterSummary.sheet, just narrowed to one
-// line so a tree covering many chapters stays cheap to push.
+// by a marker-word heuristic (story/book/chapter/scene, singular or plural,
+// or "ch", appearing anywhere in the path — see WRITER.md), not a fixed
+// folder name or depth; "other" is not an error, just a path with no marker
+// word anywhere on it (still shown, just unrecognized). 'heading' is a
+// chapter's raw first line, not a parsed/validated H1 — same "server hands
+// over raw text, client decides" contract as CharacterSummary.sheet, just
+// narrowed to one line so a tree covering many chapters stays cheap to push.
+// Mirrored (not shared) by 'classifyPath' in lib/library.ts, for the one UI
+// spot (the Explorer tab) that classifies a raw path list without a
+// /library round trip — see that module's own header.
 export interface LibraryNode {
   path: string;
   name: string;
-  kind: "folder" | "chapter" | "chapter-outline" | "story-outline" | "other";
-  number?: number;
+  kind: "folder" | "unit" | "unit-outline" | "other";
   heading?: string;
   // True when this path has no atom history at all (an uploaded binary
   // asset, or anything else that opted out of atom tracking — see
@@ -401,17 +403,17 @@ export interface LibraryNode {
   children: LibraryNode[];
 }
 
-// One chapter number's worth of artifacts, already paired server-side (see
-// Storyteller.Writer.Library.chapterUnits) — either the chapter file, the
-// beat sheet, or both existing already means the chapter exists as a
-// concept, which is a real domain fact, not a display grouping this client
-// should reconstruct itself (the planned Summarizer agent will need the
-// identical answer later). `chapterPath`/`outlinePath` absent means that
-// artifact doesn't exist yet for this number.
+// One recognized prose unit, already paired with its own beat sheet if any
+// (see Storyteller.Writer.Library.narrativeUnits) — either the chapter
+// file, the beat sheet, or both existing already means the chapter exists
+// as a concept, which is a real domain fact, not a display grouping this
+// client should reconstruct itself (the Summarizer agent needs the
+// identical answer). `path`/`outlinePath` absent means that artifact
+// doesn't exist yet. No `number` — ordering is purely the position in this
+// already-ordered list; a unit's own heading isn't repeated here either,
+// look it up on the matching LibraryNode in `nodes` by `path`.
 export interface ChapterUnit {
-  number: number;
-  chapterPath?: string;
-  heading?: string;
+  path?: string;
   outlinePath?: string;
 }
 

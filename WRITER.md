@@ -33,21 +33,67 @@ Writer-specific.
 
 ## Story structure
 
-- `chapters/ch{N}.md` — one file per chapter, narrative order. The first
-  Markdown H1 (`# `) line is the chapter's **display name** — same convention
-  `sheet.md` uses for a character's display name (see "Character structure"
-  below), and the same "server hands over raw text, client decides" contract:
-  the `/library/{name}` connection's `chapter.create` command writes this
-  line, but reading it back into a display name is a client-side concern
-  (WS-PROTOCOL.md's read-side principle), not something the server parses.
-- Surrounding folder structure is otherwise **freeform, not prescribed** —
-  `chapters/ch1.md` and `series/epic/book3/act1/chapters/ch1.md` are both
-  recognized identically, since detection only ever looks at a path's own
-  basename and immediate parent directory name
-  (`Storyteller.Writer.Library.classifyPath`, see WS-PROTOCOL.md's
-  `/library/{name}`). Nothing requires a `chapters/` folder to exist at any
-  particular depth, or to exist at all — a story with no chapter files just
-  has an empty chapter list, same as any other convention in this document.
+Detection is deliberately permissive, so the same rule covers a book written
+as one flat file and a book split into books/arcs/chapters/scenes many
+folders deep — the author's own choice, not something this app prescribes.
+This is the **one place** the rule is described; `Storyteller.Writer.Library.
+classifyPath` (Haskell, the authoritative implementation, driving
+`/library/{name}` — see WS-PROTOCOL.md) and `lib/library.ts`'s `classifyPath`
+(TypeScript, a second independent implementation for the one UI spot with no
+`/library` connection to ask — the Explorer file tree) both follow it; keep
+them in sync if it ever changes.
+
+**The rule:** a path is prose (a `Unit`) iff *some* segment of it — any
+ancestor directory name, or the leaf file's own basename stem — contains one
+of a small fixed set of marker words, matched whole-word, case-insensitive,
+with digits/punctuation treated as separators: `story`/`stories`,
+`book`/`books`, `text`/`texts`, `chapter`/`chapters`/`ch`, `scene`/`scenes`.
+So all of these are recognized identically, whatever depth or surrounding
+folder names they sit under:
+
+- `01 - the first book.md` — a whole book, one flat file (`book` in the
+  filename itself).
+- `chapters/ch1.md` — the original flat convention (`chapters` marks the
+  folder; `ch` also marks the filename on its own, so this would still be
+  recognized even directly at the root).
+- `books/01 - the first book/arc1/chapters/chapter 1 - the awakening/story.md`
+  — an arbitrarily deep book/arc/chapter split, with per-chapter folders
+  (see below). `arc1` carries no marker of its own and needs none — `books`,
+  `chapters`, and `chapter 1 - the awakening` (and the reserved `story.md`
+  name) already mark everything under them.
+
+**Ordering is natural-sort, everywhere** — `ch2` before `ch11`, `2 - the
+sequel` before `14 - the finale`, comparing alternating digit/non-digit runs
+with a digit run compared by numeric value, not string order
+(`Storyteller.Writer.Library.naturalKey`, mirrored in `lib/library.ts`'s
+`naturalCompare`). This is *only* a comparator, applied purely to a name's
+own text at sort time — nothing here ever parses a number out of a name and
+stores it, treats it as a "chapter number," or uses it to pair a chapter
+with its beat sheet (that pairing is always by parent directory or shared
+stem — see below). A number embedded in a name has no meaning beyond
+ordering; a name with no number in it at all sorts by plain text comparison,
+same as always.
+
+**Two reserved leaf names**, checked before the marker-word rule (self-
+marking — the name itself is already an unambiguous declaration, the same
+trust this document already extends to `sheet.md`/`journal.md`/`style.md`):
+- `story.md` inside a folder — that folder's own prose. This is what makes a
+  **per-chapter folder** possible: `chapters/chapter 1 - the awakening/
+  story.md` is the chapter's prose, and any other file alongside it in that
+  same folder (a `scenes/` subfolder, per-chapter lore, whatever) is either
+  itself independently recognized (if it also carries a marker word — see
+  "multiple scenes per chapter" above) or just an ordinary freeform sibling
+  file, nested under that chapter in the tree either way.
+- `outline.md`, or a same-stem `{name}.outline.md` sibling — a beat sheet,
+  see "Outlines and beat sheets" below.
+
+**Misclassification is deliberately low-stakes.** A file with no marker word
+anywhere on its path is still a completely usable file — read as ordinary
+context, alphabetically, same as before — it just won't show up in the
+`/library/{name}` tree or get picked up by hierarchical summarization
+(see "Summarization" below) until renamed or moved into a recognized shape.
+This is a convenience heuristic, not a schema, same spirit as "Not a schema"
+below.
 
 ## Outlines and beat sheets
 
@@ -59,14 +105,17 @@ referenced by prose that comes after it, so "outline before prose" holds by
 construction (DATA-MODEL.md, monotonic-reference invariant) without anything
 enforcing it.
 
-- `outline.md` — the whole-story plan. One markdown heading per chapter (or
-  arc), with prose notes underneath: what happens, why it matters, where it
-  sits in the larger shape. Coarse.
+- `outline.md` at the branch root — the whole-story plan. One markdown
+  heading per chapter (or arc), with prose notes underneath: what happens,
+  why it matters, where it sits in the larger shape. Coarse.
 
-- `chapters/ch{N}.outline.md` — the **beat sheet** for one chapter, expanded
-  from the relevant slice of `outline.md`. One heading per beat, and under
-  each, prose covering what happens, the logistics (who's where, what has to
-  be true), the emotional turn, and a rough length. This is the reviewable
+- `chapters/ch{N}.outline.md` (flat) or `chapters/chapter 1 - .../outline.md`
+  (per-chapter folder) — the **beat sheet** for one chapter, expanded from
+  the relevant slice of `outline.md`. Paired with its chapter by same-stem
+  (flat) or same-folder (per-chapter folder) — see "Story structure" above;
+  there is no numeric pairing anywhere. One heading per beat, and under each,
+  prose covering what happens, the logistics (who's where, what has to be
+  true), the emotional turn, and a rough length. This is the reviewable
   middle rung: coarser than prose, finer than the story outline. It is
   **disposable scaffolding** — edit it to steer a chapter, or delete it once
   the prose exists and you no longer care. Nothing holds a hard reference to
@@ -96,6 +145,27 @@ positionally (`ch{N}.outline.md` ↔ `chapters/ch{N}.md`). A finer, per-beat
 link — a prose atom carrying a `tickRefs` back to the beat atom it realizes,
 enabling a `follow`-based "which beats have no prose yet" coverage query — is
 a deferred optional step, not needed for either prose variant to work.
+
+## Summarization
+
+`"prose/chapter"` is the app-chosen `Summary` kind (see DATA-MODEL.md's
+"Summarization" for the generic tick/alternate-chain mechanism) covering
+prose specifically: `Storyteller.Writer.Agent.ChapterSummarizer`
+(`Server.Writer.Branch.summarize`'s handler for that one kind) groups every
+`Atom` tick since the kind's last pass by path, keeps only the ones
+`Storyteller.Writer.Library.classifyPath` calls a `Unit` (a real chapter,
+not an incidental atom on some other file), and asks one LLM call per
+touched chapter to fold the new prose into that chapter's own prior
+compression (empty on that chapter's first pass) — every touched chapter's
+result lands in one alternate-chain commit per pass, same as any other
+`Summary` kind.
+
+This is a background task, same as DATA-MODEL.md describes generically: run
+it (the `summarize` WS command) when a chapter is stable, not on every
+keystroke. If no summary exists yet for a chapter, a context-assembly agent
+just falls back to its raw content (see
+`Storyteller.Writer.Agent.SummaryAccess`) — nothing breaks, retrieval is
+just less compact until a pass runs.
 
 ## Character structure
 

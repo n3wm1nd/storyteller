@@ -14,16 +14,17 @@ import { basenameNoExt } from "@/lib/utils";
 // visually separate — rather than a second copy of the Explorer's raw file
 // tree with different icons.
 //
-// Chapter/outline pairing-by-number ('chapters' prop) is computed
-// server-side (Storyteller.Writer.Library.chapterUnits), not reconstructed
-// here: "chapter N exists" is a real domain fact (either artifact existing
+// Chapter/outline pairing ('chapters' prop) is computed server-side
+// (Storyteller.Writer.Library.narrativeUnits), not reconstructed here:
+// "this chapter exists" is a real domain fact (either artifact existing
 // already means the chapter exists as a concept, per WRITER.md's beat sheet
-// being real planning content on its own), and the Summarizer agent will
-// need the identical pairing later — duplicating that logic client-side
-// would risk two independent, driftable answers to "what belongs to chapter
-// N". Folder structure and everything unrecognized ('tree' prop) has no
-// such domain question attached to it, so it's fine to just filter it
-// client-side.
+// being real planning content on its own), and the Summarizer agent needs
+// the identical pairing — duplicating that logic client-side would risk two
+// independent, driftable answers to "what belongs to this chapter". Folder
+// structure and everything unrecognized ('tree' prop) has no such domain
+// question attached to it, so it's fine to just filter it client-side. A
+// unit's own heading isn't repeated on 'chapters' either — it's looked up
+// on the matching node in 'tree' by path (see 'headingByPath').
 //
 // Read-only except for 'chapter.create': opening any node's actual content
 // still goes through the ordinary file connection, same as
@@ -35,27 +36,30 @@ function pathNoExt(path: string): string {
   return idx > 0 ? path.slice(0, idx) : path;
 }
 
-// A chapter's own display label is its raw first line ('heading') — same
-// "server hands over raw text, client decides" contract sheet.md's H1 gets
-// (see lib/utils.characterDisplayName) — falling back to its filename (sans
-// extension; a filename was never meant to be read as a title), or to a
-// plain "Chapter N" when no prose file exists for it yet at all. Only
+// A chapter's own display label is its raw first line ('heading', looked up
+// from the matching node in 'tree' — see 'headingByPath') — same "server
+// hands over raw text, client decides" contract sheet.md's H1 gets (see
+// lib/utils.characterDisplayName) — falling back to its filename (sans
+// extension; a filename was never meant to be read as a title), or to its
+// beat sheet's filename when no prose file exists for it yet at all. Only
 // 'chapter.create' seeds an actual "# Title" line; existing prose written
 // another way (an agent, a raw edit) still has *some* first line, which can
 // be a whole paragraph rather than a short title — truncated here for the
 // sidebar's sake, not because a longer line is wrong content.
-function chapterLabel(unit: ChapterUnit): string {
-  const heading = unit.heading?.replace(/^#\s*/, "").trim();
-  if (heading) return heading.length > 60 ? heading.slice(0, 60).trimEnd() + "…" : heading;
-  return unit.chapterPath ? basenameNoExt(unit.chapterPath) : `Chapter ${unit.number}`;
+function chapterLabel(unit: ChapterUnit, heading?: string): string {
+  const cleaned = heading?.replace(/^#\s*/, "").trim();
+  if (cleaned) return cleaned.length > 60 ? cleaned.slice(0, 60).trimEnd() + "…" : cleaned;
+  const path = unit.path ?? unit.outlinePath;
+  return path ? basenameNoExt(path) : "Untitled";
 }
 
-// A chapter number with only a beat sheet so far derives its prose path from
-// the outline's own — 'ch{N}.outline.md' -> 'ch{N}.md', same directory —
-// purely a client-side convenience for "create the chapter now" below; the
-// server itself never requires this shape (detection is freeform, see
-// WRITER.md).
+// A beat-sheet-only unit derives its prose path from the outline's own —
+// 'ch{N}.outline.md' -> 'ch{N}.md', or 'story.outline.md'/'outline.md' in a
+// per-chapter folder -> 'story.md' alongside it — purely a client-side
+// convenience for "create the chapter now" below; the server itself never
+// requires this shape (detection is freeform, see WRITER.md).
 function chapterPathFromOutline(outlinePath: string): string {
+  if (outlinePath.endsWith("/outline.md")) return outlinePath.replace(/outline\.md$/, "story.md");
   return outlinePath.replace(/\.outline\.md$/, ".md");
 }
 
@@ -100,25 +104,26 @@ function Row({ active, muted, onClick, icon, label, title }: {
   );
 }
 
-// One chapter number, one row. The beat sheet (if any) is a small trailing
+// One chapter, one row. The beat sheet (if any) is a small trailing
 // icon-button on the same row, not a separate entry — clicking it opens the
 // outline directly; clicking the row itself opens the chapter's prose, or,
 // if there isn't one yet, creates it now (seeded from the outline's own
-// path/number when a beat sheet already exists) and opens that.
-function ChapterRow({ unit, selectedFile, onSelectFile, onCreateChapter }: {
+// path when a beat sheet already exists) and opens that.
+function ChapterRow({ unit, heading, selectedFile, onSelectFile, onCreateChapter }: {
   unit: ChapterUnit;
+  heading?: string;
   selectedFile: string | null;
   onSelectFile: (f: string) => void;
   onCreateChapter: (path: string, name: string) => void;
 }) {
-  const hasChapter = !!unit.chapterPath;
-  const label = chapterLabel(unit);
+  const hasChapter = !!unit.path;
+  const label = chapterLabel(unit, heading);
 
   function handleClick() {
-    if (unit.chapterPath) {
-      onSelectFile(unit.chapterPath);
+    if (unit.path) {
+      onSelectFile(unit.path);
     } else {
-      const path = unit.outlinePath ? chapterPathFromOutline(unit.outlinePath) : `chapters/ch${unit.number}.md`;
+      const path = unit.outlinePath ? chapterPathFromOutline(unit.outlinePath) : "chapters/ch1.md";
       onCreateChapter(path, label);
       onSelectFile(path);
     }
@@ -126,7 +131,7 @@ function ChapterRow({ unit, selectedFile, onSelectFile, onCreateChapter }: {
 
   return (
     <div style={{ display: "flex", alignItems: "center" }}>
-      <Row active={hasChapter && selectedFile === unit.chapterPath} muted={!hasChapter} onClick={handleClick}
+      <Row active={hasChapter && selectedFile === unit.path} muted={!hasChapter} onClick={handleClick}
         icon={<BookOpen style={{ width: 12, height: 12, flexShrink: 0, opacity: hasChapter ? 0.8 : 0.35 }} />}
         label={label} />
       {unit.outlinePath && (
@@ -158,21 +163,21 @@ export function LibraryTree({
 }) {
   const [newChapterName, setNewChapterName] = useState("");
   const leaves = collectLeaves(tree, []);
-  const storyOutlines = leaves.filter((n) => n.kind === "story-outline");
+  const headingByPath = new Map(leaves.map((n) => [n.path, n.heading]));
   const other = leaves.filter((n) => n.kind === "other").sort((a, b) => a.path.localeCompare(b.path));
 
-  // Next free chapter number/path — reuses whichever chapters/ folder the
-  // highest-numbered existing unit already lives in, or defaults to a
+  // Next free chapter path — reuses whichever folder the last existing unit
+  // already lives in and a zero-padded count-based number, or defaults to a
   // top-level chapters/ if there are none yet. Purely a client-side
-  // convenience for the input below; the server itself never requires this
-  // shape (chapter.create accepts any path — detection is freeform, see
-  // WRITER.md).
+  // convenience for the input below, a cosmetic default only, never parsed
+  // back — the server itself never requires this shape (chapter.create
+  // accepts any path — detection is freeform, see WRITER.md).
   function nextChapterPath(): string {
     const last = chapters[chapters.length - 1];
-    const lastPath = last?.chapterPath ?? last?.outlinePath;
+    const lastPath = last?.path ?? last?.outlinePath;
     if (!last || !lastPath) return "chapters/ch1.md";
     const dir = lastPath.includes("/") ? lastPath.slice(0, lastPath.lastIndexOf("/")) : "";
-    const nextNum = last.number + 1;
+    const nextNum = chapters.length + 1;
     return dir ? `${dir}/ch${nextNum}.md` : `ch${nextNum}.md`;
   }
 
@@ -202,12 +207,6 @@ export function LibraryTree({
         </div>
       ) : (
         <>
-          {storyOutlines.map((n) => (
-            <Row key={n.path} active={selectedFile === n.path} onClick={() => onSelectFile(n.path)}
-              icon={<ListTree style={{ width: 12, height: 12, flexShrink: 0, opacity: 0.8 }} />}
-              label="Story Outline" />
-          ))}
-
           <SectionHeader label="Chapters" count={chapters.length} />
           {chapters.length === 0 ? (
             <div style={{ padding: "4px 12px 10px", fontSize: 11, color: "var(--text-ghost)" }}>
@@ -215,7 +214,9 @@ export function LibraryTree({
             </div>
           ) : (
             chapters.map((unit) => (
-              <ChapterRow key={unit.number} unit={unit} selectedFile={selectedFile}
+              <ChapterRow key={unit.path ?? unit.outlinePath} unit={unit}
+                heading={unit.path ? headingByPath.get(unit.path) : undefined}
+                selectedFile={selectedFile}
                 onSelectFile={onSelectFile} onCreateChapter={onCreateChapter} />
             ))
           )}

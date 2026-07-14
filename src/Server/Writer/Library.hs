@@ -7,7 +7,7 @@
 -- | Composition for the @\/library\/{name}@ connection: the writer-facing
 -- organizational view over one branch (books\/chapters\/scenes rather than
 -- raw files) — see WS-PROTOCOL.md. Writer-specific in the same way
--- 'Server.Writer.Character' is: it knows the @chapters\/ch{N}.md@ naming
+-- 'Server.Writer.Character' is: it knows the marker-word prose-detection
 -- convention from WRITER.md, which 'Server.Core.Branch' has no business
 -- knowing about.
 --
@@ -51,7 +51,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Writer.Library
-  (LibraryNode(..), LibraryKind(..), ChapterUnit, buildLibraryTree, chapterUnits, classifyPath)
+  (LibraryNode(..), LibraryKind(..), UnitInfo, buildLibraryTree, narrativeUnits, classifyPath)
 
 -- | The 'memoFold' accumulator: every chapter path's currently-known full
 --   content, keyed by path, plus every path that has ever carried at
@@ -89,41 +89,41 @@ foldLibraryState acc _h tick = return $ case tick of
   Core.Atom _ path _ content ->
     let tracked'  = Set.insert path (lfcTracked acc)
         chapters' = case classifyPath path of
-          Chapter _ -> Map.insertWith (flip (<>)) path content (lfcChapters acc)
-          _         -> lfcChapters acc
+          Unit -> Map.insertWith (flip (<>)) path content (lfcChapters acc)
+          _    -> lfcChapters acc
     in acc { lfcTracked = tracked', lfcChapters = chapters' }
   _ -> acc
 
--- | The full organizational tree for this branch, plus every chapter
---   number already paired with its own chapter file/beat sheet (see
---   'Storyteller.Writer.Library.chapterUnits') — computed here, once, so
---   nothing downstream (this connection's push, and eventually the planned
---   Summarizer agent) has to re-derive "which chapter does this belong to"
---   independently. Takes and returns a 'LibraryFoldCache' — the memoized
---   fold's own checkpoint set, to be threaded straight through into
---   the next call (see 'Server.Writer.Library.Connection', which persists
---   it across repeated ref-move pushes the same way it already threads its
---   own file-set accumulator).
+-- | The full organizational tree for this branch, plus every prose unit
+--   already paired with its own beat sheet if any (see
+--   'Storyteller.Writer.Library.narrativeUnits') — computed here, once, so
+--   nothing downstream (this connection's push, and the Summarizer agent)
+--   has to re-derive "which unit does this belong to" independently. Takes
+--   and returns a 'LibraryFoldCache' — the memoized fold's own checkpoint
+--   set, to be threaded straight through into the next call (see
+--   'Server.Writer.Library.Connection', which persists it across repeated
+--   ref-move pushes the same way it already threads its own file-set
+--   accumulator).
 libraryTree
   :: BranchOpen r
   => [(Core.ObjectHash, LibraryFoldCache)]
-  -> Sem r ([LibraryNode], [ChapterUnit], [(Core.ObjectHash, LibraryFoldCache)])
+  -> Sem r ([LibraryNode], [UnitInfo], [(Core.ObjectHash, LibraryFoldCache)])
 libraryTree cache = do
   paths <- listAllFiles @(BranchTag Main) "/"
   (folded, nextCache) <- runStorage @Main (Core.memoFold foldLibraryState emptyLibraryFoldCache cache)
   let tree = withBinaryFlags (lfcTracked folded) (withHeadings (lfcChapters folded) (buildLibraryTree paths))
-  return (tree, chapterUnits tree, nextCache)
+  return (tree, narrativeUnits tree, nextCache)
 
--- | Fill in 'lnHeading' for chapter nodes (and recurse into folders) from
+-- | Fill in 'lnHeading' for unit nodes (and recurse into folders) from
 --   the already-folded content cache — a pure lookup, no filesystem or
 --   'StoreT' access needed at this point.
 withHeadings :: Map FilePath T.Text -> [LibraryNode] -> [LibraryNode]
 withHeadings content = map go
   where
     go n = case lnKind n of
-      Chapter _ -> n { lnHeading = Map.lookup (lnPath n) content >>= firstLine }
-      Folder    -> n { lnChildren = withHeadings content (lnChildren n) }
-      _         -> n
+      Unit   -> n { lnHeading = Map.lookup (lnPath n) content >>= firstLine }
+      Folder -> n { lnChildren = withHeadings content (lnChildren n) }
+      _      -> n
 
 -- | Fill in 'lnBinary' for every leaf (and recurse into folders) -- a
 --   path has never had an atom if and only if it opted out of atom
@@ -151,10 +151,9 @@ firstLine t = case T.lines t of
 --   first line, the same "first H1 line is the display name" convention
 --   'sheet.md' already uses (see WRITER.md). Fails on a path that already
 --   has ticks, same as 'Server.Core.File.createFile'. Deliberately doesn't
---   validate that @path@ matches the @chapters\/ch{N}.md@ convention —
---   library detection is freeform (see 'Storyteller.Writer.Library'), so a
---   path that doesn't match is still created, just not later recognized as
---   a 'Chapter' node.
+--   validate that @path@ contains a marker word — library detection is
+--   freeform (see 'Storyteller.Writer.Library'), so a path that doesn't
+--   match is still created, just not later recognized as a 'Unit' node.
 chapterCreate :: BranchOpen r => FilePath -> T.Text -> Sem r ()
 chapterCreate path name = do
   existing <- runStorage @Main (Tick.fileTicksOf path)

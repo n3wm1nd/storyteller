@@ -69,19 +69,18 @@ hideBinaryFiles action = do
         }
   filterRead @project filt (filterFileSystem @project filt action)
 
--- | Wrap @action@ so every @chapters\/ch{N}.md@ path
+-- | Wrap @action@ so every prose 'Library.Unit' path
 --   ('Storyteller.Writer.Library.classifyPath') is invisible to it --
 --   read-only narrowing, same contract as 'hideBinaryFiles'. For a caller
 --   that already has a dedicated, correctly-ordered way to see earlier
 --   chapters (see 'Storyteller.Writer.Agent.ChapterContext.earlierChaptersOf'),
 --   letting them show up again through a generic "every other file" read
---   would present the same prose twice, sorted by filename rather than
---   chapter number (wrong once a story has ten or more chapters — @ch10@
---   sorts before @ch2@), and, for whichever chapter is actively being
---   continued, growing every single turn right inside what's meant to be
---   stable context. Pure -- no branch\/atom lookup needed, unlike
---   'hideBinaryFiles', since chapter-or-not is already decidable from the
---   path alone.
+--   would present the same prose twice, in a different order (a generic
+--   file read sorts by full path, not the branch's own reading order), and,
+--   for whichever chapter is actively being continued, growing every single
+--   turn right inside what's meant to be stable context. Pure -- no
+--   branch\/atom lookup needed, unlike 'hideBinaryFiles', since chapter-or-
+--   not is already decidable from the path alone.
 hideChapters
   :: forall project r a
   .  Members '[FileSystem project, FileSystemRead project] r
@@ -90,8 +89,8 @@ hideChapters action = filterRead @project filt (filterFileSystem @project filt a
   where
     filt = PathFilter
       { shouldInclude = \p -> case Library.classifyPath p of
-          Library.Chapter _ -> False
-          _                 -> True
+          Library.Unit -> False
+          _            -> True
       , filterName = "chapters are hidden (covered separately by earlierChaptersOf)"
       }
 
