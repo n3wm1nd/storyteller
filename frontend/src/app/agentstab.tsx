@@ -122,7 +122,7 @@ function PromptEditor({ path }: { path: string }) {
   }
 
   if (loadError) {
-    return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "oklch(0.65 0.18 25)" }}>failed to load: {loadError}</div>;
+    return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "var(--rose)" }}>failed to load: {loadError}</div>;
   }
   if (content === null) {
     return (
@@ -151,7 +151,7 @@ function PromptEditor({ path }: { path: string }) {
           disabled={!dirty || saving}
           style={{
             fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border-subtle)",
-            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "var(--surface)",
+            background: dirty ? "var(--amber-tint)" : "var(--surface)",
             color: dirty ? "var(--amber)" : "var(--text-ghost)",
             cursor: dirty && !saving ? "pointer" : "default",
           }}
@@ -224,9 +224,9 @@ function PromptOverrides({ promptKeys, files, onJumpToPrompt }: {
                 <span style={{ fontFamily: "monospace", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{key}</span>
                 <span style={{
                   marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8, flexShrink: 0,
-                  background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
+                  background: active ? "var(--amber-tint)" : "var(--card)",
                   color: active ? "var(--amber)" : "var(--text-ghost)",
-                  border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
+                  border: active ? "1px solid var(--amber-border)" : "1px solid var(--border-subtle)",
                 }}>
                   {active ? "override" : "default"}
                 </span>
@@ -283,7 +283,7 @@ function ConfigEditor({ path, fieldsHint }: { path: string; fieldsHint: string[]
   }
 
   if (loadError) {
-    return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "oklch(0.65 0.18 25)" }}>failed to load: {loadError}</div>;
+    return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "var(--rose)" }}>failed to load: {loadError}</div>;
   }
   if (content === null) {
     return (
@@ -316,7 +316,7 @@ function ConfigEditor({ path, fieldsHint }: { path: string; fieldsHint: string[]
           disabled={!dirty || saving}
           style={{
             fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border-subtle)",
-            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "var(--surface)",
+            background: dirty ? "var(--amber-tint)" : "var(--surface)",
             color: dirty ? "var(--amber)" : "var(--text-ghost)",
             cursor: dirty && !saving ? "pointer" : "default",
           }}
@@ -385,9 +385,9 @@ function ConfigOverride({ agent, files, onJumpToPrompt }: {
             <span style={{ fontFamily: "monospace", color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{key}</span>
             <span style={{
               marginLeft: "auto", fontSize: 9, padding: "1px 6px", borderRadius: 8, flexShrink: 0,
-              background: active ? "oklch(0.78 0.10 65 / 0.15)" : "var(--card)",
+              background: active ? "var(--amber-tint)" : "var(--card)",
               color: active ? "var(--amber)" : "var(--text-ghost)",
-              border: active ? "1px solid oklch(0.78 0.10 65 / 0.35)" : "1px solid var(--border-subtle)",
+              border: active ? "1px solid var(--amber-border)" : "1px solid var(--border-subtle)",
             }}>
               {active ? "override" : "default"}
             </span>
@@ -456,7 +456,7 @@ export function AgentsTab({ activeBranch, path, onJumpToPrompt }: {
                     display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
                     padding: "7px 9px", marginBottom: 1, border: "none", cursor: "pointer",
                     borderRadius: 5,
-                    background: active ? "oklch(0.78 0.10 65 / 0.10)" : "transparent",
+                    background: active ? "var(--amber-wash)" : "transparent",
                     borderLeft: active ? "2px solid var(--amber)" : "2px solid transparent",
                   }}
                 >
@@ -487,8 +487,8 @@ export function AgentsTab({ activeBranch, path, onJumpToPrompt }: {
                 <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-heading)" }}>{source.label}</span>
                 <span style={{
                   fontSize: 9, padding: "1px 6px", borderRadius: 8,
-                  background: source.mode === "ambient" ? "oklch(0.78 0.10 65 / 0.15)" : "oklch(0.58 0.10 200 / 0.12)",
-                  color: source.mode === "ambient" ? "var(--amber)" : "oklch(0.68 0.12 200)",
+                  background: source.mode === "ambient" ? "var(--amber-tint)" : "var(--sky-tint)",
+                  color: source.mode === "ambient" ? "var(--amber)" : "var(--sky)",
                 }}>
                   {source.mode === "ambient" ? "sent every time" : "available on demand"}
                 </span>

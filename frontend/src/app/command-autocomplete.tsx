@@ -111,7 +111,7 @@ export function CommandSuggestionPopup({ suggestions, activeIndex, onPick, refer
           onMouseDown={(e) => { e.preventDefault(); onPick(i); }}
           style={{
             display: "flex", flexDirection: "column", gap: 1, padding: "6px 10px", cursor: "pointer",
-            background: i === activeIndex ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+            background: i === activeIndex ? "var(--amber-tint)" : "transparent",
           }}
         >
           <span style={{ fontSize: 11, fontFamily: "monospace", color: "var(--amber)", fontWeight: 600 }}>{s.display}</span>

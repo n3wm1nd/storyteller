@@ -30,11 +30,83 @@
   /* Accents */
   --amber:   oklch(0.78 0.10 65);
   --teal:    oklch(0.65 0.12 170);
+  --sky:     oklch(0.65 0.15 200); /* character/presence -- a distinct hue from teal, not a variant of it */
   --violet:  oklch(0.70 0.15 310);
   --emerald: oklch(0.72 0.16 140);
   --rose:    oklch(0.68 0.18 25);
 
+  /* Derived accent variants — color-mix() against the solid token above,
+     not a hand-picked oklch() literal, so retuning one base hue (e.g. for
+     a light theme, see the @media block below) updates every tint/border/
+     muted usage of it everywhere, with nothing to hunt down by hand. Three
+     named buckets per accent (wash/tint/border) collapse what used to be
+     ~6 slightly different hand-typed alphas per color — a deliberate,
+     small visual normalization, not a regression to chase exactness on.
+     `-muted` mixes toward a neutral instead of transparent: a real
+     desaturated variant (lower chroma *and* lightness), not just a fade. */
+  --amber-wash:    color-mix(in oklch, var(--amber),   transparent 90%);
+  --amber-tint:    color-mix(in oklch, var(--amber),   transparent 85%);
+  --amber-border:  color-mix(in oklch, var(--amber),   transparent 65%);
+  --amber-muted:   color-mix(in oklch, var(--amber),   var(--text-dim) 35%);
+  --teal-tint:     color-mix(in oklch, var(--teal),    transparent 85%);
+  --teal-border:   color-mix(in oklch, var(--teal),    transparent 65%);
+  --sky-tint:      color-mix(in oklch, var(--sky),     transparent 85%);
+  --sky-border:    color-mix(in oklch, var(--sky),     transparent 65%);
+  --sky-text:      color-mix(in oklch, var(--sky),     white 20%); /* lighter/softer than --sky for body text on a dark surface */
+  --sky-dim:       color-mix(in oklch, var(--sky),     var(--text-dim) 35%);
+  --violet-tint:   color-mix(in oklch, var(--violet),  transparent 85%);
+  --violet-border: color-mix(in oklch, var(--violet),  transparent 65%);
+  --rose-tint:     color-mix(in oklch, var(--rose),    transparent 85%);
+  --rose-border:   color-mix(in oklch, var(--rose),    transparent 65%);
+  --rose-muted:    color-mix(in oklch, var(--rose),    var(--text-dim) 30%);
+
   --radius: 0.625rem;
+}
+
+/* First-pass light theme: only the base tokens above are redefined here —
+   every derived token and every component already written against
+   var(--amber) etc. inherits automatically, which is the whole point of
+   this file being structured as base + color-mix()-derived rather than
+   scattered literals. Not a polished final light palette, just proof the
+   swap is actually this cheap; a user-facing toggle (a [data-theme]
+   attribute + a button that sets it) is a trivial follow-up if wanted,
+   not built here since nothing asked for a switch, only for it to be easy. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --background:     oklch(0.98 0.005 60);
+    --surface-deep:   oklch(0.96 0.006 60);
+    --surface:        oklch(0.94 0.007 60);
+    --surface-raised: oklch(0.91 0.008 60);
+    --sidebar:        oklch(0.95 0.006 60);
+    --card:            oklch(0.97 0.006 60);
+    --muted:           oklch(0.91 0.008 60);
+    --topbar:          oklch(0.99 0.004 60);
+
+    --foreground:     oklch(0.20 0.012 60);
+    --text-heading:   oklch(0.25 0.012 60);
+    --text-body:      oklch(0.32 0.012 60);
+    --text-secondary: oklch(0.38 0.012 60);
+    --text-label:     oklch(0.44 0.012 60);
+    --text-muted:     oklch(0.55 0.015 60);
+    --text-subtle:    oklch(0.60 0.015 60);
+    --text-disabled:  oklch(0.65 0.015 60);
+    --text-ghost:     oklch(0.70 0.015 60);
+    --text-dim:       oklch(0.74 0.015 60);
+    --text-faint:     oklch(0.78 0.015 60);
+
+    --border-subtle: oklch(0.86 0.01 60);
+    --border:        oklch(0.80 0.012 60);
+    --border-hover:  oklch(0.70 0.015 60);
+
+    /* Darker/more saturated than the dark-theme values -- the same
+       triples read as washed-out on a light background. */
+    --amber:   oklch(0.60 0.12 65);
+    --teal:    oklch(0.50 0.13 170);
+    --sky:     oklch(0.50 0.16 200);
+    --violet:  oklch(0.55 0.16 310);
+    --emerald: oklch(0.55 0.17 140);
+    --rose:    oklch(0.55 0.19 25);
+  }
 }
 
 *, *::before, *::after {
@@ -115,4 +187,4 @@ body {
 
 /* Forward-compatible slot for token decoration (app/token-decoration.ts) —
    not yet registered by any editor extension. */
-.token-highlight { background: oklch(0.78 0.10 65 / 0.15); border-radius: 2px; }
+.token-highlight { background: var(--amber-tint); border-radius: 2px; }

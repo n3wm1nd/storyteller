@@ -125,7 +125,7 @@ function FileTreeNode({
           style={{
             display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
             padding: `3px 8px 3px ${pad}px`,
-            background: dragOver ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
+            background: dragOver ? "var(--amber-tint)" : "transparent",
             border: "none", cursor: "pointer", borderRadius: 5,
             color: "var(--text-muted)", fontSize: 11,
           }}>
@@ -191,7 +191,7 @@ function FileTreeNode({
       style={{
         display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
         padding: `3px 8px 3px ${pad}px`,
-        background: active ? "oklch(0.78 0.10 65 / 0.10)" : "transparent",
+        background: active ? "var(--amber-wash)" : "transparent",
         color: active ? "var(--amber)" : "var(--text-secondary)",
         border: "none", borderLeft: active ? "2px solid var(--amber)" : "2px solid transparent",
         cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: active ? 500 : 400,
@@ -324,7 +324,7 @@ export function FileTree({
       onDrop={(e) => { if (activeBranch) handleRootDrop(e); }}
       style={{
         flex: 1, overflow: "auto", padding: "4px 4px",
-        background: rootDragOver ? "oklch(0.78 0.10 65 / 0.06)" : "transparent",
+        background: rootDragOver ? "var(--amber-wash)" : "transparent",
         outline: rootDragOver ? "1px dashed var(--amber)" : "none", outlineOffset: -2,
       }}
     >
@@ -401,7 +401,7 @@ export function FileTree({
             onClick={handleCreateFile}
             style={{
               width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center",
-              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)",
+              background: "var(--amber-tint)", border: "1px solid var(--amber-border)",
               borderRadius: 5, color: "var(--amber)", cursor: "pointer", flexShrink: 0,
             }}
           >

@@ -42,7 +42,7 @@ function TopBar({ sessionStatus, branches, activeBranch }: {
       display: "flex", alignItems: "center", padding: "0 12px",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--amber)", boxShadow: "0 0 10px oklch(0.78 0.10 65 / 40%)" }} />
+        <div style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--amber)", boxShadow: "0 0 10px var(--amber-border)" }} />
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-heading)" }}>STORYTELLER</span>
       </div>
       <div style={{ width: 1, height: 12, background: "var(--border-subtle)", margin: "0 10px" }} />
@@ -450,7 +450,7 @@ export default function Home() {
                   <button
                     onClick={handleDeleteSelected}
                     title={`Delete ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""}`}
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.65 0.18 25 / 0.15)", border: "1px solid oklch(0.65 0.18 25 / 0.35)", color: "var(--rose)" }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--rose-tint)", border: "1px solid var(--rose-border)", color: "var(--rose)" }}
                   >
                     <Trash2 style={{ width: 10, height: 10 }} />
                     Delete {contextAtoms.size}
@@ -460,7 +460,7 @@ export default function Home() {
                   <button
                     onClick={() => mergeSelected(selectedFile)}
                     title={`Merge ${contextAtoms.size} selected atoms into one`}
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: 6 }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--amber)", marginLeft: 6 }}
                   >
                     <Combine style={{ width: 10, height: 10 }} />
                     Merge {contextAtoms.size}
@@ -470,7 +470,7 @@ export default function Home() {
                   <button
                     onClick={() => splitSelected(selectedFile)}
                     title={`Re-split ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""} at paragraph/heading boundaries`}
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: 6 }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--amber)", marginLeft: 6 }}
                   >
                     <Split style={{ width: 10, height: 10 }} />
                     Split {contextAtoms.size}
@@ -480,7 +480,7 @@ export default function Home() {
                   <button
                     onClick={() => hideSelected(selectedFile)}
                     title={`Hide ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""} from an agent's context (stays in the file)`}
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: 6 }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--amber)", marginLeft: 6 }}
                   >
                     <EyeOff style={{ width: 10, height: 10 }} />
                     Hide {contextAtoms.size}
@@ -490,7 +490,7 @@ export default function Home() {
                   <button
                     onClick={() => unhideSelected(selectedFile)}
                     title={`Unhide ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""}`}
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: 6 }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--amber)", marginLeft: 6 }}
                   >
                     <Eye style={{ width: 10, height: 10 }} />
                     Unhide {contextAtoms.size}
@@ -500,7 +500,7 @@ export default function Home() {
                   <button
                     onClick={() => chatOutline(selectedFile)}
                     title="Generate a per-chapter beat sheet for each chapter this outline implies"
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.35)", color: "var(--amber)", marginLeft: contextAtoms.size > 0 ? 6 : 0 }}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--amber)", marginLeft: contextAtoms.size > 0 ? 6 : 0 }}
                   >
                     <ListTree style={{ width: 10, height: 10 }} />
                     Generate beat sheets
@@ -514,35 +514,35 @@ export default function Home() {
                 <button
                   onClick={() => setAnnotationMode((m) => m === "hidden" ? "dots" : m === "dots" ? "expanded" : "hidden")}
                   title={annotationMode === "hidden" ? "Show annotation dots" : annotationMode === "dots" ? "Expand annotations" : "Hide annotations"}
-                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: annotationMode !== "hidden" ? "oklch(0.78 0.10 65 / 0.15)" : "transparent", color: annotationMode === "expanded" ? "var(--amber)" : annotationMode === "dots" ? "oklch(0.65 0.08 65)" : "var(--text-dim)" }}
+                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: annotationMode !== "hidden" ? "var(--amber-tint)" : "transparent", color: annotationMode === "expanded" ? "var(--amber)" : annotationMode === "dots" ? "var(--amber-muted)" : "var(--text-dim)" }}
                 >
                   {annotationMode === "hidden" ? <EyeOff style={{ width: 11, height: 11 }} /> : <Eye style={{ width: 11, height: 11, opacity: annotationMode === "dots" ? 0.6 : 1 }} />}
                 </button>
                 <button
                   onClick={() => setShowAllPresence((v) => !v)}
                   title={showAllPresence ? "Hide character presence bars" : "Show character presence bars"}
-                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: showAllPresence ? "oklch(0.58 0.10 200 / 0.15)" : "transparent", color: showAllPresence ? "oklch(0.68 0.12 200)" : "var(--text-dim)" }}
+                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: showAllPresence ? "var(--sky-tint)" : "transparent", color: showAllPresence ? "var(--sky)" : "var(--text-dim)" }}
                 >
                   <Users style={{ width: 11, height: 11 }} />
                 </button>
                 <button
                   onClick={() => setViewMode("blocks")}
                   title="Blocks — atom/outliner view"
-                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "blocks" ? "oklch(0.78 0.10 65 / 0.15)" : "transparent", color: viewMode === "blocks" ? "var(--amber)" : "var(--text-dim)" }}
+                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "blocks" ? "var(--amber-tint)" : "transparent", color: viewMode === "blocks" ? "var(--amber)" : "var(--text-dim)" }}
                 >
                   <ListTree style={{ width: 11, height: 11 }} />
                 </button>
                 <button
                   onClick={() => setViewMode("text")}
                   title="Text — WYSIWYG markdown editor for the whole file"
-                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "text" ? "oklch(0.78 0.10 65 / 0.15)" : "transparent", color: viewMode === "text" ? "var(--amber)" : "var(--text-dim)" }}
+                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "text" ? "var(--amber-tint)" : "transparent", color: viewMode === "text" ? "var(--amber)" : "var(--text-dim)" }}
                 >
                   <Pilcrow style={{ width: 11, height: 11 }} />
                 </button>
                 <button
                   onClick={() => setViewMode("source")}
                   title="Source — edit the whole file as raw markdown"
-                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "source" ? "oklch(0.78 0.10 65 / 0.15)" : "transparent", color: viewMode === "source" ? "var(--amber)" : "var(--text-dim)" }}
+                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "source" ? "var(--amber-tint)" : "transparent", color: viewMode === "source" ? "var(--amber)" : "var(--text-dim)" }}
                 >
                   <FileCode style={{ width: 11, height: 11 }} />
                 </button>

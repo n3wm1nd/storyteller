@@ -17,8 +17,8 @@ export function BucketBadge({ bucket, onClick, title }: {
     width: 15, height: 15, borderRadius: "50%", flexShrink: 0,
     fontSize: 9, fontWeight: 700, fontFamily: "monospace",
     border: "none", padding: 0, cursor: interactive ? "pointer" : "default",
-    background: bucket === null ? "oklch(0.55 0.15 25 / 0.18)" : bucketColor(bucket, 0.22),
-    color: bucket === null ? "oklch(0.65 0.18 25)" : bucketColor(bucket),
+    background: bucket === null ? "var(--rose-tint)" : bucketColor(bucket, 0.22),
+    color: bucket === null ? "var(--rose)" : bucketColor(bucket),
   };
   const content = bucket === null ? <Trash2 style={{ width: 9, height: 9 }} /> : bucket;
   return interactive ? (

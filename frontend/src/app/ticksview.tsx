@@ -145,7 +145,7 @@ function TickRow({
       onMouseLeave={() => { setHovered(false); onHoverChange(null); }}
       style={{
         borderBottom: "1px solid var(--border-subtle)", marginBottom: 2,
-        background: related ? "oklch(0.78 0.10 65 / 0.10)" : "transparent",
+        background: related ? "var(--amber-wash)" : "transparent",
         boxShadow: related ? "inset 2px 0 0 var(--amber)" : "none",
         transition: "background 0.12s, box-shadow 0.12s",
       }}
@@ -176,7 +176,7 @@ function TickRow({
           />
           <button
             onClick={() => { if (noteText.trim()) { onAddNote(tick.tickId, noteText.trim()); setNoteText(""); setAddingNote(false); } }}
-            style={{ fontSize: 10, padding: "3px 8px", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)", borderRadius: 4, color: "var(--amber)", cursor: "pointer" }}
+            style={{ fontSize: 10, padding: "3px 8px", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", borderRadius: 4, color: "var(--amber)", cursor: "pointer" }}
           >Add</button>
         </div>
       )}

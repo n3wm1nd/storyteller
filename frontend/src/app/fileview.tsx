@@ -184,7 +184,7 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
       style={{
         position: "relative",
         paddingLeft: compact ? 0 : 10, marginLeft: compact ? 0 : -12,
-        background: inContext ? "oklch(0.78 0.10 65 / 0.04)" : "transparent",
+        background: inContext ? "var(--amber-wash)" : "transparent",
         borderRadius: inContext ? 4 : 0,
         marginBottom: isLast ? 0 : editing ? (compact ? 6 : 16) : (compact ? 2 : undefined),
         opacity: hidden ? 0.45 : 1,
@@ -223,7 +223,7 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
               width: "100%", boxSizing: "border-box",
               minHeight: compact ? 44 : 80, resize: "vertical",
               background: "var(--surface-deep)",
-              border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+              border: "1px solid var(--amber-border)",
               borderRadius: 4, padding: compact ? "4px 6px" : "6px 8px",
               color: "var(--text-primary)", fontSize: compact ? 11 : 14, lineHeight: compact ? 1.4 : 1.6,
               fontFamily: "inherit", outline: "none",
@@ -235,7 +235,7 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
               color: "var(--text-ghost)", fontSize: 11, padding: "2px 8px", cursor: "pointer",
             }}>Cancel</button>
             <button onClick={commitEdit} style={{
-              background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+              background: "var(--amber-tint)", border: "1px solid var(--amber-border)",
               borderRadius: 3, color: "var(--text-secondary)", fontSize: 11, padding: "2px 8px", cursor: "pointer",
             }}>Save</button>
           </div>
@@ -244,7 +244,7 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
         <div
           onDoubleClick={startEdit}
           onClick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); onToggleContext(atom.tickId); } }}
-          style={compact ? { cursor: "default", outline: inContext ? "1px solid oklch(0.78 0.10 65 / 0.4)" : "none", outlineOffset: 2, borderRadius: 3 } : undefined}
+          style={compact ? { cursor: "default", outline: inContext ? "1px solid var(--amber-border)" : "none", outlineOffset: 2, borderRadius: 3 } : undefined}
         >
           <ReactMarkdown components={compact ? compactMdComponents : mdComponents}>{content}</ReactMarkdown>
         </div>
@@ -442,13 +442,13 @@ const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }:
           rows={compact ? 2 : 4}
           style={{
             width: "100%", boxSizing: "border-box", resize: "vertical", fontSize: compact ? 11 : 12, fontFamily: "inherit",
-            background: "var(--surface-deep)", border: "1px solid oklch(0.78 0.10 65 / 0.4)", borderRadius: 4,
+            background: "var(--surface-deep)", border: "1px solid var(--amber-border)", borderRadius: 4,
             padding: "4px 6px", color: "var(--text-primary)", outline: "none",
           }}
         />
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
           <button onClick={() => setEditing(false)} style={{ background: "none", border: "1px solid var(--border-subtle)", borderRadius: 3, color: "var(--text-ghost)", fontSize: 10.5, padding: "2px 8px", cursor: "pointer" }}>Cancel</button>
-          <button onClick={commitEdit} style={{ background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.4)", borderRadius: 3, color: "var(--text-secondary)", fontSize: 10.5, padding: "2px 8px", cursor: "pointer" }}>Save</button>
+          <button onClick={commitEdit} style={{ background: "var(--amber-tint)", border: "1px solid var(--amber-border)", borderRadius: 3, color: "var(--text-secondary)", fontSize: 10.5, padding: "2px 8px", cursor: "pointer" }}>Save</button>
         </div>
       </div>
     );
@@ -480,7 +480,7 @@ const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }:
       onDoubleClick={startEdit}
       style={{
         margin: "4px 0 10px 12px", borderRadius: 5, padding: "5px 10px",
-        background: "oklch(0.78 0.10 65 / 0.08)", border: "1px solid oklch(0.78 0.10 65 / 0.25)",
+        background: "var(--amber-wash)", border: "1px solid var(--amber-border)",
         cursor: expandable ? "pointer" : "text",
       }}
     >
@@ -1038,8 +1038,8 @@ export function RawEditPanel({ branch, path }: {
           style={{
             fontSize: 10, padding: "2px 10px", borderRadius: 4,
             cursor: dirty && !saving ? "pointer" : "default",
-            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
-            border: "1px solid " + (dirty ? "oklch(0.78 0.10 65 / 0.35)" : "var(--border-subtle)"),
+            background: dirty ? "var(--amber-tint)" : "transparent",
+            border: "1px solid " + (dirty ? "var(--amber-border)" : "var(--border-subtle)"),
             color: dirty ? "var(--amber)" : "var(--text-dim)",
           }}
         >
@@ -1251,8 +1251,8 @@ export function TextEditPanel({ branch, path }: {
           style={{
             fontSize: 10, padding: "2px 10px", borderRadius: 4,
             cursor: dirty && !saving ? "pointer" : "default",
-            background: dirty ? "oklch(0.78 0.10 65 / 0.15)" : "transparent",
-            border: "1px solid " + (dirty ? "oklch(0.78 0.10 65 / 0.35)" : "var(--border-subtle)"),
+            background: dirty ? "var(--amber-tint)" : "transparent",
+            border: "1px solid " + (dirty ? "var(--amber-border)" : "var(--border-subtle)"),
             color: dirty ? "var(--amber)" : "var(--text-dim)",
           }}
         >
@@ -1373,7 +1373,7 @@ export function ChatPreviewStrip({ preview }: {
   const isEmpty = preview.text.length === 0 && preview.thinking.length === 0;
 
   return (
-    <div style={{ flexShrink: 0, borderTop: "1px solid oklch(0.78 0.10 65 / 0.25)", background: "oklch(0.16 0.02 65 / 0.5)" }}>
+    <div style={{ flexShrink: 0, borderTop: "1px solid var(--amber-border)", background: "oklch(0.16 0.02 65 / 0.5)" }}>
       <div ref={containerRef} style={{ maxHeight: 140, overflow: "auto", padding: "8px 16px" }}>
         {preview.thinking && (
           <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-ghost)", marginBottom: 6, whiteSpace: "pre-wrap" }}>

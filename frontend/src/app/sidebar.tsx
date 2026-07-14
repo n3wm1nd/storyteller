@@ -13,18 +13,16 @@ function flattenLibrary(nodes: LibraryNode[]): LibraryNode[] {
   return nodes.flatMap((n) => [n, ...flattenLibrary(n.children)]);
 }
 
-// One accent hue per branch kind (see lib/branches.ts), as an oklch()
-// L/C/H triple rather than a full color string so a caller can still
-// splice in its own alpha (e.g. the active row's tinted background) the
-// same way every other oklch literal in this file already does. Character
-// reuses the same blue CharacterListItem's own active state uses below, so
-// a character branch reads as "the same kind of thing" in both tabs;
-// prompts gets its own violet (system/infrastructure, not user content);
-// story falls back to the app's ordinary amber accent's own triple.
-function branchKindOklch(kind: ReturnType<typeof classifyBranch>): string {
-  if (kind === "character") return "0.65 0.15 200";
-  if (kind === "prompts") return "0.65 0.12 300";
-  return "0.78 0.10 65";
+// One accent token per branch kind (see lib/branches.ts) — reuses the
+// existing palette (globals.css) rather than inventing a new hue per
+// feature. Character reuses the same --sky CharacterListItem's own active
+// state uses below, so a character branch reads as "the same kind of
+// thing" in both tabs; prompts gets violet (system/infrastructure, not
+// user content); story falls back to the app's ordinary amber accent.
+function branchKindTokens(kind: ReturnType<typeof classifyBranch>): { solid: string; tint: string } {
+  if (kind === "character") return { solid: "var(--sky)", tint: "var(--sky-tint)" };
+  if (kind === "prompts")   return { solid: "var(--violet)", tint: "var(--violet-tint)" };
+  return { solid: "var(--amber)", tint: "var(--amber-tint)" };
 }
 
 // A small kind icon next to the branch's own full name (kept verbatim,
@@ -32,7 +30,7 @@ function branchKindOklch(kind: ReturnType<typeof classifyBranch>): string {
 // so the flat "Branches" tab still tells the three kinds apart by color at
 // a glance instead of showing every raw branch name identically.
 function BranchKindIcon({ kind, active }: { kind: ReturnType<typeof classifyBranch>; active: boolean }) {
-  const style = { width: 10, height: 10, flexShrink: 0, color: active ? `oklch(${branchKindOklch(kind)})` : "var(--text-dim)" };
+  const style = { width: 10, height: 10, flexShrink: 0, color: active ? branchKindTokens(kind).solid : "var(--text-dim)" };
   if (kind === "character") return <Users style={style} />;
   if (kind === "prompts") return <Settings style={style} />;
   return <GitBranch style={style} />;
@@ -43,7 +41,7 @@ function BranchItem({ name, active, onSelect, onDelete }: {
 }) {
   const [hover, setHover] = useState(false);
   const kind = classifyBranch(name);
-  const triple = branchKindOklch(kind);
+  const { solid, tint } = branchKindTokens(kind);
   return (
     <div
       onMouseEnter={() => setHover(true)}
@@ -51,14 +49,14 @@ function BranchItem({ name, active, onSelect, onDelete }: {
       style={{
         display: "flex", alignItems: "center", gap: 6,
         padding: "5px 8px",
-        background: active ? `oklch(${triple} / 0.10)` : hover ? "var(--surface)" : "transparent",
-        borderLeft: active ? `2px solid oklch(${triple})` : "2px solid transparent",
+        background: active ? tint : hover ? "var(--surface)" : "transparent",
+        borderLeft: active ? `2px solid ${solid}` : "2px solid transparent",
         borderRadius: 5, cursor: "pointer",
       }}
     >
       <BranchKindIcon kind={kind} active={active} />
       <span onClick={onSelect} title={name} style={{
-        flex: 1, fontSize: 12, color: active ? `oklch(${triple})` : "var(--text-secondary)",
+        flex: 1, fontSize: 12, color: active ? solid : "var(--text-secondary)",
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         fontWeight: active ? 500 : 400,
       }}>{name}</span>
@@ -84,14 +82,14 @@ function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart
       style={{
         display: "flex", alignItems: "center", gap: 6,
         padding: "5px 8px",
-        background: active ? "oklch(0.65 0.15 200 / 0.10)" : hover ? "var(--surface)" : "transparent",
-        borderLeft: active ? "2px solid oklch(0.65 0.15 200)" : "2px solid transparent",
+        background: active ? "var(--sky-tint)" : hover ? "var(--surface)" : "transparent",
+        borderLeft: active ? "2px solid var(--sky)" : "2px solid transparent",
         borderRadius: 5, cursor: "pointer",
       }}
     >
-      <Users style={{ width: 11, height: 11, flexShrink: 0, color: active ? "oklch(0.65 0.15 200)" : "var(--text-dim)" }} />
+      <Users style={{ width: 11, height: 11, flexShrink: 0, color: active ? "var(--sky)" : "var(--text-dim)" }} />
       <span onClick={onSelect} style={{
-        flex: 1, fontSize: 12, color: active ? "oklch(0.75 0.12 200)" : "var(--text-secondary)",
+        flex: 1, fontSize: 12, color: active ? "var(--sky-text)" : "var(--text-secondary)",
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         fontWeight: active ? 500 : 400,
       }}>{characterDisplayName(character.branch, character.sheet)}</span>
@@ -233,7 +231,7 @@ export function LeftSidebar({
               onClick={() => { if (newBranch.trim()) { onCreateBranch(newBranch.trim()); setNewBranch(""); } }}
               style={{
                 width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center",
-                background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)",
+                background: "var(--amber-tint)", border: "1px solid var(--amber-border)",
                 borderRadius: 5, color: "var(--amber)", cursor: "pointer", flexShrink: 0,
               }}
             >

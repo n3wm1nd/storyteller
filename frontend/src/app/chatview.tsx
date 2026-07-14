@@ -117,7 +117,7 @@ function EditableBubble({
           rows={estimateRows(draft)}
           style={{
             width: "100%", boxSizing: "border-box", resize: "vertical",
-            background: "var(--surface-deep)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+            background: "var(--surface-deep)", border: "1px solid var(--amber-border)",
             borderRadius: 6, padding: "8px 10px", color: "var(--foreground)",
             fontSize: 12.5, lineHeight: 1.5, fontFamily: "inherit", outline: "none",
           }}
@@ -128,7 +128,7 @@ function EditableBubble({
             color: "var(--text-ghost)", fontSize: 10, padding: "2px 8px", cursor: "pointer",
           }}>Cancel</button>
           <button onClick={commit} style={{
-            background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.4)",
+            background: "var(--amber-tint)", border: "1px solid var(--amber-border)",
             borderRadius: 3, color: "var(--text-secondary)", fontSize: 10, padding: "2px 8px", cursor: "pointer",
           }}>Save</button>
         </div>
@@ -291,7 +291,7 @@ export function ChatView({
                 align="flex-end"
                 content={ex.promptTick.message}
                 disabled={generating}
-                bubbleStyle={{ ...bubbleBase, background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)", color: "var(--text-heading)" }}
+                bubbleStyle={{ ...bubbleBase, background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--text-heading)" }}
                 onSave={(text) => {
                   // Editing the most recent turn: the existing reply was
                   // generated against the text being replaced, so it's
@@ -319,7 +319,7 @@ export function ChatView({
         })}
         {visiblePending.map(pp => (
           <div key={`opt-${pp.id}`} style={{ display: "flex", flexDirection: "column", gap: 8, opacity: 0.6 }}>
-            <div style={{ ...bubbleBase, alignSelf: "flex-end", background: "oklch(0.78 0.10 65 / 0.15)", border: "1px solid oklch(0.78 0.10 65 / 0.3)", color: "var(--text-heading)" }}>
+            <div style={{ ...bubbleBase, alignSelf: "flex-end", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--text-heading)" }}>
               {pp.text}
             </div>
             <div style={typingBubble}>…</div>
@@ -358,7 +358,7 @@ export function ChatView({
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", width: 36, alignSelf: "flex-end",
             height: 32, borderRadius: 6, border: "none", cursor: "pointer",
-            background: draft.trim().length === 0 ? "var(--surface-deep)" : "oklch(0.78 0.10 65 / 0.2)",
+            background: draft.trim().length === 0 ? "var(--surface-deep)" : "var(--amber-tint)",
             color: draft.trim().length === 0 ? "var(--text-dim)" : "var(--amber)",
           }}
         >

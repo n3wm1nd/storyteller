@@ -510,7 +510,7 @@ export function CharacterSidebar({
       {rebasing && (
         <div style={{
           flexShrink: 0, padding: "5px 10px", borderBottom: "1px solid var(--border-subtle)",
-          background: "oklch(0.78 0.10 65 / 0.10)", display: "flex", alignItems: "center", gap: 5,
+          background: "var(--amber-wash)", display: "flex", alignItems: "center", gap: 5,
         }}>
           <History style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0 }} />
           <span style={{ fontSize: 9, color: "var(--amber)", fontStyle: "italic" }}>Scene as of the rebase marker</span>
