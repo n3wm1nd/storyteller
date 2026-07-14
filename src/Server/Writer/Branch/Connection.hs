@@ -36,7 +36,7 @@ module Server.Writer.Branch.Connection
 
 import Control.Concurrent (forkIO, killThread)
 import Control.Monad (void)
-import Control.Concurrent.STM (TChan, atomically, dupTChan)
+import Control.Concurrent.STM (TChan, TVar, atomically, dupTChan, newTVarIO, writeTVar)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -51,7 +51,7 @@ import Server.Core.Branch (Main, BranchOpen, branchState, branchStateSince)
 import Server.Core.Logging (logCommand)
 import Server.Writer.Branch.Dispatch (runCommand)
 import Server.Writer.Branch.Protocol
-import Server.Writer.Env (ServerEnv(..))
+import Server.Writer.Env (ServerEnv(..), registerCancel, unregisterCancel)
 import Server.Writer.Notification (BranchNotification(..), watchBranch)
 import Server.Core.Protocol (Update(..))
 import Runix.LLM.Streaming (StreamEvent)
@@ -66,16 +66,20 @@ import Storyteller.Core.Types (TickId(..))
 runBranch :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runBranch env branch conn = do
   notifyChan <- atomically $ dupTChan (envNotifyChan env)
+  cancelFlag <- newTVarIO False
   notifier   <- forkIO $ runNotifier env branch conn notifyChan
-  runCommands env branch conn `finally` killThread notifier
+  runCommands env branch conn cancelFlag `finally` killThread notifier
 
 -- | The command-loop thread's persistent stack: enter the branch once, push
 --   the initial full state, then dispatch commands until the socket closes.
-runCommands :: ServerEnv -> T.Text -> WS.Connection -> IO ()
-runCommands env branch conn = do
-  result <- runM $ wsAction env conn $
+--   'cancelFlag' is this connection's one long-lived cancel flag — reset
+--   before each command runs and briefly published under that command's
+--   own id (see 'handle') so a \/session 'cancel' can reach it.
+runCommands :: ServerEnv -> T.Text -> WS.Connection -> TVar Bool -> IO ()
+runCommands env branch conn cancelFlag = do
+  result <- runM $ wsAction env conn cancelFlag $
     withBranch @Main branch (pushInitial conn branch)
-      >> splitMarkdownAware (commandLoop conn branch)
+      >> splitMarkdownAware (commandLoop env conn branch cancelFlag)
   either (reportError conn) return result
 
 -- | The notify-listener thread's persistent stack: react to ref-move
@@ -94,7 +98,10 @@ runCommands env branch conn = do
 --   re-announce every already-known file as newly added.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $ do
+  -- Never runs an LLM-backed command, so there is nothing to cancel — a
+  -- fresh, unshared 'TVar Bool' just satisfies 'actionStack's signature.
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $ do
     initialFiles <- withBranch @Main branch (fst <$> branchState)
     void $ watchBranch chan branch (Nothing, Set.fromList initialFiles) (onNotify branch conn)
   either (reportError conn) return result
@@ -126,8 +133,8 @@ pushInitial conn branch = do
 --   to one introduced later around an individual command.
 commandLoop
   :: (SessionEffects r, Member (Embed IO) r)
-  => WS.Connection -> T.Text -> Sem r ()
-commandLoop conn branch = loop
+  => ServerEnv -> WS.Connection -> T.Text -> TVar Bool -> Sem r ()
+commandLoop env conn branch cancelFlag = loop
   where
     loop = do
       msg <- embed (try (WS.receiveData conn) :: IO (Either SomeException LBS.ByteString))
@@ -138,13 +145,17 @@ commandLoop conn branch = loop
           Just cmd -> handle cmd >> loop
 
     -- Each command is its own transaction — see the comment in
-    -- Server.Writer.File.Connection.commandLoop.
-    handle cmd =
+    -- Server.Writer.File.Connection.commandLoop. 'cancelFlag' handling
+    -- mirrors that module's 'handle' too.
+    handle cmd = do
+      embed $ atomically $ writeTVar cancelFlag False
+      embed $ mapM_ (\cid -> registerCancel env cid cancelFlag) (bcId cmd)
       catch @String
         (logCommand (commandKind cmd)
           (withStorage (withBranch @Main branch (runCommand branch cmd)))
           >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
+      embed $ mapM_ (unregisterCancel env) (bcId cmd)
 
 -- | Push updated tick state, plus a 'FileAdded'/'FileRemoved' for every path
 --   that appeared or disappeared from the working tree since the last push

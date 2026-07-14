@@ -30,7 +30,7 @@ module Server.Writer.Run
   , notifyRemaps
   ) where
 
-import Control.Concurrent.STM (TChan, atomically, writeTChan)
+import Control.Concurrent.STM (TChan, TVar, atomically, newTVarIO, writeTChan)
 import qualified Data.Text as T
 import Data.Aeson (encode, object, (.=), Value)
 import qualified Network.WebSockets as WS
@@ -54,7 +54,7 @@ import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.LLM.Registry (SomeLLMRunner(..))
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
-import Storyteller.Core.Runtime (runInfrastructureWith)
+import Storyteller.Core.Runtime (runInfrastructureWithCancellation)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Git (runStoryStorageGitNotify)
 import Storyteller.Core.Storage (StoryStorage)
@@ -143,15 +143,25 @@ streamChunksWS conn = interpret $ \(EmitChunk event) ->
 --   after every other interpreter in this stack (including 'failLog')
 --   has already had its say, so nothing logged during a command's run
 --   is missed regardless of where in the stack it was logged from.
+--
+--   'cancelFlag' only ever reaches 'runInfrastructureWithCancellation',
+--   which resolves and fully eliminates 'Runix.Cancellation.Cancellation'
+--   internally (see that function's Haddock) — it never appears in this
+--   function's own effect row, so nothing above 'actionStack' (agents,
+--   handlers, 'SessionEffects' itself) has to know cancellation exists.
+--   Callers with nothing meaningful to cancel (every non-File\/Branch
+--   connection, and 'runAction's CLI\/session path) just pass a fresh,
+--   never-set 'TVar Bool'.
 actionStack
   :: (Member (Embed IO) r, Member (StreamChunk StreamEvent) r)
   => ServerEnv
+  -> TVar Bool
   -> Sem ( LLM ProseModel : LLM AgentModel
          : Config StreamingEnabled : PromptStorage : StoryStorage : Undo
          : Random : HTTP : HTTPStreaming : Sleep : Time : Git
          : Fail : Error String : Logging : r) a
   -> Sem (Logging : r) (Either String a)
-actionStack env action =
+actionStack env cancelFlag action =
   case (envProseRunner env, envAgentRunner env) of
     ( SomeLLMRunner (proseRunner :: forall r' a'. Members
         '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r'
@@ -162,7 +172,7 @@ actionStack env action =
       ) ->
         runError @String
       . failLog
-      . runInfrastructureWith (runGitViaWorker (envGitWorker env))
+      . runInfrastructureWithCancellation cancelFlag (runGitViaWorker (envGitWorker env))
       . runStoryStorageGitNotify (notifyRemaps (envNotifyChan env))
       . interpretPromptStorageFS
       . runConfig (StreamingEnabled True)
@@ -188,7 +198,9 @@ runAction
   :: ServerEnv
   -> (forall r. SessionEffects r => Sem r a)
   -> IO (Either String a)
-runAction env action = runM (ignoreChunks @StreamEvent (loggingIO (actionStack env action)))
+runAction env action = do
+  cancelFlag <- newTVarIO False
+  runM (ignoreChunks @StreamEvent (loggingIO (actionStack env cancelFlag action)))
 
 -- | Shared composition for WS connections: layers the connection's
 --   log-forwarding interpreter *directly around 'actionStack's own result*
@@ -207,8 +219,14 @@ runAction env action = runM (ignoreChunks @StreamEvent (loggingIO (actionStack e
 --   Both 'Server.Writer.File.Connection' and 'Server.Writer.Branch.Connection'
 --   had been assembling this composition independently; this is the one
 --   place it's built. Callers still own 'runM' at their own call site.
+--
+--   'cancelFlag' is the connection's own long-lived 'TVar Bool' (created
+--   once in 'runFile'\/'runBranch', reset before each command — see those
+--   modules' 'handle'); passed straight through to 'actionStack', which is
+--   the one place it actually gets consumed (see its Haddock).
 wsAction
-  :: ServerEnv -> WS.Connection
+  :: ServerEnv -> WS.Connection -> TVar Bool
   -> (forall r. (SessionEffects r, Member (Embed IO) r, Member (Error String) r) => Sem r a)
   -> Sem '[Embed IO] (Either String a)
-wsAction env conn action = streamChunksWS conn (loggingWS conn (actionStack env action))
+wsAction env conn cancelFlag action =
+  streamChunksWS conn (loggingWS conn (actionStack env cancelFlag action))

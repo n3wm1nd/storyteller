@@ -7,13 +7,14 @@
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
 import { useEffect, useRef, useState } from "react";
-import { Send, RotateCcw, EyeOff, RefreshCw } from "lucide-react";
+import { Send, RotateCcw, EyeOff, RefreshCw, Square } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { AgentLogStrip, ChatPreviewStrip } from "./fileview";
 import { CHAT_COMMANDS, parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
+import { cancelGeneration } from "./fileview.actions";
 
 interface ChatExchange {
   promptTick: WireTick;
@@ -351,19 +352,33 @@ export function ChatView({
             }}
           />
         </div>
-        <button
-          onClick={submit}
-          disabled={draft.trim().length === 0}
-          title="Send"
-          style={{
-            display: "flex", alignItems: "center", justifyContent: "center", width: 36, alignSelf: "flex-end",
-            height: 32, borderRadius: 6, border: "none", cursor: "pointer",
-            background: draft.trim().length === 0 ? "var(--surface-deep)" : "var(--amber-tint)",
-            color: draft.trim().length === 0 ? "var(--text-dim)" : "var(--amber)",
-          }}
-        >
-          <Send style={{ width: 14, height: 14 }} />
-        </button>
+        {generating ? (
+          <button
+            onClick={cancelGeneration}
+            title="Stop generating"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", width: 36, alignSelf: "flex-end",
+              height: 32, borderRadius: 6, border: "none", cursor: "pointer",
+              background: "var(--amber-tint)", color: "var(--amber)",
+            }}
+          >
+            <Square style={{ width: 12, height: 12 }} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            onClick={submit}
+            disabled={draft.trim().length === 0}
+            title="Send"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", width: 36, alignSelf: "flex-end",
+              height: 32, borderRadius: 6, border: "none", cursor: "pointer",
+              background: draft.trim().length === 0 ? "var(--surface-deep)" : "var(--amber-tint)",
+              color: draft.trim().length === 0 ? "var(--text-dim)" : "var(--amber)",
+            }}
+          >
+            <Send style={{ width: 14, height: 14 }} />
+          </button>
+        )}
       </div>
     </div>
   );

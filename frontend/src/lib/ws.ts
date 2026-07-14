@@ -109,7 +109,14 @@ export type SessionCommand =
   // UndoLog entry's own id) — see Storyteller.Core.Undo.resetToUndo.
   // Symmetric: entryId can name any entry, earlier or later than the
   // current one, so this doubles as both undo and redo.
-  | { type: "undo.reset"; id?: string; entryId: string };
+  | { type: "undo.reset"; id?: string; entryId: string }
+  // Ask whatever branch/file connection is running the command with wire
+  // id `targetId` to stop early — sent here, on /session, rather than on
+  // that command's own connection, since that connection's command loop
+  // only reads its next message after the current one finishes (see
+  // Server.Writer.Session.Protocol's Cancel). Fire-and-forget: no response
+  // event, and canceling an already-finished/unknown id is a silent no-op.
+  | { type: "cancel"; id?: string; targetId: string };
 
 // One character branch's raw summary — sheet.md content, unprocessed (see
 // WS-PROTOCOL.md's "read is raw-but-complete" rule). The client is

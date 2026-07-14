@@ -35,7 +35,7 @@ module Server.Writer.Library.Connection
 
 import Control.Concurrent (forkIO, killThread)
 import Control.Monad (void)
-import Control.Concurrent.STM (TChan, atomically, dupTChan)
+import Control.Concurrent.STM (TChan, atomically, dupTChan, newTVarIO)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -70,10 +70,13 @@ runLibrary env branch conn = do
 -- | The command-loop thread's persistent stack: enter the branch once, push
 --   the initial tree (cold -- this thread never loops on its own push, so
 --   there's no accumulator to seed), then dispatch commands until the
---   socket closes.
+--   socket closes. 'chapter.create' isn't LLM-backed, so — unlike File\/
+--   Branch — there's nothing to cancel; a fresh, unshared 'TVar Bool'
+--   satisfies 'wsAction's signature.
 runCommands :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCommands env branch conn = do
-  result <- runM $ wsAction env conn $
+  cancelFlag <- newTVarIO False
+  result <- runM $ wsAction env conn cancelFlag $
     withBranch @Main branch (void (push conn [])) >> commandLoop conn branch
   either (reportError conn) return result
 
@@ -84,7 +87,8 @@ runCommands env branch conn = do
 --   push at startup so the first real 'RefMoved' is already warm.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $ do
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $ do
     initialCache <- withBranch @Main branch (push conn [])
     void $ watchBranch chan branch initialCache (onNotify branch conn)
   either (reportError conn) return result

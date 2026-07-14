@@ -57,5 +57,9 @@ export function atRebase(marker: string | null, ticks: Record<string, WireTick>,
   const branches = Object.entries(journalMarkers)
     .filter((entry): entry is [string, string] => entry[1] !== null)
     .map(([branch, tickId]) => ({ branch, tickId }));
-  return { type: "at", tickId: pivot, command: cmd, ...(branches.length > 0 ? { branches } : {}) };
+  // Carry the inner command's own id up onto the 'at' wrapper: the server
+  // registers a cancel flag under the *outermost* received command's id
+  // (see Server.Writer.File.Connection's handle), so a cancel targeting
+  // 'cmd.id' has to still find it there once rebased.
+  return { type: "at", id: cmd.id, tickId: pivot, command: cmd, ...(branches.length > 0 ? { branches } : {}) };
 }

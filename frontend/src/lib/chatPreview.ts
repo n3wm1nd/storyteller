@@ -49,7 +49,7 @@ export function handleChatPreview(evt: ChatPreviewEvent) {
       break;
     }
     case "chat.preview.end":
-      mirrorServerEvent({ preview: null });
+      mirrorServerEvent({ preview: null, previewCommandId: null });
       break;
   }
   if (evt.type === "chat.preview.end") flushPendingSubmit();
@@ -57,12 +57,16 @@ export function handleChatPreview(evt: ChatPreviewEvent) {
 
 // Send the submission that was held back while the previous generation was
 // still streaming, now that it's done. Built at queue-time (see
-// fileview.actions.ts's 'sendChatCommand'), so nothing left to do but send it.
+// fileview.actions.ts's 'sendChatCommand'), so nothing left to do but
+// attach a fresh id (same as an immediate send — see 'sendChatCommand') and
+// send it.
 function flushPendingSubmit() {
   const pending = useUI.getState().pendingSubmit;
   if (!pending) return;
   useUI.setState({ pendingSubmit: null });
   const fc = getServerCache().openFiles[pending.path];
   if (!fc) return;
-  fc.conn.send(atRebase(useUI.getState().rebaseMarker, fc.ticks, pending.cmd, useUI.getState().journalMarkers));
+  const cmd = { ...pending.cmd, id: crypto.randomUUID() };
+  mirrorServerEvent({ previewCommandId: cmd.id });
+  fc.conn.send(atRebase(useUI.getState().rebaseMarker, fc.ticks, cmd, useUI.getState().journalMarkers));
 }

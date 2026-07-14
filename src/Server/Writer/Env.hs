@@ -10,9 +10,14 @@ module Server.Writer.Env
   , AppState(..)
   , emptyAppState
   , loadServerEnv
+  , registerCancel
+  , unregisterCancel
+  , requestCancel
   ) where
 
-import Control.Concurrent.STM (TVar, TChan, newTVarIO, newBroadcastTChanIO)
+import Control.Concurrent.STM (TVar, TChan, atomically, modifyTVar', newTVarIO, readTVarIO, writeTVar, newBroadcastTChanIO)
+import qualified Data.Map.Strict as Map
+import qualified Data.Text as T
 import System.Directory (createDirectoryIfMissing)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
@@ -23,13 +28,18 @@ import Server.Writer.GitWorker (GitWorkerQueue, startGitWorker)
 import Server.Writer.Notification (BranchNotification)
 import Storyteller.Core.LLM.Registry (SomeLLMRunner, resolveKnownModel, resolveRoleRunner)
 
--- | Mutable shared state across requests. Starts empty; extended as needed.
+-- | Mutable shared state across requests.
 data AppState = AppState
-  -- placeholder — nothing needs cross-request state yet
-  deriving (Show)
+  { cancelFlags :: Map.Map T.Text (TVar Bool)
+    -- ^ One entry per in-flight, cancelable command, keyed by its own
+    -- wire id (the 'fcId'\/'bcId' the client sent it with) — see
+    -- 'registerCancel'\/'unregisterCancel'\/'requestCancel'. Lets the
+    -- always-listening \/session connection reach a cancel flag owned by
+    -- some other connection's command loop.
+  }
 
 emptyAppState :: AppState
-emptyAppState = AppState
+emptyAppState = AppState { cancelFlags = Map.empty }
 
 data ServerEnv = ServerEnv
   { envRepoPath    :: FilePath                    -- ^ STORY_REPO
@@ -75,6 +85,35 @@ requireEnv var = do
   case mv of
     Just v  -> return v
     Nothing -> hPutStrLn stderr ("Error: " <> var <> " is not set") >> exitFailure
+
+-- | Publish a command's cancel flag under its own wire id, so a later
+--   'requestCancel' for that id (arriving on some other connection, e.g.
+--   \/session) can find it. Overwrites any existing entry for that id —
+--   ids are only ever reused across genuinely sequential commands on the
+--   same connection (see 'Server.Writer.File.Connection'\/'Branch.Connection'),
+--   never concurrently.
+registerCancel :: ServerEnv -> T.Text -> TVar Bool -> IO ()
+registerCancel env cid flag =
+  atomically $ modifyTVar' (appState env) (\s -> s { cancelFlags = Map.insert cid flag (cancelFlags s) })
+
+-- | Drop a command's cancel-flag registration once it's finished (success
+--   or error) — a stale id left behind would let a late cancel silently
+--   flip a flag nobody's reading anymore, harmless but pointless.
+unregisterCancel :: ServerEnv -> T.Text -> IO ()
+unregisterCancel env cid =
+  atomically $ modifyTVar' (appState env) (\s -> s { cancelFlags = Map.delete cid (cancelFlags s) })
+
+-- | Set the cancel flag registered under 'cid', if any is still live.
+--   Returns 'False' for an unknown id — already finished, or never
+--   cancelable — which the caller treats as a harmless no-op, not an
+--   error: the client can't generally know whether its cancel raced the
+--   command's own completion.
+requestCancel :: ServerEnv -> T.Text -> IO Bool
+requestCancel env cid = do
+  s <- readTVarIO (appState env)
+  case Map.lookup cid (cancelFlags s) of
+    Just flag -> atomically (writeTVar flag True) >> return True
+    Nothing   -> return False
 
 -- | Where to dump raw LLM request/response JSON when 'LLM_LOG_REQUESTS' is
 --   set (any non-empty value) -- @<repo>\/.git\/runix-request-logs@, so

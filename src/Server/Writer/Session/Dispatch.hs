@@ -27,6 +27,7 @@ import Runix.FileSystem (fileExists, readFile)
 import Runix.Git (ObjectHash(..))
 
 import Server.Core.Run (SessionEffects)
+import Server.Writer.Env (ServerEnv, requestCancel)
 import Server.Writer.Session.Protocol
 import Storyteller.Core.Git (BranchTag, runBranchAndFS)
 import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
@@ -36,8 +37,8 @@ import Storyteller.Writer.Branches (BranchKind(..), classifyBranch)
 
 import Prelude hiding (readFile)
 
-runCommand :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> SessionCommand -> Sem r ()
-runCommand conn cmd = case cmd of
+runCommand :: (SessionEffects r, Member (Embed IO) r) => ServerEnv -> WS.Connection -> SessionCommand -> Sem r ()
+runCommand env conn cmd = case cmd of
 
   -- No direct branch.created/branch.deleted confirmation: same
   -- one-list-no-round-trip shape as 'UndoReset' below — the ref write also
@@ -71,6 +72,8 @@ runCommand conn cmd = case cmd of
   UndoReset _mid entryId -> do
     resetToUndo (ObjectHash entryId)
     push =<< undoLog
+
+  Cancel _mid targetId -> embed (() <$ requestCancel env targetId)
 
   where
     push = embed . WS.sendTextData conn . encode

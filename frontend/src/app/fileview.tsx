@@ -2,8 +2,9 @@
 
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square } from "lucide-react";
 import { StickyNote, HelpCircle } from "lucide-react";
+import { cancelGeneration } from "./fileview.actions";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
@@ -1432,8 +1433,13 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   regen:  { label: "Regen",  title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
 };
 
-export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk, onInform }: {
+export function InputBar({ enabled, generating, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk, onInform }: {
   enabled: boolean;
+  // Whether a chat.writer/fixer/regen/etc call is currently streaming on
+  // this file's connection — see lib/serverCacheStore.ts's 'preview'.
+  // Swaps the mode-pill/send cluster below for a Stop button (see
+  // fileview.actions.ts's 'cancelGeneration') while true.
+  generating: boolean;
   // The active branch's own /lore data feeds '@mention' completion (see
   // lib/mentions.ts) — current-branch-only for now, no cross-branch search.
   activeBranch: string | null;
@@ -1594,6 +1600,16 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
           />
         </div>
         <div ref={menuRef} style={{ position: "relative", display: "flex", flexDirection: "column", gap: 4, justifyContent: "flex-end" }}>
+          {generating ? (
+            <button onClick={cancelGeneration} title="Stop generating" style={{
+              padding: "4px 10px",
+              background: "var(--amber-tint)", border: "1px solid var(--amber-border)",
+              borderRadius: 5, color: "var(--amber)", cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
+            }}>
+              <Square style={{ width: 10, height: 10 }} fill="currentColor" />
+            </button>
+          ) : (
           <div style={{ display: "flex", gap: 2 }}>
             <button onClick={() => fire()} title={`${AGENT_META[mode].title} (⌘↵) — shift-tab to change mode`} style={{
               flex: 1, padding: "4px 10px",
@@ -1614,8 +1630,9 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
               <ChevronDown style={{ width: 11, height: 11 }} />
             </button>
           </div>
+          )}
 
-          {menuOpen && (
+          {!generating && menuOpen && (
             <div ref={modeMenu.refs.setFloating} style={{
               ...modeMenu.floatingStyles, zIndex: 10,
               background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,

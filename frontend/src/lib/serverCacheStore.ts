@@ -109,6 +109,12 @@ export interface ServerCacheState {
   // see lib/chatPreview.ts.
   preview: { text: string; thinking: string } | null;
 
+  // The wire id of the command 'preview' belongs to, if it was sent with
+  // one — what a Stop button targets via SessionCommand's "cancel". Same
+  // lifecycle as 'preview': set right before sending, cleared everywhere
+  // 'preview' is cleared. Null whenever 'preview' is null.
+  previewCommandId: string | null;
+
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
   _library: StoryWS<LibraryCommand, LibraryEvent> | null;
@@ -128,6 +134,7 @@ const _store = create<ServerCacheState>(() => ({
   openCharacters: {},
   openJournals: {},
   preview: null,
+  previewCommandId: null,
   _session: null,
   _branch: null,
   _library: null,

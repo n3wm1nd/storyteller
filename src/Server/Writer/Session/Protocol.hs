@@ -28,6 +28,14 @@ data SessionCommand
   -- entry, earlier or later than the current one, so this doubles as both
   -- undo and redo.
   | UndoReset      { scId :: Maybe T.Text, scEntryId :: T.Text }
+  -- | Ask whatever File\/Branch connection is running the command with wire
+  -- id 'scTargetId' to stop early — see 'Server.Writer.Env.requestCancel'.
+  -- Sent here, on \/session, rather than on that command's own connection,
+  -- because the connection's command loop only reads its next message
+  -- after the current one finishes; \/session is always listening.
+  -- Fire-and-forget: no response event, and an unknown\/already-finished
+  -- 'scTargetId' is a silent no-op, not an error.
+  | Cancel         { scId :: Maybe T.Text, scTargetId :: T.Text }
   deriving (Show)
 
 instance FromJSON SessionCommand where
@@ -38,6 +46,7 @@ instance FromJSON SessionCommand where
       "create-branch"    -> CreateBranch i <$> o .: "branch"
       "delete-branch"    -> DeleteBranch i <$> o .: "branch"
       "undo.reset"       -> UndoReset i <$> o .: "entryId"
+      "cancel"           -> Cancel i <$> o .: "targetId"
       _                  -> fail ("unknown session command: " <> T.unpack t)
 
 -- | Short label for logging — see 'Server.Writer.File.Protocol.commandKind'.
@@ -46,6 +55,7 @@ commandKind = \case
   CreateBranch {}   -> "create-branch"
   DeleteBranch {}   -> "delete-branch"
   UndoReset {}      -> "undo.reset"
+  Cancel {}         -> "cancel"
 
 -- | One character branch's sidebar-facing summary: the branch id (still
 --   carrying the @character\/@ prefix; stripping it is a display concern,

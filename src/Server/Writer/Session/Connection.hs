@@ -40,7 +40,7 @@ module Server.Writer.Session.Connection
   ) where
 
 import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.STM (TChan, atomically, dupTChan, readTChan, tryReadTChan)
+import Control.Concurrent.STM (TChan, atomically, dupTChan, newTVarIO, readTChan, tryReadTChan)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -71,12 +71,13 @@ runSession env conn = do
 --   drop chunks rather than push them anywhere.
 runCommands :: ServerEnv -> WS.Connection -> IO ()
 runCommands env conn = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $ do
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $ do
     embed $ WS.sendTextData conn (encode SessionReady')
     pushBranchList conn
     pushCharacterList conn
     pushUndoLog conn
-    commandLoop conn
+    commandLoop env conn
   either (reportError conn) return result
 
 -- | Re-push the branch list only when some ref's existence actually
@@ -85,7 +86,8 @@ runCommands env conn = do
 --   why each reacts to a different, precise subset of what's possible.
 runNotifier :: ServerEnv -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $
     watchNotifications chan (onRefMove conn) (pushUndoLog conn)
   either (reportError conn) return result
 
@@ -158,8 +160,8 @@ reportError conn err = WS.sendTextData conn (encode (SessionError (T.pack err)))
 
 commandLoop
   :: (SessionEffects r, Member (Embed IO) r)
-  => WS.Connection -> Sem r ()
-commandLoop conn = loop
+  => ServerEnv -> WS.Connection -> Sem r ()
+commandLoop env conn = loop
   where
     loop = do
       msg <- embed (try (WS.receiveData conn) :: IO (Either SomeException LBS.ByteString))
@@ -171,5 +173,5 @@ commandLoop conn = loop
 
     handle cmd =
       catch @String
-        (logCommand (commandKind cmd) (runCommand conn cmd))
+        (logCommand (commandKind cmd) (runCommand env conn cmd))
         (\err -> embed (reportError conn err))

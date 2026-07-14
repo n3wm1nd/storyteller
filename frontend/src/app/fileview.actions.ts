@@ -54,6 +54,7 @@ export async function openFile(path: string): Promise<void> {
             [path]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
           },
           preview: null,
+          previewCommandId: null,
         };
       });
     } else if (evt.type === "tick.remap") {
@@ -66,7 +67,7 @@ export async function openFile(path: string): Promise<void> {
       handleChatPreview(evt);
     } else if (evt.type === "error") {
       clearPreviewDelayTimer();
-      mirrorServerEvent({ preview: null });
+      mirrorServerEvent({ preview: null, previewCommandId: null });
       setError(evt.message);
     }
   });
@@ -207,16 +208,30 @@ function sendFileCommand(path: string, cmd: FileCommand) {
 // streaming on this connection (server processes one command at a time).
 // 'buildCmd' receives the captured flowTid (HEAD at queue-time) only when
 // the command is actually being queued — an immediate send has no
-// in-flight generation to be provisional about.
+// in-flight generation to be provisional about. An immediate send gets a
+// fresh id attached and recorded as 'previewCommandId' — what a Stop
+// button (see 'cancelGeneration') targets; the queued-and-flushed path
+// gets its own id at flush time instead (see lib/chatPreview.ts).
 function sendChatCommand(path: string, buildCmd: (flowTid?: string) => FileCommand) {
   const fc = getServerCache().openFiles[path];
   if (!fc) return;
   if (getServerCache().preview !== null) {
     useUI.setState({ pendingSubmit: { path, cmd: buildCmd(fc.head ?? undefined) } });
   } else {
+    const cmd = { ...buildCmd(undefined), id: crypto.randomUUID() };
+    mirrorServerEvent({ previewCommandId: cmd.id });
     schedulePreviewPlaceholder();
-    sendFileCommand(path, buildCmd(undefined));
+    sendFileCommand(path, cmd);
   }
+}
+
+// Ask the server to stop the in-flight chat/write generation early — see
+// Server.Writer.Session.Protocol's Cancel. No-ops if nothing is generating
+// (previewCommandId null) or the session connection isn't up.
+export function cancelGeneration() {
+  const targetId = getServerCache().previewCommandId;
+  if (!targetId) return;
+  getServerCache()._session?.send({ type: "cancel", targetId });
 }
 
 // Presence is scoped to a file (a scene), not the whole branch — see

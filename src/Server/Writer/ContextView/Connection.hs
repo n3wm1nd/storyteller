@@ -73,7 +73,8 @@ reportError conn err = WS.sendTextData conn (encode (ContextViewError (T.pack er
 --   discipline every other connection follows.
 runCommands :: ServerEnv -> T.Text -> WS.Connection -> TVar [ContextSlot] -> IO ()
 runCommands env branch conn slotsVar = do
-  result <- runM $ wsAction env conn $ commandLoop branch conn slotsVar
+  cancelFlag <- newTVarIO False
+  result <- runM $ wsAction env conn cancelFlag $ commandLoop branch conn slotsVar
   either (reportError conn) return result
 
 commandLoop
@@ -99,7 +100,8 @@ commandLoop branch conn slotsVar = loop
 --   puts a tick id on the wire.
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> TVar [ContextSlot] -> IO ()
 runNotifier env branch conn chan slotsVar = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $
     void $ watchBranch chan branch () (onNotify branch conn slotsVar)
   either (reportError conn) return result
 

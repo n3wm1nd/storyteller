@@ -21,6 +21,7 @@ module Storyteller.Core.Runtime
     -- * Runners
   , runInfrastructure
   , runInfrastructureWith
+  , runInfrastructureWithCancellation
   , runStoryGit
 
     -- * Re-exported for custom stacks
@@ -28,18 +29,20 @@ module Storyteller.Core.Runtime
   , Git
   ) where
 
+import Control.Concurrent.STM (TVar)
 import Control.Monad (void)
 import Polysemy
 import Polysemy.Fail
 import Polysemy.Error (Error, runError)
 import Polysemy.Resource (Resource, runResource)
+import Runix.Cancellation (Cancellation, runCancellationSTM)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (LLM)
 import Runix.LLM.Interpreter (interpretLLMWith, LlamaCppAuth(..))
 import Runix.Random (Random, randomIO)
 import Runix.RestAPI (RestEndpoint(..))
 import Runix.Runner (httpIO, withRequestTimeout, loggingIO, failLog)
-import Runix.HTTP (HTTP, HTTPStreaming, httpIOStreaming)
+import Runix.HTTP (HTTP, HTTPStreaming, httpIOStreaming, httpIOStreamingWithCancellation)
 import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
@@ -129,6 +132,38 @@ runInfrastructureWith runGit action =
   . timeIO
   . sleepIO
   . httpIOStreaming (withRequestTimeout 600)
+  . httpIO (withRequestTimeout 600)
+  . randomIO
+  $ withUndoLog storyRefPrefix isStoryRef action
+
+-- | Same as 'runInfrastructureWith', but backs 'HTTPStreaming' with
+--   'httpIOStreamingWithCancellation' instead of 'httpIOStreaming' —
+--   between-chunk fetches stop early once 'cancelFlag' is set, the same
+--   way a naturally-ended stream would (see that function's Haddock).
+--
+--   'Runix.Cancellation.Cancellation' is introduced and eliminated
+--   entirely within this one composition (@raiseUnder \@Cancellation@
+--   inserts it right under 'HTTPStreaming' for
+--   'httpIOStreamingWithCancellation' to use; 'runCancellationSTM'
+--   consumes it immediately after) — it never appears in @action@'s row,
+--   so nothing above this call (agents, handlers, 'SessionEffects' itself)
+--   ever needs to know cancellation exists. That's what makes this safe
+--   to swap in for one caller ('Server.Writer.Run.actionStack', the
+--   interactive server) while every other 'runInfrastructureWith' caller
+--   (CLI executables, tests) stays untouched.
+runInfrastructureWithCancellation
+  :: Members '[Fail, Embed IO] r
+  => TVar Bool
+  -> (Sem (Git : r) a -> Sem r a)
+  -> Sem (Undo : Random : HTTP : HTTPStreaming : Sleep : Time : Git : r) a
+  -> Sem r a
+runInfrastructureWithCancellation cancelFlag runGit action =
+    runGit
+  . timeIO
+  . sleepIO
+  . runCancellationSTM cancelFlag
+  . httpIOStreamingWithCancellation (withRequestTimeout 600)
+  . raiseUnder @Cancellation
   . httpIO (withRequestTimeout 600)
   . randomIO
   $ withUndoLog storyRefPrefix isStoryRef action

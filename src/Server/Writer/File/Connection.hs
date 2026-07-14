@@ -36,7 +36,7 @@ module Server.Writer.File.Connection
 
 import Control.Concurrent (forkIO, killThread)
 import Control.Monad (void)
-import Control.Concurrent.STM (TChan, atomically, dupTChan)
+import Control.Concurrent.STM (TChan, TVar, atomically, dupTChan, newTVarIO, writeTVar)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as LBS
@@ -45,7 +45,7 @@ import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed, runM)
 import Polysemy.Error (Error, catch)
 
-import Server.Writer.Env (ServerEnv(..))
+import Server.Writer.Env (ServerEnv(..), registerCancel, unregisterCancel)
 import Server.Core.File (FileOpen, fileState, fileStateSince)
 import Server.Core.Logging (logCommand)
 import Server.Writer.File.Dispatch (runCommand)
@@ -64,16 +64,20 @@ import Storyteller.Core.Runtime (Main)
 runFile :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runFile env branch path conn = do
   notifyChan <- atomically $ dupTChan (envNotifyChan env)
+  cancelFlag <- newTVarIO False
   notifier   <- forkIO $ runNotifier env branch path conn notifyChan
-  runCommands env branch path conn `finally` killThread notifier
+  runCommands env branch path conn cancelFlag `finally` killThread notifier
 
 -- | The command-loop thread's persistent stack: enter the branch once, push
 --   the initial file state, then dispatch commands until the socket closes.
-runCommands :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
-runCommands env branch path conn = do
-  result <- runM $ wsAction env conn $
+--   'cancelFlag' is this connection's one long-lived cancel flag — reset
+--   before each command runs and briefly published under that command's
+--   own id (see 'handle') so a \/session 'cancel' can reach it.
+runCommands :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TVar Bool -> IO ()
+runCommands env branch path conn cancelFlag = do
+  result <- runM $ wsAction env conn cancelFlag $
     withBranch @Main branch (pushInitial conn path)
-      >> splitMarkdownAware (commandLoop branch conn path)
+      >> splitMarkdownAware (commandLoop env branch conn path cancelFlag)
   either (reportError conn) return result
 
 -- | The notify-listener thread's persistent stack: react to ref-move and
@@ -83,7 +87,10 @@ runCommands env branch path conn = do
 --   long-held scope to notice writes made elsewhere.
 runNotifier :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch path conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
+  -- Never runs an LLM-backed command, so there is nothing to cancel — a
+  -- fresh, unshared 'TVar Bool' just satisfies 'actionStack's signature.
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $
     void $ watchBranch chan branch Nothing (onNotify branch conn path)
   either (reportError conn) return result
 
@@ -124,8 +131,8 @@ pushInitial conn path = do
 --   introduced later around an individual command.
 commandLoop
   :: (Member Splitter r, SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> FilePath -> Sem r ()
-commandLoop branch conn path = loop
+  => ServerEnv -> T.Text -> WS.Connection -> FilePath -> TVar Bool -> Sem r ()
+commandLoop env branch conn path cancelFlag = loop
   where
     loop = do
       msg <- embed (try (WS.receiveData conn) :: IO (Either SomeException LBS.ByteString))
@@ -139,11 +146,19 @@ commandLoop branch conn path = loop
     -- cross-branch cascade) either all land together or none do, and
     -- either way the ref-move notification other connections rely on
     -- fires right after this command, not just at connection close.
-    handle cmd =
+    --
+    -- 'cancelFlag' is reset before the command starts, and — if it carries
+    -- an id — briefly registered under that id (see 'Server.Writer.Env')
+    -- so a 'cancel' sent on \/session while this command is streaming can
+    -- reach it; unregistered again once the command finishes either way.
+    handle cmd = do
+      embed $ atomically $ writeTVar cancelFlag False
+      embed $ mapM_ (\cid -> registerCancel env cid cancelFlag) (fcId cmd)
       catch @String
         (logCommand (commandKind cmd) (withStorage (withBranch @Main branch (runCommand path cmd)))
           >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
+      embed $ mapM_ (unregisterCancel env) (fcId cmd)
 
 -- 'since = Nothing' means we're still in the absent state from connect —
 -- mirror 'pushInitial' exactly, so it transitions to present the moment

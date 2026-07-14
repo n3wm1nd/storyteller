@@ -26,7 +26,7 @@ module Server.Writer.Character.Connection
 
 import Control.Concurrent (forkIO, killThread)
 import Control.Monad (void)
-import Control.Concurrent.STM (TChan, atomically, dupTChan)
+import Control.Concurrent.STM (TChan, atomically, dupTChan, newTVarIO)
 import Control.Exception (SomeException, try, finally)
 import Data.Aeson (encode)
 import qualified Data.ByteString.Lazy as LBS
@@ -51,15 +51,19 @@ runCharacter env branch conn = do
   notifier   <- forkIO $ runNotifier env branch conn notifyChan
   runInitial env branch conn `finally` killThread notifier
 
+-- | Read-only connection — no commands, so no cancel flag ever gets set;
+--   a fresh, unshared 'TVar Bool' satisfies 'wsAction's signature.
 runInitial :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runInitial env branch conn = do
-  result <- runM $ wsAction env conn $
+  cancelFlag <- newTVarIO False
+  result <- runM $ wsAction env conn cancelFlag $
     withBranch @Main branch (push conn branch) >> waitForClose conn
   either (reportError conn) return result
 
 runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> IO ()
 runNotifier env branch conn chan = do
-  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env $
+  cancelFlag <- newTVarIO False
+  result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $
     void $ watchBranch chan branch () (onNotify branch conn)
   either (reportError conn) return result
 
