@@ -75,6 +75,30 @@ spec runner = do
         Left err -> expectationFailure err
         Right typed -> fromTick @Prompt typed `shouldBe` Just (Prompt "chat/f.md" "new text")
 
+    -- The "regenerate with a changed prompt" flow
+    -- ('Server.Writer.File.chatConverseSwipe') always calls 'editChatPrompt'
+    -- with whatever (possibly stale) prompt id the client last saw, same as
+    -- 'chatConverseSwipe''s own Haddock on why it reads history *before*
+    -- editing. A second edit reusing the *original* (now-superseded) id --
+    -- e.g. the user regenerates twice before the client's first response
+    -- (carrying the new tick id) comes back -- must still land on the
+    -- prompt's *current* text, not silently overwrite based on stale data
+    -- or get lost. 'editChatPrompt' itself resolves the id inside its own
+    -- 'Core.at' call, so the edit's *position* is never in question -- this
+    -- pins that the *file* field it reads back off the (still-unresolved)
+    -- 'Tick.readTypesTick' call survives a stale id too, since nothing here
+    -- ever changes a 'Prompt''s own path in place.
+    it "a second edit reusing the original (now-stale) prompt id still lands correctly" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            h <- runStorage @Main (Tick.storeAs (Prompt "chat/f.md" "v0"))
+            let tid = TickId (Core.unObjectHash h)
+            editChatPrompt tid "v1"
+            editChatPrompt tid "v2"  -- same, now-stale, original id
+            runStorage @Main (Core.resolveId h >>= Tick.readTypesTick)
+      case result of
+        Left err -> expectationFailure err
+        Right typed -> fromTick @Prompt typed `shouldBe` Just (Prompt "chat/f.md" "v2")
+
   describe "correcting an instruction group (delete group, regenerate at its captured parent)" $ do
 
     -- Pins the assumption 'Server.Writer.File.correctGroup' depends on:

@@ -87,7 +87,12 @@ proseAgent outputHint charContexts contextBlocks (ExistingContent existing) (Ins
 --   to the 'Storyteller.Core.Runtime.Prompts' branch.
 defaultWriterSystemPrompt :: Prompt
 defaultWriterSystemPrompt =
-  "You are a creative writing assistant. Write only what is asked. Output only prose, nothing else."
+  "You are a creative writing assistant. Output only prose, nothing else. \
+  \Never restate the instruction back as narration -- absorb what it asks for and \
+  \render it in the story's own voice, as events, dialogue, and detail, not as a \
+  \paraphrase of the request. Any word count given is a rough target, not a hard \
+  \limit -- go over or under it when the scene calls for it. Do not wrap up, resolve, \
+  \or otherwise end the story in this section; leave threads open for what comes next."
 
 -- | Compiled-in sampling default for @agent.writer@ (also backing
 --   'Storyteller.Writer.Agent.Outline.chapterProse'\/'chapterProseByBeat'\/
@@ -157,7 +162,7 @@ writerUserMessage contextBlocks charContexts existing extraInstructions instruct
 
     lengthHint = case outputHint of
       Nothing            -> ""
-      Just (WordCount n) -> "Write approximately " <> T.pack (show n) <> " words.\n"
+      Just (WordCount n) -> "Aim for roughly " <> T.pack (show n) <> " words -- a guideline, not a hard cutoff.\n"
 
 -- | Read the target file's existing content and every /other/ branch file,
 --   as plain data — no LLM involved. Requires the target branch's

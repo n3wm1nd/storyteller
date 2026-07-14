@@ -134,8 +134,9 @@ writeAgent lore style chars pinned earlierChapters currentTicks instruction = do
 --   with its own later replay as history) on every single turn.
 chapterContinuationNote :: T.Text
 chapterContinuationNote =
-  "Write approximately 300 words per turn. Write only the new text to \
-  \append. Do not repeat or summarise existing content."
+  "Aim for roughly 300 words per turn, as a guideline rather than a hard \
+  \limit. Write only the new text to append -- do not repeat or summarise \
+  \existing content."
 
 -- | The pure heart of 'writeAgent': everything about message order,
 --   what's included, and what's dropped when empty, with no LLM effect

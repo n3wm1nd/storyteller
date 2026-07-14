@@ -292,7 +292,13 @@ spec runner = do
     -- client sent). The prompt's own rebase replays (and so re-hashes)
     -- the atom sitting after it; pushSwipe must still land on the atom's
     -- *current* position via 'resolveId', not silently miss and land a
-    -- stray new atom instead.
+    -- stray new atom instead. A *second*, direct edit lands on the atom
+    -- itself (still via the same pre-rebase id) so the content actually
+    -- being displaced differs from what that stale id's own, never-
+    -- replayed commit still says -- otherwise this test can't tell "reads
+    -- the atom's current content" apart from "reads whatever the stale id
+    -- happens to still say", which coincide whenever only the atom's
+    -- *position* (not its content) was rebased out from under it.
     it "pushSwipe still finds the atom after an earlier rebase changed its id" $ do
       let result = withFile_ runner (BranchName "b") $ do
             promptTid <- runStorage @Main (Core.store (Core.NonAtom [] "type:prompt\n\nhi"))
@@ -303,14 +309,25 @@ spec runner = do
             _ <- runStorage @Main $ Core.at promptTid $ Core.editTick $ \case
               Core.NonAtom refs _ -> return (Core.NonAtom refs "type:prompt\n\nhi (edited)")
               other               -> return other
-            -- Use the *stale* (pre-rebase) atom id, same as the caller.
-            _ <- runStorage @Main (Swipe.pushSwipe atomTid "second reply")
+            -- Edit the atom itself too, still via the *stale* id --
+            -- 'Ops.editAtomAt' resolves it internally, so this correctly
+            -- lands on the atom's current position: its content is now
+            -- "second reply", even though the stale id's own unreplayed
+            -- commit still (and only ever) says "first reply".
+            _ <- runStorage @Main (Ops.editAtomAt atomTid "second reply")
+            -- Use the same stale atom id one more time, same as the
+            -- caller. The content displaced into the swipe must be
+            -- "second reply" -- what the atom actually, currently holds.
+            _ <- runStorage @Main (Swipe.pushSwipe atomTid "third reply")
             fileState "chat/f.md"
       case result of
         Left err  -> expectationFailure err
         Right upd -> do
-          let kinds = map wtKind (updateTicks upd)
-          -- Exactly one atom (edited in place) and one swipe holding the
-          -- displaced content -- not two atoms.
+          let ticks = updateTicks upd
+              kinds = map wtKind ticks
+          -- Exactly one atom (edited in place, twice) and one swipe
+          -- holding the displaced content -- not two/three atoms.
           length (filter (== "atom") kinds) `shouldBe` 1
           length (filter (== "swipe") kinds) `shouldBe` 1
+          [swipeMsg] <- return [wtMessage t | t <- ticks, wtKind t == "swipe"]
+          swipeMsg `shouldBe` "second reply"

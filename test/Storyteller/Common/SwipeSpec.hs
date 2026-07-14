@@ -13,7 +13,7 @@ import Data.List (sort)
 import Test.Hspec
 
 import Storage.Core
-import Storage.Ops (addAtom)
+import Storage.Ops (addAtom, editAtomAt)
 import Storage.MockStore
 import Storyteller.Common.Swipe
 
@@ -42,6 +42,30 @@ spec = do
         Right (t, _) -> case t of
           NonAtom _ msg -> msg `shouldBe` "type:swipe\n\noriginal"
           _             -> expectationFailure "expected the tick right after the atom to be a swipe"
+
+    it "reads the *current* content to displace, even when called with a stale (already-superseded) id" $ do
+      -- 'cycleSwipe' resolves its argument via 'resolveId' before doing
+      -- anything else (see its own Haddock) precisely because a caller may
+      -- be holding an id an earlier edit in the same scope has since
+      -- replaced. 'pushSwipe'/'swapAtomContent' makes no such promise: it
+      -- reads the old content straight off the (possibly-stale) id it's
+      -- given. Edit the atom once behind the caller's back, then push a
+      -- swipe on the now-stale original id -- the content that edit
+      -- produced ("v1") should land as the preserved alternate, not the
+      -- content from before it.
+      let result = runChain $ do
+            a0 <- addAtom "f.md" "v0"
+            _  <- editAtomAt a0 "v1"          -- caller's `a0` is now stale
+            _  <- pushSwipe a0 "v2"           -- pushed against the stale id
+            content <- committedContent "f.md"
+            drop >>= \t -> return (content, t)
+      case result of
+        Left err -> expectationFailure err
+        Right ((content, tick), _) -> do
+          content `shouldBe` "v2"
+          case tick of
+            NonAtom _ msg -> msg `shouldBe` "type:swipe\n\nv1"
+            _             -> expectationFailure "expected a swipe preserving \"v1\""
 
     it "leaves everything already after the atom untouched" $ do
       let result = fst <$> runChain (do

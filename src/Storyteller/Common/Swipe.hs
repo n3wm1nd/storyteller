@@ -36,9 +36,14 @@ import Storyteller.Common.Types (Swipe(..))
 --   whatever it held before as a new alternate — a 'Swipe' inserted
 --   immediately after the atom's new position, ahead of anything already
 --   in its carousel. The shared core both 'pushSwipe' and 'cycleSwipe'
---   build on.
+--   build on. @tid@ is resolved first (see 'Storage.Core.resolveId'), same
+--   reason 'cycleSwipe' does it: a caller composing this with an earlier
+--   edit in the same scope may be holding an id that edit has since
+--   replaced, and reading the content to displace straight off a stale id
+--   would silently discard whatever that earlier edit actually produced.
 swapAtomContent :: StoreM m => ObjectHash -> Text -> StoreT m ObjectHash
-swapAtomContent tid newContent = do
+swapAtomContent tid0 newContent = do
+  tid <- resolveId tid0
   old <- Tick.readTypesTick tid
   oldContent <- case fromTick @Atom old of
     Just (Atom _ content) -> return content
