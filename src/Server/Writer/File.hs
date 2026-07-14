@@ -46,7 +46,7 @@ import UniversalLLM (Message(..))
 import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary, flattenCharSummary, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
-import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, hideChapters, classifyPath)
+import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, hideChapters, hideLore, classifyPath)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
@@ -162,7 +162,7 @@ journalPath = "journal.md"
 --   result is done here too.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Map.Map T.Text ContextLayout -> Sem r ()
 chatWriter path prompt context layout mFlowTid charLayouts = do
-  (_existing, fileCtx) <- hideChapters @(BranchTag Main) (hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path))
+  (_existing, fileCtx) <- hideLore @(BranchTag Main) (hideChapters @(BranchTag Main) (hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)))
   (loreBlocks, styleBlocks, earlierChapters) <- runStorage @Main $ do
     (WorldContext.WorldLore lore, WorldContext.SystemContext style) <- WorldContext.worldContextOf
     earlier <- ChapterContext.earlierChaptersOf path

@@ -32,7 +32,7 @@ noSummary :: CharSummary
 noSummary = CharSummary [] [] []
 
 build
-  :: [ContextBlock] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [T.Text] -> [FileTick] -> Instruction
+  :: [ContextBlock] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [(FilePath, T.Text)] -> [FileTick] -> Instruction
   -> [Message ProseModel]
 build = buildChapterMessages
 
@@ -49,9 +49,12 @@ spec = describe "buildChapterMessages" $ do
       (m : _) -> m `shouldBe` UserText "### notes/tavern.md\n\nA tavern."
       []      -> expectationFailure "expected at least one message"
 
-  it "puts earlier chapters right after world lore, oldest first, one message each" $ do
-    let msgs = build [] [] [] ["chapter one prose", "chapter two prose"] [] (Instruction "go")
-    take 2 msgs `shouldBe` [UserText "chapter one prose", UserText "chapter two prose"]
+  it "puts earlier chapters right after world lore, oldest first, each as a naming user message plus its prose as an assistant message" $ do
+    let msgs = build [] [] [] [("chapters/ch1.md", "chapter one prose"), ("chapters/ch2.md", "chapter two prose")] [] (Instruction "go")
+    take 4 msgs `shouldBe`
+      [ UserText "## Chapter: chapters/ch1.md", AssistantText "chapter one prose"
+      , UserText "## Chapter: chapters/ch2.md", AssistantText "chapter two prose"
+      ]
 
   it "puts a character's sheet/context as one chapter-start message, journal excluded from it" $ do
     let alice = CharSummary
@@ -103,7 +106,7 @@ spec = describe "buildChapterMessages" $ do
           [ContextBlock "### lore.md\n\nlore"]
           [(CharLabel "Alice", alice)]
           [ContextBlock "### pinned.md\n\npinned"]
-          ["earlier chapter"]
+          [("chapters/ch1.md", "earlier chapter")]
           [atomTick "existing prose"]
           (Instruction "finish the scene")
     case reverse msgs of

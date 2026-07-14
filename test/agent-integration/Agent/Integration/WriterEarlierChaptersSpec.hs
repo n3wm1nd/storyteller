@@ -69,7 +69,7 @@ spec
 spec runner = describe "earlier-chapter continuity reaching the writer (real LLM, cached)" $
   it "keeps a new chapter consistent with a fact only an earlier chapter established" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [] [] [earlierChapter] [] instruction
+      Prose text <- writeAgent [] [] [] [] [("chapters/ch1.md", earlierChapter)] [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

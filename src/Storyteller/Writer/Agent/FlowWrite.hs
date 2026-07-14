@@ -57,7 +57,7 @@ flowWriteAgent
   -> [ContextBlock]                                  -- ^ standing style guide
   -> [(CharLabel, CharSummary)]                       -- ^ every active character's summary
   -> [ContextBlock]                                  -- ^ pinned/short-term context
-  -> [T.Text]                                        -- ^ earlier chapters, oldest-first
+  -> [(FilePath, T.Text)]                            -- ^ earlier chapters, oldest-first, each its own path and full prose
   -> Instruction
   -> Sem r ([TickId], Prose)
 flowWriteAgent path flowTid lore style chars pinned earlierChapters instruction = do

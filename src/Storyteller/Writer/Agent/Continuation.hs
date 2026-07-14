@@ -38,7 +38,7 @@ import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..), renderEmbeddedFile)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, applyContextLayout)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 
@@ -210,4 +210,4 @@ readContextFile
   -> Sem r ContextBlock
 readContextFile path = do
   bytes <- readFile @project path
-  return $ ContextBlock $ "### " <> T.pack path <> "\n\n" <> TE.decodeUtf8 bytes
+  return $ ContextBlock $ renderEmbeddedFile path (TE.decodeUtf8 bytes)

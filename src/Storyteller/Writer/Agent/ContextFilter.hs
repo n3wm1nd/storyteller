@@ -24,6 +24,7 @@
 module Storyteller.Writer.Agent.ContextFilter
   ( hideBinaryFiles
   , hideChapters
+  , hideLore
   , PickerRule(..)
   , ContextLayout
   , classifyPath
@@ -36,6 +37,7 @@ import Data.List (sortOn)
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import System.FilePath (takeExtension)
 import qualified System.FilePath.Glob as Glob
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
@@ -46,6 +48,7 @@ import qualified Runix.FileSystem.Path as Path
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (BranchOp, runStorage)
 import qualified Storyteller.Writer.Library as Library
+import Storyteller.Writer.Agent.WorldContext (isWorldContextEligible)
 
 -- | Wrap @action@ so every binary path in @branch@ is invisible to it.
 --   Read-only narrowing, same contract as every other 'PathFilter' in
@@ -69,6 +72,34 @@ hideBinaryFiles action = do
         }
   filterRead @project filt (filterFileSystem @project filt action)
 
+-- | Narrow a leaf-only exclusion predicate (@classifyPath p == Unit@,
+--   @isWorldContextEligible p@, ...) so it's safe to use as a whole
+--   'PathFilter', not just as a per-file classifier. 'Runix.FileSystem.
+--   filterFileSystem' asks @shouldInclude@ about *every* path a
+--   'listAllFiles' walk touches, including the bare directory it's about
+--   to descend into (the real interpreter behind this genuinely calls
+--   'Runix.FileSystem.ListFiles' once per directory level, via
+--   'Runix.FileSystem.foldTree' -- see 'Storyteller.Core.Git.
+--   runStoryFSGit') and the branch root @\"\/\"@ itself, not only the
+--   files it eventually returns -- and a directory query denied there
+--   doesn't just narrow the results, it hard-fails the whole traversal
+--   ('Runix.FileSystem.listFiles' 'fail's on any denied 'Runix.FileSystem.
+--   ListFiles'). A directory segment can satisfy either predicate above
+--   just as easily as a real content file can -- @\"chapters\"@ itself
+--   matches the same chapter marker word 'Storyteller.Writer.Library.
+--   classifyPath' looks for in a leaf's own name, and the branch root
+--   trivially satisfies 'isWorldContextEligible''s elimination test (it
+--   isn't a chapter, chat scratch, or a sheet\/journal, so by that test
+--   alone it "is" eligible) -- so applying either predicate directly,
+--   unguarded, denies descending into a real @chapters\/@ directory or
+--   listing the branch root at all, rather than narrowing what's found
+--   inside them. A path with no extension is never a genuine leaf file in
+--   this codebase's convention (every real content file is a @.md@), so
+--   it's always let through here regardless of what the leaf predicate
+--   says about it -- only an actual @.md@ path is ever weighed against it.
+excludeLeaf :: (FilePath -> Bool) -> FilePath -> Bool
+excludeLeaf isExcludedLeaf p = not (null (takeExtension p)) && isExcludedLeaf p
+
 -- | Wrap @action@ so every prose 'Library.Unit' path
 --   ('Storyteller.Writer.Library.classifyPath') is invisible to it --
 --   read-only narrowing, same contract as 'hideBinaryFiles'. For a caller
@@ -80,7 +111,9 @@ hideBinaryFiles action = do
 --   for whichever chapter is actively being continued, growing every single
 --   turn right inside what's meant to be stable context. Pure -- no
 --   branch\/atom lookup needed, unlike 'hideBinaryFiles', since chapter-or-
---   not is already decidable from the path alone.
+--   not is already decidable from the path alone -- but see 'excludeLeaf'
+--   for why that per-file decision still needs guarding before it's safe
+--   to use as this filter's own @shouldInclude@.
 hideChapters
   :: forall project r a
   .  Members '[FileSystem project, FileSystemRead project] r
@@ -88,10 +121,35 @@ hideChapters
 hideChapters action = filterRead @project filt (filterFileSystem @project filt action)
   where
     filt = PathFilter
-      { shouldInclude = \p -> case Library.classifyPath p of
-          Library.Unit -> False
-          _            -> True
+      { shouldInclude = \p -> not (excludeLeaf isChapter p)
       , filterName = "chapters are hidden (covered separately by earlierChaptersOf)"
+      }
+    isChapter p = Library.classifyPath p == Library.Unit
+
+-- | Wrap @action@ so every path 'Storyteller.Writer.Agent.WorldContext.
+--   worldContextOf' already delivers (world lore -- including the
+--   whole-story outline and any beat sheet -- and the style guide) is
+--   invisible to it -- same read-only-narrowing contract as 'hideChapters',
+--   and for the identical reason: a caller that already has a dedicated,
+--   stable early channel for this content (see 'Server.Writer.File.
+--   chatWriter', which calls 'worldContextOf' and this filter side by side)
+--   would otherwise show it a second time, folded into whatever "every
+--   other file" context ends up in -- 'Storyteller.Writer.Agent.
+--   Continuation.gatherFileContext''s pinned\/short-term splice -- deep in
+--   a chapter's history rather than once, up front. Pure -- no branch\/atom
+--   lookup needed, unlike 'hideBinaryFiles', since lore-or-not is already
+--   decidable from the path alone -- see 'excludeLeaf' for why that
+--   decision still needs guarding before it's safe to use as this filter's
+--   own @shouldInclude@.
+hideLore
+  :: forall project r a
+  .  Members '[FileSystem project, FileSystemRead project] r
+  => Sem r a -> Sem r a
+hideLore action = filterRead @project filt (filterFileSystem @project filt action)
+  where
+    filt = PathFilter
+      { shouldInclude = \p -> not (excludeLeaf isWorldContextEligible p)
+      , filterName = "lore/outline/style are hidden (covered separately by worldContextOf)"
       }
 
 -- | One claim in a 'ContextLayout': every path matching 'prPattern' that no

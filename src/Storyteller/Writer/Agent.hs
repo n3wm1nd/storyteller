@@ -20,6 +20,7 @@ module Storyteller.Writer.Agent
   , ContextBlock(..)
   , ExistingContent(..)
   , WordCount(..)
+  , renderEmbeddedFile
   ) where
 
 import Data.Text (Text)
@@ -105,10 +106,29 @@ data CharSummary = CharSummary
 flattenCharSummary :: CharSummary -> [CharContextBlock]
 flattenCharSummary (CharSummary sheet ctx journal) = sheet ++ ctx ++ journal
 
--- | A formatted block of branch context (e.g. "### path\n\ncontent"), ready
+-- | A formatted block of branch context (see 'renderEmbeddedFile'), ready
 --   for inclusion in an LLM prompt alongside character and file content.
 newtype ContextBlock = ContextBlock Text
   deriving (Show, Eq)
+
+-- | Render a branch file's raw content as an explicitly fenced block --
+--   distinct from a live instruction even if a provider concatenates this
+--   message with an adjacent one of the same role (some do, once several
+--   'UserText' messages end up back to back -- see
+--   'Storyteller.Writer.Agent.Write.buildChapterMessages'). The @path@
+--   attribute is what tells the model *what* this is without needing prose
+--   framing repeated around every single entry; the tags are what tell it
+--   this is embedded reference data, not something to act on directly.
+--   Shared by 'Storyteller.Writer.Agent.WorldContext.worldContextOf' (lore
+--   and style entries) and 'Storyteller.Writer.Agent.Continuation.
+--   gatherFileContext' (every other branch file) -- the two places raw
+--   file content gets embedded into a prompt this way.
+renderEmbeddedFile :: FilePath -> Text -> Text
+renderEmbeddedFile path content = T.concat
+  [ "<context-file path=\"", T.pack path, "\">\n"
+  , content
+  , "\n</context-file>"
+  ]
 
 -- | The current content of the file being continued.
 --   Empty when the file does not yet exist.

@@ -106,7 +106,7 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
         charSummary = CharSummary { csSheet = [], csContext = charBlocks, csJournal = [] }
 
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [(CharLabel "Mira", charSummary)] [] [existingText] [] instruction
+      Prose text <- writeAgent [] [] [(CharLabel "Mira", charSummary)] [] [("scene.md", existingText)] [] instruction
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

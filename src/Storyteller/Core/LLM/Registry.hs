@@ -94,7 +94,7 @@ import UniversalLLM.Models.DeepSeek.DeepSeek (DeepSeekV4Flash(..), DeepSeekV4Pro
 import UniversalLLM.Models.Moonshot.Kimi (KimiK25(..))
 import UniversalLLM.Models.Minimax.M (MinimaxM25(..))
 import UniversalLLM.Models.ZhipuAI.GLM (GLM47(..))
-import UniversalLLM.Models.Anthropic.Claude (ClaudeFable5(..))
+import UniversalLLM.Models.Anthropic.Claude (ClaudeSonnet46(..), ClaudeOpus48(..))
 import UniversalLLM.Models.OpenAI.GPT (GPTOSS20B(..), GPT54(..))
 import UniversalLLM.Providers.OpenAI (LlamaCpp(..), OpenRouter(..))
 import UniversalLLM.Providers.Anthropic (Anthropic(..))
@@ -142,7 +142,16 @@ knownModels =
   , ("kimi-k2.5",         KnownModel ViaOpenRouter (Model KimiK25 OpenRouter)         [MaxTokens 2048])
   , ("minimax-m2.5",      KnownModel ViaOpenRouter (Model MinimaxM25 OpenRouter)      [MaxTokens 2048])
   , ("glm-4.7",           KnownModel ViaOpenRouter (Model GLM47 OpenRouter)           [MaxTokens 2048])
-  , ("claude-fable-5",    KnownModel ViaAnthropic  (Model ClaudeFable5 Anthropic)     [MaxTokens 2048])
+
+  -- Claude, both backends: native Anthropic (preferred -- no OpenRouter
+  -- markup, and the one that's actually been run against) and OpenRouter
+  -- (for accounts that already centralize billing/keys there). Sonnet and
+  -- Opus specifically, not Fable -- Fable is not a good prose model and is
+  -- expensive/token-inefficient for what this project needs it for.
+  , ("claude-sonnet-4-6",             KnownModel ViaAnthropic  (Model ClaudeSonnet46 Anthropic)  [MaxTokens 2048])
+  , ("claude-sonnet-4-6-openrouter",  KnownModel ViaOpenRouter (Model ClaudeSonnet46 OpenRouter) [MaxTokens 2048])
+  , ("claude-opus-4-8",               KnownModel ViaAnthropic  (Model ClaudeOpus48 Anthropic)    [MaxTokens 2048])
+  , ("claude-opus-4-8-openrouter",    KnownModel ViaOpenRouter (Model ClaudeOpus48 OpenRouter)   [MaxTokens 2048])
 
   -- Not yet in universal-llm at all -- stubbed so a typo'd env var points at
   -- the actual gap instead of "unknown model name".
@@ -187,7 +196,10 @@ knownAgentModels =
   , ("kimi-k2.5",      error "KimiK25 via OpenRouter has no HasJSON/HasReasoning instance in universal-llm -- prose-only, see the 'kimi-k2.5' entry in knownModels; add capability instances in UniversalLLM.Models.Moonshot.Kimi to make it agent-eligible")
   , ("minimax-m2.5",   error "MinimaxM25 via OpenRouter has no HasJSON/HasReasoning instance in universal-llm -- prose-only, see the 'minimax-m2.5' entry in knownModels; add capability instances in UniversalLLM.Models.Minimax.M to make it agent-eligible")
   , ("glm-4.7",        error "GLM47 via OpenRouter has no HasJSON/HasReasoning instance in universal-llm -- prose-only, see the 'glm-4.7' entry in knownModels; add capability instances in UniversalLLM.Models.ZhipuAI.GLM to make it agent-eligible")
-  , ("claude-fable-5", error "ClaudeFable5 via Anthropic has no HasJSON/HasReasoning instance in universal-llm -- prose-only, see the 'claude-fable-5' entry in knownModels; add capability instances in UniversalLLM.Models.Anthropic.Claude to make it agent-eligible")
+  , ("claude-sonnet-4-6",            error "ClaudeSonnet46 via Anthropic has no HasJSON instance in universal-llm -- prose-only, see the 'claude-sonnet-4-6' entry in knownModels; add a HasJSON instance in UniversalLLM.Models.Anthropic.Claude to make it agent-eligible")
+  , ("claude-sonnet-4-6-openrouter", error "ClaudeSonnet46 via OpenRouter has no HasJSON instance in universal-llm -- prose-only, see the 'claude-sonnet-4-6-openrouter' entry in knownModels; add a HasJSON instance in UniversalLLM.Models.Anthropic.Claude to make it agent-eligible")
+  , ("claude-opus-4-8",              error "ClaudeOpus48 via Anthropic has no HasJSON instance in universal-llm -- prose-only, see the 'claude-opus-4-8' entry in knownModels; add a HasJSON instance in UniversalLLM.Models.Anthropic.Claude to make it agent-eligible")
+  , ("claude-opus-4-8-openrouter",   error "ClaudeOpus48 via OpenRouter has no HasJSON instance in universal-llm -- prose-only, see the 'claude-opus-4-8-openrouter' entry in knownModels; add a HasJSON instance in UniversalLLM.Models.Anthropic.Claude to make it agent-eligible")
 
   , ("mistral-large", error "mistral-large is not yet added to universal-llm -- see UniversalLLM.Models.Mistral (does not exist yet); add a model module there first, then a real KnownAgentModel entry here")
   , ("llama",          error "llama is not yet added to universal-llm -- see UniversalLLM.Models.Meta (does not exist yet); add a model module there first, then a real KnownAgentModel entry here")

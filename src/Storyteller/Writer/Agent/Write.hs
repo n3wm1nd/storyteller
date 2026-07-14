@@ -79,9 +79,18 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --
 --     1. World lore (if any) -- one message, stable across an entire
 --        story.
---     2. Earlier chapters, oldest first -- one message each, each one's
---        full current prose verbatim (no prompts, no instructions: a
---        chapter file's working-tree content already is just its prose).
+--     2. Earlier chapters, oldest first -- one @('UserText', 'AssistantText')@
+--        pair per chapter: a short 'UserText' naming the chapter's path,
+--        then its full current prose verbatim (no prompts, no instructions:
+--        a chapter file's working-tree content already is just its prose)
+--        as 'AssistantText' -- framed as something the assistant already
+--        wrote, not as reference material the user is presenting, which is
+--        both the more accurate framing (this *is* prior assistant output)
+--        and what keeps a run of several chapters from reading as one
+--        undifferentiated 'UserText' blob if a provider concatenates
+--        adjacent same-role messages -- see 'buildChapterMessages's
+--        Haddock below for why the naming message matters even once the
+--        prose itself is safely on the other role.
 --     3. This chapter's "identity" block -- every active character's
 --        'csSheet'\/'csContext', under a @"## Character: {name}"@ header
 --        each (see 'flattenCharBlocks') -- mostly stable for the whole
@@ -109,7 +118,7 @@ writeAgent
   -> [ContextBlock]              -- ^ standing style guide, already rendered (see 'Storyteller.Writer.Agent.WorldContext.SystemContext') -- appended to the system prompt, not a message
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
   -> [ContextBlock]              -- ^ pinned/short-term context (e.g. the user's own selection)
-  -> [T.Text]                    -- ^ earlier chapters, oldest-first, full prose
+  -> [(FilePath, T.Text)]        -- ^ earlier chapters, oldest-first, each its own path and full prose
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> Sem r Prose
@@ -148,7 +157,7 @@ buildChapterMessages
   .  [ContextBlock]              -- ^ world lore, already rendered
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
   -> [ContextBlock]              -- ^ pinned/short-term context
-  -> [T.Text]                    -- ^ earlier chapters, oldest-first, full prose
+  -> [(FilePath, T.Text)]        -- ^ earlier chapters, oldest-first, each its own path and full prose
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> [Message m]
@@ -157,7 +166,17 @@ buildChapterMessages lore chars pinned earlierChapters currentTicks (Instruction
   where
     loreMsgs = [ UserText (renderContextBlocks lore) | not (null lore) ]
 
-    earlierMsgs = [ UserText c | c <- earlierChapters, not (T.null c) ]
+    -- Each earlier chapter is its own naming 'UserText' ("which chapter is
+    -- this") immediately followed by its full prose as 'AssistantText' --
+    -- framed as something the assistant already wrote, since it genuinely
+    -- is prior assistant output, and (see 'writeAgent's own Haddock) so a
+    -- run of several chapters back to back doesn't read as one
+    -- undifferentiated 'UserText' blob if a provider concatenates adjacent
+    -- same-role messages.
+    earlierMsgs = concat
+      [ [UserText ("## Chapter: " <> T.pack path), AssistantText content]
+      | (path, content) <- earlierChapters, not (T.null content)
+      ]
 
     -- 'flattenCharBlocks' always prepends a header per entry, so a
     -- character with nothing under 'csSheet'\/'csContext' has to be

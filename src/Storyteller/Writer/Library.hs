@@ -36,6 +36,7 @@ module Storyteller.Writer.Library
   , classifyPath
   , buildLibraryTree
   , narrativeUnits
+  , naturalKey
   ) where
 
 import Data.Char (isAlpha, isDigit)
