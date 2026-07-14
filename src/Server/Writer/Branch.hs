@@ -15,6 +15,7 @@
 module Server.Writer.Branch
   ( trackFiles
   , charGen
+  , summarize
   , uploadFiles
   , uploadFile
   , saveFile
@@ -23,26 +24,30 @@ module Server.Writer.Branch
 
 import Control.Monad (void)
 import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Sem)
+import Polysemy (Members, Sem)
 import Polysemy.Error (throw)
+import Polysemy.Fail (Fail)
 import Runix.FileSystem (writeFile)
+import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Core.Util (withBranch)
 
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
+import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
-import Storyteller.Core.Atom (Atom(..))
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage, withStorage)
+import Storyteller.Core.Atom (Atom(..), contentFor)
+import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, withStorage)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Storage (createBranch, getBranch)
-import Storyteller.Core.Types (BranchName(..), Tick, fromTick, tickId)
+import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
+import Storyteller.Core.Types (BranchName(..), Tick, TickId, fromTick, tickId)
 import qualified Data.Yaml as Yaml
 
 import Prelude hiding (writeFile)
@@ -174,3 +179,31 @@ uploadFile branch path content =
 saveFile :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
 saveFile branch path content =
   withStorage (withBranch @Main branch (void (runStorage @Main (Ops.saveFile path content))))
+
+-- | Run one summarization pass for @kind@ against the already-open
+--   'Main' branch scope -- see 'Storyteller.Writer.Agent.Summarizer.runSummarizer'.
+--   No branch-opening of its own is needed the way 'trackFiles'\/'charGen'
+--   need it: everything (source and the resulting 'Storyteller.Common.Summary.Summary'
+--   tick) lives on this one already-open branch, and the alternate chain
+--   it extends has no branch of its own to open in the first place (see
+--   "Storyteller.Common.Summary"'s module Haddock).
+--
+--   'passthroughGenerate' is a placeholder, not a real summarizer: it
+--   copies each touched file's new content across verbatim, grouped by
+--   path, with no actual compression. It exists so this command is
+--   genuinely exercisable end-to-end (a real alternate chain, a real
+--   'Summary' tick, discoverable through
+--   'Storyteller.Writer.Agent.SummaryAccess') before any per-domain
+--   summarizer agent (prose, character, lore -- an LLM call assembling
+--   real compressed prose) exists to replace it. Swap this out, per
+--   @kind@, once one does; nothing about the wiring here needs to change
+--   when that happens.
+summarize :: Members '[BranchOp Main, Git, StoryStorage, Fail] r => T.Text -> Sem r (Maybe TickId)
+summarize kind = runSummarizer @Main kind passthroughGenerate
+
+passthroughGenerate :: [Tick] -> Sem r (Map.Map FilePath T.Text)
+passthroughGenerate = pure . foldl' step Map.empty
+  where
+    step acc t = case fromTick @Atom t of
+      Just (Atom file _) -> Map.insertWith (flip (<>)) file (contentFor file t) acc
+      Nothing             -> acc

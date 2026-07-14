@@ -33,7 +33,7 @@ import qualified Data.Text as T
 import Polysemy (Sem)
 
 import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
-import Server.Writer.Branch (trackFiles, charGen)
+import Server.Writer.Branch (trackFiles, charGen, summarize)
 import Server.Writer.Branch.Protocol
 import Server.Writer.File.Dispatch (atBranches)
 import Server.Core.Run (SessionEffects)
@@ -54,6 +54,13 @@ runCommand branch cmd =
     CharGen mid path scenario seed -> do
       charGen name path scenario seed
       return [FileAdded mid path]
+
+    -- No structural event to report -- the new 'Summary' tick reaches the
+    -- client through the ordinary ref-move notification, same as any
+    -- other tick-producing command (see 'AddNote' below).
+    Summarize _mid kind -> do
+      _ <- summarize kind
+      return []
 
     AddNote _mid refTickId text -> do
       addNote [TickId refTickId] text

@@ -39,6 +39,11 @@ import Server.Writer.File.Protocol (AtBranch(..))
 data BranchCommand
   = Track      { bcId :: Maybe T.Text, bcSource :: T.Text, bcOnlyFile :: Maybe FilePath, bcToFile :: FilePath }
   | CharGen    { bcId :: Maybe T.Text, bcPath :: FilePath, bcScenario :: T.Text, bcSeed :: Maybe Int }
+  -- Run one summarization pass for @bcKind@ over this branch -- see
+  -- 'Storyteller.Writer.Agent.Summarizer.runSummarizer'. No target path or
+  -- range: what's new is always "everything since @bcKind@'s last summary
+  -- here, or since root" -- implicit, per 'Storyteller.Common.Summary'.
+  | Summarize  { bcId :: Maybe T.Text, bcKind :: T.Text }
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
@@ -58,6 +63,7 @@ instance FromJSON BranchCommand where
     case t of
       "track"       -> Track      i <$> o .: "source" <*> o .:? "onlyFile" <*> o .: "to"
       "chargen"     -> CharGen    i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
+      "summarize"   -> Summarize  i <$> o .: "kind"
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
@@ -69,6 +75,7 @@ commandKind :: BranchCommand -> T.Text
 commandKind = \case
   Track {}      -> "track"
   CharGen {}    -> "chargen"
+  Summarize {}  -> "summarize"
   AddNote {}    -> "add.note"
   MoveTick {}   -> "move.tick"
   DeleteTick {} -> "delete.tick"

@@ -20,8 +20,9 @@ import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
-import Server.Writer.Branch (uploadFiles)
+import Server.Writer.Branch (summarize, uploadFiles)
 import Server.TestStack
+import Storyteller.Writer.Agent.SummaryAccess (densest)
 
 import Prelude hiding (readFile)
 
@@ -49,7 +50,12 @@ withBranch_ runner name action = run $ runner $ do
   runBranchAndFS @Main name action
 
 spec :: TestRunner -> Spec
-spec runner = describe "uploadFiles" $ do
+spec runner = do
+  uploadFilesSpec runner
+  summarizeSpec runner
+
+uploadFilesSpec :: TestRunner -> Spec
+uploadFilesSpec runner = describe "uploadFiles" $ do
 
   it "creates a new file with the uploaded content" $ do
     let result = withBranch_ runner (BranchName "test") $ do
@@ -112,3 +118,31 @@ spec runner = describe "uploadFiles" $ do
           tracked <- runStorage @Main (Ops.hasAnyAtom "notes.md")
           return tracked
     result `shouldBe` Right False
+
+-- | 'summarize' is the WS 'Server.Writer.Branch.Protocol.Summarize'
+--   command's own implementation -- exercised directly here (no WS/JSON
+--   layer), same as 'uploadFiles' above. Uses the current placeholder
+--   generator ('Server.Writer.Branch.passthroughGenerate', not exported),
+--   so this checks the wiring -- a real 'Storyteller.Common.Summary.Summary'
+--   tick gets produced and is discoverable through
+--   'Storyteller.Writer.Agent.SummaryAccess' -- not any real compression.
+summarizeSpec :: TestRunner -> Spec
+summarizeSpec runner = describe "summarize" $ do
+  it "produces a Summary tick whose content is discoverable via densest" $ do
+    let result = withBranch_ runner (BranchName "test") $ do
+          _    <- runStorage @Main (Ops.addAtom "story.md" "chapter one.")
+          mtid <- summarize "prose/chapter"
+          content <- densest @Main ["prose/chapter"] "story.md"
+          return (mtid, content)
+    case result of
+      Left err -> expectationFailure err
+      Right (mtid, content) -> do
+        mtid `shouldNotBe` Nothing
+        content `shouldBe` "chapter one."
+
+  it "a second call with nothing new returns Nothing" $ do
+    let result = withBranch_ runner (BranchName "test") $ do
+          _ <- runStorage @Main (Ops.addAtom "story.md" "chapter one.")
+          _ <- summarize "prose/chapter"
+          summarize "prose/chapter"
+    result `shouldBe` Right Nothing
