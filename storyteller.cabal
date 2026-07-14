@@ -47,11 +47,14 @@ library
                   , Storyteller.Writer.Agent.Fix
                   , Storyteller.Writer.Agent.ReplaceTool
                   , Storyteller.Writer.Agent.ContextPreview
+                  , Storyteller.Writer.Agent.Summarizer
+                  , Storyteller.Writer.Agent.SummaryAccess
                   , Storyteller.Core.Atom
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation
                   , Storyteller.Common.Swipe
+                  , Storyteller.Common.Summary
                   , Storyteller.Writer.Types
                   , Storyteller.Writer.Presence
                   , Storyteller.Writer.Library
@@ -234,6 +237,8 @@ test-suite storyteller-test
                   , Storyteller.SubdirSpec
                   , Storyteller.SplitterSpec
                   , Storyteller.TrackerSpec
+                  , Storyteller.SummarySpec
+                  , Storyteller.SummaryAccessSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
                   , Storyteller.WorldContextSpec

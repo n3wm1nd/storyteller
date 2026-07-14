@@ -19,6 +19,8 @@ import qualified Storyteller.CreateSpec
 import qualified Storyteller.SubdirSpec
 import qualified Storyteller.SplitterSpec
 import qualified Storyteller.TrackerSpec
+import qualified Storyteller.SummarySpec
+import qualified Storyteller.SummaryAccessSpec
 import qualified Storyteller.CharGenSpec
 import qualified Storyteller.CharContextSpec
 import qualified Storyteller.WorldContextSpec
@@ -65,6 +67,8 @@ main = hspec $ do
   describe "Storyteller.Subdir"         Storyteller.SubdirSpec.spec
   describe "Storyteller.Splitter"       Storyteller.SplitterSpec.spec
   describe "Storyteller.Tracker"        Storyteller.TrackerSpec.spec
+  describe "Storyteller.Summary"        Storyteller.SummarySpec.spec
+  describe "Storyteller.Writer.Agent.SummaryAccess" Storyteller.SummaryAccessSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
   describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
   describe "Storyteller.Writer.Agent.WorldContext" Storyteller.WorldContextSpec.spec
