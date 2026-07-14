@@ -20,16 +20,34 @@ anyone is validating against.
 
 ## Branch naming
 
-- `story/{storythread}` — a story branch.
+`Storyteller.Writer.Branches.classifyBranch` is the one central place a
+branch *name* (as opposed to a file path within one — see "Story structure"
+below for that, a separate question) gets classified by convention, mirrored
+in `frontend/src/lib/branches.ts` for the one UI spot that classifies a raw
+branch-name list on its own — the plain "Branches" sidebar tab, which has no
+per-kind list from the server to render the way the "Characters" tab does
+(see below). Keep the two implementations in sync if this ever changes.
+
 - `character/{characterid}` — a character (or, generally, entity — group,
   place, object) branch. See DATA-MODEL.md for why entity branches are
   partial-view, not narrative.
+- `prompts` — the one well-known, exact-match branch prompt overrides live
+  on (`Storyteller.Core.Prompt.promptsBranchName`; see that module's own
+  header for the storage convention). Not something a user creates or
+  writes prose into — it's app infrastructure that happens to be an
+  ordinary branch, same storage mechanism as everything else.
+- Everything else is a **story branch** — the default, not a fallback for
+  "unrecognized." `story/{storythread}` is an optional, purely cosmetic
+  prefix (stripped by `branchDisplayName` when present); it is never
+  required, since a plain branch name with no prefix at all
+  (`master`, say) already works as a story branch everywhere in this
+  codebase today.
 
-The prefix is how server-side code decides how to interpret a branch (e.g.
-whether it's eligible for the character list/sidebar) and how the frontend
-decides how to render it. Nothing currently enforces the prefix at branch
-creation — a branch named without one is just not picked up by anything
-Writer-specific.
+The prefix (where one exists) is how server-side code decides how to
+interpret a branch (e.g. whether it's eligible for the character
+list/sidebar) and how the frontend decides how to render it. Nothing
+currently enforces a prefix at branch creation — a branch named without one
+is just treated as an ordinary story branch, not flagged as invalid.
 
 ## Story structure
 

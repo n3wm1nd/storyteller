@@ -58,6 +58,7 @@ import Storyteller.Writer.Agent.Fix (fixAgent)
 import Storyteller.Writer.Agent.Outline
   ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
   , reconcileChapter, reconcileChapterByBeat, splitOutlineFreeform )
+import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
 import Storyteller.Writer.Types (Character(..), CharacterAnswer(..), PresenceEvent)
 import Storyteller.Core.Runtime (Main)
@@ -130,7 +131,7 @@ activeCharacterContext charLayouts path = do
             | otherwise   = isJust (classifyPath layout p)
       summary <- runBranchOpGit @ActiveChar (BranchName name) $
         runStorage @ActiveChar (charSummaryWithJournal "sheet.md" journalPath keep journalLookback journalMaxOut journalPadding)
-      let label = maybe name id (T.stripPrefix "character/" name)
+      let label = branchDisplayName name
       pure (CharLabel label, summary)
 
 -- | Bounds for the curated journal slice 'activeCharacterContext' folds

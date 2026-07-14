@@ -55,6 +55,7 @@ module Storyteller.Core.Prompt
   , getConfigWithPrompt
   , interpretPromptStorageFS
   , interpretPromptStorageMap
+  , promptsBranchName
   ) where
 
 import Control.Monad (void)
@@ -137,6 +138,10 @@ getConfigWithPrompt key defaultPrompt defaultConfigs = do
   configs    <- getConfig key defaultConfigs
   pure (SystemPrompt sys : configs)
 
+-- | The one well-known branch name this module owns -- exported so
+--   'Storyteller.Writer.Branches.classifyBranch' (the Writer-layer "what
+--   kind of branch is this" convention, which Core has no business knowing
+--   about on its own) can recognize it without duplicating the literal.
 promptsBranchName :: BranchName
 promptsBranchName = BranchName "prompts"
 

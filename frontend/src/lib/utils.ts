@@ -1,4 +1,5 @@
 import type { WireTick } from "./ws";
+import { branchDisplayName } from "./branches";
 
 export type AnnotationMode = "hidden" | "dots" | "expanded";
 
@@ -190,8 +191,7 @@ export function basenameNoExt(path: string): string {
 // rule), so every caller either has sheet content to pass or accepts the
 // id-based fallback.
 export function characterDisplayName(branch: string, sheet?: string | null): string {
-  const stripped = branch.startsWith("character/") ? branch.slice("character/".length) : branch;
-  const fallback = decodeURIComponent(stripped);
+  const fallback = decodeURIComponent(branchDisplayName(branch));
   if (!sheet) return fallback;
   const h1 = sheet.split("\n").find((line) => line.startsWith("# "));
   return h1 ? h1.slice(2).trim() : fallback;

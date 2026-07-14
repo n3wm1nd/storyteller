@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, GitBranch, Plus, Users, BookOpen } from "lucide-react";
+import { Folder, GitBranch, Plus, Users, BookOpen, Settings } from "lucide-react";
 import { type ConnInfo } from "@/lib/uiStore";
 import { type CharacterSummary, type LibraryNode, type ChapterUnit } from "@/lib/ws";
 import { statusColor, characterDisplayName } from "@/lib/utils";
+import { classifyBranch } from "@/lib/branches";
 import { FileTree } from "./filetree";
 import { LibraryTree } from "./library";
 
@@ -12,10 +13,37 @@ function flattenLibrary(nodes: LibraryNode[]): LibraryNode[] {
   return nodes.flatMap((n) => [n, ...flattenLibrary(n.children)]);
 }
 
+// One accent hue per branch kind (see lib/branches.ts), as an oklch()
+// L/C/H triple rather than a full color string so a caller can still
+// splice in its own alpha (e.g. the active row's tinted background) the
+// same way every other oklch literal in this file already does. Character
+// reuses the same blue CharacterListItem's own active state uses below, so
+// a character branch reads as "the same kind of thing" in both tabs;
+// prompts gets its own violet (system/infrastructure, not user content);
+// story falls back to the app's ordinary amber accent's own triple.
+function branchKindOklch(kind: ReturnType<typeof classifyBranch>): string {
+  if (kind === "character") return "0.65 0.15 200";
+  if (kind === "prompts") return "0.65 0.12 300";
+  return "0.78 0.10 65";
+}
+
+// A small kind icon next to the branch's own full name (kept verbatim,
+// prefix and all — this tab is the raw list, unlike "Characters" below),
+// so the flat "Branches" tab still tells the three kinds apart by color at
+// a glance instead of showing every raw branch name identically.
+function BranchKindIcon({ kind, active }: { kind: ReturnType<typeof classifyBranch>; active: boolean }) {
+  const style = { width: 10, height: 10, flexShrink: 0, color: active ? `oklch(${branchKindOklch(kind)})` : "var(--text-dim)" };
+  if (kind === "character") return <Users style={style} />;
+  if (kind === "prompts") return <Settings style={style} />;
+  return <GitBranch style={style} />;
+}
+
 function BranchItem({ name, active, onSelect, onDelete }: {
   name: string; active: boolean; onSelect: () => void; onDelete: () => void;
 }) {
   const [hover, setHover] = useState(false);
+  const kind = classifyBranch(name);
+  const triple = branchKindOklch(kind);
   return (
     <div
       onMouseEnter={() => setHover(true)}
@@ -23,14 +51,14 @@ function BranchItem({ name, active, onSelect, onDelete }: {
       style={{
         display: "flex", alignItems: "center", gap: 6,
         padding: "5px 8px",
-        background: active ? "oklch(0.78 0.10 65 / 0.10)" : hover ? "var(--surface)" : "transparent",
-        borderLeft: active ? "2px solid var(--amber)" : "2px solid transparent",
+        background: active ? `oklch(${triple} / 0.10)` : hover ? "var(--surface)" : "transparent",
+        borderLeft: active ? `2px solid oklch(${triple})` : "2px solid transparent",
         borderRadius: 5, cursor: "pointer",
       }}
     >
-      <div style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: active ? "var(--amber)" : "var(--text-dim)" }} />
-      <span onClick={onSelect} style={{
-        flex: 1, fontSize: 12, color: active ? "var(--amber)" : "var(--text-secondary)",
+      <BranchKindIcon kind={kind} active={active} />
+      <span onClick={onSelect} title={name} style={{
+        flex: 1, fontSize: 12, color: active ? `oklch(${triple})` : "var(--text-secondary)",
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         fontWeight: active ? 500 : 400,
       }}>{name}</span>

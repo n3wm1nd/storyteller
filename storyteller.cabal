@@ -59,6 +59,7 @@ library
                   , Storyteller.Writer.Types
                   , Storyteller.Writer.Presence
                   , Storyteller.Writer.Library
+                  , Storyteller.Writer.Branches
                   , Storyteller.Writer.Lore
                   , Server.Core.Protocol
                   , Server.Core.Util
@@ -252,6 +253,7 @@ test-suite storyteller-test
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec
+                  , Storyteller.BranchesSpec
                   , Storyteller.ContextFilterSpec
                   , Storyteller.ContextPreviewSpec
                   , Storyteller.OutlineSpec

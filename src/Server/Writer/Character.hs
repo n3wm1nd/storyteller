@@ -27,6 +27,7 @@ import Runix.FileSystem (fileExists, readFile)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.Git (BranchTag)
+import Storyteller.Writer.Branches (branchDisplayName)
 
 import Prelude hiding (readFile)
 
@@ -40,7 +41,7 @@ data CharacterState = CharacterState
 --   summarization, just what's directly readable off the branch.
 characterState :: BranchOpen r => T.Text -> Sem r CharacterState
 characterState branch = do
-  let name = maybe branch id (T.stripPrefix "character/" branch)
+  let name = branchDisplayName branch
   sheet <- fileExists @(BranchTag Main) "sheet.md" >>= \case
     False -> return Nothing
     True  -> Just . TE.decodeUtf8 <$> readFile @(BranchTag Main) "sheet.md"

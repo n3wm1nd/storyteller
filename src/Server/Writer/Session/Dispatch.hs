@@ -32,6 +32,7 @@ import Storyteller.Core.Git (BranchTag, runBranchAndFS)
 import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
 import Storyteller.Core.Types (BranchName(..), branchName)
 import Storyteller.Core.Undo (UndoEntry(..), listUndo, resetToUndo)
+import Storyteller.Writer.Branches (BranchKind(..), classifyBranch)
 
 import Prelude hiding (readFile)
 
@@ -51,7 +52,7 @@ runCommand conn cmd = case cmd of
       Nothing -> do
         _ <- createBranch name
         branchNames >>= push . BranchList
-        if "character/" `T.isPrefixOf` branch then characterSummaries >>= push . CharacterList else return ()
+        if classifyBranch branch == Character then characterSummaries >>= push . CharacterList else return ()
 
   DeleteBranch _mid branch -> do
     let name = BranchName branch
@@ -60,7 +61,7 @@ runCommand conn cmd = case cmd of
       Just _  -> do
         deleteBranch name
         branchNames >>= push . BranchList
-        if "character/" `T.isPrefixOf` branch then characterSummaries >>= push . CharacterList else return ()
+        if classifyBranch branch == Character then characterSummaries >>= push . CharacterList else return ()
 
   -- No direct confirmation event: restoring refs re-triggers the same
   -- RefMoved-driven notifier every other write does (see
@@ -90,7 +91,7 @@ branchNames = map (unBranchName . branchName) <$> listBranches
 --   opens a scope for a branch other than the one already ambiently open.
 characterSummaries :: SessionEffects r => Sem r [CharacterSummary]
 characterSummaries = do
-  names <- filter ("character/" `T.isPrefixOf`) <$> branchNames
+  names <- filter ((== Character) . classifyBranch) <$> branchNames
   mapM readSummary names
   where
     readSummary branch = runBranchAndFS @SummaryBranch (BranchName branch) $ do

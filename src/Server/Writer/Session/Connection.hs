@@ -58,6 +58,7 @@ import Server.Writer.Notification (BranchNotification(..))
 import Server.Writer.Run (actionStack, loggingWS)
 import Server.Writer.Session.Dispatch (runCommand, characterSummaries, branchNames, undoLog)
 import Server.Writer.Session.Protocol
+import Storyteller.Writer.Branches (BranchKind(..), classifyBranch)
 
 runSession :: ServerEnv -> WS.Connection -> IO ()
 runSession env conn = do
@@ -130,7 +131,7 @@ watchNotifications chan onRefs onUndo = loop
       Just n  -> (n :) <$> drainAll ch
       Nothing -> return []
 
-    isCharacterRef = T.isPrefixOf "character/"
+    isCharacterRef ref = classifyBranch ref == Character
 
 onRefMove :: (SessionEffects r, Member (Embed IO) r) => WS.Connection -> Bool -> Bool -> Sem r ()
 onRefMove conn branchesChanged characterTouched = do
