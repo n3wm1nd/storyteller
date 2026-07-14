@@ -23,10 +23,14 @@
 --   a type variable in agent or handler code.
 --
 --   A role proxy's declared capabilities should reflect exactly what the
---   real model it proxies needs: 'ProseModel' only ever constructs plain
---   text and tool calls, so it declares only 'HasTools'; 'AgentModel' also
---   declares 'HasJSON'\/'HasReasoning' since its tool-heavy workflows may
---   want them. 'reinterpretProse'\/'reinterpretAgent' require @chosenModel@
+--   real model it proxies needs: 'ProseModel' only ever constructs and
+--   consumes plain text (every prose agent -- 'Storyteller.Writer.Agent.
+--   Continuation.proseAgent', 'Storyteller.Writer.Agent.Write.writeAgent',
+--   'Storyteller.Writer.Agent.ChapterSummarizer' -- reads back only
+--   'Runix.LLM.AssistantText' and never sends a 'Tools' config), so it
+--   declares nothing beyond the config triad; 'AgentModel' declares
+--   'HasTools'\/'HasJSON'\/'HasReasoning' since its tool-heavy workflows
+--   actually use all three. 'reinterpretProse'\/'reinterpretAgent' require @chosenModel@
 --   (the real, registry-resolved model) to have at least that same set --
 --   checked wherever a concrete model gets plugged in (see
 --   'Storyteller.Core.LLM.Registry.resolveRoleRunner') -- so a model
@@ -91,8 +95,8 @@ import UniversalLLM
 
 -- ---------------------------------------------------------------------------
 -- Prose role: narrow. 'Storyteller.Writer.Agent.Continuation.proseAgent'
--- and everything built on it only ever construct plain text and tool
--- calls -- no reason to declare more.
+-- and everything built on it only ever construct and consume plain text --
+-- no reason to declare more.
 -- ---------------------------------------------------------------------------
 
 data ProseProxyProvider
@@ -103,10 +107,6 @@ instance SupportsTemperature ProseProxyProvider
 
 data ProseRole
 type ProseModel = Model ProseRole ProseProxyProvider
-
-instance HasTools ProseModel where
-  type ToolState ProseModel = ()
-  withTools = error "Storyteller.Core.LLM.Role: role proxy models are never interpreted directly"
 
 -- ---------------------------------------------------------------------------
 -- Agent role: for agents whose main activity is calling tools rather than
@@ -174,8 +174,7 @@ convertConfig = unsafeCoerce
 --   module's Haddock for why that match (and its limits) matters.
 reinterpretProse
   :: forall chosenModel r a.
-     ( HasTools chosenModel
-     , SupportsSystemPrompt (ProviderOf chosenModel), SupportsMaxTokens (ProviderOf chosenModel), SupportsTemperature (ProviderOf chosenModel)
+     ( SupportsSystemPrompt (ProviderOf chosenModel), SupportsMaxTokens (ProviderOf chosenModel), SupportsTemperature (ProviderOf chosenModel)
      , Member (LLM chosenModel) r )
   => Sem (LLM ProseModel : r) a -> Sem r a
 reinterpretProse = interpret $ \case

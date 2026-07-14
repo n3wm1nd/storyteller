@@ -26,7 +26,10 @@ import System.IO (hPutStrLn, stderr)
 
 import Server.Writer.GitWorker (GitWorkerQueue, startGitWorker)
 import Server.Writer.Notification (BranchNotification)
-import Storyteller.Core.LLM.Registry (SomeLLMRunner, resolveKnownModel, resolveRoleRunner)
+import Storyteller.Core.LLM.Registry
+  ( SomeProseLLMRunner, SomeAgentLLMRunner
+  , resolveKnownModel, resolveKnownAgentModel
+  , resolveProseRoleRunner, resolveAgentRoleRunner )
 
 -- | Mutable shared state across requests.
 data AppState = AppState
@@ -49,8 +52,8 @@ data ServerEnv = ServerEnv
   , appState       :: TVar AppState
   , envNotifyChan  :: TChan BranchNotification    -- ^ broadcast channel; connections dupTChan to subscribe
   , envGitWorker   :: GitWorkerQueue              -- ^ the process's one git-storage worker; see PLAN-git-storage-worker.md
-  , envProseRunner :: SomeLLMRunner                -- ^ ROLE_PROSE_MODEL, resolved once at startup — see Storyteller.Core.LLM.Role
-  , envAgentRunner :: SomeLLMRunner                -- ^ ROLE_AGENT_MODEL, resolved once at startup
+  , envProseRunner :: SomeProseLLMRunner           -- ^ ROLE_PROSE_MODEL, resolved once at startup — see Storyteller.Core.LLM.Role
+  , envAgentRunner :: SomeAgentLLMRunner           -- ^ ROLE_AGENT_MODEL, resolved once at startup
   }
 
 loadServerEnv :: IO ServerEnv
@@ -64,9 +67,9 @@ loadServerEnv = do
   worker    <- startGitWorker repo notify
   mLogDir   <- llmLogDir repo
   proseKnown  <- resolveKnownModel "ROLE_PROSE_MODEL" "qwen35-40b"
-  agentKnown  <- resolveKnownModel "ROLE_AGENT_MODEL" "qwen35-40b"
-  proseRunner <- resolveRoleRunner mLogDir proseKnown
-  agentRunner <- resolveRoleRunner mLogDir agentKnown
+  agentKnown  <- resolveKnownAgentModel "ROLE_AGENT_MODEL" "qwen35-40b"
+  proseRunner <- resolveProseRoleRunner mLogDir proseKnown
+  agentRunner <- resolveAgentRoleRunner mLogDir agentKnown
   return ServerEnv
     { envRepoPath    = repo
     , envLLMEndpoint = endpoint

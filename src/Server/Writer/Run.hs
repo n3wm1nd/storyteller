@@ -52,7 +52,7 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Env (ServerEnv(..))
 import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
-import Storyteller.Core.LLM.Registry (SomeLLMRunner(..))
+import Storyteller.Core.LLM.Registry (SomeProseLLMRunner(..), SomeAgentLLMRunner(..))
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Runtime (runInfrastructureWithCancellation)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
@@ -163,10 +163,10 @@ actionStack
   -> Sem (Logging : r) (Either String a)
 actionStack env cancelFlag action =
   case (envProseRunner env, envAgentRunner env) of
-    ( SomeLLMRunner (proseRunner :: forall r' a'. Members
+    ( SomeProseLLMRunner (proseRunner :: forall r' a'. Members
         '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r'
         => Sem (LLM proseChosen : r') a' -> Sem r' a')
-      , SomeLLMRunner (agentRunner :: forall r' a'. Members
+      , SomeAgentLLMRunner (agentRunner :: forall r' a'. Members
         '[HTTP, HTTPStreaming, StreamChunk StreamEvent, Fail, Time, Sleep, Config StreamingEnabled, Logging, Embed IO] r'
         => Sem (LLM agentChosen : r') a' -> Sem r' a')
       ) ->

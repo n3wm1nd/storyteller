@@ -27,6 +27,7 @@
 module Agent.Integration.Harness
   ( CacheProject(..)
   , KnownModel(..)
+  , KnownAgentModel(..)
   , LLMRunner(..)
   , Main
   , ModelID(..)
@@ -41,6 +42,7 @@ module Agent.Integration.Harness
   , withPromptOverride
   , resolveFixture
   , resolveKnownModel
+  , resolveKnownAgentModel
   , runExpect
   , withKnownModel
   ) where
@@ -65,8 +67,8 @@ import Agent.Integration.ToolCallQuality
 import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.LLM.Registry
-  ( KnownModel(..), LLMRunner(..), ModelID(..)
-  , knownModels, modelInterpreter, resolveKnownModel, withKnownModel )
+  ( KnownModel(..), KnownAgentModel(..), LLMRunner(..), ModelID(..)
+  , knownModels, modelInterpreter, resolveKnownModel, resolveKnownAgentModel, withKnownModel )
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (Prompt, PromptKey, PromptStorage(..))
 import Storyteller.Core.Runtime (Main)

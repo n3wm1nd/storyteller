@@ -29,8 +29,8 @@ import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Storage (createBranch)
 
 import Agent.Integration.Harness
-  ( CacheProject(..), KnownModel(..), LLMRunner(..), Main, Runner
-  , loggingPretty, mainBranch, modelInterpreter, resolveFixture, resolveKnownModel
+  ( CacheProject(..), KnownAgentModel(..), LLMRunner(..), Main, Runner
+  , loggingPretty, mainBranch, modelInterpreter, resolveFixture, resolveKnownAgentModel
   )
 import qualified Agent.Integration.CharContextWriteSpec
 import qualified Agent.Integration.ReworkAtomSpec
@@ -50,13 +50,14 @@ import qualified Agent.Integration.WriterEarlierChaptersSpec
 import qualified Agent.Integration.WriterConversationHistorySpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
---   env vars -- see 'Agent.Integration.Harness.knownModels') and build the
---   shared 'Agent.Integration.Harness.Runner' exactly once for the whole
---   suite. Neither role defaults to matching the other; each falls back
---   to its own default only when unset. The two nested 'withKnownModel'
---   calls are what pin @storyModel@\/@judgeModel@ to concrete types for
---   the rest of this scope, including the 'hspec' call below -- every
---   spec runs against whichever models were actually resolved this run.
+--   env vars -- see 'Agent.Integration.Harness.knownModels' for what's
+--   available) and build the shared 'Agent.Integration.Harness.Runner'
+--   exactly once for the whole suite. Neither role defaults to matching the
+--   other; each falls back to its own default only when unset. The two
+--   nested 'withKnownModel' calls are what pin @storyModel@\/@judgeModel@ to
+--   concrete types for the rest of this scope, including the 'hspec' call
+--   below -- every spec runs against whichever models were actually
+--   resolved this run.
 --   @storyModel@ backs *both* 'Storyteller.Core.LLM.Role.ProseModel' and
 --   'Storyteller.Core.LLM.Role.AgentModel' -- production agents now
 --   hardcode their role rather than staying generic (see
@@ -66,10 +67,19 @@ import qualified Agent.Integration.WriterConversationHistorySpec
 --   picking two independent models for the two roles the way production
 --   does, since @STORY_MODEL@\/@JUDGE_MODEL@ is this suite's own axis of
 --   variation (agent-under-test vs. judge), not per-role model choice.
---   @storyKnown@ is unpacked once, via a direct 'KnownModel' pattern match,
---   giving one genuinely fresh existential model type scoped over the whole
---   @do@ block -- then 'modelInterpreter' is called on it twice (once per
---   role) to build two independent 'LLMRunner's. That's the fix for a
+--   Both @STORY_MODEL@ and @JUDGE_MODEL@ are resolved from
+--   'Agent.Integration.Harness.resolveKnownAgentModel' (not the weaker
+--   prose-only 'Agent.Integration.Harness.resolveKnownModel') even though
+--   'Agent.Integration.Judge.judge' itself only needs 'HasTools': every
+--   model here also passes through 'Runix.LLM.Cache.cacheLLM', which
+--   requires the full 'HasJSON'\/'HasReasoning' set unconditionally for its
+--   own message (de)serialization, regardless of what the judge role
+--   actually exercises.
+--   @storyKnown@ is unpacked once, via a direct 'KnownAgentModel' pattern
+--   match, giving one genuinely fresh existential model type scoped over
+--   the whole @do@ block -- then 'modelInterpreter' is called on it twice
+--   (once per role) to build two independent 'LLMRunner's. That's the fix
+--   for a
 --   structural trap the equivalent nested-'withKnownModel'-CPS version fell
 --   into: an 'LLMRunner'\'s own effect row is fixed the moment it's built,
 --   so one value can't satisfy two different residual rows the way a fresh
@@ -119,14 +129,18 @@ isRegenerate = maybe False (`notElem` ["", "0", "false"]) <$> lookupEnv "REGENER
 
 main :: IO ()
 main = do
-  storyKnown <- resolveKnownModel "STORY_MODEL" "qwen35-40b"
-  judgeKnown <- resolveKnownModel "JUDGE_MODEL" "deepseek-v4-flash"
+  -- Both roles are resolved from the agent-eligible table -- see this
+  -- function's Haddock for why STORY_MODEL needs it (backs both role
+  -- proxies) and why JUDGE_MODEL does too despite 'judge' itself only
+  -- needing HasTools (cacheLLM's own unconditional requirement).
+  storyKnown <- resolveKnownAgentModel "STORY_MODEL" "qwen35-40b"
+  judgeKnown <- resolveKnownAgentModel "JUDGE_MODEL" "deepseek-v4-flash"
   agentCacheDir <- resolveFixture "test/fixtures/llm-agent-cache"
   verbose <- isVerbose
   regenerate <- isRegenerate
 
   case (storyKnown, judgeKnown) of
-    (KnownModel storyID (story :: storyTy) storyConfigs, KnownModel judgeID (judgeVal :: judgeTy) judgeConfigs) -> do
+    (KnownAgentModel storyID (story :: storyTy) storyConfigs, KnownAgentModel judgeID (judgeVal :: judgeTy) judgeConfigs) -> do
       runStoryProse <- modelInterpreter storyID story storyConfigs
       runStoryAgent <- modelInterpreter storyID story storyConfigs
       runJudge      <- modelInterpreter judgeID judgeVal judgeConfigs
