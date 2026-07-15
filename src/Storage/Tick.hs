@@ -326,25 +326,33 @@ fileTicksOf path = do
 --   main file view needs to render annotations alongside the prose
 --   they're attached to ('Server.Core.File.fileStateSince'); nothing else
 --   in the codebase does. The expensive half, and the reason it's split
---   out rather than folded into 'fileTicksOf' itself: 'expandRefs' below
---   is an O(n^2)-shaped fixed-point search over the whole lifetime, not a
---   plain filter -- every caller that doesn't render annotations (the
---   overwhelming majority) has no reason to pay for it.
+--   out rather than folded into 'fileTicksOf' itself.
+--
+--   A single forward (oldest-to-newest) pass over @path@'s lifetime,
+--   accumulating into a growing 'Set.Set': whenever a tick's own refs
+--   point at anything already in that set, the tick joins it too -- so
+--   something even newer can reference *it* later in the very same pass.
+--   Captures a reference chain of any depth this way (a note about a note
+--   about an atom, and so on) -- an earlier version applied a fixed-point
+--   step exactly *twice*, a hardcoded depth-2 cap that would have missed
+--   a third hop, and did it with repeated @O(n)@ 'elem'\/'notElem' list
+--   scans per step rather than 'Set' membership.
+--
+--   Never even looks at anything older than @ticks@'s own earliest member
+--   ('dropWhile' below): a ref only ever points backward in time, so
+--   nothing before the seed set's first tick could possibly reference
+--   anything in it -- there's nothing to find by scanning that far back,
+--   let alone repeatedly.
 fetchRelatedTicks :: StoreM m => FilePath -> [FileTick] -> StoreT m [FileTick]
 fetchRelatedTicks path ticks = do
   allTicks <- lifetimeTicksOf path
-  let seedIds   = map ftTickId ticks
-      memberIds = expandRefs seedIds allTicks
-      included  = Set.fromList (memberIds ++ seedIds)
-  return (relinkParents included Nothing allTicks)
-  where
-    expandRefs :: [Text] -> [FileTick] -> [Text]
-    expandRefs members allTicks =
-      let step ms = ms ++ [ ftTickId ft
-                           | ft <- allTicks
-                           , ftTickId ft `notElem` ms
-                           , any (`elem` ms) (ftRefs ft) ]
-      in step (step members)
+  let seedIds  = Set.fromList (map ftTickId ticks)
+      relevant = dropWhile (\ft -> not (Set.member (ftTickId ft) seedIds)) allTicks
+      included = List.foldl' step seedIds relevant
+      step acc ft
+        | any (`Set.member` acc) (ftRefs ft) = Set.insert (ftTickId ft) acc
+        | otherwise                           = acc
+  return (relinkParents included Nothing relevant)
 
 -- | Decode a single commit as a 'FileTick', without regard to whether it's
 --   relevant to @path@ at all -- 'ftContent' carries that verdict
