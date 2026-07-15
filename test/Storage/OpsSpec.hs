@@ -266,3 +266,37 @@ spec = do
             renameFile "scene.md" "chapter1.md"
             committedContent "chapter1.md")
       result `shouldBe` Right "p1-revised\np2\n"
+
+    -- A tick kind that isn't a real file diff (a presence event, a
+    -- prompt, ...) still associates itself with a file via a plain
+    -- "file:<path>" header field on top of an opaque 'NonAtom' -- see
+    -- 'Storage.Tick.encodeTickData'. Left alone, a rename would move every
+    -- atom to the new name while leaving a tick like this still pointing
+    -- at the old one, silently orphaning it from the file's projection.
+    -- Written as a raw 'NonAtom' directly (rather than going through
+    -- 'Storyteller.Writer.Types.Presence') to keep this test at the same
+    -- low level as the rest of "Storage.Ops" -- the fix is generic over
+    -- the wire convention, not specific to any one 'TickType'.
+    it "also rewrites a non-atom tick's own \"file\" header field, not just atomPath" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- store (NonAtom [] "type:presence\nfile:scene.md\ncharacter:alice\nevent:enter\n\n")
+            renameFile "scene.md" "chapter1.md"
+            follow [] $ \acc _ t -> case t of
+              NonAtom _ raw | raw /= "type:root\n" -> (raw : acc, True)
+              _                                     -> (acc, True))
+      result `shouldBe` Right ["type:presence\nfile:chapter1.md\ncharacter:alice\nevent:enter\n\n"]
+
+    -- A non-atom tick naming some *other* file must be left completely
+    -- untouched by a rename -- only ticks naming the path actually being
+    -- renamed are in scope.
+    it "leaves a non-atom tick naming an unrelated file untouched by an unrelated rename" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- addAtom "other.md" "q1\n"
+            _ <- store (NonAtom [] "type:presence\nfile:other.md\ncharacter:alice\nevent:enter\n\n")
+            renameFile "scene.md" "chapter1.md"
+            follow [] $ \acc _ t -> case t of
+              NonAtom _ raw | raw /= "type:root\n" -> (raw : acc, True)
+              _                                     -> (acc, True))
+      result `shouldBe` Right ["type:presence\nfile:other.md\ncharacter:alice\nevent:enter\n\n"]

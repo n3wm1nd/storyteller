@@ -78,7 +78,8 @@ newtype Gap = Gap { unGap :: Text } deriving (Show, Eq)
 instance Arbitrary Gap where
   arbitrary = Gap . T.pack <$> frequency
     [ (2, pure [])
-    , (1, choose (3, 8) >>= (`vectorOf` choose ('A', 'Z')))
+    , (1, choose (3, 8) >>= (`vectorOf` elements ['A' .. 'Z']))
+    , (1, choose (3, 8) >>= (`vectorOf` elements ("AB\n" :: String)))
     ]
   shrink (Gap t) = [ Gap (T.pack s) | s <- shrink (T.unpack t) ]
 
@@ -320,6 +321,47 @@ spec = do
     it "pure addition before the first atom" $
       checkTransform $ Transform ["aaaaaa"] [noEdit] ["FRONT", ""]
 
+    it "pure addition of a heading plus blank line before the first atom keeps its trailing newlines" $
+      checkTransform $ Transform ["Some paragraph text here."] [noEdit] ["# Heading\n\n", ""]
+
+    it "pure addition of a heading before an atom that already starts with blank lines keeps them" $
+      checkTransform $ Transform ["\n\nSome paragraph text here."] [noEdit] ["# Heading", ""]
+
+    it "replacing a leading title with a new heading keeps the existing blank-line separator that followed it" $
+      checkTransform $ Transform ["Old Title\n\nBody."] [AtomEdit 9 0] ["# New Heading", ""]
+
+    -- A freshly created file's only atom is the blank "create file" marker
+    -- (see 'Storage.Ops.storeNewFile' -- the same empty-atom shape
+    -- 'Storyteller.Core.Create.createFile' leaves behind), not a real
+    -- 'addAtom'-seeded one -- 'checkTransform's own model assumes every
+    -- seed atom is nonempty, so this one is written out directly against
+    -- 'commitWorktree' instead of through the shared harness. Only the
+    -- final content is asserted, not which atom ends up carrying which
+    -- piece or in what order relative to the empty marker -- an empty
+    -- atom contributes nothing to the fold no matter where it lands.
+    it "typing a heading plus blank line into a freshly-created (blank-atom) file keeps its newlines" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom path ""
+            writeFile path (TE.encodeUtf8 "# Heading\n\nSome body text.")
+            commitWorktree
+            committedContent path)
+      result `shouldBe` Right (TE.encodeUtf8 "# Heading\n\nSome body text.")
+
+    -- Same scenario, but going through the *real* creation path
+    -- ('commitWorktree' over an empty ambient file -- what 'storeNewFile'
+    -- actually does) as its own, separate commit, before the heading is
+    -- typed in and saved as a second, later 'commitWorktree' -- the exact
+    -- two-step sequence a real "new file, then raw-mode edit" session
+    -- goes through, rather than seeding the blank atom directly.
+    it "typing a heading plus blank line into a file that was *actually* created blank via commitWorktree (not addAtom) keeps its newlines" $ do
+      let result = fst <$> runChain (do
+            writeFile path (TE.encodeUtf8 "")
+            commitWorktree
+            writeFile path (TE.encodeUtf8 "# Heading\n\nSome body text.")
+            commitWorktree
+            committedContent path)
+      result `shouldBe` Right (TE.encodeUtf8 "# Heading\n\nSome body text.")
+
     it "pure addition after the last atom" $
       checkTransform $ Transform ["aaaaaa"] [noEdit] ["", "END"]
 
@@ -472,6 +514,34 @@ spec = do
             commitWorktree
             committedContent "scene.md")
       result `shouldBe` Right "new"
+
+    -- The two prior tests seed the recreated life's real content via
+    -- 'addAtom' -- a single direct store, no reconciliation involved --
+    -- before ever calling 'commitWorktree'. A real "delete, then create a
+    -- new file with the same name and type into it" session instead goes
+    -- through 'commitWorktree'/'commitFile' *twice*, separately: once for
+    -- 'Storyteller.Core.Create.createFile' (an empty atom, 'addAtom path
+    -- ""', the same shape used above), and again later for the actual
+    -- typed content, saved as a raw whole-file edit. That second call is
+    -- exactly what 'foldInto' takes the 'reconcileAtom' path for (target
+    -- isn't yet reflected at head), which walks back through the
+    -- newly-recreated empty atom, past it, straight into the deletion
+    -- marker below it -- reproducing the bug report: the deleted life's
+    -- old content ends up back in the reconciled chain alongside the new.
+    it "typing into a recreated file across two separate commitWorktree calls doesn't resurrect the deleted life's content" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "old"
+            _ <- deleteFile "scene.md"
+            _ <- addAtom "scene.md" ""     -- createFile-shaped recreation
+            commitWorktree
+            writeFile "scene.md" (TE.encodeUtf8 "new")
+            commitWorktree                 -- the typed content, saved separately
+            committedContent "scene.md")
+      -- "old" is expected to still be reachable somewhere in the full chain
+      -- (deletion is a forward event, not a rebase -- see 'Storage.Ops.deleteFile's
+      -- own Haddock) -- what this actually checks is that it never leaks back
+      -- into the *visible* content of the recreated file.
+      result `shouldBe` Right (TE.encodeUtf8 "new")
 
   -- Non-UTF8 ambient content — see the "one small can of worms" design
   -- conversation: a path that was *never* atom-tracked (dropped in by

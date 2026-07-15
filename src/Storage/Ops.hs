@@ -484,7 +484,12 @@ reconcileAtom path present target h = do
     Atom _ p _ c    | p == path, T.null c -> do
       -- A zero-length atom records presence, not content (see
       -- 'classify'): it can never be judged by comparing text, only by
-      -- whether the file is still supposed to exist at all.
+      -- whether the file is still supposed to exist at all. Its exact
+      -- position among other ticks for @path@ is likewise not something
+      -- any invariant here cares about -- the one thing 'commitFile'
+      -- promises is that folding every surviving atom for @path@,
+      -- in chain order, reproduces @target@ exactly, and an empty atom
+      -- contributes nothing to that fold no matter where it ends up.
       if present then return () else () <$ at h drop
       maybe (return ()) (reconcileAtom path present target) mbParent
     Atom _ p _ c | p == path -> do
@@ -1042,6 +1047,19 @@ findCreationTick path = headHash >>= go
 --   head can belong to some later, unrelated reuse of the same path --
 --   there is no "later" lifetime left to accidentally catch.
 --
+--   Not just 'Atom's own @atomPath@: a tick kind that isn't a real file
+--   diff (a 'Storyteller.Writer.Types.Presence', 'Storyteller.Writer.
+--   Agent.Prompt', ...) still associates itself with a file by carrying a
+--   plain @"file"@ header field of its own, on top of 'Storage.Core.Tick's
+--   opaque 'NonAtom' -- see 'Storage.Tick.encodeTickData'\/'decodeTickData'
+--   for that wire convention. Left alone, a rename would silently orphan
+--   any such tick still naming @oldPath@ (its own tick would move, but a
+--   presence event on it would keep pointing at a file that, from here on,
+--   no longer exists): 'renamePathField' rewrites that header line the
+--   same way @renameTo@'s 'Atom' case rewrites 'atomPath', generically over
+--   every 'NonAtom' -- it never needs to know which 'TickType' it's
+--   looking at, only that the wire convention is the same for all of them.
+--
 --   Also moves @oldPath@'s content in the ambient tree to @newPath@, same
 --   convention 'addAtom'\/'deleteFile' already follow: a caller doing
 --   further ambient 'Runix.FileSystem' operations immediately afterward
@@ -1058,6 +1076,15 @@ renameFile oldPath newPath = do
   where
     renameTo t = case t of
       Atom refs p tags content | p == oldPath -> Atom refs newPath tags content
+      NonAtom refs raw                        -> NonAtom refs (renamePathField raw)
       _                                       -> t
     requireAtom t@Atom {} = return t
     requireAtom _         = fail "renameFile: creation tick is not an atom"
+    renamePathField raw =
+      let (headerBlock, rest) = T.breakOn "\n\n" raw
+      in if T.null rest
+           then raw  -- no header/payload boundary at all -- not this wire convention, leave untouched
+           else T.intercalate "\n" (map renameLine (T.lines headerBlock)) <> rest
+    renameLine l = case T.breakOn ":" l of
+      (k, v) | k == "file", T.drop 1 v == T.pack oldPath -> "file:" <> T.pack newPath
+      _                                                   -> l
