@@ -115,13 +115,18 @@ spec = describe "createFile" $ do
         Left err    -> expectationFailure err
         Right ticks -> ticks `shouldSatisfy` all (not . isOpaque)
 
-    -- Deletion is a forward event, not a rebase: the path disappears from
-    -- the *tree*, but every earlier tick -- including the one that
-    -- introduced it -- stays exactly where it was in history. Contrast
-    -- with the old (wrong) rebase-based implementation, which made
-    -- 'Tick.fileTicksOf' come back empty by physically excising those
-    -- ticks from the chain.
-    it "removes the path from the tree, but keeps its own tick history intact" $ do
+    -- Deletion is a forward event, not a rebase: every earlier tick --
+    -- including the one that introduced the file -- stays exactly where
+    -- it was in *raw* history, fully reachable (see the rebase\/undo-delete
+    -- tests below, which read it back). But 'Tick.fileTicksOf' is a
+    -- curated, current-lifetime-scoped *view* over that history, not raw
+    -- history itself -- a currently-deleted, not-yet-recreated file has no
+    -- current lifetime at all, so it reads exactly like a path that never
+    -- existed: empty, not "creation tick plus deletion tick". Nothing here
+    -- contradicts "deletion doesn't erase" -- the ticks are still there,
+    -- 'fileTicksOf' just isn't the read that shows them once the file
+    -- itself is gone.
+    it "leaves fileTicksOf empty once deleted, same as a path that never existed" $ do
       let result = runTestFS $ do
             _        <- createFile "scene.md"
             Ops.deleteFile "scene.md"
@@ -132,8 +137,7 @@ spec = describe "createFile" $ do
         Left err               -> expectationFailure err
         Right (present, ticks) -> do
           present `shouldBe` False
-          map Tick.ftKind ticks `shouldBe` ["atom", "atom"]
-          lookup "removed" (Tick.ftFields (last ticks)) `shouldBe` Just "true"
+          ticks `shouldBe` []
 
     -- The whole point of a forward-event delete: rebasing at a tick from
     -- before the deletion must still see the file exactly as it was then

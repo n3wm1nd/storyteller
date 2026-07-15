@@ -6,24 +6,19 @@
 
 module Storyteller.PresenceSpec (spec) where
 
-import Prelude hiding (appendFile)
-
 import Data.List (find, sort)
 import Data.Text (Text)
-import qualified Data.Text.Encoding as TE
 import Test.Hspec
 
 import Polysemy
 import Polysemy.Fail
 import Polysemy.State (evalState)
 
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, appendFile)
-
 import Git.Mock
-import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Git hiding (emptyWorkingTree)
 import Storyteller.Core.Storage (createBranch)
 import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types
 import Storyteller.Writer.Types (Character(..), Presence(..), PresenceEvent(..))
@@ -69,16 +64,21 @@ runStory withCharacter action =
       runBranchAndFS @Story (BranchName "story") action
   where void m = m >> return ()
 
--- | Append @content@ to @path@ and store it as an atom tick — the one thing
---   that marks "an atom happened" for 'trailingPresenceFor's purposes.
-writeAtom
-  :: Members '[ BranchOp Story, FileSystem (BranchTag Story)
-              , FileSystemRead (BranchTag Story), FileSystemWrite (BranchTag Story)
-              , Fail ] r
-  => FilePath -> Text -> Sem r TickId
+-- | Commit @content@ as a real atom on @path@ -- the one thing that marks
+--   "an atom happened" for 'trailingPresenceFor's purposes. Goes through
+--   'Storage.Ops.addAtom' specifically (the real 'Storage.Core.Atom'
+--   constructor, which is the one shape 'Storage.Core.store' actually
+--   splices into the tree) rather than 'Tick.storeAs', which always wraps
+--   its argument as a 'Storage.Core.NonAtom' -- content that merely
+--   *decodes back* as atom-shaped on read, without ever landing in the
+--   tree at all. That distinction didn't matter for this file's own
+--   assertions (which only ever decode ticks back, never check tree
+--   presence) until 'Storage.Tick.fileTicksOf' started checking real tree
+--   presence for its own lifetime-boundary walk -- at which point a
+--   "file" created this way was, correctly, still nonexistent.
+writeAtom :: Members '[BranchOp Story, Fail] r => FilePath -> Text -> Sem r TickId
 writeAtom path content = do
-  appendFile @(BranchTag Story) path (TE.encodeUtf8 content)
-  h <- runStorage @Story (Tick.storeAs (Atom path content))
+  h <- runStorage @Story (Ops.addAtom path content)
   return (TickId (Core.unObjectHash h))
 
 -- ---------------------------------------------------------------------------
@@ -122,6 +122,8 @@ spec = do
       -- presence tick, not two, and not zero (the character is genuinely
       -- meant to end up active).
       let result = runStory True $ do
+            -- A character can only enter a scene that exists.
+            _           <- writeAtom "scene.md" ""
             ticksBefore <- runStorage @Story (Tick.fileTicksOf "scene.md")
             _           <- recordPresence @Story "scene.md" alice Enter
             mtid2       <- recordPresence @Story "scene.md" alice Enter
@@ -184,6 +186,8 @@ spec = do
 
     it "includes a character after Enter, mirroring the frontend's activeCharacterBranches fold" $
       runStory True (do
+        -- A character can only enter a scene that exists.
+        _ <- writeAtom "scene.md" ""
         _ <- recordPresence @Story "scene.md" alice Enter
         activeCharactersFor @Story "scene.md")
         `shouldBe` Right [alice]
@@ -205,6 +209,8 @@ spec = do
     it "tracks multiple characters independently" $ do
       let result = runStory True $ do
             _ <- createBranch (unCharacter bob)
+            -- A character can only enter a scene that exists.
+            _ <- writeAtom "scene.md" ""
             _ <- recordPresence @Story "scene.md" alice Enter
             _ <- recordPresence @Story "scene.md" bob Enter
             active <- activeCharactersFor @Story "scene.md"
@@ -214,6 +220,8 @@ spec = do
     it "resolves interleaved characters correctly: Alice squashes away, Bob's tick survives" $ do
       let result = runStory True $ do
             _     <- createBranch (unCharacter bob)
+            -- A character can only enter a scene that exists.
+            _     <- writeAtom "scene.md" ""
             _     <- recordPresence @Story "scene.md" alice Enter
             mtb   <- recordPresence @Story "scene.md" bob   Enter
             mtl   <- recordPresence @Story "scene.md" alice Leave

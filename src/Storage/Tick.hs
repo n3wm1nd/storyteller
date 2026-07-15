@@ -229,26 +229,78 @@ data FileTick = FileTick
   } deriving (Show, Eq)
 
 -- | Walk the branch history from head and extract all ticks relevant to
---   @path@: every atom on that path, everything (transitively) referenced
---   by one, and every other tick whose own "file" field hints at @path@.
---   Returns oldest-first, root included (harmless -- it never carries
---   file content or a "file" field, so it's never a member of the
---   projection, only ever a potential, and here unused, parent link).
+--   @path@'s *current lifetime*: every atom on that path since the last
+--   time it was deleted (never, for a path that's never been removed and
+--   recreated), everything (transitively) referenced by one of those
+--   atoms, and every other tick whose own "file" field hints at @path@
+--   from within that same span. Returns oldest-first, root included
+--   (harmless -- it never carries file content or a "file" field, so it's
+--   never a member of the projection, only ever a potential, and here
+--   unused, parent link).
+--
+--   Deliberately *not* every atom this exact path string has ever carried
+--   across its entire history: a path can be deleted and recreated more
+--   than once, and each recreation is content unrelated to whatever came
+--   before it (see 'Storage.Ops.deleteFile'\/'Storage.Ops.saveFileAsNew's
+--   own Haddocks -- a deletion is a forward event, not a rebase, so an
+--   earlier lifetime's atoms stay reachable in raw history forever, but
+--   that's a "still reachable for a deliberate historical read" guarantee,
+--   not "still part of this file's everyday state"). Every caller of this
+--   function reads whatever it returns as *the* file's current tick
+--   history (the main file view's own tick list among them) -- mixing in
+--   an unrelated earlier lifetime's atoms here previously meant a
+--   checkpoint\/recreate (or a plain delete-then-different-file-later)
+--   made old, unrelated content reappear in that view.
+--
+--   Walks backward from head one commit at a time, stopping the instant
+--   @path@ is no longer present in that commit's own committed tree
+--   snapshot ('lookupPathAt') or root is reached -- it never decodes, or
+--   even reads, anything from an earlier lifetime. The tree itself is the
+--   ground truth for "does this path currently exist," checked directly
+--   (one 'lookupPathAt' per commit -- cost proportional to @path@'s
+--   depth, not the size of the tree, since every commit already carries
+--   its own complete snapshot, and 'lookupPathAt' specifically -- not
+--   'readPathAt' -- since this only ever needs to know whether the blob
+--   is there, never its own bytes) rather than inferred from a
+--   removal-tagged 'Atom'
+--   -- an earlier version stopped at a tag match instead, which only gives
+--   the right answer if every single way a path can disappear from the
+--   tree is disciplined enough to also leave that exact marker behind on
+--   that exact path (true of 'Storage.Ops.deleteFile' today, but a real,
+--   silent invariant to keep true forever rather than something the tree
+--   itself already settles unconditionally). An even earlier version
+--   decoded the *entire* branch history unconditionally (@mapM ... raw@
+--   over every commit from root to head) before filtering any of it away
+--   -- correct once lifetime-scoped, but still paying full history's cost
+--   on every call regardless of how small the current lifetime actually
+--   is. Same bounded-walk shape 'Storage.Ops.atomHistory'\/
+--   'Storage.Ops.currentLifetimeAtoms'\/'recentAtomsOf' already use, for
+--   exactly this reason.
 fileTicksOf :: StoreM m => FilePath -> StoreT m [FileTick]
-fileTicksOf path = do
-  h <- headHash
-  collectChain h [] >>= go
+fileTicksOf path = headHash >>= \h -> collectLifetime h [] >>= go
   where
-    collectChain :: StoreM m => ObjectHash -> [(ObjectHash, CommitData)] -> StoreT m [(ObjectHash, CommitData)]
-    collectChain h acc = do
-      cd <- lift (readCommit h)
-      case commitParents cd of
-        []      -> return ((h, cd) : acc)
-        (p : _) -> collectChain p ((h, cd) : acc)
+    -- Oldest-first, same trick 'recentAtomsOf'\/'currentLifetimeAtoms' use:
+    -- each older commit is prepended in front of what's already been
+    -- collected, so by the time recursion bottoms out (root, or the
+    -- tree-presence boundary) the accumulator already reads
+    -- oldest-to-newest. A currently-removed file (deleted, not yet
+    -- recreated) has no "current" ticks at all -- same as a path that's
+    -- never existed -- so the very first tree check (at head) already
+    -- stops the walk with nothing collected.
+    collectLifetime :: StoreM m => ObjectHash -> [FileTick] -> StoreT m [FileTick]
+    collectLifetime h acc = do
+      present <- lift (lookupPathAt h path)
+      case present of
+        Nothing -> return acc
+        Just _  -> do
+          cd <- lift (readCommit h)
+          ft <- toFileTick path h cd
+          case commitParents cd of
+            []      -> return (ft : acc)
+            (p : _) -> collectLifetime p (ft : acc)
 
-    go :: StoreM m => [(ObjectHash, CommitData)] -> StoreT m [FileTick]
-    go raw = do
-      allTicks <- mapM (uncurry (toFileTick path)) raw
+    go :: StoreM m => [FileTick] -> StoreT m [FileTick]
+    go allTicks = do
       let fileHint   = T.pack path
           atomIds    = [ ftTickId ft | ft <- allTicks, ftContent ft /= Nothing ]
           memberIds  = expandRefs atomIds allTicks

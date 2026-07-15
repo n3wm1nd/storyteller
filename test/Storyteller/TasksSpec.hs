@@ -237,6 +237,85 @@ spec = do
           -- sync found nothing new and never called its stub.
           length calls `shouldBe` 1
 
+    -- The point of the whole delta-on-later-passes design: on a
+    -- long-running character, the second (and every later) Suggest call
+    -- must stay cheap -- re-reading the entire journal every time would
+    -- make it grow more expensive forever, exactly the "borderline
+    -- unusable on a local model with a long history" problem this was
+    -- built to avoid.
+    it "a second suggest pass reads only what's new, not the whole journal again" $ do
+      let result = runOne $ do
+            _ <- runStorage @TestBranch (Ops.saveFile "sheet.md" "Mira is a locksmith's daughter.")
+            _ <- runStorage @TestBranch (Ops.addAtom "journal.md" "she left home.")
+            _ <- suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- rebuild her life.") "Mira" "tasks.md"
+            _ <- runStorage @TestBranch (Ops.addAtom "journal.md" "\n\nshe found work at the docks.")
+            suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- settle at the docks.") "Mira" "tasks.md"
+      case result of
+        Left err -> expectationFailure err
+        Right (calls, changed) -> do
+          changed `shouldBe` True
+          case calls of
+            [ (_, _, firstMaterial), (_, secondCurrent, secondMaterial) ] -> do
+              firstMaterial  `shouldSatisfy` T.isInfixOf "she left home."
+              secondCurrent  `shouldBe` "## Long-term goals\n- rebuild her life."
+              secondMaterial `shouldSatisfy` T.isInfixOf "she found work at the docks."
+              -- The whole point: the old entry isn't resent, only the delta.
+              secondMaterial `shouldNotSatisfy` T.isInfixOf "she left home."
+            other -> expectationFailure ("expected exactly two calls, got " <> show (length other))
+
+    it "a second suggest pass still includes sheet.md's current content even though it's unchanged" $ do
+      let result = runOne $ do
+            _ <- runStorage @TestBranch (Ops.saveFile "sheet.md" "Mira is a locksmith's daughter.")
+            _ <- runStorage @TestBranch (Ops.addAtom "journal.md" "she left home.")
+            _ <- suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- rebuild her life.") "Mira" "tasks.md"
+            _ <- runStorage @TestBranch (Ops.addAtom "journal.md" "\n\nshe found work at the docks.")
+            suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- settle at the docks.") "Mira" "tasks.md"
+      case result of
+        Left err -> expectationFailure err
+        Right (calls, _) -> case calls of
+          [_, (_, _, secondMaterial)] -> secondMaterial `shouldSatisfy` T.isInfixOf "locksmith's daughter"
+          other -> expectationFailure ("expected exactly two calls, got " <> show (length other))
+
+    it "a second suggest pass with nothing new since the first is a no-op" $ do
+      let result = runOne $ do
+            _ <- runStorage @TestBranch (Ops.saveFile "sheet.md" "Mira is a locksmith's daughter.")
+            _ <- runStorage @TestBranch (Ops.addAtom "journal.md" "she left home.")
+            _ <- suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- rebuild her life.") "Mira" "tasks.md"
+            suggestTasksWith @TestBranch (recordingAgent "unused") "Mira" "tasks.md"
+      case result of
+        Left err -> expectationFailure err
+        Right (calls, changed) -> do
+          changed `shouldBe` False
+          length calls `shouldBe` 1
+
+    -- Regression: a manual clear of tasks.md (e.g. via the raw-edit "Save"
+    -- in character-sidebar.tsx's TasksEditor, which always goes through
+    -- 'Storage.Ops.saveFileAsNew' directly, never 'exchangeTasksFile')
+    -- leaves the *old* sync marker sitting in history, unrelated to the
+    -- now-empty visible content. An earlier version branched on that
+    -- marker rather than on the file's actual current content, so a
+    -- Suggest run right after a manual clear (with no *new* journal entry
+    -- since that old marker) silently skipped instead of re-grounding.
+    it "treats a manually-cleared tasks.md (stale marker, empty content) as a first pass again" $ do
+      let result = runOne $ do
+            _ <- runStorage @TestBranch (Ops.addAtom "journal.md" "she left home.")
+            _ <- suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- rebuild her life.") "Mira" "tasks.md"
+            -- Simulate the raw-edit "Save" clearing tasks.md, bypassing
+            -- exchangeTasksFile (and its marker) entirely.
+            _ <- runStorage @TestBranch (Ops.saveFileAsNew "tasks.md" "tasks.md" "")
+            -- No new journal entry here -- this is the exact case that
+            -- used to skip.
+            suggestTasksWith @TestBranch (recordingAgent "## Long-term goals\n- start over.") "Mira" "tasks.md"
+      case result of
+        Left err -> expectationFailure err
+        Right (calls, changed) -> do
+          changed `shouldBe` True
+          case calls of
+            [_, (_, secondCurrent, secondMaterial)] -> do
+              secondCurrent  `shouldBe` ""
+              secondMaterial `shouldSatisfy` T.isInfixOf "she left home."
+            other -> expectationFailure ("expected exactly two calls, got " <> show (length other))
+
   describe "character name resolution" $ do
     it "syncTasksWith prefers sheet.md's own heading over the fallback name" $ do
       let result = runOne $ do

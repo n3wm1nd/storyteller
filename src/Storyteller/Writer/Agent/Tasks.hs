@@ -51,7 +51,7 @@ module Storyteller.Writer.Agent.Tasks
   ) where
 
 import Control.Monad (when)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -75,18 +75,33 @@ import Storyteller.Core.Types (Tick, fromTick)
 -- Storage-level pieces
 -- ---------------------------------------------------------------------------
 
--- | The newest atom on @tasksPath@ that carries a ref, walking back from
---   head -- i.e. this branch's own last sync marker, if it's ever been
---   synced\/suggested before. Filtered to @tasksPath@ specifically (unlike
---   'Storyteller.Writer.Agent.Tracker.trackBranch's tracker-side lookup,
---   which doesn't need to filter because the tracker branch has no other
---   ref-carrying atoms) since a real tasks.md-bearing branch may carry
---   other ref-carrying atoms of its own (e.g. a character branch's journal
---   entries, written by 'Storyteller.Writer.Agent.Tracker').
+-- | The newest atom on @tasksPath@ that carries a ref -- i.e. this
+--   branch's own last sync marker, if it's ever been synced\/suggested
+--   before *in the file's current lifetime*. Built on
+--   'Storage.Tick.fileTicksOf', which is itself already scoped to the
+--   current lifetime (never reads past a removal boundary) -- this
+--   function has no idea what a removal marker even is, it only ever asks
+--   "what are this file's current ticks" and picks the newest one with a
+--   ref. Without that scoping, a marker from a stale, no-longer-visible
+--   lifetime (e.g. tasks.md manually cleared via
+--   'Storage.Ops.saveFileAsNew' -- see character-sidebar.tsx's
+--   TasksEditor, which always bypasses 'exchangeTasksFile') would still be
+--   found, wrongly treating a run against the now-empty file as a
+--   continuation of a sync history that, as far as the current file is
+--   concerned, doesn't exist.
 lastSyncedTasksRef :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Core.ObjectHash)
-lastSyncedTasksRef tasksPath = Core.follow Nothing $ \acc _h t -> case t of
-  Core.Atom (r : _) file _ _ | file == tasksPath -> (Just r, False)
-  _                                               -> (acc, True)
+lastSyncedTasksRef tasksPath = do
+  ticks <- Tick.fileTicksOf tasksPath
+  return $ listToMaybe
+    [ Core.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ]
+
+-- | Every tick hash strictly newer than @since@, walking back from head,
+--   oldest-first (same convention 'Storage.Tick.recentAtomsOf' uses).
+--   'Nothing' means "never synced" -- walks all the way to root. Shared by
+--   'syncTasksWith' (always) and 'suggestTasksWith' (on every pass after
+--   its first, once a marker exists to walk back to).
+newTicksSince :: Core.StoreM m => Maybe Core.ObjectHash -> Core.StoreT m [Core.ObjectHash]
+newTicksSince since = Core.follow [] $ \acc h _t -> if since == Just h then (acc, False) else (h : acc, True)
 
 -- | Every atom-tick among @ticks@ on a file @keep@ accepts (never
 --   @tasksPath@ itself, regardless of what @keep@ says -- tasks.md is
@@ -177,8 +192,7 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
     h    <- Core.headHash
     return (name, old, ref, h)
 
-  newHashes <- runStorage @branch $
-    Core.follow [] $ \acc h _t -> if lastSynced == Just h then (acc, False) else (h : acc, True)
+  newHashes <- runStorage @branch (newTicksSince lastSynced)
 
   if null newHashes then do
     info "syncTasksWith: nothing new since the last sync, skipping"
@@ -195,9 +209,9 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
       info ("syncTasksWith: wrote updated " <> T.pack tasksPath)
       return True
 
--- | Propose new tasks for this branch's character from a full,
---   *unfiltered* read of every file on the branch (sheet, journal, any
---   other context files) -- deliberately not
+-- | Propose new tasks for this branch's character. The *first* pass ever
+--   (no sync marker yet) reads a full, *unfiltered* dump of every file on
+--   the branch -- deliberately not
 --   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' (the
 --   windowed read 'Server.Writer.File.activeCharacterContext' uses for
 --   ambient generation context), even though both read "a character's
@@ -209,15 +223,29 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
 --   for ambient generation context, where the source scene is already
 --   shown separately (see 'Server.Writer.File.chatWriter's earlier-
 --   chapters channel) and re-showing an identical copy would be pure
---   duplication -- but a Suggest pass has no such other channel. Filtered
---   through the same lens, it would see next to nothing: not a smaller
---   version of the journal, effectively no journal at all. The correct
---   primitive for "no other context is coming" is the same one
---   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' already
---   uses for exactly that reason -- every file, in full, unfiltered.
---   Still records\/advances the same sync marker 'syncTasksWith' uses, so
---   a reconcile pass run right after doesn't immediately re-process what
---   suggestion just read.
+--   duplication -- but a Suggest pass has no such other channel of its
+--   own. Filtered through the same lens, it would see next to nothing:
+--   not a smaller version of the journal, effectively no journal at all.
+--   The correct primitive for a genuinely first read, with nothing to
+--   build on yet, is the same one
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' already uses
+--   for exactly that reason -- every file, in full, unfiltered.
+--
+--   *Every later* pass reuses 'syncTasksWith's own delta machinery
+--   instead: only journal\/other-file ticks written since the last
+--   sync\/suggest, the same 'newTicksSince'\/'newSourceText' this module's
+--   own reconcile pass already uses. This is sound, not just cheaper: the
+--   character's already-established personality and history aren't lost
+--   between calls, they're already folded into @current@ (tasks.md's own
+--   prior content, which every earlier pass has already updated) --
+--   re-deriving that same understanding from the full journal on every
+--   single call was pure waste, and on a long-running character\/a weak
+--   local model, the difference between "small delta" and "the whole
+--   journal, every time" is the difference between usable and not.
+--   @sheet.md@'s own *current* content is still read in full on every
+--   pass regardless (small, stable, rarely changes) -- only the
+--   unboundedly-growing journal\/other-file material goes through the
+--   delta path.
 --
 --   @fallbackName@: see 'syncTasksWith's own Haddock, same
 --   'resolveCharacterName' fallback reasoning.
@@ -233,16 +261,48 @@ suggestTasksWith
   -> Text -> FilePath -> Sem r Bool
 suggestTasksWith generate fallbackName tasksPath = do
   info ("suggestTasksWith: reading character context for " <> T.pack tasksPath <> "...")
-  (characterName, mOld, sourceText, headH) <- runStorage @branch $ do
+  (characterName, mOld, lastSynced, sheetText, headH) <- runStorage @branch $ do
     name  <- resolveCharacterName "sheet.md" fallbackName
     old   <- readTasksFile tasksPath
+    ref   <- lastSyncedTasksRef tasksPath
     files <- FS.list
-    texts <- mapM (\p -> TE.decodeUtf8 <$> Core.readFile p) (filter (/= tasksPath) files)
+    sheet <- if "sheet.md" `elem` files then TE.decodeUtf8 <$> Core.readFile "sheet.md" else return ""
     h     <- Core.headHash
-    return (name, old, T.intercalate "\n\n---\n\n" texts, h)
+    return (name, old, ref, sheet, h)
 
-  if T.null (T.strip sourceText) then do
-    info "suggestTasksWith: no character context found (no sheet, journal, or other files) -- skipping"
+  -- Whether to do a full grounding read or just the delta hinges on
+  -- whether this file's *current lifetime* has a sync marker yet --
+  -- 'lastSyncedTasksRef' is itself lifetime-scoped (never finds a marker
+  -- from before a removal boundary), so a manually-cleared tasks.md (see
+  -- character-sidebar.tsx's TasksEditor, whose "Save" always bypasses
+  -- 'exchangeTasksFile' via 'Storage.Ops.saveFileAsNew' directly) correctly
+  -- reports no marker here, the same as a genuinely first-ever pass would.
+  (isFirstPass, bodyText) <- case lastSynced of
+    Nothing -> do
+      info "suggestTasksWith: first pass for this lifetime of tasks.md -- reading full context..."
+      body <- runStorage @branch $ do
+        files <- FS.list
+        texts <- mapM (\p -> TE.decodeUtf8 <$> Core.readFile p) (filter (\p -> p /= tasksPath && p /= "sheet.md") files)
+        return (T.intercalate "\n\n---\n\n" texts)
+      return (True, body)
+    Just _ -> do
+      info "suggestTasksWith: reading what's new since the last sync/suggest..."
+      newHashes <- runStorage @branch (newTicksSince lastSynced)
+      newTicks  <- runStorage @branch (mapM Tick.readTypesTick newHashes)
+      return (False, newSourceText (/= "sheet.md") tasksPath newTicks)
+
+  -- A first pass needs *something* at all (a sheet alone is enough to
+  -- start from); a later pass needs something genuinely *new* -- sheet.md
+  -- alone reappearing unchanged every call isn't a reason to re-run.
+  let skip = if isFirstPass
+               then T.null (T.strip sheetText) && T.null (T.strip bodyText)
+               else T.null (T.strip bodyText)
+      sourceText
+        | T.null (T.strip sheetText) = bodyText
+        | otherwise                   = sheetText <> "\n\n---\n\n" <> bodyText
+
+  if skip then do
+    info "suggestTasksWith: no new character context to draw on -- skipping"
     return False
   else do
     newContent <- generate characterName (fromMaybe "" mOld) sourceText

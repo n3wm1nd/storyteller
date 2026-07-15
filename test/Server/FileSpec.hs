@@ -131,11 +131,14 @@ spec runner = do
   describe "deleteFile" $ do
 
     -- Deletion is a forward event (see 'Storyteller.Core.Create's module
-    -- Haddock), not a rebase: the deletion itself lands as one more tick,
-    -- on top of whatever was already there -- 'fileState' keeps showing
-    -- the file's whole history, ending in that tick, rather than coming
-    -- back empty the way a rebase-based delete would have left it.
-    it "deletion lands as one more tick on top of the file's existing history" $ do
+    -- Haddock), not a rebase: the tick that recorded it, and everything
+    -- before it, stays exactly where it was in *raw* history -- nothing is
+    -- excised. But 'fileState' (via 'Tick.fileTicksOf') is a current-
+    -- lifetime-scoped *view*, not raw history: a currently-deleted,
+    -- not-yet-recreated file has no current lifetime at all, so it reads
+    -- exactly like a path that never existed -- empty ticks, empty head --
+    -- not "the file's whole history, ending in a deletion tick".
+    it "leaves fileState empty once deleted, same as a path that never existed" $ do
       let result = withFile_ runner (BranchName "b") $ do
             _ <- appendAtom "f.md" "first"
             _ <- appendAtom "f.md" "second"
@@ -144,9 +147,8 @@ spec runner = do
       case result of
         Left err  -> expectationFailure err
         Right upd -> do
-          length (updateTicks upd) `shouldBe` 3
-          updateHead upd `shouldNotBe` ""
-          wtTickId (last (updateTicks upd)) `shouldBe` updateHead upd
+          updateTicks upd `shouldBe` []
+          updateHead upd `shouldBe` ""
 
     -- Deleting one file must not disturb another file's own chain —
     -- 'Storage.Ops.deleteFile' commits a single tick scoped to its own
@@ -172,9 +174,12 @@ spec runner = do
     -- afterward. Now that both 'createFile' and 'deleteFile' guard on tree
     -- presence ('Storage.Ops.exists'), not tick history -- a deleted path
     -- genuinely has no ticks of its own excised, they're kept for history,
-    -- see 'Storyteller.CreateSpec' -- recreating it succeeds, and the
-    -- recreated file's history (from 'atomHistory', which stops folding at
-    -- the deletion marker) doesn't carry any of the old content forward.
+    -- see 'Storyteller.CreateSpec' -- recreating it succeeds. 'fileState'
+    -- only shows the *new* lifetime's own tick (the second 'createFile') --
+    -- the old creation-then-deletion belongs to a now-closed, unrelated
+    -- lifetime and correctly doesn't bleed into the recreated file's
+    -- current state, matching 'atomHistory' (which likewise stops folding
+    -- at the deletion marker) not carrying the old content forward either.
     it "a path can be recreated after being deleted, with no leftover tick blocking it" $ do
       let result = withFile_ runner (BranchName "b") $ do
             createFile "f.md"
@@ -184,7 +189,7 @@ spec runner = do
       case result of
         Left err -> expectationFailure err
         Right (upd, history) -> do
-          length (updateTicks upd) `shouldBe` 3
+          length (updateTicks upd) `shouldBe` 1
           mconcat (map snd history) `shouldBe` ""
 
   describe "renameFile" $ do
