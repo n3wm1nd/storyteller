@@ -201,6 +201,24 @@ spec = do
         Left err -> expectationFailure err
         Right (ticks, _finalState) -> map ftKind ticks `shouldBe` ["atom", "note"]
 
+    -- Regression: an earlier version applied its fixed-point step exactly
+    -- twice (hardcoded), which happened to be enough for a two-hop chain
+    -- (atom <- note1 <- note2, already covered above) but would silently
+    -- have dropped a third hop. The current single forward pass has no
+    -- depth limit at all.
+    it "fetchRelatedTicks captures a reference chain three levels deep" $ do
+      let result = runChain $ do
+            h1    <- addAtom "scene.md" "p1\n"
+            h2    <- store (NonAtom [h1] "type:note\n\nfirst note")
+            h3    <- store (NonAtom [h2] "type:note\n\nsecond note, about the first")
+            _     <- store (NonAtom [h3] "type:note\n\nthird note, about the second")
+            ticks <- fileTicksOf "scene.md"
+            fetchRelatedTicks "scene.md" ticks
+      case result of
+        Left err -> expectationFailure err
+        Right (ticks, _finalState) ->
+          length (filter (\ft -> ftKind ft == "note") ticks) `shouldBe` 3
+
   describe "recentAtomsOf" $ do
     it "keeps every atom when all are reference-free and both bounds have room to spare" $ do
       let result = fst <$> runChain (do

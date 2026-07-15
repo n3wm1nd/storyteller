@@ -328,31 +328,54 @@ fileTicksOf path = do
 --   in the codebase does. The expensive half, and the reason it's split
 --   out rather than folded into 'fileTicksOf' itself.
 --
---   A single forward (oldest-to-newest) pass over @path@'s lifetime,
---   accumulating into a growing 'Set.Set': whenever a tick's own refs
---   point at anything already in that set, the tick joins it too -- so
---   something even newer can reference *it* later in the very same pass.
---   Captures a reference chain of any depth this way (a note about a note
---   about an atom, and so on) -- an earlier version applied a fixed-point
---   step exactly *twice*, a hardcoded depth-2 cap that would have missed
---   a third hop, and did it with repeated @O(n)@ 'elem'\/'notElem' list
---   scans per step rather than 'Set' membership.
+--   Descends from head first, following @commitParents@ only -- no tick
+--   decoding at all -- until it reaches @ticks@'s own oldest member (a
+--   plain hash comparison per commit): a ref only ever points backward in
+--   time, so nothing older than the seed set's own first tick could
+--   possibly reference anything in it, and there's nothing to gain by
+--   even reading that far back, let alone decoding it. Only *then*, on
+--   the way back up (one 'toFileTick' per commit from that point to
+--   head), does it decide what belongs: a tick joins the result if it's
+--   one of the original @ticks@, or if any of its own refs already point
+--   at something already included from everything older -- which, on the
+--   way up, has always already been resolved. That captures a reference
+--   chain of any depth in the same single ascent (a note about a note
+--   about an atom, and so on): an earlier version instead fetched the
+--   *entire* lifetime up front ('lifetimeTicksOf', paying to decode the
+--   part it was about to throw away) and applied a fixed-point search
+--   step exactly *twice* over the result -- a hardcoded depth-2 cap that
+--   would have missed a third hop, on top of the wasted fetch.
 --
---   Never even looks at anything older than @ticks@'s own earliest member
---   ('dropWhile' below): a ref only ever points backward in time, so
---   nothing before the seed set's first tick could possibly reference
---   anything in it -- there's nothing to find by scanning that far back,
---   let alone repeatedly.
+--   Builds the result newest-first during the ascent (each new tick is
+--   O(1) to prepend, unlike an @allTicks ++ [ft]@ append repeated once per
+--   tick, which is quadratic over a long lifetime) and reverses once at
+--   the very end.
 fetchRelatedTicks :: StoreM m => FilePath -> [FileTick] -> StoreT m [FileTick]
-fetchRelatedTicks path ticks = do
-  allTicks <- lifetimeTicksOf path
-  let seedIds  = Set.fromList (map ftTickId ticks)
-      relevant = dropWhile (\ft -> not (Set.member (ftTickId ft) seedIds)) allTicks
-      included = List.foldl' step seedIds relevant
-      step acc ft
-        | any (`Set.member` acc) (ftRefs ft) = Set.insert (ftTickId ft) acc
-        | otherwise                           = acc
-  return (relinkParents included Nothing relevant)
+fetchRelatedTicks _ [] = return []
+fetchRelatedTicks path ticks@(oldest : _) = do
+  let seedIds = Set.fromList (map ftTickId ticks)
+      stopId  = ftTickId oldest -- ticks is oldest-first (see fileTicksOf)
+  h <- headHash
+  (resultRev, _, _) <- ascend seedIds stopId h
+  return (reverse resultRev)
+  where
+    -- Returns (result so far, newest-first; the last-included tick's own
+    -- id, i.e. what the next tick up should parent onto; the running
+    -- included-id set), having already descended past everything older
+    -- than 'stopId' without decoding any of it.
+    ascend :: StoreM m => Set.Set Text -> Text -> ObjectHash -> StoreT m ([FileTick], Maybe Text, Set.Set Text)
+    ascend seedIds stopId h = do
+      cd <- lift (readCommit h)
+      (olderRev, lastId, included) <-
+        if unObjectHash h == stopId
+          then return ([], Nothing, seedIds)
+          else case commitParents cd of
+            []      -> return ([], Nothing, seedIds) -- reached root without finding stopId; shouldn't happen for a real seed from this same path's own lifetime
+            (p : _) -> ascend seedIds stopId p
+      ft <- toFileTick path h cd
+      if Set.member (ftTickId ft) included || any (`Set.member` included) (ftRefs ft)
+        then return (ft { ftParent = lastId } : olderRev, Just (ftTickId ft), Set.insert (ftTickId ft) included)
+        else return (olderRev, lastId, included)
 
 -- | Decode a single commit as a 'FileTick', without regard to whether it's
 --   relevant to @path@ at all -- 'ftContent' carries that verdict
