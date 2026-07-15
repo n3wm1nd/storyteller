@@ -27,6 +27,7 @@ module Server.Core.File
   , createFile
   , deleteFile
   , renameFile
+  , checkpointFile
   , appendToFile
   , editFileAtom
   , deleteFileAtom
@@ -150,6 +151,21 @@ renameFile path newPath = do
       else do
         info $ "renaming file: " <> T.pack path <> " -> " <> T.pack newPath
         void $ runStorage @Main (Ops.renameFile path newPath)
+
+-- | Freeze @path@'s current lifetime and clone it in full onto a fresh one
+-- -- see 'Storage.Ops.checkpointFile'. From here on, an atom edit\/delete
+-- issued on @path@ can only reach the new copies; everything before this
+-- point stays exactly as it was, just no longer reachable through ordinary
+-- editing. Fails on an absent path, same reasoning as 'deleteFile'\/
+-- 'renameFile's own guards -- there's no current lifetime to checkpoint.
+checkpointFile :: (FileOpen r, Member Logging r) => FilePath -> Sem r ()
+checkpointFile path = do
+  present <- runStorage @Main (Ops.exists path)
+  if not present
+    then fail ("checkpointFile: no such file: " <> path)
+    else do
+      info $ "checkpointing file: " <> T.pack path
+      void $ runStorage @Main (Ops.checkpointFile path)
 
 -- | Append content to a file as a single atom — the caller (someone typing
 --   and appending their own text) already chose exactly what they wanted

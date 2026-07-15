@@ -80,6 +80,11 @@ data FileCommand
   --   a forward event (contrast with 'Delete') -- see
   --   'Storage.Ops.renameFile'. Fails if 'fcNewPath' already exists.
   | Rename     { fcId :: Maybe T.Text, fcNewPath :: T.Text }
+  -- | Freeze this path's current lifetime and clone it in full onto a
+  --   fresh one -- see 'Storage.Ops.checkpointFile'\/'Server.Core.File.
+  --   checkpointFile'. From here on, an atom edit\/delete can only reach
+  --   the new copies; nothing before this point is touched.
+  | Checkpoint { fcId :: Maybe T.Text }
   | EditAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   -- | Edit a chat 'Storyteller.Writer.Agent.Prompt' tick's text in place.
   --   Distinct from 'EditAtom': a prompt's message carries no filesystem
@@ -197,6 +202,7 @@ instance FromJSON FileCommand where
       "chat.append" -> ChatAppend i <$> o .: "content"
       "delete"      -> pure (Delete i)
       "rename"      -> Rename i <$> o .: "newPath"
+      "checkpoint"  -> pure (Checkpoint i)
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
       "edit.prompt" -> EditPrompt i <$> o .: "tickId" <*> o .: "content"
       "delete.atom" -> DeleteAtom i <$> o .: "tickId"
@@ -250,6 +256,7 @@ commandKind = \case
   ChatAppend {}   -> "chat.append"
   Delete {}       -> "delete"
   Rename {}       -> "rename"
+  Checkpoint {}   -> "checkpoint"
   EditAtom {}     -> "edit.atom"
   EditPrompt {}   -> "edit.prompt"
   DeleteAtom {}   -> "delete.atom"

@@ -6,7 +6,7 @@ import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter } from "./sidebar.actions";
 import {
-  openFile, createFile, deleteFile, renameFile, closeFile, enterScene, leaveScene, askCharacter,
+  openFile, createFile, deleteFile, renameFile, checkpointFile, closeFile, enterScene, leaveScene, askCharacter,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, chatFix, chatNote, chatRegen, chatOutline,
@@ -297,6 +297,13 @@ export default function Home() {
     }
   }
 
+  // Unlike delete/rename, the path itself never changes — the already-open
+  // connection's own ref-move notification picks up the resulting update,
+  // same as any other in-place edit, so there's nothing else to do here.
+  function handleCheckpointFile(path: string) {
+    checkpointFile(path);
+  }
+
   function handleCloseFile() {
     if (selectedFile) closeFile(selectedFile);
     setSelectedFile(null);
@@ -410,6 +417,7 @@ export default function Home() {
               onCreateFile={handleCreateFile}
               onDeleteFile={handleDeleteFile}
               onRenameFile={handleRenameFile}
+              onCheckpointFile={handleCheckpointFile}
               onCreateBranch={createBranch}
               onDeleteBranch={deleteBranch}
               onCreateChapter={createChapter}

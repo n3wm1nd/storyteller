@@ -63,6 +63,21 @@ export async function saveRawFile(branch: string, path: string, content: string)
   if (!res.ok) throw new Error(`save failed: ${res.status} ${path}`);
 }
 
+// "Save as new": the same PUT /$raw/{path} resource, but with the "?asNew"
+// query flag instead of the default reconciled diff (see app/Server.hs and
+// Server.Writer.Branch.saveFileAsNew/Storage.Ops.saveFileAsNew) — a
+// wholesale replacement, no note/atom continuity carried forward. The raw/
+// markdown editor's own escape hatch for "this isn't an edit, it's a
+// replacement" (a structural change to a file's own list/table content
+// that shouldn't be tracked atom-by-atom). `newPath` forks to a different
+// file instead of replacing this one in place; omitted, it defaults to
+// `path` itself server-side.
+export async function saveRawFileAsNew(branch: string, path: string, content: string, newPath?: string) {
+  const url = `${httpBase()}/branch/${encodeURIComponent(branch)}/$raw/${encodePath(path)}?asNew${newPath ? `&newPath=${encodeURIComponent(newPath)}` : ""}`;
+  const res = await fetch(url, { method: "PUT", body: content });
+  if (!res.ok) throw new Error(`save as new failed: ${res.status} ${path}`);
+}
+
 // ── Shared event types ────────────────────────────────────────────────────────
 
 export type ErrorEvent    = { type: "error";     message: string };
@@ -210,6 +225,12 @@ export type FileCommand =
   | { type: "chat.append"; id?: string; content: string }
   | { type: "delete";      id?: string }
   | { type: "rename";      id?: string; newPath: string }
+  // Checkpoint: freeze this path's current lifetime and clone it in full
+  // (every atom, plus every note/fixup/swipe attached to one) onto a fresh
+  // one. From here on, an atom edit/delete can only reach the new copies —
+  // everything before this point stays exactly as it was, just no longer
+  // reachable through ordinary editing (see Storage.Ops.checkpointFile).
+  | { type: "checkpoint";  id?: string }
   | { type: "edit.atom";   id?: string; tickId: string; content: string }
   // Edit a chat prompt tick's text in place — distinct from edit.atom: a
   // prompt isn't file content, so this doesn't restage anything.

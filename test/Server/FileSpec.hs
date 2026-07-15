@@ -215,6 +215,35 @@ spec runner = do
         Left _  -> return ()
         Right _ -> expectationFailure "expected renameFile to fail when the destination already exists"
 
+  describe "checkpointFile" $ do
+
+    -- 'fileState' (built on 'Tick.fileTicksOf') deliberately walks every
+    -- lifetime, not just the current one -- so the raw tick *count* is
+    -- expected to grow (the old atoms, the checkpoint's own deletion
+    -- marker, and the fresh clones are all still in there). What actually
+    -- has to stay unchanged is the file's own committed content -- read
+    -- via 'Ops.atomHistory' (the current lifetime's own committed fold),
+    -- not the ambient tree, which 'checkpointFile' never touches at all
+    -- (nothing about the ambient tree needs to change; only 'renameFile'
+    -- needs that sync, since a rename actually changes the path).
+    it "leaves the file's own committed content unchanged" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _      <- appendAtom "f.md" "p1"
+            _      <- appendAtom "f.md" "p2"
+            before <- runStorage @Main (Ops.atomHistory "f.md")
+            checkpointFile "f.md"
+            after  <- runStorage @Main (Ops.atomHistory "f.md")
+            return (map snd before, map snd after)
+      case result of
+        Left err -> expectationFailure err
+        Right (before, after) -> after `shouldBe` before
+
+    it "fails when the path isn't currently present" $
+      (run $ runner $ createBranch (BranchName "b") >> runBranchAndFS @Main (BranchName "b") (checkpointFile "nope.md"))
+        `shouldSatisfy` \case
+          Left _  -> True
+          Right _ -> False
+
   describe "moveFileAtom" $ do
 
     it "moving a single atom to front is a no-op on chain length" $ do

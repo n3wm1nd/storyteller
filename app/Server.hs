@@ -35,12 +35,20 @@
 --                                 atom chain (see
 --                                 'Server.Writer.Branch.saveFile'/
 --                                 'Storage.Ops.commitFile') instead of
---                                 landing as an opaque binary asset
+--                                 landing as an opaque binary asset. With
+--                                 "?asNew" instead: a wholesale replacement
+--                                 (see 'Server.Writer.Branch.saveFileAsNew'/
+--                                 'Storage.Ops.saveFileAsNew') rather than a
+--                                 reconciled diff — no note/atom continuity
+--                                 carried forward. "?newPath=..." alongside
+--                                 it forks to a different file; absent, it
+--                                 defaults to this same path.
 --   /                           — the built frontend, if STATIC_DIR is set
 --                                 (see 'staticApp'); otherwise a plain
 --                                 placeholder response, unchanged from before
 module Main (main) where
 
+import Control.Monad (join)
 import Network.Wai (Application, Request(pathInfo, requestMethod), responseLBS, responseFile, strictRequestBody)
 import qualified Network.Wai as Wai
 import Network.Wai.Handler.Warp (runSettings, defaultSettings, setTimeout, setPort)
@@ -58,7 +66,7 @@ import System.IO (hPutStrLn, stderr)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Server.Core.File (readFileContent)
-import Server.Writer.Branch (uploadFile, saveFile)
+import Server.Writer.Branch (uploadFile, saveFile, saveFileAsNew)
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort, envStaticDir)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
@@ -129,13 +137,27 @@ httpApp env req respond
       -- convention as the WS router's "$context" (see wsRouter) — raw-edit
       -- save reconciles against the atom chain ('Server.Writer.Branch.saveFile')
       -- instead of depositing an opaque binary asset like a plain upload.
+      --
+      -- The "?asNew" query flag is the same resource, a different write
+      -- strategy: a wholesale replacement ('Server.Writer.Branch.
+      -- saveFileAsNew') instead of the default reconciled diff — the raw/
+      -- markdown editor's own "this isn't an edit, it's a replacement"
+      -- escape hatch. "?newPath=..." alongside it forks to a different
+      -- file instead of replacing this one in place; absent, it defaults
+      -- to this same path.
       (m, "branch" : name : "$raw" : path@(_:_)) | m == methodPut -> do
         let filePath = T.unpack (T.intercalate "/" path)
+            asNew    = any ((== "asNew") . fst) (Wai.queryString req)
+            newPath  = maybe filePath (T.unpack . TE.decodeUtf8Lenient)
+                             (join (lookup "newPath" (Wai.queryString req)))
         body <- strictRequestBody req
         case TE.decodeUtf8' (LBS.toStrict body) of
           Left _        -> respond $ responseLBS status400 (corsHeaders req) "raw edit content must be valid UTF-8"
           Right content -> do
-            result <- runAction env (saveFile name filePath content)
+            result <- runAction env $
+              if asNew
+                then saveFileAsNew name filePath newPath content
+                else saveFile name filePath content
             case result of
               Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
               Right () -> respond $ responseLBS status200 (corsHeaders req) ""

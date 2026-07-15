@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, FileWarning, BookOpen, ListTree, ChevronRight, Plus, Trash2, Pencil } from "lucide-react";
+import { Folder, FolderOpen, FileText, FileWarning, BookOpen, ListTree, ChevronRight, Plus, Trash2, Pencil, Camera } from "lucide-react";
 import { branchFileUrl } from "@/lib/ws";
 import { classifyPath, naturalCompare, type LibraryKind } from "@/lib/library";
 
@@ -263,7 +263,7 @@ function RenameInput({ pad, initialName, onCommit, onCancel }: {
 // their own.
 
 export function FileTree({
-  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onDeleteFile, onRenameFile, onUploadFiles,
+  activeBranch, files, binaryPaths, selectedFile, onSelectFile, onCreateFile, onDeleteFile, onRenameFile, onCheckpointFile, onUploadFiles,
 }: {
   activeBranch: string | null;
   files: string[];
@@ -276,6 +276,11 @@ export function FileTree({
   onCreateFile: (path: string) => void;
   onDeleteFile: (path: string) => void;
   onRenameFile: (path: string, newPath: string) => void;
+  // Freeze this file's current lifetime and clone it in full onto a fresh
+  // one (see Storage.Ops.checkpointFile) — content is unchanged, only the
+  // editing boundary moves, so unlike delete/rename there's no selection/
+  // navigation fallout to handle here.
+  onCheckpointFile: (path: string) => void;
   onUploadFiles: (files: { path: string; content: File }[]) => void;
 }) {
   const [rootDragOver, setRootDragOver] = useState(false);
@@ -349,6 +354,19 @@ export function FileTree({
             }}
           >
             <Pencil style={{ width: 11, height: 11 }} />
+          </button>
+        )}
+        {activeBranch && selectedFile && (
+          <button
+            onClick={() => onCheckpointFile(selectedFile)}
+            title={`Checkpoint ${decodeURIComponent(selectedFile)} — freeze its current history, start editing fresh from here`}
+            style={{
+              width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "transparent", border: "none", borderRadius: 4,
+              color: "var(--text-dim)", cursor: "pointer", flexShrink: 0, padding: 0,
+            }}
+          >
+            <Camera style={{ width: 11, height: 11 }} />
           </button>
         )}
         {activeBranch && selectedFile && (

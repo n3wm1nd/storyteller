@@ -30,7 +30,7 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
-import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
+import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
 import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
@@ -61,6 +61,9 @@ runCommand path cmd = case cmd of
 
   Rename _mid newPath ->
     [] <$ renameFile path (T.unpack newPath)
+
+  Checkpoint _mid ->
+    [] <$ checkpointFile path
 
   EditAtom _mid tid content ->
     [] <$ editFileAtom path (TickId tid) content

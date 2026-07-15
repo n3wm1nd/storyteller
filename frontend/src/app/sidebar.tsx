@@ -109,7 +109,7 @@ export function LeftSidebar({
   tab, setTab,
   branches, characterBranches, activeBranch, files, selectedFile,
   libraryTree, libraryChapters,
-  onSelectBranch, onSelectFile, onCreateFile, onDeleteFile, onRenameFile,
+  onSelectBranch, onSelectFile, onCreateFile, onDeleteFile, onRenameFile, onCheckpointFile,
   onCreateBranch, onDeleteBranch,
   onCreateChapter,
   onHoverCharacter,
@@ -139,6 +139,7 @@ export function LeftSidebar({
   onCreateFile: (path: string) => void;
   onDeleteFile: (path: string) => void;
   onRenameFile: (path: string, newPath: string) => void;
+  onCheckpointFile: (path: string) => void;
   onCreateBranch: (name: string) => void;
   onDeleteBranch: (name: string) => void;
   onCreateChapter: (path: string, name: string) => void;
@@ -187,7 +188,7 @@ export function LeftSidebar({
       {tab === "explorer" && (
         <FileTree
           activeBranch={activeBranch} files={files} binaryPaths={binaryPaths} selectedFile={selectedFile}
-          onSelectFile={onSelectFile} onCreateFile={onCreateFile} onDeleteFile={onDeleteFile} onRenameFile={onRenameFile} onUploadFiles={onUploadFiles}
+          onSelectFile={onSelectFile} onCreateFile={onCreateFile} onDeleteFile={onDeleteFile} onRenameFile={onRenameFile} onCheckpointFile={onCheckpointFile} onUploadFiles={onUploadFiles}
         />
       )}
 

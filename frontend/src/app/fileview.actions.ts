@@ -5,7 +5,7 @@
 // Colocated with fileview.tsx rather than living in a shared store file —
 // see lib/serverCacheStore.ts's header for the write-access convention.
 
-import { fileConn } from "@/lib/ws";
+import { fileConn, saveRawFileAsNew } from "@/lib/ws";
 import type { FileCommand, ContextItem, PickerRule } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
@@ -112,6 +112,29 @@ export function deleteFile(path: string) {
 // handleRenameFile), same as closing/reopening on any other path change.
 export function renameFile(path: string, newPath: string) {
   sendFileCommand(path, { type: "rename", newPath });
+}
+
+// Freeze this file's current lifetime and clone it in full onto a fresh
+// one (see Storage.Ops.checkpointFile) — an atom edit/delete issued after
+// this point can only ever reach the new copies, while everything before
+// it stays exactly as it was, just no longer reachable through ordinary
+// editing. The lighter-weight alternative to saveFileAsNew below: content
+// is untouched, only the editing boundary moves.
+export function checkpointFile(path: string) {
+  sendFileCommand(path, { type: "checkpoint" });
+}
+
+// "Save as new": replace this file's content wholesale, bypassing the
+// usual atom-diff reconciliation entirely (see lib/ws.ts's saveRawFileAsNew /
+// Storage.Ops.saveFileAsNew) — for a raw/markdown-editor structural change
+// that shouldn't be tracked atom-by-atom. Goes over HTTP PUT, not the file
+// connection's own command channel, same as saveRawFile already does for
+// an ordinary raw-mode save; the caller is responsible for re-syncing the
+// connection afterward the same way a rename's caller already is.
+export async function saveFileAsNew(path: string, content: string, newPath?: string): Promise<void> {
+  const { activeBranch } = getServerCache();
+  if (!activeBranch) return;
+  await saveRawFileAsNew(activeBranch, path, content, newPath);
 }
 
 export function closeFile(path: string) {

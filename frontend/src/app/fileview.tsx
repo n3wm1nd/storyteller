@@ -16,7 +16,7 @@ import { parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
 import { useMentionAutocomplete } from "./mention-autocomplete";
 import { useLoreTree, flattenLore } from "./lore-selector";
-import { branchFileUrl, saveRawFile } from "@/lib/ws";
+import { branchFileUrl, saveRawFile, saveRawFileAsNew } from "@/lib/ws";
 
 // tiptap-markdown's Markdown extension adds `storage.markdown` at runtime
 // (see TextEditPanel below) but ships no type augmentation for it, so
@@ -1023,6 +1023,22 @@ export function RawEditPanel({ branch, path }: {
       });
   }
 
+  // "Save as new": bypasses atom-diff reconciliation entirely -- for a
+  // structural edit (reordered/reworked list content) that shouldn't be
+  // tracked atom-by-atom against whatever was here before. No note/atom
+  // continuity carried forward, contrast with an ordinary 'save'.
+  function saveAsNew() {
+    if (content === null || saving) return;
+    setSaving(true);
+    setError(null);
+    saveRawFileAsNew(branch, path, content)
+      .then(() => { setSavedContent(content); setSaving(false); })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setSaving(false);
+      });
+  }
+
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{
@@ -1033,6 +1049,20 @@ export function RawEditPanel({ branch, path }: {
         <span style={{ flex: 1 }} />
         {error && <span style={{ color: "var(--rose)" }}>{error}</span>}
         {dirty && !error && <span style={{ color: "var(--amber)" }}>unsaved</span>}
+        <button
+          onClick={saveAsNew}
+          disabled={!dirty || saving}
+          title="Replace this file's content wholesale — no atom-by-atom diff, no note/atom continuity carried forward"
+          style={{
+            fontSize: 10, padding: "2px 10px", borderRadius: 4,
+            cursor: dirty && !saving ? "pointer" : "default",
+            background: "transparent",
+            border: "1px solid var(--border-subtle)",
+            color: dirty ? "var(--text-dim)" : "var(--text-ghost)",
+          }}
+        >
+          Save as new
+        </button>
         <button
           onClick={save}
           disabled={!dirty || saving}
@@ -1195,6 +1225,33 @@ export function TextEditPanel({ branch, path }: {
       });
   }
 
+  // "Save as new": bypasses atom-diff reconciliation entirely, so there's
+  // no reason to bother with 'computeMinimalSave's head/middle/tail
+  // slicing (that machinery exists purely to keep the server's diff small)
+  // -- the full re-serialized document goes straight over, same as the
+  // no-snapshot fallback 'save' itself uses.
+  function saveAsNew() {
+    if (!editor || savingRef.current) return;
+    const md = editor.storage.markdown.getMarkdown();
+    savingRef.current = true;
+    setSaving(true);
+    setError(null);
+    saveRawFileAsNew(branch, path, md)
+      .then(() => {
+        savedContentRef.current = md;
+        setSavedContent(md);
+        setDirty(false);
+        originalRef.current = snapshotOriginal(editor, md);
+        savingRef.current = false;
+        setSaving(false);
+      })
+      .catch((err) => {
+        savingRef.current = false;
+        setError(err instanceof Error ? err.message : String(err));
+        setSaving(false);
+      });
+  }
+
   const editor = useEditor({
     extensions: [StarterKit, Markdown.configure({ html: false, transformPastedText: true })],
     content: "",
@@ -1246,6 +1303,20 @@ export function TextEditPanel({ branch, path }: {
         <span style={{ flex: 1 }} />
         {error && <span style={{ color: "var(--rose)" }}>{error}</span>}
         {dirty && !error && <span style={{ color: "var(--amber)" }}>unsaved</span>}
+        <button
+          onClick={saveAsNew}
+          disabled={!dirty || saving}
+          title="Replace this file's content wholesale — no atom-by-atom diff, no note/atom continuity carried forward"
+          style={{
+            fontSize: 10, padding: "2px 10px", borderRadius: 4,
+            cursor: dirty && !saving ? "pointer" : "default",
+            background: "transparent",
+            border: "1px solid var(--border-subtle)",
+            color: dirty ? "var(--text-dim)" : "var(--text-ghost)",
+          }}
+        >
+          Save as new
+        </button>
         <button
           onClick={save}
           disabled={!dirty || saving}

@@ -19,6 +19,7 @@ module Server.Writer.Branch
   , uploadFiles
   , uploadFile
   , saveFile
+  , saveFileAsNew
   , onlyWhilePresent
   ) where
 
@@ -183,6 +184,20 @@ uploadFile branch path content =
 saveFile :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
 saveFile branch path content =
   withStorage (withBranch @Main branch (void (runStorage @Main (Ops.saveFile path content))))
+
+-- | One-shot "save as new" for the same @PUT /branch/{name}/$raw/{path}@
+--   endpoint, reached via its @?asNew@ query flag instead of a distinct
+--   route -- same resource, a different write strategy (see
+--   'Storage.Ops.saveFileAsNew'): wholesale replacement, not a reconciled
+--   diff against the existing atom chain. @newPath@ defaults to @path@
+--   itself (the endpoint's own "asNew" flag carries no destination of its
+--   own) -- the common in-place case; a caller wanting to fork to a
+--   genuinely different file passes @?newPath=...@ instead. Presence-
+--   agnostic, same as 'saveFile' right above it -- 'Ops.saveFileAsNew' is
+--   safe to call whether or not @path@ already exists.
+saveFileAsNew :: SessionEffects r => T.Text -> FilePath -> FilePath -> T.Text -> Sem r ()
+saveFileAsNew branch path newPath content =
+  withStorage (withBranch @Main branch (void (runStorage @Main (Ops.saveFileAsNew path newPath content))))
 
 -- | Run one summarization pass for @kind@ against the already-open
 --   'Main' branch scope -- see 'Storyteller.Writer.Agent.Summarizer.runSummarizer'.
