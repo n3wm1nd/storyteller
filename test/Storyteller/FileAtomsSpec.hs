@@ -159,11 +159,21 @@ spec = describe "fileTicks" $ do
           [atom] -> Tick.ftMessage atom `shouldBe` "x\n"
           atoms  -> fail $ "expected 1 atom, got " <> show (length atoms)
 
-  it "note referencing a file atom is included in that file's ticks" $ do
+  it "fileTicksOf alone does not include a note referencing a file atom -- that's fetchRelatedTicks's job" $ do
     let result = runTestFS $ do
           atomId <- Ops.addAtom "scene.md" "content\n"
           _noteId <- Tick.storeAs (Note [TickId (Core.unObjectHash atomId)] "a note")
           Tick.fileTicksOf "scene.md"
+    case result of
+      Left err    -> fail err
+      Right ticks -> map Tick.ftKind ticks `shouldBe` ["atom"]
+
+  it "fetchRelatedTicks adds a note referencing a file atom" $ do
+    let result = runTestFS $ do
+          atomId <- Ops.addAtom "scene.md" "content\n"
+          _noteId <- Tick.storeAs (Note [TickId (Core.unObjectHash atomId)] "a note")
+          base   <- Tick.fileTicksOf "scene.md"
+          Tick.fetchRelatedTicks "scene.md" base
     case result of
       Left err    -> fail err
       Right ticks -> do
@@ -187,12 +197,13 @@ spec = describe "fileTicks" $ do
         -- only the scene.md atom, no note (it refs other.md's atom)
         map Tick.ftKind ticks `shouldBe` ["atom"]
 
-  it "note referencing a note is included transitively" $ do
+  it "fetchRelatedTicks includes a note referencing a note transitively" $ do
     let result = runTestFS $ do
           atomId  <- Ops.addAtom "scene.md" "content\n"
           noteId  <- Tick.storeAs (Note [TickId (Core.unObjectHash atomId)] "first note")
           _note2Id <- Tick.storeAs (Note [TickId (Core.unObjectHash noteId)] "note about note")
-          Tick.fileTicksOf "scene.md"
+          base    <- Tick.fileTicksOf "scene.md"
+          Tick.fetchRelatedTicks "scene.md" base
     case result of
       Left err    -> fail err
       Right ticks ->

@@ -182,11 +182,21 @@ spec = do
         Left err -> expectationFailure err
         Right ticks -> map ftContent ticks `shouldBe` [Just "p1\n"]
 
-    it "includes a note that references one of the file's own atoms" $ do
+    it "does not include a note that references one of the file's own atoms -- that's fetchRelatedTicks's job" $ do
       let result = runChain $ do
             h <- addAtom "scene.md" "p1\n"
             _ <- store (NonAtom [h] "type:note\n\nabout p1")
             fileTicksOf "scene.md"
+      case result of
+        Left err -> expectationFailure err
+        Right (ticks, _finalState) -> map ftKind ticks `shouldBe` ["atom"]
+
+    it "fetchRelatedTicks adds a note that references one of the file's own atoms" $ do
+      let result = runChain $ do
+            h     <- addAtom "scene.md" "p1\n"
+            _     <- store (NonAtom [h] "type:note\n\nabout p1")
+            ticks <- fileTicksOf "scene.md"
+            fetchRelatedTicks "scene.md" ticks
       case result of
         Left err -> expectationFailure err
         Right (ticks, _finalState) -> map ftKind ticks `shouldBe` ["atom", "note"]

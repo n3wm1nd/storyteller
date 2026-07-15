@@ -19,6 +19,7 @@ module Storage.Tick
   , findTick
   , FileTick(..)
   , fileTicksOf
+  , fetchRelatedTicks
   , recentAtomsOf
   , encodeTickData
   ) where
@@ -228,15 +229,12 @@ data FileTick = FileTick
   , ftParent  :: Maybe Text
   } deriving (Show, Eq)
 
--- | Walk the branch history from head and extract all ticks relevant to
---   @path@'s *current lifetime*: every atom on that path since the last
---   time it was deleted (never, for a path that's never been removed and
---   recreated), everything (transitively) referenced by one of those
---   atoms, and every other tick whose own "file" field hints at @path@
---   from within that same span. Returns oldest-first, root included
---   (harmless -- it never carries file content or a "file" field, so it's
---   never a member of the projection, only ever a potential, and here
---   unused, parent link).
+-- | Walk the branch history from head and decode every tick within
+--   @path@'s *current lifetime*: since the last time it was deleted
+--   (never, for a path that's never been removed and recreated). Oldest-
+--   first, root included (harmless -- it never carries file content or a
+--   "file" field, so it's never a member of either projection built on
+--   top of this, only ever a potential, and here unused, parent link).
 --
 --   Deliberately *not* every atom this exact path string has ever carried
 --   across its entire history: a path can be deleted and recreated more
@@ -245,12 +243,10 @@ data FileTick = FileTick
 --   own Haddocks -- a deletion is a forward event, not a rebase, so an
 --   earlier lifetime's atoms stay reachable in raw history forever, but
 --   that's a "still reachable for a deliberate historical read" guarantee,
---   not "still part of this file's everyday state"). Every caller of this
---   function reads whatever it returns as *the* file's current tick
---   history (the main file view's own tick list among them) -- mixing in
---   an unrelated earlier lifetime's atoms here previously meant a
+--   not "still part of this file's everyday state"). Mixing in an
+--   unrelated earlier lifetime's atoms here previously meant a
 --   checkpoint\/recreate (or a plain delete-then-different-file-later)
---   made old, unrelated content reappear in that view.
+--   made old, unrelated content reappear in the main file view.
 --
 --   Walks backward from head one commit at a time, stopping the instant
 --   @path@ is no longer present in that commit's own committed tree
@@ -262,22 +258,21 @@ data FileTick = FileTick
 --   its own complete snapshot, and 'lookupPathAt' specifically -- not
 --   'readPathAt' -- since this only ever needs to know whether the blob
 --   is there, never its own bytes) rather than inferred from a
---   removal-tagged 'Atom'
---   -- an earlier version stopped at a tag match instead, which only gives
---   the right answer if every single way a path can disappear from the
---   tree is disciplined enough to also leave that exact marker behind on
---   that exact path (true of 'Storage.Ops.deleteFile' today, but a real,
---   silent invariant to keep true forever rather than something the tree
---   itself already settles unconditionally). An even earlier version
---   decoded the *entire* branch history unconditionally (@mapM ... raw@
---   over every commit from root to head) before filtering any of it away
---   -- correct once lifetime-scoped, but still paying full history's cost
---   on every call regardless of how small the current lifetime actually
---   is. Same bounded-walk shape 'Storage.Ops.atomHistory'\/
+--   removal-tagged 'Atom' -- an earlier version stopped at a tag match
+--   instead, which only gives the right answer if every single way a
+--   path can disappear from the tree is disciplined enough to also leave
+--   that exact marker behind on that exact path (true of
+--   'Storage.Ops.deleteFile' today, but a real, silent invariant to keep
+--   true forever rather than something the tree itself already settles
+--   unconditionally). An even earlier version decoded the *entire* branch
+--   history unconditionally before filtering any of it away -- correct
+--   once lifetime-scoped, but still paying full history's cost on every
+--   call regardless of how small the current lifetime actually is. Same
+--   bounded-walk shape 'Storage.Ops.atomHistory'\/
 --   'Storage.Ops.currentLifetimeAtoms'\/'recentAtomsOf' already use, for
 --   exactly this reason.
-fileTicksOf :: StoreM m => FilePath -> StoreT m [FileTick]
-fileTicksOf path = headHash >>= \h -> collectLifetime h [] >>= go
+lifetimeTicksOf :: StoreM m => FilePath -> StoreT m [FileTick]
+lifetimeTicksOf path = headHash >>= \h -> collectLifetime h []
   where
     -- Oldest-first, same trick 'recentAtomsOf'\/'currentLifetimeAtoms' use:
     -- each older commit is prepended in front of what's already been
@@ -299,28 +294,54 @@ fileTicksOf path = headHash >>= \h -> collectLifetime h [] >>= go
             []      -> return (ft : acc)
             (p : _) -> collectLifetime p (ft : acc)
 
-    go :: StoreM m => [FileTick] -> StoreT m [FileTick]
-    go allTicks = do
-      let fileHint   = T.pack path
-          atomIds    = [ ftTickId ft | ft <- allTicks, ftContent ft /= Nothing ]
-          memberIds  = expandRefs atomIds allTicks
-          fileHinted = [ ftTickId ft | ft <- allTicks
-                                     , ftContent ft == Nothing
-                                     , lookup "file" (ftFields ft) == Just fileHint ]
-          included   = Set.fromList (memberIds ++ fileHinted)
-      return (relinkParents included Nothing allTicks)
+relinkParents :: Set.Set Text -> Maybe Text -> [FileTick] -> [FileTick]
+relinkParents _ _ [] = []
+relinkParents included lastIncluded (ft : rest)
+  | Set.member (ftTickId ft) included =
+      ft { ftParent = lastIncluded } : relinkParents included (Just (ftTickId ft)) rest
+  | otherwise = relinkParents included lastIncluded rest
 
-    relinkParents :: Set.Set Text -> Maybe Text -> [FileTick] -> [FileTick]
-    relinkParents _ _ [] = []
-    relinkParents included lastIncluded (ft : rest)
-      | Set.member (ftTickId ft) included =
-          ft { ftParent = lastIncluded } : relinkParents included (Just (ftTickId ft)) rest
-      | otherwise = relinkParents included lastIncluded rest
+-- | Every tick *directly* relevant to @path@'s current lifetime: atoms on
+--   that path, and non-atom ticks whose own "file" field hints at it
+--   (presence events, etc.) -- deliberately *not* anything that merely
+--   references one of those atoms (notes, fixups, swipes); see
+--   'fetchRelatedTicks' for that, layered on top explicitly by whichever
+--   caller actually needs it, rather than paid for by everyone. This is
+--   the cheap half: 'lifetimeTicksOf's own bounded walk plus one plain
+--   filter, no search.
+fileTicksOf :: StoreM m => FilePath -> StoreT m [FileTick]
+fileTicksOf path = do
+  allTicks <- lifetimeTicksOf path
+  let fileHint = T.pack path
+      included = Set.fromList
+        [ ftTickId ft
+        | ft <- allTicks
+        , ftContent ft /= Nothing || lookup "file" (ftFields ft) == Just fileHint
+        ]
+  return (relinkParents included Nothing allTicks)
 
+-- | @ticks@ (typically 'fileTicksOf's own result), plus every tick in
+--   @path@'s current lifetime that transitively references one of its
+--   atoms -- a note, a 'Storyteller.Common.Types.Fixup', a swipe. What the
+--   main file view needs to render annotations alongside the prose
+--   they're attached to ('Server.Core.File.fileStateSince'); nothing else
+--   in the codebase does. The expensive half, and the reason it's split
+--   out rather than folded into 'fileTicksOf' itself: 'expandRefs' below
+--   is an O(n^2)-shaped fixed-point search over the whole lifetime, not a
+--   plain filter -- every caller that doesn't render annotations (the
+--   overwhelming majority) has no reason to pay for it.
+fetchRelatedTicks :: StoreM m => FilePath -> [FileTick] -> StoreT m [FileTick]
+fetchRelatedTicks path ticks = do
+  allTicks <- lifetimeTicksOf path
+  let seedIds   = map ftTickId ticks
+      memberIds = expandRefs seedIds allTicks
+      included  = Set.fromList (memberIds ++ seedIds)
+  return (relinkParents included Nothing allTicks)
+  where
     expandRefs :: [Text] -> [FileTick] -> [Text]
-    expandRefs members ticks =
+    expandRefs members allTicks =
       let step ms = ms ++ [ ftTickId ft
-                           | ft <- ticks
+                           | ft <- allTicks
                            , ftTickId ft `notElem` ms
                            , any (`elem` ms) (ftRefs ft) ]
       in step (step members)

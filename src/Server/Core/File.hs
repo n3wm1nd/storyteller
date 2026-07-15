@@ -98,8 +98,15 @@ fileState path = fileStateSince path Nothing
 --   present in this file's chain, only ticks after it are included. When
 --   'since' is 'Nothing' or no longer present (rewritten out from under it),
 --   the full chain is returned.
+--
+--   'Tick.fetchRelatedTicks' on top of 'Tick.fileTicksOf' -- not
+--   'fileTicksOf' alone -- since the file view is the one real consumer of
+--   the reference-expansion (notes, fixups, swipes rendered alongside the
+--   atoms they're attached to); see 'Tick.fetchRelatedTicks's own Haddock
+--   for why that's not folded into 'fileTicksOf' itself.
 fileStateSince :: FileOpen r => FilePath -> Maybe T.Text -> Sem r Update
-fileStateSince path since = fileUpdateSince since <$> runStorage @Main (Tick.fileTicksOf path)
+fileStateSince path since = fileUpdateSince since <$> runStorage @Main
+  (Tick.fileTicksOf path >>= Tick.fetchRelatedTicks path)
 
 -- ---------------------------------------------------------------------------
 -- Mutations on the already-open branch
