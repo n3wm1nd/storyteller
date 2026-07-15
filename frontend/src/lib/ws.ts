@@ -184,16 +184,19 @@ export type BranchCommand =
   // source branch is tracked into `to` — see
   // Storyteller.Writer.Agent.Tracker.trackBranch.
   | { type: "track";       id?: string; source: string; onlyFile?: string; to: string }
-  // Reconcile/propose tasks.md against this (the command's own) branch's
-  // own content — onlyFile has the same "one file, or every file" shape as
-  // track's, `to` defaults server-side to "tasks.md" — see
-  // Storyteller.Writer.Agent.Tasks. suggest.tasks's loreSource, when given,
-  // additionally folds that (story) branch's own world lore in as source
-  // material — never that branch's raw scene content, so a character's
-  // suggestions only ever draw on what they'd actually know (their own
-  // journal, plus lore) — see Server.Writer.Branch.Protocol.SuggestTasks.
+  // sync.tasks reconciles tasks.md against this (the command's own)
+  // branch's own content — onlyFile has the same "one file, or every
+  // file" shape as track's, `to` defaults server-side to "tasks.md" — see
+  // Storyteller.Writer.Agent.Tasks. suggest.tasks always reads this
+  // branch's own full character context (sheet, other context files,
+  // recent journal) instead — no onlyFile, it isn't file-selectable.
+  // suggest.tasks's loreSource, when given, additionally folds that
+  // (story) branch's own world lore in as source material — never that
+  // branch's raw scene content, so a character's suggestions only ever
+  // draw on what they'd actually know — see
+  // Server.Writer.Branch.Protocol.SuggestTasks.
   | { type: "sync.tasks";    id?: string; onlyFile?: string; to?: string }
-  | { type: "suggest.tasks"; id?: string; loreSource?: string; onlyFile?: string; to?: string }
+  | { type: "suggest.tasks"; id?: string; loreSource?: string; to?: string }
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }

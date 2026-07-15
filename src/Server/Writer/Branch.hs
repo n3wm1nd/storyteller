@@ -246,11 +246,13 @@ passthroughGenerate = pure . foldl' step Map.empty
 --   hypothetical story-branch caller would pass 'Nothing' for "every
 --   chapter." Returns whether it made a change, for the dispatch layer to
 --   decide whether a 'Server.Writer.Branch.Protocol.FileAdded' is due (the
---   file may not have existed before this call).
+--   file may not have existed before this call). @fallbackName@ is only
+--   ever used when this branch's own @sheet.md@ has no name of its own to
+--   give -- see 'Storyteller.Writer.Agent.Tasks.resolveCharacterName'.
 syncTasksOnBranch
   :: (LLMs r, Members '[BranchOp Main, PromptStorage, Logging, Fail] r)
-  => Maybe FilePath -> FilePath -> Sem r Bool
-syncTasksOnBranch onlyFile toFile = syncTasks @Main (isSourceFile onlyFile toFile) toFile
+  => T.Text -> Maybe FilePath -> FilePath -> Sem r Bool
+syncTasksOnBranch fallbackName onlyFile toFile = syncTasks @Main fallbackName (isSourceFile onlyFile toFile) toFile
 
 data LoreSource
 
@@ -267,14 +269,15 @@ data LoreSource
 --   Opens its own transient 'LoreSource'-tagged scope to read it, same
 --   reasoning 'trackFiles' opens 'Source'\/'Tracker' scopes for: the lore
 --   branch is a different branch entirely, known only from the command
---   payload.
+--   payload. @fallbackName@: see 'syncTasksOnBranch's own Haddock, same
+--   reasoning.
 suggestTasksOnBranch
   :: (SessionEffects r, Members '[BranchOp Main, PromptStorage, Logging, Fail] r)
-  => Maybe BranchName -> Maybe FilePath -> FilePath -> Sem r Bool
-suggestTasksOnBranch loreSource onlyFile toFile = do
+  => T.Text -> Maybe BranchName -> FilePath -> Sem r Bool
+suggestTasksOnBranch fallbackName loreSource toFile = do
   lore <- maybe (return "") fetchLore loreSource
-  let generate current material = tasksGenerateAgent current (foldLore lore material)
-  suggestTasksWith @Main generate (isSourceFile onlyFile toFile) toFile
+  let generate cName current material = tasksGenerateAgent cName current (foldLore lore material)
+  suggestTasksWith @Main generate fallbackName toFile
   where
     foldLore lore material
       | T.null lore = material

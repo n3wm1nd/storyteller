@@ -98,7 +98,7 @@ spec
 spec runner = describe "tasksGenerateAgent (real LLM, cached)" $
   it "proposes tasks concretely grounded in a real journal, not generic mood" $
     runExpect @judgeModel runner $ do
-      content <- tasksGenerateAgent "" doranJournal
+      content <- tasksGenerateAgent "Doran" "" doranJournal
       info ("tasksGenerateAgent output:\n" <> content)
       embed $ do
         content `shouldNotBe` ""

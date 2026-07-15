@@ -39,6 +39,7 @@ import Server.Writer.File.Dispatch (atBranches)
 import Server.Core.Run (SessionEffects)
 import Storyteller.Core.Git (atGeneric)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
+import Storyteller.Writer.Branches (branchDisplayName)
 
 runCommand
   :: (BranchOpen r, SessionEffects r)
@@ -65,12 +66,18 @@ runCommand branch cmd =
     -- Same "no structural event unless something actually landed" shape as
     -- 'Summarize' above, except tasks.md really can be a brand new file the
     -- first time this runs, so the client does need to hear about it then.
+    -- 'branchDisplayName branch' -- this connection's own branch, always a
+    -- character branch in practice -- is only the *fallback* name (see
+    -- 'Storyteller.Writer.Agent.Tasks.resolveCharacterName'): sheet.md's
+    -- own heading wins whenever one exists, since a branch id like
+    -- character/mira is a slug, not necessarily the character's actual
+    -- name.
     SyncTasks mid onlyFile toFile -> do
-      changed <- syncTasksOnBranch onlyFile toFile
+      changed <- syncTasksOnBranch (branchDisplayName branch) onlyFile toFile
       return [ FileAdded mid toFile | changed ]
 
-    SuggestTasks mid loreSource onlyFile toFile -> do
-      changed <- suggestTasksOnBranch (BranchName <$> loreSource) onlyFile toFile
+    SuggestTasks mid loreSource toFile -> do
+      changed <- suggestTasksOnBranch (branchDisplayName branch) (BranchName <$> loreSource) toFile
       return [ FileAdded mid toFile | changed ]
 
     AddNote _mid refTickId text -> do

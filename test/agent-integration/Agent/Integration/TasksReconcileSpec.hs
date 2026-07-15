@@ -71,7 +71,7 @@ spec
 spec runner = describe "tasksReconcileAgent (real LLM, cached)" $
   it "drops a task the new material resolves while leaving unrelated tasks untouched" $
     runExpect @judgeModel runner $ do
-      updated <- tasksReconcileAgent currentTasks newMaterial
+      updated <- tasksReconcileAgent "Lena" currentTasks newMaterial
       info ("tasksReconcileAgent output:\n" <> updated)
       embed $ updated `shouldNotBe` ""
 

@@ -51,17 +51,20 @@ data BranchCommand
   -- kind of thing (a character branch's journal; 'Nothing' for a story
   -- branch's every file).
   | SyncTasks    { bcId :: Maybe T.Text, bcOnlyFile :: Maybe FilePath, bcToFile :: FilePath }
-  -- Propose new tasks from a full read of bcOnlyFile (or every file) --
-  -- see 'Storyteller.Writer.Agent.Tasks.suggestTasks'. bcLoreSource, when
+  -- Propose new tasks from this (character) branch's own full character
+  -- context -- sheet, other context files, recent journal -- see
+  -- 'Storyteller.Writer.Agent.Tasks.suggestTasks'. bcLoreSource, when
   -- given, additionally folds that (story) branch's own world lore in as
   -- source material -- fair game for a character to reason from (it's
   -- world knowledge, not plot they haven't witnessed), unlike that
   -- branch's raw scene content, which is deliberately never read here: a
   -- character's suggestions must come only from what they'd actually
   -- know -- their own journal (already presence-gated by
-  -- 'Storyteller.Writer.Agent.Tracker.trackBranch's own copy into it) plus
-  -- lore, never the story branch directly.
-  | SuggestTasks { bcId :: Maybe T.Text, bcLoreSource :: Maybe T.Text, bcOnlyFile :: Maybe FilePath, bcToFile :: FilePath }
+  -- 'Storyteller.Writer.Agent.Tracker.trackBranch's own copy into it),
+  -- sheet, and lore, never the story branch directly. No bcOnlyFile --
+  -- unlike Track\/SyncTasks, this isn't file-selectable, it's always this
+  -- character's own full context.
+  | SuggestTasks { bcId :: Maybe T.Text, bcLoreSource :: Maybe T.Text, bcToFile :: FilePath }
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
@@ -83,7 +86,7 @@ instance FromJSON BranchCommand where
       "chargen"     -> CharGen    i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
       "summarize"   -> Summarize  i <$> o .: "kind"
       "sync.tasks"    -> SyncTasks    i <$> o .:? "onlyFile" <*> (fromMaybe "tasks.md" <$> o .:? "to")
-      "suggest.tasks" -> SuggestTasks i <$> o .:? "loreSource" <*> o .:? "onlyFile" <*> (fromMaybe "tasks.md" <$> o .:? "to")
+      "suggest.tasks" -> SuggestTasks i <$> o .:? "loreSource" <*> (fromMaybe "tasks.md" <$> o .:? "to")
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"

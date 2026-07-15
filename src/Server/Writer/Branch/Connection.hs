@@ -75,12 +75,31 @@ runBranch env branch conn = do
 --   'cancelFlag' is this connection's one long-lived cancel flag — reset
 --   before each command runs and briefly published under that command's
 --   own id (see 'handle') so a \/session 'cancel' can reach it.
+--   'commandLoop's own @catch \@String@ only catches
+--   'Polysemy.Error.throw'\/'Polysemy.Fail.fail' -- not a genuine Haskell
+--   exception (an HTTP failure, a partial-function crash inside a
+--   dependency's response parsing, ...) escaping from deep inside a
+--   command's own effects (e.g. an LLM call). Such an exception used to
+--   propagate silently all the way up through this function's one
+--   top-level 'runM' and kill the connection with no 'BranchError' ever
+--   sent and nothing logged after whatever ran last -- indistinguishable,
+--   from the client's side, from the command just hanging forever. This
+--   'try' is the outer safety net for exactly that case: it can't isolate
+--   the failure to just the one command that caused it (unlike
+--   'Polysemy.Error.catch' inside the loop, which lets the connection keep
+--   taking further commands) -- doing that would need 'Polysemy.Final'
+--   wired through this whole stack, a bigger change than this fix
+--   warrants -- but a diagnosable 'BranchError' and a connection the
+--   client can simply reconnect is a large improvement over silence.
 runCommands :: ServerEnv -> T.Text -> WS.Connection -> TVar Bool -> IO ()
 runCommands env branch conn cancelFlag = do
-  result <- runM $ wsAction env conn cancelFlag $
+  outcome <- try @SomeException $ runM $ wsAction env conn cancelFlag $
     withBranch @Main branch (pushInitial conn branch)
       >> splitMarkdownAware (commandLoop env conn branch cancelFlag)
-  either (reportError conn) return result
+  case outcome of
+    Left ex             -> reportError conn ("internal error: " <> show ex)
+    Right (Left err)     -> reportError conn err
+    Right (Right result) -> return result
 
 -- | The notify-listener thread's persistent stack: react to ref-move
 --   broadcasts for the connection's lifetime. Doesn't hold 'BranchOpen'

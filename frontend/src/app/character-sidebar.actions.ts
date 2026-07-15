@@ -201,10 +201,36 @@ export const TASKS_PATH = "tasks.md";
 // Resolves once the command has actually landed (or failed) — not on send
 // — so a caller that wants to refetch tasks.md afterward (see
 // character-sidebar.tsx's TasksPanel) doesn't race the mutation.
+//
+// Unlike trackOne, this also forwards "agent.log" events to the global
+// agent log strip (same as openJournal's own connection handler) — the
+// server interprets a branch connection's Logging effect via loggingWS
+// (Server.Writer.Run), which pushes every info/warning straight to this
+// connection as agent.log, never to the server's own stdout. Without this,
+// Storyteller.Writer.Agent.Tasks's own progress logging (querying the
+// model, "no source material found", etc.) would be sent and then
+// silently dropped, on a connection nobody's watching.
+//
+// Every /branch/{name} connection unconditionally pushes one "branch.ready"
+// + one "update" the instant it opens (Server.Writer.Branch.Connection's
+// pushInitial) -- before the server has even read this connection's first
+// message, let alone processed our command. That initial "update" is
+// *never* our command's own result; treating it as one (an earlier version
+// of this function did, matching trackOne's own shape) closes the
+// connection within milliseconds of connecting, every single time -- not a
+// race, a guaranteed miss -- so every agent.log this command was ever
+// going to emit, and its real completion event, land on an already-dead
+// socket. 'seenUpdate' skips exactly that first one.
 function runTasksCommand(characterBranch: string, cmd: BranchCommand): Promise<void> {
   return new Promise((resolve) => {
     const conn = branchConn(characterBranch);
+    let seenUpdate = false;
     conn.subscribe((evt) => {
+      if (evt.type === "agent.log") useUI.getState().addAgentLog(evt.level, evt.message);
+      if (evt.type === "update" && !seenUpdate) {
+        seenUpdate = true; // the connection's own initial push, not our command's result
+        return;
+      }
       if (evt.type === "update" || evt.type === "error" || evt.type === "file.added") {
         conn.close();
         resolve();
@@ -226,13 +252,16 @@ export function syncTasks(characterBranch: string) {
   return runTasksCommand(characterBranch, { type: "sync.tasks", onlyFile: JOURNAL_PATH, to: TASKS_PATH });
 }
 
-// Propose new tasks for this character from their journal plus the active
-// story's world lore — never the story's raw scene content (see
-// Server.Writer.Branch.Protocol.SuggestTasks's own Haddock on why).
+// Propose new tasks for this character from their full character context
+// (sheet, other context files, recent journal) plus the active story's
+// world lore — never the story's raw scene content (see
+// Server.Writer.Branch.Protocol.SuggestTasks's own Haddock on why). No
+// onlyFile here (unlike syncTasks) — suggestion always reads this
+// character's whole context, not a caller-picked file.
 export function suggestTasks(characterBranch: string) {
   const loreSource = getServerCache().activeBranch;
   return runTasksCommand(characterBranch, {
-    type: "suggest.tasks", loreSource: loreSource ?? undefined, onlyFile: JOURNAL_PATH, to: TASKS_PATH,
+    type: "suggest.tasks", loreSource: loreSource ?? undefined, to: TASKS_PATH,
   });
 }
 
