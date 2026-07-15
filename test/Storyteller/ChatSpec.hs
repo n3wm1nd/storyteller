@@ -20,6 +20,9 @@ tick kind msg content = FileTick
   , ftParent  = Nothing
   }
 
+hiddenTick :: Text -> Text -> Maybe Text -> FileTick
+hiddenTick kind msg content = (tick kind msg content) { ftFields = [("hide", "true")] }
+
 spec :: Spec
 spec = describe "historyFromFileTicks" $ do
 
@@ -57,3 +60,16 @@ spec = describe "historyFromFileTicks" $ do
           , tick "atom"     "reply" Nothing
           ]
     historyFromFileTicks ticks `shouldBe` [UserText "hi", AssistantText "reply"]
+
+  it "drops ticks tagged hidden rather than surfacing them to a model" $ do
+    let ticks =
+          [ tick       "prompt" "first question"  Nothing
+          , hiddenTick "atom"   "ignored"          (Just "first answer")
+          , tick       "prompt" "second question"  Nothing
+          , tick       "atom"   "ignored"          (Just "second answer")
+          ]
+    historyFromFileTicks ticks `shouldBe`
+      [ UserText "first question"
+      , UserText "second question"
+      , AssistantText "second answer"
+      ]

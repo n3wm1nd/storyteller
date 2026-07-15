@@ -169,10 +169,18 @@ chatTools =
 --   replies ('Storyteller.Core.Atom.Atom' ticks) — this is exactly a
 --   conversation transcript, so building one is just filtering and
 --   relabelling, not new storage. Any other tick kind on the file (notes,
---   presence) is conversational noise here and dropped.
+--   presence) is conversational noise here and dropped -- and so is any
+--   tick the user has explicitly hidden (@("hide", "true")@ in 'ftFields',
+--   set\/cleared via 'Server.Core.File.hideFileAtoms'\/'unhideFileAtoms'):
+--   this is the one place a hidden tick actually stops reaching a model,
+--   same tag the UI already lets a user toggle per atom but that, until
+--   now, only ever affected how the atom was *displayed*, never what a
+--   later call here actually sent.
 historyFromFileTicks :: [FileTick] -> [Message m]
-historyFromFileTicks = concatMap toMessage
+historyFromFileTicks = concatMap toMessage . filter (not . isHidden)
   where
+    isHidden ft = lookup "hide" (ftFields ft) == Just "true"
+
     toMessage ft = case ftKind ft of
       "prompt" -> [UserText (ftMessage ft)]
       "atom"   -> [AssistantText (maybe (ftMessage ft) id (ftContent ft))]
