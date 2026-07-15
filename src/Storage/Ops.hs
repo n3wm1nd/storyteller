@@ -33,6 +33,8 @@ module Storage.Ops
   , splitTick
   , findCreationTick
   , renameFile
+  , checkpointFile
+  , saveFileAsNew
   ) where
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)
@@ -1088,3 +1090,108 @@ renameFile oldPath newPath = do
     renameLine l = case T.breakOn ":" l of
       (k, v) | k == "file", T.drop 1 v == T.pack oldPath -> "file:" <> T.pack newPath
       _                                                   -> l
+
+-- | Freeze @path@'s current lifetime behind a fresh deletion boundary,
+--   then clone it in full onto a brand new lifetime at the same path: every
+--   atom, and every other tick anywhere in the chain that refers to one of
+--   them (a note, fixup, swipe, ...), each re-'store'd as an independent
+--   copy with a fresh id. From here on, 'atomHistory'\/'fileTicksOf's own
+--   current-lifetime view sees only the new copies -- so an 'editAtomAt'\/
+--   'deleteTick' issued after this point can only ever touch them, never
+--   reach back through the boundary into what came before -- while the
+--   originals are left completely untouched, exactly the way 'deleteFile'
+--   already leaves an old lifetime intact: nothing here is a rebase, only
+--   new ticks get added on top.
+--
+--   Every atom is re-'store'd through the real 'Atom' constructor rather
+--   than replayed as a generic drafted message -- 'Storage.Core.store'
+--   gives 'Atom' its own dedicated tree-splicing case (folding its content
+--   into the actual git tree), which a 'NonAtom' never gets; a uniformly
+--   "drafted" replay would decode back as an atom on the next read
+--   ('decodeTick' just sniffs the message shape) while silently never
+--   having landed in the tree at all. Every other tick clones as a plain
+--   'NonAtom', message untouched -- none of them carry a path-shaped field
+--   of their own the way 'Atom'\/'renameFile' do, only 'tickRefs' pointing
+--   at the atom(s) they annotate.
+--
+--   Each clone's own 'tickRefs' are rewritten to point at whichever of
+--   *this* clone's siblings they originally referenced (a note pointing at
+--   an atom being cloned alongside it must end up pointing at that atom's
+--   new copy, not its now-frozen original) via a plain local mapping built
+--   up as the clones land -- deliberately not the store's own 'logRemap'
+--   table: that would make the *original* atom's id permanently resolve to
+--   its clone everywhere, including for a caller still holding the old id
+--   wanting history exactly as it was -- the same guarantee 'deleteFile'
+--   itself depends on. A checkpoint clones; it never rebases, so both
+--   copies must go on existing, independently, forever. A ref to anything
+--   outside this one clone batch (unrelated, or belonging to some other
+--   path entirely) is left exactly as it was -- the mapping only ever
+--   redirects ids it actually minted.
+--
+--   'Binary'\/'Opaque' ticks are left out of the clone even if one somehow
+--   carries a 'tickRefs' pointing at one of these atoms (no real caller
+--   currently produces that shape): the original stays reachable and
+--   correct either way, it just doesn't gain a counterpart pointing at the
+--   fresh copy -- cloning one would need its own real tree content the
+--   same way 'Atom' does, which nothing here has a use case to justify yet.
+checkpointFile :: StoreM m => FilePath -> StoreT m ()
+checkpointFile path = do
+  atoms <- currentLifetimeAtoms path
+  let atomIds = Set.fromList (map fst atoms)
+  annotations <- follow [] $ \acc h t -> case t of
+    _ | Set.member h atomIds                    -> (acc, True)
+    _ | any (`Set.member` atomIds) (tickRefs t)  -> ((h, t) : acc, True)
+    _                                            -> (acc, True)
+  _      <- deleteFile path
+  remap1 <- foldM cloneAtom Map.empty atoms
+  _      <- foldM cloneAnnotation remap1 annotations
+  return ()
+  where
+    remapRefs remap = map (\r -> Map.findWithDefault r r remap)
+
+    cloneAtom remap (oldId, Atom refs _ tags content) = do
+      newId <- store (Atom (remapRefs remap refs) path tags content)
+      return (Map.insert oldId newId remap)
+    cloneAtom remap _ = return remap -- unreachable: 'currentLifetimeAtoms' only yields Atom
+
+    cloneAnnotation remap (oldId, t) = case t of
+      NonAtom refs raw -> do
+        newId <- store (NonAtom (remapRefs remap refs) raw)
+        return (Map.insert oldId newId remap)
+      _ -> return remap -- see the Haddock's own note on Binary\/Opaque
+
+    -- Same current-lifetime boundary as 'atomHistory', but keeping each
+    -- atom's own id and tags alongside its content -- 'atomHistory' only
+    -- ever hands back content, since that's all its own callers need.
+    currentLifetimeAtoms :: StoreM m => FilePath -> StoreT m [(ObjectHash, Tick)]
+    currentLifetimeAtoms p = headHash >>= \h -> go h []
+      where
+        go h acc = do
+          t <- lift (readTick h)
+          case t of
+            a@(Atom _ p' tags _) | p' == p ->
+              if isRemoval tags then return acc else continue h ((h, a) : acc)
+            _ -> continue h acc
+        continue h acc = do
+          cd <- lift (readCommit h)
+          case commitParents cd of
+            []        -> return acc
+            (par : _) -> go par acc
+
+-- | Replace @oldPath@ with a brand new, unrelated lifetime at @newPath@:
+--   @oldPath@'s current lifetime is deleted (see 'deleteFile' -- a forward
+--   event, its own history stays exactly as it was), and @newPath@ starts
+--   fresh with @content@ as its one atom. Deliberately not a 'renameFile':
+--   no id\/ref continuity at all between the two -- every note, fixup, or
+--   swipe attached to @oldPath@'s old atoms stays exactly where it is,
+--   pointing at a lifetime that's now frozen behind a deletion marker,
+--   rather than following the content forward the way 'renameFile' (or
+--   'checkpointFile') would carry it. The one entry point for "this is a
+--   wholesale replacement, not an edit" -- e.g. a raw\/markdown editor's
+--   own "save as new" action -- where nothing about the old version's own
+--   history is expected to connect to the new one.
+saveFileAsNew :: StoreM m => FilePath -> FilePath -> Text -> StoreT m ()
+saveFileAsNew oldPath newPath content = do
+  _ <- deleteFile oldPath
+  _ <- addAtom newPath content
+  return ()

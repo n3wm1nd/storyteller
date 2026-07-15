@@ -9,6 +9,7 @@ import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
 import qualified Data.ByteString as BS
+import qualified Data.Text as T
 
 import Test.Hspec
 
@@ -286,6 +287,102 @@ spec = do
               NonAtom _ raw | raw /= "type:root\n" -> (raw : acc, True)
               _                                     -> (acc, True))
       result `shouldBe` Right ["type:presence\nfile:chapter1.md\ncharacter:alice\nevent:enter\n\n"]
+
+  describe "checkpointFile" $ do
+    it "leaves the file's current content unchanged" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            _ <- addAtom "scene.md" "p2\n"
+            checkpointFile "scene.md"
+            committedContent "scene.md")
+      result `shouldBe` Right "p1\np2\n"
+
+    -- The whole point: every atom in the current lifetime gets a fresh id
+    -- (so a later 'editAtomAt'\/'deleteTick' can only ever reach the new
+    -- copies), while the originals stay reachable in full history rather
+    -- than being dropped -- a checkpoint clones, it never rebases.
+    it "gives every atom a fresh id, but leaves the originals reachable in full history" $ do
+      let result = runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            t2 <- addAtom "scene.md" "p2\n"
+            checkpointFile "scene.md"
+            newHistory <- atomHistory "scene.md"
+            -- Every real content atom on the path, across every lifetime --
+            -- deliberately excludes the zero-length deletion marker
+            -- 'checkpointFile' itself commits, which is also an 'Atom' for
+            -- this path but isn't one of the atoms being cloned.
+            everyAtom   <- follow [] $ \acc h t -> case t of
+              Atom _ p _ c | p == "scene.md", not (T.null c) -> (h : acc, True)
+              _                                              -> (acc, True)
+            return (map snd newHistory, map fst newHistory, [t1, t2], everyAtom))
+      case result of
+        Left err -> expectationFailure err
+        Right ((newContents, newIds, oldIds, everyAtom), _finalState) -> do
+          newContents `shouldBe` ["p1\n", "p2\n"]
+          newIds `shouldSatisfy` all (`notElem` oldIds)
+          everyAtom `shouldMatchList` (oldIds ++ newIds)
+
+    -- A note attached to a checkpointed atom is cloned alongside it, with
+    -- its own ref rewritten to the new copy -- the original note is left
+    -- exactly as it was, still pointing at the now-frozen original atom.
+    it "clones a note attached to a checkpointed atom, re-pointing the clone at the new atom" $ do
+      let result = runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- store (NonAtom [t1] "type:note\n\na note")
+            checkpointFile "scene.md"
+            newHistory <- atomHistory "scene.md"
+            let newAtomId = fst (head newHistory)
+            noteRefs <- follow [] $ \acc _ t -> case t of
+              NonAtom refs raw | raw == "type:note\n\na note" -> (refs : acc, True)
+              _                                                -> (acc, True)
+            return (t1, newAtomId, noteRefs))
+      case result of
+        Left err -> expectationFailure err
+        Right ((t1, newAtomId, noteRefs), _finalState) ->
+          noteRefs `shouldMatchList` [[t1], [newAtomId]]
+
+    it "does not touch an unrelated file's own atoms or notes" $ do
+      let result = runChain (do
+            _  <- addAtom "scene.md" "p1\n"
+            t2 <- addAtom "other.md" "q1\n"
+            _  <- store (NonAtom [t2] "type:note\n\nabout q1")
+            checkpointFile "scene.md"
+            content  <- committedContent "other.md"
+            noteRefs <- follow [] $ \acc _ t -> case t of
+              NonAtom refs raw | raw == "type:note\n\nabout q1" -> (refs : acc, True)
+              _                                                  -> (acc, True)
+            return (content, t2, noteRefs))
+      case result of
+        Left err -> expectationFailure err
+        Right ((content, t2, noteRefs), _finalState) -> do
+          content `shouldBe` "q1\n"
+          noteRefs `shouldBe` [[t2]]
+
+  describe "saveFileAsNew" $ do
+    it "old path is gone; new path holds the given content as a single fresh atom" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\np2\n"
+            saveFileAsNew "scene.md" "chapter1.md" "replaced\n"
+            old <- Storage.Ops.exists "scene.md"
+            new <- committedContent "chapter1.md"
+            return (old, new))
+      result `shouldBe` Right (False, "replaced\n")
+
+    -- No id\/ref continuity at all -- unlike 'checkpointFile' or
+    -- 'renameFile', a note on the old content stays pointing at the old
+    -- (now-frozen) atom; nothing carries it forward to the replacement.
+    it "does not carry a note on the old content forward to the replacement" $ do
+      let result = runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- store (NonAtom [t1] "type:note\n\na note")
+            saveFileAsNew "scene.md" "chapter1.md" "replaced\n"
+            noteRefs <- follow [] $ \acc _ t -> case t of
+              NonAtom refs raw | raw == "type:note\n\na note" -> (refs : acc, True)
+              _                                                -> (acc, True)
+            return (t1, noteRefs))
+      case result of
+        Left err -> expectationFailure err
+        Right ((t1, noteRefs), _finalState) -> noteRefs `shouldBe` [[t1]]
 
     -- A non-atom tick naming some *other* file must be left completely
     -- untouched by a rename -- only ticks naming the path actually being
