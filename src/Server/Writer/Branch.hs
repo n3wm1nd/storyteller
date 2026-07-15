@@ -16,6 +16,8 @@ module Server.Writer.Branch
   ( trackFiles
   , charGen
   , summarize
+  , syncTasksOnBranch
+  , suggestTasksOnBranch
   , uploadFiles
   , uploadFile
   , saveFile
@@ -42,7 +44,10 @@ import Server.Core.Util (withBranch)
 import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryGenerate)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
+import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
+import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
+import Storyteller.Writer.Agent (ContextBlock(..))
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..), contentFor)
@@ -232,3 +237,61 @@ passthroughGenerate = pure . foldl' step Map.empty
     step acc t = case fromTick @Atom t of
       Just (Atom file _) -> Map.insertWith (flip (<>)) file (contentFor file t) acc
       Nothing             -> acc
+
+-- | Reconcile a tasks.md-shaped file against whatever's new on this
+--   already-open 'Main' branch since its last sync -- see
+--   'Storyteller.Writer.Agent.Tasks.syncTasks'. Same "restrict to one
+--   source file, or every file" shape as 'trackFiles'\/'summarize': a
+--   character sidebar's "Sync Tasks" button restricts to its journal, a
+--   hypothetical story-branch caller would pass 'Nothing' for "every
+--   chapter." Returns whether it made a change, for the dispatch layer to
+--   decide whether a 'Server.Writer.Branch.Protocol.FileAdded' is due (the
+--   file may not have existed before this call).
+syncTasksOnBranch
+  :: (LLMs r, Members '[BranchOp Main, PromptStorage, Logging, Fail] r)
+  => Maybe FilePath -> FilePath -> Sem r Bool
+syncTasksOnBranch onlyFile toFile = syncTasks @Main (isSourceFile onlyFile toFile) toFile
+
+data LoreSource
+
+-- | Propose new tasks from a full read of this branch's source material,
+--   plus -- when @loreSource@ names a (story) branch -- that branch's own
+--   world lore, folded in as extra material ahead of it. Deliberately
+--   *not* that branch's raw content otherwise: a character's suggestions
+--   must only ever be grounded in what they'd actually know -- their own
+--   (already presence-gated, see 'Storyteller.Writer.Agent.Tracker's
+--   Haddock) journal, plus world knowledge, never scenes they never
+--   witnessed. See 'Storyteller.Writer.Agent.Tasks.suggestTasks' and
+--   'Server.Writer.Branch.Protocol.SuggestTasks'.
+--
+--   Opens its own transient 'LoreSource'-tagged scope to read it, same
+--   reasoning 'trackFiles' opens 'Source'\/'Tracker' scopes for: the lore
+--   branch is a different branch entirely, known only from the command
+--   payload.
+suggestTasksOnBranch
+  :: (SessionEffects r, Members '[BranchOp Main, PromptStorage, Logging, Fail] r)
+  => Maybe BranchName -> Maybe FilePath -> FilePath -> Sem r Bool
+suggestTasksOnBranch loreSource onlyFile toFile = do
+  lore <- maybe (return "") fetchLore loreSource
+  let generate current material = tasksGenerateAgent current (foldLore lore material)
+  suggestTasksWith @Main generate (isSourceFile onlyFile toFile) toFile
+  where
+    foldLore lore material
+      | T.null lore = material
+      | otherwise    = lore <> "\n\n---\n\n" <> material
+
+fetchLore :: SessionEffects r => BranchName -> Sem r T.Text
+fetchLore branch =
+  runBranchAndFS @LoreSource branch $
+    runStorage @LoreSource $ do
+      (WorldContext.WorldLore blocks, _) <- WorldContext.worldContextOf
+      return (T.intercalate "\n\n---\n\n" [ t | ContextBlock t <- blocks ])
+
+-- | 'Just f' restricts to exactly that file; 'Nothing' accepts every file
+--   except @toFile@ itself (the tasks file is never its own source) --
+--   same "one file, or everything" convention 'trackFiles'\/'trackBranch's
+--   @onlyFile@ already uses.
+isSourceFile :: Maybe FilePath -> FilePath -> FilePath -> Bool
+isSourceFile onlyFile toFile file = case onlyFile of
+  Just f  -> file == f
+  Nothing -> file /= toFile

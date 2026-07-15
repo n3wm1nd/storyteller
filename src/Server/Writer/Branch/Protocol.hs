@@ -44,6 +44,24 @@ data BranchCommand
   -- range: what's new is always "everything since @bcKind@'s last summary
   -- here, or since root" -- implicit, per 'Storyteller.Common.Summary'.
   | Summarize  { bcId :: Maybe T.Text, bcKind :: T.Text }
+  -- Reconcile bcToFile (tasks.md by default) against whatever's new since
+  -- its last sync -- see 'Storyteller.Writer.Agent.Tasks.syncTasks'.
+  -- bcOnlyFile has the same "restrict to one source file, or every file"
+  -- shape as Track's, since the underlying delta-gathering is the same
+  -- kind of thing (a character branch's journal; 'Nothing' for a story
+  -- branch's every file).
+  | SyncTasks    { bcId :: Maybe T.Text, bcOnlyFile :: Maybe FilePath, bcToFile :: FilePath }
+  -- Propose new tasks from a full read of bcOnlyFile (or every file) --
+  -- see 'Storyteller.Writer.Agent.Tasks.suggestTasks'. bcLoreSource, when
+  -- given, additionally folds that (story) branch's own world lore in as
+  -- source material -- fair game for a character to reason from (it's
+  -- world knowledge, not plot they haven't witnessed), unlike that
+  -- branch's raw scene content, which is deliberately never read here: a
+  -- character's suggestions must come only from what they'd actually
+  -- know -- their own journal (already presence-gated by
+  -- 'Storyteller.Writer.Agent.Tracker.trackBranch's own copy into it) plus
+  -- lore, never the story branch directly.
+  | SuggestTasks { bcId :: Maybe T.Text, bcLoreSource :: Maybe T.Text, bcOnlyFile :: Maybe FilePath, bcToFile :: FilePath }
   | AddNote    { bcId :: Maybe T.Text, bcRefTickId :: T.Text, bcNoteText :: T.Text }
   | MoveTick   { bcId :: Maybe T.Text, bcTickId :: T.Text, bcAfterTickId :: Maybe T.Text }
   | DeleteTick { bcId :: Maybe T.Text, bcTickId :: T.Text }
@@ -64,6 +82,8 @@ instance FromJSON BranchCommand where
       "track"       -> Track      i <$> o .: "source" <*> o .:? "onlyFile" <*> o .: "to"
       "chargen"     -> CharGen    i <$> o .: "path" <*> o .: "scenario" <*> o .:? "seed"
       "summarize"   -> Summarize  i <$> o .: "kind"
+      "sync.tasks"    -> SyncTasks    i <$> o .:? "onlyFile" <*> (fromMaybe "tasks.md" <$> o .:? "to")
+      "suggest.tasks" -> SuggestTasks i <$> o .:? "loreSource" <*> o .:? "onlyFile" <*> (fromMaybe "tasks.md" <$> o .:? "to")
       "add.note"    -> AddNote    i <$> o .: "refTickId" <*> o .: "text"
       "move.tick"   -> MoveTick   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "delete.tick" -> DeleteTick i <$> o .: "tickId"
@@ -76,6 +96,8 @@ commandKind = \case
   Track {}      -> "track"
   CharGen {}    -> "chargen"
   Summarize {}  -> "summarize"
+  SyncTasks {}    -> "sync.tasks"
+  SuggestTasks {} -> "suggest.tasks"
   AddNote {}    -> "add.note"
   MoveTick {}   -> "move.tick"
   DeleteTick {} -> "delete.tick"

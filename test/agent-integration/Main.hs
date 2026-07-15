@@ -48,6 +48,9 @@ import qualified Agent.Integration.WriterStyleGuideSpec
 import qualified Agent.Integration.WriterPinnedContextSpec
 import qualified Agent.Integration.WriterEarlierChaptersSpec
 import qualified Agent.Integration.WriterConversationHistorySpec
+import qualified Agent.Integration.TasksSteeringSpec
+import qualified Agent.Integration.TasksSuggestionQualitySpec
+import qualified Agent.Integration.TasksReconcileSpec
 
 -- | Resolve both roles' models (@STORY_MODEL@\/@JUDGE_MODEL@, independent
 --   env vars -- see 'Agent.Integration.Harness.knownModels' for what's
@@ -199,3 +202,6 @@ main = do
         describe "Agent.Integration.WriterPinnedContextSpec"     (Agent.Integration.WriterPinnedContextSpec.spec @judgeTy runner)
         describe "Agent.Integration.WriterEarlierChaptersSpec"   (Agent.Integration.WriterEarlierChaptersSpec.spec @judgeTy runner)
         describe "Agent.Integration.WriterConversationHistorySpec" (Agent.Integration.WriterConversationHistorySpec.spec @judgeTy runner)
+        describe "Agent.Integration.TasksSteeringSpec"           (Agent.Integration.TasksSteeringSpec.spec @judgeTy runner)
+        describe "Agent.Integration.TasksSuggestionQualitySpec"  (Agent.Integration.TasksSuggestionQualitySpec.spec @judgeTy runner)
+        describe "Agent.Integration.TasksReconcileSpec"          (Agent.Integration.TasksReconcileSpec.spec @judgeTy runner)

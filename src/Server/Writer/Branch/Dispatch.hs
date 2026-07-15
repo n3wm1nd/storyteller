@@ -33,7 +33,7 @@ import qualified Data.Text as T
 import Polysemy (Sem)
 
 import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
-import Server.Writer.Branch (trackFiles, charGen, summarize)
+import Server.Writer.Branch (trackFiles, charGen, summarize, syncTasksOnBranch, suggestTasksOnBranch)
 import Server.Writer.Branch.Protocol
 import Server.Writer.File.Dispatch (atBranches)
 import Server.Core.Run (SessionEffects)
@@ -61,6 +61,17 @@ runCommand branch cmd =
     Summarize _mid kind -> do
       _ <- summarize kind
       return []
+
+    -- Same "no structural event unless something actually landed" shape as
+    -- 'Summarize' above, except tasks.md really can be a brand new file the
+    -- first time this runs, so the client does need to hear about it then.
+    SyncTasks mid onlyFile toFile -> do
+      changed <- syncTasksOnBranch onlyFile toFile
+      return [ FileAdded mid toFile | changed ]
+
+    SuggestTasks mid loreSource onlyFile toFile -> do
+      changed <- suggestTasksOnBranch (BranchName <$> loreSource) onlyFile toFile
+      return [ FileAdded mid toFile | changed ]
 
     AddNote _mid refTickId text -> do
       addNote [TickId refTickId] text

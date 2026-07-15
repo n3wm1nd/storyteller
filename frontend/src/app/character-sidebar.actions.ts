@@ -6,7 +6,7 @@
 // file — see lib/serverCacheStore.ts's header for the write-access
 // convention.
 
-import { branchConn, characterConn, fileConn } from "@/lib/ws";
+import { branchConn, characterConn, fileConn, type BranchCommand } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent, remapSet, atRebase } from "@/lib/wsHelpers";
@@ -192,6 +192,48 @@ export function trackAllJournals(characterBranches: string[]) {
   const source = getServerCache().activeBranch;
   if (!source) return;
   for (const branch of characterBranches) trackOne(branch, source, undefined);
+}
+
+export const TASKS_PATH = "tasks.md";
+
+// Same short-lived-connection shape as 'trackOne': fire the command on the
+// character branch's own connection, close on the resulting update/error.
+// Resolves once the command has actually landed (or failed) — not on send
+// — so a caller that wants to refetch tasks.md afterward (see
+// character-sidebar.tsx's TasksPanel) doesn't race the mutation.
+function runTasksCommand(characterBranch: string, cmd: BranchCommand): Promise<void> {
+  return new Promise((resolve) => {
+    const conn = branchConn(characterBranch);
+    conn.subscribe((evt) => {
+      if (evt.type === "update" || evt.type === "error" || evt.type === "file.added") {
+        conn.close();
+        resolve();
+      }
+      if (evt.type === "error") setError(evt.message);
+    });
+    conn.connect().then(() => {
+      conn.send(cmd);
+    }).catch(() => { conn.close(); resolve(); });
+  });
+}
+
+// Reconcile this character's tasks.md against whatever's new in their own
+// journal since the last sync — see Storyteller.Writer.Agent.Tasks.syncTasks.
+// Restricted to journal.md, same "only what this character actually
+// witnessed" reasoning as trackJournal itself (the journal is already
+// presence-gated on the way in).
+export function syncTasks(characterBranch: string) {
+  return runTasksCommand(characterBranch, { type: "sync.tasks", onlyFile: JOURNAL_PATH, to: TASKS_PATH });
+}
+
+// Propose new tasks for this character from their journal plus the active
+// story's world lore — never the story's raw scene content (see
+// Server.Writer.Branch.Protocol.SuggestTasks's own Haddock on why).
+export function suggestTasks(characterBranch: string) {
+  const loreSource = getServerCache().activeBranch;
+  return runTasksCommand(characterBranch, {
+    type: "suggest.tasks", loreSource: loreSource ?? undefined, onlyFile: JOURNAL_PATH, to: TASKS_PATH,
+  });
 }
 
 // Basic editing on a character's journal — same commands the main file

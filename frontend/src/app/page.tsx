@@ -14,6 +14,7 @@ import {
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal, trackJournal, trackAllJournals,
+  syncTasks, suggestTasks,
   editJournalAtom, deleteJournalAtom, journalFix, appendJournal, cycleJournalSwipe,
 } from "./character-sidebar.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
@@ -689,6 +690,7 @@ export default function Home() {
                   journalMarkers={journalMarkers} setJournalMarker={setJournalMarker}
                   trackJournal={trackJournal}
                   onTrackAll={() => trackAllJournals(characterBranches.map((c) => c.branch))}
+                  syncTasks={syncTasks} suggestTasks={suggestTasks}
                   editJournalAtom={editJournalAtom} cycleJournalSwipe={cycleJournalSwipe} appendJournal={appendJournal}
                   contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
                   toggleContextAtom={toggleContextAtom} toggleContextAnnotation={toggleContextAnnotation}

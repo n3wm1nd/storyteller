@@ -50,6 +50,7 @@ library
                   , Storyteller.Writer.Agent.Summarizer
                   , Storyteller.Writer.Agent.SummaryAccess
                   , Storyteller.Writer.Agent.ChapterSummarizer
+                  , Storyteller.Writer.Agent.Tasks
                   , Storyteller.Core.Atom
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
@@ -242,6 +243,7 @@ test-suite storyteller-test
                   , Storyteller.SummarySpec
                   , Storyteller.SummaryAccessSpec
                   , Storyteller.ChapterSummarizerSpec
+                  , Storyteller.TasksSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
                   , Storyteller.WorldContextSpec
@@ -337,6 +339,9 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.WriterPinnedContextSpec
                   , Agent.Integration.WriterEarlierChaptersSpec
                   , Agent.Integration.WriterConversationHistorySpec
+                  , Agent.Integration.TasksSteeringSpec
+                  , Agent.Integration.TasksSuggestionQualitySpec
+                  , Agent.Integration.TasksReconcileSpec
                   , Agent.Integration.ToolCallQuality
                   , Git.Mock
                   , Paths_storyteller

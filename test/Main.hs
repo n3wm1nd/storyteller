@@ -22,6 +22,7 @@ import qualified Storyteller.TrackerSpec
 import qualified Storyteller.SummarySpec
 import qualified Storyteller.SummaryAccessSpec
 import qualified Storyteller.ChapterSummarizerSpec
+import qualified Storyteller.TasksSpec
 import qualified Storyteller.CharGenSpec
 import qualified Storyteller.CharContextSpec
 import qualified Storyteller.WorldContextSpec
@@ -72,6 +73,7 @@ main = hspec $ do
   describe "Storyteller.Summary"        Storyteller.SummarySpec.spec
   describe "Storyteller.Writer.Agent.SummaryAccess" Storyteller.SummaryAccessSpec.spec
   describe "Storyteller.Writer.Agent.ChapterSummarizer" Storyteller.ChapterSummarizerSpec.spec
+  describe "Storyteller.Writer.Agent.Tasks" Storyteller.TasksSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
   describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
   describe "Storyteller.Writer.Agent.WorldContext" Storyteller.WorldContextSpec.spec
