@@ -104,6 +104,7 @@ library
                   , universal-llm
                   , text
                   , bytestring
+                  , base64-bytestring
                   , containers
                   , array
                   , filepath

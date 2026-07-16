@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
-import { Folder, GitBranch, Plus, Users, BookOpen, Settings } from "lucide-react";
+import { useRef, useState } from "react";
+import { Folder, GitBranch, Plus, Users, BookOpen, Settings, UserPlus } from "lucide-react";
 import { useUI, type ConnInfo } from "@/lib/uiStore";
 import { type CharacterSummary, type LibraryNode, type ChapterUnit } from "@/lib/ws";
 import { statusColor, characterDisplayName } from "@/lib/utils";
 import { classifyBranch } from "@/lib/branches";
+import { extractPngCardPayload, parseCardJson, buildCharacterFiles, type ParsedCard } from "@/lib/taverncard";
 import { FileTree } from "./filetree";
 import { LibraryTree } from "./library";
 
@@ -103,6 +104,123 @@ function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart
   );
 }
 
+// ── Character card import ───────────────────────────────────────────────────
+//
+// Drop (or pick) a SillyTavern character card -- .png with the card
+// embedded as metadata, or a bare .json export -- and stage it for import.
+// Parsing (lib/taverncard.ts) is entirely client-side; nothing is sent
+// until the user confirms the preview below, since community cards vary
+// a lot in quality and the branch/file mapping is worth a look-first step
+// rather than committing blind. A confirmed import fires one atomic
+// import-character-card command (see sidebar.actions.ts's
+// importCharacterCard) plus, for a PNG source, a trailing avatar.png PUT
+// once the branch exists.
+
+interface PendingCard {
+  card: ParsedCard;
+  branch: string;
+  files: { path: string; content: string }[];
+  avatar?: File;
+}
+
+function CardImportZone({ onImport }: {
+  onImport: (branch: string, files: { path: string; content: string }[], avatar?: File) => Promise<void>;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const [pending, setPending] = useState<PendingCard | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  async function handleFile(file: File) {
+    setImportError(null);
+    try {
+      const isPng = file.type === "image/png" || file.name.toLowerCase().endsWith(".png");
+      const raw = isPng ? extractPngCardPayload(await file.arrayBuffer()) : await file.text();
+      if (raw === null) throw new Error("no character card metadata found in this PNG");
+      const card = parseCardJson(raw);
+      const { branch, files } = buildCharacterFiles(card);
+      setPending({ card, branch, files, avatar: isPng ? file : undefined });
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function pickFirst(fileList: FileList | null) {
+    if (fileList && fileList.length > 0) void handleFile(fileList[0]);
+  }
+
+  if (pending) {
+    return (
+      <div style={{ padding: "6px 8px", border: "1px solid var(--border-subtle)", borderRadius: 6, background: "var(--card)" }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-heading)", marginBottom: 4 }}>
+          Import &ldquo;{pending.card.name}&rdquo;
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
+          <span style={{ fontSize: 10, color: "var(--text-dim)" }}>as</span>
+          <input
+            value={pending.branch}
+            onChange={(e) => setPending({ ...pending, branch: e.target.value })}
+            style={{
+              flex: 1, fontSize: 11, padding: "3px 6px", background: "var(--surface)",
+              border: "1px solid var(--border-subtle)", borderRadius: 4, color: "var(--foreground)", outline: "none",
+              fontFamily: "monospace",
+            }}
+          />
+        </div>
+        <div style={{ fontSize: 9, color: "var(--text-ghost)", marginBottom: 8 }}>
+          Creates {pending.files.map((f) => f.path).join(", ")}
+          {pending.avatar ? ", avatar.png" : ""}
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={() => { onImport(pending.branch, pending.files, pending.avatar); setPending(null); }}
+            disabled={!pending.branch.trim()}
+            style={{
+              flex: 1, fontSize: 10, padding: "4px 8px", background: "var(--amber)", border: "none",
+              borderRadius: 4, color: "oklch(0.15 0.01 60)", fontWeight: 600,
+              cursor: pending.branch.trim() ? "pointer" : "default", opacity: pending.branch.trim() ? 1 : 0.5,
+            }}
+          >
+            Import
+          </button>
+          <button
+            onClick={() => setPending(null)}
+            style={{
+              fontSize: 10, padding: "4px 8px", background: "transparent",
+              border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-label)", cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => { e.preventDefault(); setDragOver(false); pickFirst(e.dataTransfer.files); }}
+      style={{
+        padding: "10px 8px", border: `1px dashed ${dragOver ? "var(--amber)" : "var(--border-subtle)"}`,
+        borderRadius: 6, textAlign: "center", cursor: "pointer",
+        background: dragOver ? "var(--amber-wash)" : "transparent",
+      }}
+    >
+      <input
+        ref={inputRef} type="file" accept=".png,.json,image/png,application/json" hidden
+        onChange={(e) => { pickFirst(e.target.files); e.target.value = ""; }}
+      />
+      <UserPlus style={{ width: 14, height: 14, color: "var(--text-dim)", marginBottom: 2 }} />
+      <div style={{ fontSize: 10, color: "var(--text-label)" }}>Drop a character card</div>
+      <div style={{ fontSize: 9, color: "var(--text-ghost)" }}>.png or .json, SillyTavern format</div>
+      {importError && <div style={{ fontSize: 9, color: "var(--rose)", marginTop: 4 }}>{importError}</div>}
+    </div>
+  );
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export function LeftSidebar({
@@ -114,6 +232,7 @@ export function LeftSidebar({
   onCreateChapter,
   onHoverCharacter,
   onUploadFiles,
+  onImportCharacterCard,
   conns, error,
 }: {
   tab: "explorer" | "branches" | "characters" | "library";
@@ -145,6 +264,10 @@ export function LeftSidebar({
   onCreateChapter: (path: string, name: string) => void;
   onHoverCharacter: (branch: string | null) => void;
   onUploadFiles: (files: { path: string; content: File }[]) => void;
+  // SillyTavern character card import (see CardImportZone) — one branch
+  // plus its generated files, and the source PNG itself when the card came
+  // from one (used as the character's avatar.png).
+  onImportCharacterCard: (branch: string, files: { path: string; content: string }[], avatar?: File) => Promise<void>;
   conns: ConnInfo[];
   error: string | null;
 }) {
@@ -254,7 +377,7 @@ export function LeftSidebar({
           </div>
           {characterBranches.length === 0 ? (
             <div style={{ padding: "12px 12px", fontSize: 11, color: "var(--text-ghost)" }}>
-              No character branches — create one from the Branches tab (e.g. "character/alice")
+              No character branches — create one from the Branches tab (e.g. "character/alice"), or drop a character card below
             </div>
           ) : (
             characterBranches.map((c) => (
@@ -265,6 +388,9 @@ export function LeftSidebar({
                 onHoverEnd={() => onHoverCharacter(null)} />
             ))
           )}
+          <div style={{ marginTop: 8 }}>
+            <CardImportZone onImport={onImportCharacterCard} />
+          </div>
         </div>
       )}
 

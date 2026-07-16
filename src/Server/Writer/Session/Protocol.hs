@@ -11,6 +11,7 @@ module Server.Writer.Session.Protocol
   , SessionEvent(..)
   , CharacterSummary(..)
   , WireUndoEntry(..)
+  , CardFile(..)
   , commandKind
   ) where
 
@@ -36,6 +37,21 @@ data SessionCommand
   -- Fire-and-forget: no response event, and an unknown\/already-finished
   -- 'scTargetId' is a silent no-op, not an error.
   | Cancel         { scId :: Maybe T.Text, scTargetId :: T.Text }
+  -- | Atomically create a new character branch and deposit a fixed set of
+  -- text files, plus an optional base64-encoded avatar image, onto it —
+  -- the frontend's SillyTavern character card import: it parses the
+  -- dropped @.png@/@.json@ card client-side (see WRITER.md), maps its
+  -- fields to file content (@sheet.md@, @instructions.md@, an optional
+  -- lore file), and sends the result here rather than round-tripping a
+  -- plain @CreateBranch@ plus one @saveFile@ per file, which could leave a
+  -- half-created character visible to other connections if a later step
+  -- failed. The avatar rides along in this same command rather than as a
+  -- separate follow-up @PUT@ for the same reason, plus one more: a
+  -- separate @PUT@ is a second, independent HTTP connection racing this
+  -- command's own branch creation, which turned out to be a real problem
+  -- in practice, not just a theoretical one — see
+  -- 'Server.Writer.Branch.importCharacterCard'.
+  | ImportCharacterCard { scId :: Maybe T.Text, scBranch :: T.Text, scFiles :: [CardFile], scAvatar :: Maybe T.Text }
   deriving (Show)
 
 instance FromJSON SessionCommand where
@@ -43,19 +59,30 @@ instance FromJSON SessionCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "create-branch"    -> CreateBranch i <$> o .: "branch"
-      "delete-branch"    -> DeleteBranch i <$> o .: "branch"
-      "undo.reset"       -> UndoReset i <$> o .: "entryId"
-      "cancel"           -> Cancel i <$> o .: "targetId"
-      _                  -> fail ("unknown session command: " <> T.unpack t)
+      "create-branch"          -> CreateBranch i <$> o .: "branch"
+      "delete-branch"          -> DeleteBranch i <$> o .: "branch"
+      "undo.reset"             -> UndoReset i <$> o .: "entryId"
+      "cancel"                 -> Cancel i <$> o .: "targetId"
+      "import-character-card"  -> ImportCharacterCard i <$> o .: "branch" <*> o .: "files" <*> o .:? "avatar"
+      _                        -> fail ("unknown session command: " <> T.unpack t)
 
 -- | Short label for logging — see 'Server.Writer.File.Protocol.commandKind'.
 commandKind :: SessionCommand -> T.Text
 commandKind = \case
-  CreateBranch {}   -> "create-branch"
-  DeleteBranch {}   -> "delete-branch"
-  UndoReset {}      -> "undo.reset"
-  Cancel {}         -> "cancel"
+  CreateBranch {}         -> "create-branch"
+  DeleteBranch {}         -> "delete-branch"
+  UndoReset {}            -> "undo.reset"
+  Cancel {}               -> "cancel"
+  ImportCharacterCard {}  -> "import-character-card"
+
+-- | One text file the frontend wants deposited onto the newly created
+--   branch — see 'ImportCharacterCard'. The avatar image, when a card
+--   has one, travels separately as 'scAvatar' (base64, since it isn't
+--   text) rather than as one of these.
+data CardFile = CardFile { cfPath :: FilePath, cfContent :: T.Text } deriving (Show)
+
+instance FromJSON CardFile where
+  parseJSON = withObject "CardFile" $ \o -> CardFile <$> o .: "path" <*> o .: "content"
 
 -- | One character branch's sidebar-facing summary: the branch id (still
 --   carrying the @character\/@ prefix; stripping it is a display concern,

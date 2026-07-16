@@ -20,8 +20,9 @@ import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
-import Server.Writer.Branch (summarize, uploadFiles)
+import Server.Writer.Branch (summarize, uploadFiles, importCharacterCard)
 import Server.TestStack
+import Storyteller.Core.Storage (getBranch)
 import Storyteller.Writer.Agent.SummaryAccess (densest)
 
 import Prelude hiding (readFile)
@@ -53,6 +54,7 @@ spec :: TestRunner -> Spec
 spec runner = do
   uploadFilesSpec runner
   summarizeSpec runner
+  importCharacterCardSpec runner
 
 uploadFilesSpec :: TestRunner -> Spec
 uploadFilesSpec runner = describe "uploadFiles" $ do
@@ -150,3 +152,57 @@ summarizeSpec runner = describe "summarize" $ do
           _ <- summarize "raw"
           summarize "raw"
     result `shouldBe` Right Nothing
+
+-- | 'importCharacterCard' is the atomic branch-creation counterpart to
+--   'uploadFiles' -- the SillyTavern character-card-import command's own
+--   implementation (see 'Server.Writer.Session.Dispatch'). Unlike
+--   'uploadFiles', which deposits into an already-open branch, this opens
+--   its own scope after creating the branch, so it's exercised at the top
+--   level of the runner rather than through 'withBranch_'.
+importCharacterCardSpec :: TestRunner -> Spec
+importCharacterCardSpec runner = describe "importCharacterCard" $ do
+
+  it "creates the branch and writes every given file with its given content" $ do
+    let result = run $ runner $ do
+          importCharacterCard (BranchName "character/alice")
+            [ ("sheet.md", "Alice is a curious explorer.")
+            , ("instructions.md", "Speaks in short sentences.")
+            ]
+            Nothing
+          runBranchAndFS @Main (BranchName "character/alice") $ do
+            sheet        <- readFile @(BranchTag Main) "sheet.md"
+            instructions <- readFile @(BranchTag Main) "instructions.md"
+            return (TE.decodeUtf8 sheet, TE.decodeUtf8 instructions)
+    result `shouldBe` Right ("Alice is a curious explorer.", "Speaks in short sentences.")
+
+  it "the branch is discoverable via getBranch afterwards" $ do
+    let result = run $ runner $ do
+          importCharacterCard (BranchName "character/bob") [("sheet.md", "Bob.")] Nothing
+          getBranch (BranchName "character/bob")
+    result `shouldSatisfy` either (const False) (/= Nothing)
+
+  -- Contrast with 'uploadFiles', which deliberately deposits as an opaque,
+  -- never-atom-tracked asset (see its own Haddock) -- an imported card's
+  -- files are real prose/content the user will go on to edit normally, so
+  -- they need to reconcile against the atom chain like any other write,
+  -- not sit as an opaque binary blob.
+  it "deposited files are atom-tracked, unlike a plain upload" $ do
+    let result = run $ runner $ do
+          importCharacterCard (BranchName "character/carol") [("sheet.md", "Carol.")] Nothing
+          runBranchAndFS @Main (BranchName "character/carol") $
+            runStorage @Main (Ops.hasAnyAtom "sheet.md")
+    result `shouldBe` Right True
+
+  -- The avatar rides in the same atomic command now (see this function's
+  -- own Haddock for why: a separate follow-up PUT raced the branch's own
+  -- creation in practice), deposited the same opaque, never-atom-tracked
+  -- way 'uploadFiles' deposits any binary asset.
+  it "deposits the avatar alongside the text files when given one" $ do
+    let bytes = BS.pack [0x89, 0x50, 0x4e, 0x47]
+    let result = run $ runner $ do
+          importCharacterCard (BranchName "character/dana") [("sheet.md", "Dana.")] (Just ("avatar.png", bytes))
+          runBranchAndFS @Main (BranchName "character/dana") $ do
+            content <- readFile @(BranchTag Main) "avatar.png"
+            tracked <- runStorage @Main (Ops.hasAnyAtom "avatar.png")
+            return (content, tracked)
+    result `shouldBe` Right (bytes, False)

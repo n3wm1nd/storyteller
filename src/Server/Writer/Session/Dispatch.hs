@@ -18,6 +18,7 @@ module Server.Writer.Session.Dispatch
   ) where
 
 import Data.Aeson (encode)
+import qualified Data.ByteString.Base64 as B64
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Network.WebSockets as WS
@@ -27,6 +28,7 @@ import Runix.FileSystem (fileExists, readFile)
 import Runix.Git (ObjectHash(..))
 
 import Server.Core.Run (SessionEffects)
+import Server.Writer.Branch (importCharacterCard)
 import Server.Writer.Env (ServerEnv, requestCancel)
 import Server.Writer.Session.Protocol
 import Storyteller.Core.Git (BranchTag, runBranchAndFS)
@@ -74,6 +76,33 @@ runCommand env conn cmd = case cmd of
     push =<< undoLog
 
   Cancel _mid targetId -> embed (() <$ requestCancel env targetId)
+
+  -- Same "branch must not already exist" guard as 'CreateBranch' above,
+  -- and the same no-round-trip BranchList/CharacterList push — an import
+  -- always targets a character branch by construction (the frontend only
+  -- ever sends 'character/...' here), so both are pushed unconditionally
+  -- rather than gated on 'classifyBranch' the way CreateBranch/DeleteBranch
+  -- gate it (those two accept any branch name, this one doesn't).
+  --
+  -- 'scAvatar', when present, is decoded here rather than in
+  -- 'Server.Writer.Branch.importCharacterCard' -- base64 is a wire-format
+  -- concern of this JSON protocol, not something the storage-layer
+  -- function should know about. A malformed payload throws (caught the
+  -- same way any other command failure is, see 'Server.Writer.Session.
+  -- Connection') rather than silently dropping the avatar.
+  ImportCharacterCard _mid branch files avatarB64 -> do
+    let name = BranchName branch
+    avatar <- case avatarB64 of
+      Nothing -> return Nothing
+      Just b64 -> case B64.decode (TE.encodeUtf8 b64) of
+        Left err    -> throw @String ("invalid avatar data: " <> err)
+        Right bytes -> return (Just ("avatar.png", bytes))
+    getBranch name >>= \case
+      Just _  -> throw @String ("branch already exists: " <> T.unpack branch)
+      Nothing -> do
+        importCharacterCard name [(cfPath f, cfContent f) | f <- files] avatar
+        branchNames >>= push . BranchList
+        characterSummaries >>= push . CharacterList
 
   where
     push = embed . WS.sendTextData conn . encode

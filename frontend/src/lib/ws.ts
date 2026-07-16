@@ -131,7 +131,18 @@ export type SessionCommand =
   // only reads its next message after the current one finishes (see
   // Server.Writer.Session.Protocol's Cancel). Fire-and-forget: no response
   // event, and canceling an already-finished/unknown id is a silent no-op.
-  | { type: "cancel"; id?: string; targetId: string };
+  | { type: "cancel"; id?: string; targetId: string }
+  // Atomically create a character branch and deposit a fixed set of text
+  // files, plus an optional base64-encoded avatar image, onto it — the
+  // SillyTavern character-card-import drop zone (see lib/taverncard.ts's
+  // 'buildCharacterFiles' for how a dropped card becomes this shape, and
+  // Server.Writer.Session.Protocol's ImportCharacterCard for why this is
+  // one command instead of a create-branch, per-file saves, and a
+  // separate avatar PUT — that split raced the avatar's upload against
+  // the branch's own creation in practice, not just in theory). `avatar`
+  // is `undefined` for a card with no image (any .json card, or a .png
+  // with no embedded portrait a viewer would show).
+  | { type: "import-character-card"; id?: string; branch: string; files: { path: string; content: string }[]; avatar?: string };
 
 // One character branch's raw summary — sheet.md content, unprocessed (see
 // WS-PROTOCOL.md's "read is raw-but-complete" rule). The client is

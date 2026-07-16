@@ -15,6 +15,7 @@
 module Server.Writer.Branch
   ( trackFiles
   , charGen
+  , importCharacterCard
   , summarize
   , syncTasksOnBranch
   , suggestTasksOnBranch
@@ -64,6 +65,7 @@ import Prelude hiding (writeFile)
 data Source
 data Tracker
 data CharBranch
+data ImportBranch
 
 -- | Track a source branch into a single journal file on a target branch.
 --   Creates the target branch if it doesn't exist. Returns the destination
@@ -138,6 +140,45 @@ charGen name path scenario seed = do
     let sheet = charGenAgent template rngSeed
     writeFile @(BranchTag CharBranch) path (TE.encodeUtf8 (unSheet sheet))
     void $ runStorage @CharBranch (Ops.commitFiles [path])
+
+-- | Create a brand-new character branch and deposit a fixed set of text
+--   files, plus an optional binary avatar, onto it in one commit -- the
+--   atomic counterpart to a client parsing a SillyTavern-format character
+--   card and following up with a plain @CreateBranch@ plus one @saveFile@
+--   per generated file and a separate @PUT@ for the avatar, which would
+--   leave a half-created character branch visible to every other
+--   connection if any step failed partway, and which in practice raced the
+--   avatar's own @PUT@ (a second, independent HTTP connection) against
+--   this command's branch creation -- see 'Server.Writer.Session.Dispatch'
+--   and lib/taverncard.ts's own history. Folding the avatar into this same
+--   command removes that race entirely rather than papering over it with
+--   retries: a card's avatar is small (comparable to the text fields
+--   already carried the same way), so there's no real cost to treating it
+--   like the rest of the card instead of like a general-purpose binary
+--   upload. The caller is responsible for mapping card fields to file
+--   content -- e.g. @sheet.md@ for identity/personality, @instructions.md@
+--   for the roleplay-flavored fields a future impersonation agent would
+--   consume, an optional lore file for an embedded @character_book@ --
+--   this function only knows "branch, files, optional avatar."
+--
+--   Unlike 'charGen', does not tolerate the branch already existing --
+--   an import always names a fresh branch (checked by the caller before
+--   this runs); silently overwriting an existing character's files would
+--   be the wrong default for a drag-and-drop import.
+importCharacterCard
+  :: Members '[Git, StoryStorage, Fail] r
+  => BranchName
+  -> [(FilePath, T.Text)]
+  -> Maybe (FilePath, BS.ByteString)
+  -> Sem r ()
+importCharacterCard name files avatar = do
+  _ <- createBranch name
+  runBranchAndFS @ImportBranch name $ do
+    mapM_ (\(path, content) -> writeFile @(BranchTag ImportBranch) path (TE.encodeUtf8 content)) files
+    void $ runStorage @ImportBranch (Ops.commitFiles (map fst files))
+    case avatar of
+      Nothing              -> return ()
+      Just (path, content) -> void $ runStorage @ImportBranch (Ops.addBinary path content)
 
 -- | Write one or more files' content directly into the branch, bypassing
 --   the chat-agent pipeline entirely (an upload isn't an LLM-authored

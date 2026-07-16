@@ -59,6 +59,40 @@ export function createBranch(name: string) {
   getServerCache()._session?.send({ type: "create-branch", branch: name });
 }
 
+// SillyTavern character card import (see lib/taverncard.ts) — one atomic
+// branch-creation command carrying the text files and, when the card came
+// from a .png, its avatar too (base64-encoded — see
+// Server.Writer.Session.Protocol's ImportCharacterCard). Originally the
+// avatar rode a separate follow-up HTTP PUT once the branch was confirmed
+// to exist; that turned out to race the branch's own creation in
+// practice (a second, independent connection, even though the WS reply
+// only arrives once the write is committed server-side), so it now goes
+// in the same command instead of being reconciled after the fact —
+// avatars from a character card are small enough that folding them in
+// costs nothing.
+export async function importCharacterCard(branch: string, files: { path: string; content: string }[], avatar?: Blob) {
+  const avatarB64 = avatar ? await blobToBase64(avatar) : undefined;
+  getServerCache()._session?.send({ type: "import-character-card", branch, files, avatar: avatarB64 });
+}
+
+// FileReader's own base64 encoder, via a data URL ("data:<mime>;base64,
+// <payload>") -- native and avoids the usual byte-array-to-base64
+// hand-rolling (a manual char-code loop feeding 'btoa', which also risks
+// blowing the call stack on a large file if written as
+// 'btoa(String.fromCharCode(...bytes))' instead of a loop). Just the
+// payload after the comma is what the wire command wants.
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      resolve(dataUrl.slice(dataUrl.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("failed to read avatar file"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 export function deleteBranch(name: string) {
   getServerCache()._session?.send({ type: "delete-branch", branch: name });
 }
