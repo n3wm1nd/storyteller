@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | 'Storage.Ops.commitFile' (via its core, 'Storage.Ops.foldInto') is
+-- | 'Storage.Reconcile.commitFile' (via its core, @foldInto@) is
 --   supposed to cost about what the actual edit costs, not the size of
 --   the graph around it -- see that module's own Haddock. Content and
 --   final-atom assertions ("Storage.CommitWorktreeSpec") already check

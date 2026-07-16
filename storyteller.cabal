@@ -15,6 +15,8 @@ data-files:         test/fixtures/minimal.yaml
 library
   exposed-modules:  Storage.Core
                   , Storage.FS
+                  , Storage.Query
+                  , Storage.Reconcile
                   , Storage.Ops
                   , Storage.Tick
                   , Storyteller

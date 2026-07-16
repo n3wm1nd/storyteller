@@ -274,13 +274,13 @@ data FileTick = FileTick
 --   history unconditionally before filtering any of it away -- correct
 --   once lifetime-scoped, but still paying full history's cost on every
 --   call regardless of how small the current lifetime actually is. Same
---   bounded-walk shape 'Storage.Ops.atomHistory'\/
---   'Storage.Ops.currentLifetimeAtoms'\/'recentAtomsOf' already use, for
+--   bounded-walk shape 'Storage.Query.atomHistory'\/
+--   'Storage.Query.lifetimeAtoms'\/'recentAtomsOf' already use, for
 --   exactly this reason.
 lifetimeTicksOf :: StoreM m => FilePath -> StoreT m [FileTick]
 lifetimeTicksOf path = headHash >>= \h -> collectLifetime h []
   where
-    -- Oldest-first, same trick 'recentAtomsOf'\/'Storage.Ops.lifetimeAtoms'
+    -- Oldest-first, same trick 'recentAtomsOf'\/'Storage.Query.lifetimeAtoms'
     -- use: each older commit is prepended in front of what's already been
     -- collected, so by the time recursion bottoms out (root, or the
     -- tree-presence boundary) the accumulator already reads
