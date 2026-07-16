@@ -15,6 +15,14 @@
       url = "github:n3wm1nd/runix-tools";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Pre-built frontend static export (bun run build:static), committed to
+    # frontend/out and packaged by frontend/flake.nix. Bumped by hand
+    # (nix flake lock --update-input frontend-dist) after committing a fresh
+    # build; the actual bun/Next.js build never runs inside Nix.
+    frontend-dist = {
+      url = "github:n3wm1nd/storyteller?dir=frontend";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     # Vendored at the exact commit gitlib-effect/cbits/build-libgit2.sh builds
     # locally (see vendor/libgit2, pinned via the git submodule) -- fetched
     # here instead of read off disk so the flake doesn't depend on the
@@ -25,7 +33,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, runix-flake, universal-llm-flake, runix-tools-flake, libgit2-src, ... }:
+  outputs = { self, nixpkgs, runix-flake, universal-llm-flake, runix-tools-flake, libgit2-src, frontend-dist, ... }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -82,6 +90,19 @@
       };
 
       storyteller = haskellPackages.storyteller;
+
+      # story-server with STATIC_DIR defaulted to the pre-built frontend
+      # export -- --set-default only applies when the caller hasn't already
+      # set STATIC_DIR, so `STATIC_DIR=... nix run` still overrides it.
+      storytellerWithFrontend = pkgs.symlinkJoin {
+        name = "storyteller-with-frontend";
+        paths = [ storyteller ];
+        buildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          wrapProgram $out/bin/story-server \
+            --set-default STATIC_DIR ${frontend-dist.packages.${system}.default}
+        '';
+      };
     in
     {
       packages.${system} = {
@@ -94,7 +115,7 @@
         default = self.apps.${system}.story-server;
         story-server = {
           type = "app";
-          program = "${storyteller}/bin/story-server";
+          program = "${storytellerWithFrontend}/bin/story-server";
         };
       };
 

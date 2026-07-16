@@ -6,7 +6,6 @@ dist/
 *.dyn_hi
 *.dyn_o
 .ghc.environment.*
-frontend/out
 gitlib-effect/cbits/build/
 
 # Local machine config, never shared
