@@ -1,0 +1,346 @@
+{
+  "nodes": {
+    "libgit2-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779445383,
+        "narHash": "sha256-ZKUiz3pdFE2SKxh53X2oyr7hs32Njj5YVA0OXDXz7h0=",
+        "owner": "libgit2",
+        "repo": "libgit2",
+        "rev": "f7164261c9bc0a7e0ebf767c584e5192810a8b24",
+        "type": "github"
+      },
+      "original": {
+        "owner": "libgit2",
+        "repo": "libgit2",
+        "rev": "f7164261c9bc0a7e0ebf767c584e5192810a8b24",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1784120854,
+        "narHash": "sha256-KesHgItiZPgGX740axSiQLcIQ8D24MDqNpkKYWIek8k=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "753cc8a3a87467296ddd1fa93f0cc3e81120ee46",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "libgit2-src": "libgit2-src",
+        "nixpkgs": "nixpkgs",
+        "runix-flake": "runix-flake",
+        "runix-tools-flake": "runix-tools-flake",
+        "universal-llm-flake": "universal-llm-flake_4"
+      }
+    },
+    "runix-flake": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "sse-parser-src": "sse-parser-src",
+        "universal-llm-flake": "universal-llm-flake"
+      },
+      "locked": {
+        "lastModified": 1784213928,
+        "narHash": "sha256-XFmjbcR2XT5FcMPKsggNKDUar1ddMeg37zeFwdEr6pE=",
+        "owner": "n3wm1nd",
+        "repo": "runix",
+        "rev": "28d7f4074c5bb93575528eeb2f04518f6d7c80bc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "runix",
+        "type": "github"
+      }
+    },
+    "runix-flake_2": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-tools-flake",
+          "nixpkgs"
+        ],
+        "sse-parser-src": "sse-parser-src_3",
+        "universal-llm-flake": "universal-llm-flake_2"
+      },
+      "locked": {
+        "lastModified": 1784213928,
+        "narHash": "sha256-XFmjbcR2XT5FcMPKsggNKDUar1ddMeg37zeFwdEr6pE=",
+        "owner": "n3wm1nd",
+        "repo": "runix",
+        "rev": "28d7f4074c5bb93575528eeb2f04518f6d7c80bc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "runix",
+        "type": "github"
+      }
+    },
+    "runix-tools-flake": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "runix-flake": "runix-flake_2",
+        "universal-llm-flake": "universal-llm-flake_3"
+      },
+      "locked": {
+        "lastModified": 1784215543,
+        "narHash": "sha256-xXDQ6IWWw4PzYi7Z8njSVlQsgdoMv/DSZToTy4q9NpU=",
+        "owner": "n3wm1nd",
+        "repo": "runix-tools",
+        "rev": "06fff697eb5e8818c3626594599beaa4e6d93fe7",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "runix-tools",
+        "type": "github"
+      }
+    },
+    "sse-parser-src": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-flake",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "libs/sse-parser",
+        "lastModified": 1784213396,
+        "narHash": "sha256-cevkZV9IrZ0ftJ+RbNZGZeoRN3EmGw296Mng9w6y7iI=",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "rev": "9f84ee7777efeb11cfc9d369dcb7485ddd3e62bf",
+        "type": "github"
+      },
+      "original": {
+        "dir": "libs/sse-parser",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "type": "github"
+      }
+    },
+    "sse-parser-src_2": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-flake",
+          "universal-llm-flake",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "libs/sse-parser",
+        "lastModified": 1784213396,
+        "narHash": "sha256-cevkZV9IrZ0ftJ+RbNZGZeoRN3EmGw296Mng9w6y7iI=",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "rev": "9f84ee7777efeb11cfc9d369dcb7485ddd3e62bf",
+        "type": "github"
+      },
+      "original": {
+        "dir": "libs/sse-parser",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "type": "github"
+      }
+    },
+    "sse-parser-src_3": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-tools-flake",
+          "runix-flake",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "libs/sse-parser",
+        "lastModified": 1784213396,
+        "narHash": "sha256-cevkZV9IrZ0ftJ+RbNZGZeoRN3EmGw296Mng9w6y7iI=",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "rev": "9f84ee7777efeb11cfc9d369dcb7485ddd3e62bf",
+        "type": "github"
+      },
+      "original": {
+        "dir": "libs/sse-parser",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "type": "github"
+      }
+    },
+    "sse-parser-src_4": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-tools-flake",
+          "runix-flake",
+          "universal-llm-flake",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "libs/sse-parser",
+        "lastModified": 1784213396,
+        "narHash": "sha256-cevkZV9IrZ0ftJ+RbNZGZeoRN3EmGw296Mng9w6y7iI=",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "rev": "9f84ee7777efeb11cfc9d369dcb7485ddd3e62bf",
+        "type": "github"
+      },
+      "original": {
+        "dir": "libs/sse-parser",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "type": "github"
+      }
+    },
+    "sse-parser-src_5": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-tools-flake",
+          "universal-llm-flake",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "libs/sse-parser",
+        "lastModified": 1784213396,
+        "narHash": "sha256-cevkZV9IrZ0ftJ+RbNZGZeoRN3EmGw296Mng9w6y7iI=",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "rev": "9f84ee7777efeb11cfc9d369dcb7485ddd3e62bf",
+        "type": "github"
+      },
+      "original": {
+        "dir": "libs/sse-parser",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "type": "github"
+      }
+    },
+    "sse-parser-src_6": {
+      "inputs": {
+        "nixpkgs": [
+          "universal-llm-flake",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "libs/sse-parser",
+        "lastModified": 1784213396,
+        "narHash": "sha256-cevkZV9IrZ0ftJ+RbNZGZeoRN3EmGw296Mng9w6y7iI=",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "rev": "9f84ee7777efeb11cfc9d369dcb7485ddd3e62bf",
+        "type": "github"
+      },
+      "original": {
+        "dir": "libs/sse-parser",
+        "owner": "n3wm1nd",
+        "repo": "runix-project",
+        "type": "github"
+      }
+    },
+    "universal-llm-flake": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-flake",
+          "nixpkgs"
+        ],
+        "sse-parser-src": "sse-parser-src_2"
+      },
+      "locked": {
+        "lastModified": 1784213720,
+        "narHash": "sha256-4LH5GGNcvLRs7qBw8TOlVXnCCCxviYRYv9Hpi3kLqN0=",
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "rev": "c4ff70482e930e527065c1cfed40109b3af658f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "type": "github"
+      }
+    },
+    "universal-llm-flake_2": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-tools-flake",
+          "runix-flake",
+          "nixpkgs"
+        ],
+        "sse-parser-src": "sse-parser-src_4"
+      },
+      "locked": {
+        "lastModified": 1784213720,
+        "narHash": "sha256-4LH5GGNcvLRs7qBw8TOlVXnCCCxviYRYv9Hpi3kLqN0=",
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "rev": "c4ff70482e930e527065c1cfed40109b3af658f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "type": "github"
+      }
+    },
+    "universal-llm-flake_3": {
+      "inputs": {
+        "nixpkgs": [
+          "runix-tools-flake",
+          "nixpkgs"
+        ],
+        "sse-parser-src": "sse-parser-src_5"
+      },
+      "locked": {
+        "lastModified": 1784213720,
+        "narHash": "sha256-4LH5GGNcvLRs7qBw8TOlVXnCCCxviYRYv9Hpi3kLqN0=",
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "rev": "c4ff70482e930e527065c1cfed40109b3af658f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "type": "github"
+      }
+    },
+    "universal-llm-flake_4": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "sse-parser-src": "sse-parser-src_6"
+      },
+      "locked": {
+        "lastModified": 1784213720,
+        "narHash": "sha256-4LH5GGNcvLRs7qBw8TOlVXnCCCxviYRYv9Hpi3kLqN0=",
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "rev": "c4ff70482e930e527065c1cfed40109b3af658f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "n3wm1nd",
+        "repo": "universal-llm",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

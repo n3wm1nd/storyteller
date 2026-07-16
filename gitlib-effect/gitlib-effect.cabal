@@ -17,8 +17,11 @@ build-type:         Custom
 -- own module doc for why (vendored + statically built with no network
 -- transports, rather than depending on a system libgit2 install).
 custom-setup
+  -- Upper-bounded below Cabal 3.14, which reworked BuildInfo's
+  -- includeDirs/extraLibDirs from plain FilePath to SymbolicPath --
+  -- Setup.hs's confHook is written against the older FilePath API.
   setup-depends: base >=4.18 && <5
-               , Cabal >=3.0
+               , Cabal >=3.0 && <3.14
                , process
                , directory
                , filepath
