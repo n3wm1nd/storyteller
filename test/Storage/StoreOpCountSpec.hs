@@ -62,6 +62,21 @@ spec = do
         (snd <$> runMeasuring (wideTree 40 >> () <$ addAtom "hot/story.md" "x")
                               (deleteFile "hot/story.md"))
 
+  describe "checkpointFile: bounded by the file's own lifetime" $
+    -- Both walks inside it -- the lifetime atoms ('lifetimeAtoms', which
+    -- stops at the creation atom by tree truth) and the annotation
+    -- candidates (which stop at the oldest lifetime atom) -- must never
+    -- descend into unrelated history below the file's own creation.
+    it "costs exactly the same whether preceded by a little unrelated history or a lot" $ do
+      let scenario n = do
+            wideTree n
+            t1 <- addAtom "hot/story.md" "p1\n"
+            _  <- store (NonAtom [t1] "type:note\n\na note")
+            return ()
+      shouldCostTheSame
+        (snd <$> runMeasuring (scenario 3)  (checkpointFile "hot/story.md"))
+        (snd <$> runMeasuring (scenario 40) (checkpointFile "hot/story.md"))
+
   describe "rebase: replaying a Binary tick via treeDelta" $
     -- Deleting the atom right below a Binary tick forces 'at' to capture
     -- the binary's own tree contribution ('treeDelta') and reapply it

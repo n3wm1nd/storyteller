@@ -341,6 +341,38 @@ spec = do
         Right ((t1, newAtomId, noteRefs), _finalState) ->
           noteRefs `shouldMatchList` [[t1], [newAtomId]]
 
+    -- Annotations chain: a note about a note about an atom. The clone
+    -- must follow the whole chain (same any-depth rule
+    -- 'Storage.Tick.relatedTicksOf' applies when *rendering* annotations)
+    -- -- cloning only direct referers would leave the outer note pointing
+    -- at the frozen lifetime while the inner one moved forward, silently
+    -- splitting the annotation graph at depth two.
+    it "clones a note-about-a-note transitively, re-pointing each clone one hop up" $ do
+      let result = runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            n1 <- store (NonAtom [t1] "type:note\n\ninner")
+            _  <- store (NonAtom [n1] "type:note\n\nouter")
+            checkpointFile "scene.md"
+            newHistory  <- atomHistory "scene.md"
+            innerCopies <- follow [] $ \acc h t -> case t of
+              NonAtom refs raw | raw == "type:note\n\ninner" -> ((h, refs) : acc, True)
+              _                                               -> (acc, True)
+            outerRefs   <- follow [] $ \acc _ t -> case t of
+              NonAtom refs raw | raw == "type:note\n\nouter" -> (refs : acc, True)
+              _                                               -> (acc, True)
+            return (t1, n1, map fst newHistory, innerCopies, outerRefs))
+      case result of
+        Left err -> expectationFailure err
+        Right ((t1, n1, newAtomIds, innerCopies, outerRefs), _finalState) -> do
+          newAtom <- case newAtomIds of
+            [a] -> return a
+            _   -> fail ("expected exactly one cloned atom, got " <> show (length newAtomIds))
+          -- the inner note is cloned, its clone pointing at the cloned atom
+          map snd innerCopies `shouldMatchList` [[t1], [newAtom]]
+          let innerClone = [ h | (h, refs) <- innerCopies, refs == [newAtom] ]
+          -- the outer note is cloned too, its clone pointing at the inner clone
+          outerRefs `shouldMatchList` ([n1] : map (: []) innerClone)
+
     it "does not touch an unrelated file's own atoms or notes" $ do
       let result = runChain (do
             _  <- addAtom "scene.md" "p1\n"

@@ -1147,8 +1147,10 @@ renameFile oldPath newPath = do
 
 -- | Freeze @path@'s current lifetime behind a fresh deletion boundary,
 --   then clone it in full onto a brand new lifetime at the same path: every
---   atom, and every other tick anywhere in the chain that refers to one of
---   them (a note, fixup, swipe, ...), each re-'store'd as an independent
+--   atom, and every other tick that refers to one of them -- directly or
+--   through a chain of annotations of any depth (a note about a note about
+--   an atom), the same any-depth rule 'Storage.Tick.relatedTicksOf' applies
+--   when *rendering* annotations -- each re-'store'd as an independent
 --   copy with a fresh id. From here on, 'atomHistory'\/'fileTicksOf's own
 --   current-lifetime view sees only the new copies -- so an 'editAtomAt'\/
 --   'deleteTick' issued after this point can only ever touch them, never
@@ -1190,47 +1192,49 @@ renameFile oldPath newPath = do
 --   same way 'Atom' does, which nothing here has a use case to justify yet.
 checkpointFile :: StoreM m => FilePath -> StoreT m ()
 checkpointFile path = do
-  atoms <- currentLifetimeAtoms path
-  let atomIds = Set.fromList (map fst atoms)
-  annotations <- follow [] $ \acc h t -> case t of
-    _ | Set.member h atomIds                    -> (acc, True)
-    _ | any (`Set.member` atomIds) (tickRefs t)  -> ((h, t) : acc, True)
-    _                                            -> (acc, True)
-  _      <- deleteFile path
-  remap1 <- foldM cloneAtom Map.empty atoms
-  _      <- foldM cloneAnnotation remap1 annotations
-  return ()
+  atoms <- lifetimeAtoms path
+  case atoms of
+    [] -> () <$ deleteFile path
+    ((oldestAtom, _) : _) -> do
+      let atomIds = Set.fromList (map fst atoms)
+      -- Candidate annotations live strictly between head and the
+      -- lifetime's own oldest atom -- a ref only ever points backward in
+      -- time, so nothing at or below that atom can reference it (the same
+      -- bound 'Storage.Tick.relatedTicksOf' descends to); the walk stops
+      -- right there instead of paying for the whole chain. Which
+      -- candidates actually belong is then decided oldest-first against
+      -- the growing set of already-included ids, so a chain of
+      -- annotations joins hop by hop, however deep -- the inner note is
+      -- always older than the one about it, and so always settled first.
+      candidates <- follow [] $ \acc h t -> case t of
+        _ | h == oldestAtom -> (acc, False)
+        NonAtom {}          -> ((h, t) : acc, True)
+        _                   -> (acc, True)
+      let annotations = pickTransitive atomIds [] candidates
+      _      <- deleteFile path
+      remap1 <- foldM cloneAtom Map.empty atoms
+      _      <- foldM cloneAnnotation remap1 annotations
+      return ()
   where
+    -- @candidates@ oldest-first (see 'follow''s prepend order), so every
+    -- tick's own referents are already decided by the time it's looked at.
+    pickTransitive _ acc [] = reverse acc
+    pickTransitive included acc ((h, t) : rest)
+      | any (`Set.member` included) (tickRefs t) =
+          pickTransitive (Set.insert h included) ((h, t) : acc) rest
+      | otherwise = pickTransitive included acc rest
+
     remapRefs remap = map (\r -> Map.findWithDefault r r remap)
 
     cloneAtom remap (oldId, Atom refs _ tags content) = do
       newId <- store (Atom (remapRefs remap refs) path tags content)
       return (Map.insert oldId newId remap)
-    cloneAtom remap _ = return remap -- unreachable: 'currentLifetimeAtoms' only yields Atom
+    cloneAtom remap _ = return remap -- unreachable: 'lifetimeAtoms' only yields Atom
 
-    cloneAnnotation remap (oldId, t) = case t of
-      NonAtom refs raw -> do
-        newId <- store (NonAtom (remapRefs remap refs) raw)
-        return (Map.insert oldId newId remap)
-      _ -> return remap -- see the Haddock's own note on Binary\/Opaque
-
-    -- Same current-lifetime boundary as 'atomHistory', but keeping each
-    -- atom's own id and tags alongside its content -- 'atomHistory' only
-    -- ever hands back content, since that's all its own callers need.
-    currentLifetimeAtoms :: StoreM m => FilePath -> StoreT m [(ObjectHash, Tick)]
-    currentLifetimeAtoms p = headHash >>= \h -> go h []
-      where
-        go h acc = do
-          t <- lift (readTick h)
-          case t of
-            a@(Atom _ p' tags _) | p' == p ->
-              if isRemoval tags then return acc else continue h ((h, a) : acc)
-            _ -> continue h acc
-        continue h acc = do
-          cd <- lift (readCommit h)
-          case commitParents cd of
-            []        -> return acc
-            (par : _) -> go par acc
+    cloneAnnotation remap (oldId, NonAtom refs raw) = do
+      newId <- store (NonAtom (remapRefs remap refs) raw)
+      return (Map.insert oldId newId remap)
+    cloneAnnotation remap _ = return remap -- unreachable: only NonAtoms are collected
 
 -- | Replace @oldPath@ with a brand new, unrelated lifetime at @newPath@:
 --   @oldPath@'s current lifetime is deleted (see 'deleteFile' -- a forward
