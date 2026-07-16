@@ -79,11 +79,22 @@ trackBranch onlyFile atomFilter toFile = do
       Core.Atom (r : _) _ _ _ -> (Just r, False)
       _                       -> (acc, True)
 
-  newHashes <- runStorage @trackeeBranch $
-    Core.follow [] $ \acc h _t ->
-      if lastSynced == Just h then (acc, False) else (h : acc, True)
-
-  newTicks <- runStorage @trackeeBranch (mapM Tick.readTypesTick newHashes)
+  -- FIXME(tracker-resync): a dangling 'lastSynced' makes this walk run to
+  -- root and conclude "everything is new" -- the Haddock's own first-run
+  -- case, and the expense is acceptable there. What isn't: the copy loop
+  -- below then re-copies the whole filtered history into an
+  -- already-populated journal as duplicates. Remaps cover most id churn
+  -- (the ref is read resolved, and the boundary cascade rewrites it
+  -- physically), but 'Ops.deleteTick' of exactly the last-synced trackee
+  -- tick logs no replacement, so its ref goes dangling for good. Before
+  -- bulk-copying on a miss, check candidates against refs already present
+  -- in @toFile@ -- or sync nothing and surface the mismatch.
+  --
+  -- One read per commit, not two: 'Tick.newTypesTicksSince' decodes each
+  -- typed tick inline during the same backward walk that finds
+  -- 'lastSynced', via 'Storage.Core.followC' -- no separate hash
+  -- collection pass for 'readTypesTick' to redundantly re-read afterward.
+  newTicks <- runStorage @trackeeBranch (Tick.newTypesTicksSince lastSynced)
 
   let contentTicks = filter ((/= Nothing) . tickParent) newTicks
       onOwnFile t   = case fromTick @Atom t of

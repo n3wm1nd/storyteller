@@ -95,14 +95,6 @@ lastSyncedTasksRef tasksPath = do
   return $ listToMaybe
     [ Core.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ]
 
--- | Every tick hash strictly newer than @since@, walking back from head,
---   oldest-first (same convention 'Storage.Tick.recentAtomsOf' uses).
---   'Nothing' means "never synced" -- walks all the way to root. Shared by
---   'syncTasksWith' (always) and 'suggestTasksWith' (on every pass after
---   its first, once a marker exists to walk back to).
-newTicksSince :: Core.StoreM m => Maybe Core.ObjectHash -> Core.StoreT m [Core.ObjectHash]
-newTicksSince since = Core.follow [] $ \acc h _t -> if since == Just h then (acc, False) else (h : acc, True)
-
 -- | Every atom-tick among @ticks@ on a file @keep@ accepts (never
 --   @tasksPath@ itself, regardless of what @keep@ says -- tasks.md is
 --   never its own source material), concatenated in the order given.
@@ -192,16 +184,15 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
     h    <- Core.headHash
     return (name, old, ref, h)
 
-  newHashes <- runStorage @branch (newTicksSince lastSynced)
+  newTicks <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
 
-  if null newHashes then do
+  if null newTicks then do
     info "syncTasksWith: nothing new since the last sync, skipping"
     return False
   else do
-    newTicks <- runStorage @branch (mapM Tick.readTypesTick newHashes)
     let sourceText = newSourceText isSource tasksPath newTicks
     if T.null (T.strip sourceText) then do
-      info ("syncTasksWith: " <> T.pack (show (length newHashes)) <> " new tick(s), none matched by the source filter -- skipping")
+      info ("syncTasksWith: " <> T.pack (show (length newTicks)) <> " new tick(s), none matched by the source filter -- skipping")
       return False
     else do
       newContent <- reconcile characterName (fromMaybe "" mOld) sourceText
@@ -233,7 +224,7 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
 --
 --   *Every later* pass reuses 'syncTasksWith's own delta machinery
 --   instead: only journal\/other-file ticks written since the last
---   sync\/suggest, the same 'newTicksSince'\/'newSourceText' this module's
+--   sync\/suggest, the same 'Storage.Tick.newTypesTicksSince'\/'newSourceText' this module's
 --   own reconcile pass already uses. This is sound, not just cheaper: the
 --   character's already-established personality and history aren't lost
 --   between calls, they're already folded into @current@ (tasks.md's own
@@ -287,8 +278,7 @@ suggestTasksWith generate fallbackName tasksPath = do
       return (True, body)
     Just _ -> do
       info "suggestTasksWith: reading what's new since the last sync/suggest..."
-      newHashes <- runStorage @branch (newTicksSince lastSynced)
-      newTicks  <- runStorage @branch (mapM Tick.readTypesTick newHashes)
+      newTicks <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
       return (False, newSourceText (/= "sheet.md") tasksPath newTicks)
 
   -- A first pass needs *something* at all (a sheet alone is enough to

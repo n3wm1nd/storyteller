@@ -96,6 +96,7 @@ module Storage.Core
   , logRemap
   , composeMapping
   , follow
+  , followC
   , memoFold
   , syncTo
   , reset
@@ -893,11 +894,22 @@ readAt target0 action = do
 --   alongside it rather than having to dig it out). Stops when @step@
 --   says so, or when the root (no parent) is reached, whichever first.
 follow :: StoreM m => b -> (b -> ObjectHash -> Tick -> (b, Bool)) -> StoreT m b
-follow seed step = headHash >>= \h -> liftG (walk seed h)
+follow seed step = followC seed (\acc h _cd t -> step acc h t)
+
+-- | 'follow', but @step@ also gets the raw 'CommitData' each hash decoded
+--   to along the way -- the same one 'readCommitTick' already produced to
+--   get @t@ in the first place. Exists for callers that need to decode
+--   each tick into some other representation (e.g.
+--   'Storage.Tick.readTypesTick', which needs 'commitParents' for a typed
+--   tick's position) as part of the same walk: with plain 'follow' that
+--   decode has to happen in a second pass over the collected hashes, an
+--   entirely avoidable second physical read of every commit involved.
+followC :: StoreM m => b -> (b -> ObjectHash -> CommitData -> Tick -> (b, Bool)) -> StoreT m b
+followC seed step = headHash >>= \h -> liftG (walk seed h)
   where
     walk acc h = do
       (cd, t) <- readCommitTick h
-      let (acc', continue) = step acc h t
+      let (acc', continue) = step acc h cd t
       if not continue
         then return acc'
         else case commitParents cd of

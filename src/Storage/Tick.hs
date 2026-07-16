@@ -15,6 +15,7 @@ module Storage.Tick
   ( storeAs
   , getTypesTick
   , readTypesTick
+  , newTypesTicksSince
   , findTickFrom
   , findTick
   , FileTick(..)
@@ -155,37 +156,61 @@ storeAs a = do
 readTypesTick :: StoreM m => ObjectHash -> StoreT m ST.Tick
 readTypesTick h = do
   (cd, t) <- lift (readCommitTick h)
-  let parents = commitParents cd
-      pos = ST.TickPos
-        { ST.posId     = uncoerceRef h
-        , ST.posParent = uncoerceRef <$> listToMaybe parents
-        , ST.posRefs   = map uncoerceRef (List.drop 1 parents)
-        }
-      td = case t of
-        Atom _ path tags content -> ST.TickData
-          { ST.tickRefs    = ST.posRefs pos
-          , ST.tickFields  = ("type", "atom") : ("file", T.pack path) : tags
-          , ST.tickMessage = content
-          }
-        Binary _ path -> ST.TickData
-          { ST.tickRefs    = ST.posRefs pos
-          , ST.tickFields  = [("type", "binary"), ("file", T.pack path)]
-          , ST.tickMessage = ""
-          }
-        Opaque _ -> ST.TickData
-          { ST.tickRefs    = ST.posRefs pos
-          , ST.tickFields  = []
-          , ST.tickMessage = ""
-          }
-        NonAtom _ raw -> (decodeTickData raw) { ST.tickRefs = ST.posRefs pos }
-  return ST.Tick { ST.tickPos = pos, ST.tickData = td }
+  return (mkTypesTick h cd t)
+
+-- | The pure decode step of 'readTypesTick', split out so a caller
+--   walking commits some other way (e.g. 'Storage.Core.followC', which
+--   already has @(h, cd, t)@ in hand from its own single 'readCommitTick'
+--   per commit) can build the same typed 'ST.Tick' without a second,
+--   redundant physical read.
+mkTypesTick :: ObjectHash -> CommitData -> Tick -> ST.Tick
+mkTypesTick h cd t = ST.Tick { ST.tickPos = pos, ST.tickData = td }
   where
+    parents = commitParents cd
+    pos = ST.TickPos
+      { ST.posId     = uncoerceRef h
+      , ST.posParent = uncoerceRef <$> listToMaybe parents
+      , ST.posRefs   = map uncoerceRef (List.drop 1 parents)
+      }
+    td = case t of
+      Atom _ path tags content -> ST.TickData
+        { ST.tickRefs    = ST.posRefs pos
+        , ST.tickFields  = ("type", "atom") : ("file", T.pack path) : tags
+        , ST.tickMessage = content
+        }
+      Binary _ path -> ST.TickData
+        { ST.tickRefs    = ST.posRefs pos
+        , ST.tickFields  = [("type", "binary"), ("file", T.pack path)]
+        , ST.tickMessage = ""
+        }
+      Opaque _ -> ST.TickData
+        { ST.tickRefs    = ST.posRefs pos
+        , ST.tickFields  = []
+        , ST.tickMessage = ""
+        }
+      NonAtom _ raw -> (decodeTickData raw) { ST.tickRefs = ST.posRefs pos }
     listToMaybe []      = Nothing
     listToMaybe (x : _) = Just x
 
 -- | Head's own tick, decoded.
 getTypesTick :: StoreM m => StoreT m ST.Tick
 getTypesTick = headHash >>= readTypesTick
+
+-- | Every tick strictly newer than @since@, walking back from head,
+--   decoded to a typed 'ST.Tick' in the same pass -- one physical
+--   'readCommitTick' per commit, not two: 'Storage.Core.followC' hands
+--   back the very 'CommitData' each hash decoded to, so there's no need
+--   for a caller to collect hashes and then 'mapM readTypesTick' them
+--   afterward, which would read every commit involved all over again.
+--   'Nothing' means "never synced" -- walks all the way to root. Oldest-
+--   first, the order every caller of this shape (a sync marker walk)
+--   wants ticks folded in.
+newTypesTicksSince :: StoreM m => Maybe ObjectHash -> StoreT m [ST.Tick]
+newTypesTicksSince since = followC [] step
+  where
+    step acc h cd t
+      | since == Just h = (acc, False)
+      | otherwise        = (mkTypesTick h cd t : acc, True)
 
 -- | Walk the chain backward from @start@, decoding one tick at a time via
 --   'readTypesTick' and stopping at the first one @f@ answers with a
