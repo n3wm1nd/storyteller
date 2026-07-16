@@ -130,7 +130,8 @@ characterSummaries = do
       sheet <- fileExists @(BranchTag SummaryBranch) "sheet.md" >>= \case
         False -> return Nothing
         True  -> Just . TE.decodeUtf8 <$> readFile @(BranchTag SummaryBranch) "sheet.md"
-      return (CharacterSummary branch sheet)
+      hasAvatar <- fileExists @(BranchTag SummaryBranch) "avatar.png"
+      return (CharacterSummary branch sheet hasAvatar)
 
 -- | The undo log, wire-shaped and chronological (oldest first) — shared by
 --   the connection's initial push and its notifier (see

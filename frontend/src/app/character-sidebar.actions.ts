@@ -30,7 +30,7 @@ export async function openCharacter(branch: string): Promise<void> {
     bumpActivity(label);
     if (evt.type === "character.update") {
       mirrorServerEvent((s) => ({
-        openCharacters: { ...s.openCharacters, [branch]: { branch, name: evt.name, sheet: evt.sheet ?? null, conn: cc } },
+        openCharacters: { ...s.openCharacters, [branch]: { branch, name: evt.name, sheet: evt.sheet ?? null, avatar: evt.avatar, conn: cc } },
       }));
       setConnStatus(label, "connected");
     } else if (evt.type === "error") {
@@ -41,7 +41,7 @@ export async function openCharacter(branch: string): Promise<void> {
   try {
     await cc.connect();
     mirrorServerEvent((s) => ({
-      openCharacters: { ...s.openCharacters, [branch]: { branch, name: branch, sheet: null, conn: cc } },
+      openCharacters: { ...s.openCharacters, [branch]: { branch, name: branch, sheet: null, avatar: false, conn: cc } },
     }));
   } catch (err) {
     setConnStatus(label, "error");

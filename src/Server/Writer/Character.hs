@@ -32,17 +32,26 @@ import Storyteller.Writer.Branches (branchDisplayName)
 import Prelude hiding (readFile)
 
 data CharacterState = CharacterState
-  { charName  :: T.Text
-  , charSheet :: Maybe T.Text
+  { charName      :: T.Text
+  , charSheet     :: Maybe T.Text
+  , charHasAvatar :: Bool
   } deriving (Show, Eq)
 
 -- | Display name is the branch name with the @character\/@ prefix
 --   stripped, when present — collected-and-augmented, not processed: no
 --   summarization, just what's directly readable off the branch.
+--   'charHasAvatar' is a plain existence check on @avatar.png@ (deposited
+--   by a SillyTavern character card import, see
+--   'Server.Writer.Branch.importCharacterCard') — an existence flag, not
+--   the image bytes themselves: the client already has a plain @GET
+--   \/branch\/{name}\/avatar.png@ available for the bytes (same route any
+--   other branch file uses), so there's no reason to duplicate binary
+--   content over this JSON push the way 'charSheet' duplicates text.
 characterState :: BranchOpen r => T.Text -> Sem r CharacterState
 characterState branch = do
   let name = branchDisplayName branch
   sheet <- fileExists @(BranchTag Main) "sheet.md" >>= \case
     False -> return Nothing
     True  -> Just . TE.decodeUtf8 <$> readFile @(BranchTag Main) "sheet.md"
-  return (CharacterState name sheet)
+  hasAvatar <- fileExists @(BranchTag Main) "avatar.png"
+  return (CharacterState name sheet hasAvatar)

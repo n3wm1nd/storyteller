@@ -81,7 +81,7 @@ reportError conn err = WS.sendTextData conn (encode (CharacterError (T.pack err)
 push :: (BranchOpen r, Member (Embed IO) r) => WS.Connection -> T.Text -> Sem r ()
 push conn branch = do
   st <- characterState branch
-  embed $ WS.sendTextData conn (encode (CharacterUpdate (charName st) (charSheet st)))
+  embed $ WS.sendTextData conn (encode (CharacterUpdate (charName st) (charSheet st) (charHasAvatar st)))
 
 -- | No commands to dispatch — just block until the client disconnects, so
 --   the connection (and its notifier thread) stay alive for its lifetime.

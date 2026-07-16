@@ -91,14 +91,18 @@ instance FromJSON CardFile where
 --   in this protocol (see WS-PROTOCOL.md): the server doesn't extract a
 --   display name from the sheet's H1 line, it just hands over the sheet;
 --   the client decodes that into a display name the same way it decodes
---   any other raw content into a concept it needs.
+--   any other raw content into a concept it needs. 'csHasAvatar' is the
+--   same plain @avatar.png@ existence flag as
+--   'Server.Writer.Character.CharacterState.charHasAvatar' — see its own
+--   Haddock for why this carries a flag, not the image bytes.
 data CharacterSummary = CharacterSummary
-  { csBranch :: T.Text
-  , csSheet  :: Maybe T.Text
+  { csBranch    :: T.Text
+  , csSheet     :: Maybe T.Text
+  , csHasAvatar :: Bool
   } deriving (Show)
 
 instance ToJSON CharacterSummary where
-  toJSON cs = object [ "branch" .= csBranch cs, "sheet" .= csSheet cs ]
+  toJSON cs = object [ "branch" .= csBranch cs, "sheet" .= csSheet cs, "avatar" .= csHasAvatar cs ]
 
 -- | One 'Storyteller.Core.Undo.UndoEntry', wire-shaped: just enough for a
 -- client to render and jump to it, not the full per-ref snapshot

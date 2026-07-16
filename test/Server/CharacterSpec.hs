@@ -50,13 +50,13 @@ spec = describe "characterState" $ do
 
   it "sheet is Nothing when sheet.md does not exist" $
     withCharacterBranch "character/nosheet" (characterState "character/nosheet")
-      `shouldBe` Right (CharacterState "nosheet" Nothing)
+      `shouldBe` Right (CharacterState "nosheet" Nothing False)
 
   it "sheet is Just the file's content when sheet.md exists" $ do
     let result = withCharacterBranch "character/alice" $ do
           writeFile @(BranchTag Main) "sheet.md" "Alice is a curious explorer."
           characterState "character/alice"
-    result `shouldBe` Right (CharacterState "alice" (Just "Alice is a curious explorer."))
+    result `shouldBe` Right (CharacterState "alice" (Just "Alice is a curious explorer.") False)
 
   it "strips the character/ prefix from the display name" $
     withCharacterBranch "character/bob-the-builder" (characterState "character/bob-the-builder")
@@ -65,3 +65,13 @@ spec = describe "characterState" $ do
   it "leaves the name untouched when there is no character/ prefix" $
     withCharacterBranch "not-a-character-branch" (characterState "not-a-character-branch")
       `shouldSatisfy` either (const False) ((== "not-a-character-branch") . charName)
+
+  it "hasAvatar is False when avatar.png does not exist" $
+    withCharacterBranch "character/noavatar" (characterState "character/noavatar")
+      `shouldSatisfy` either (const False) (not . charHasAvatar)
+
+  it "hasAvatar is True when avatar.png exists" $ do
+    let result = withCharacterBranch "character/dana" $ do
+          writeFile @(BranchTag Main) "avatar.png" "\137PNG"
+          characterState "character/dana"
+    result `shouldSatisfy` either (const False) charHasAvatar

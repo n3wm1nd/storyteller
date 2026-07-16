@@ -149,9 +149,14 @@ export type SessionCommand =
 // responsible for decoding this into a display name (first Markdown H1
 // line, falling back to the branch id) the same way it decodes any other
 // raw content into a concept it needs.
+// `avatar` is an existence flag, not the image data -- the actual bytes are
+// a plain GET away at branchFileUrl(branch, "avatar.png"), same route any
+// other branch file uses, so there's no reason to duplicate binary content
+// over this push the way `sheet` duplicates text.
 export interface CharacterSummary {
   branch: string;
   sheet: string | null;
+  avatar: boolean;
 }
 
 // One entry in the shared, session-wide undo log (Storyteller.Core.Undo) --
@@ -364,7 +369,7 @@ export type FileEvent =
 // (see Server/Writer/Character.hs) — sheet edits go through the file
 // connection for sheet.md, never through this one.
 export type CharacterEvent =
-  | { type: "character.update"; name: string; sheet?: string }
+  | { type: "character.update"; name: string; sheet?: string; avatar: boolean }
   | ErrorEvent;
 
 // ── Context-view protocol ─────────────────────────────────────────────────────

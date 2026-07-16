@@ -49,6 +49,7 @@ export interface CharacterConn {
   branch: string;
   name:   string;
   sheet:  string | null;
+  avatar: boolean;
   conn:   StoryWS<never, CharacterEvent>;
 }
 

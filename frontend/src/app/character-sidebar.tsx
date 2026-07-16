@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Users, UserPlus, UserMinus, ChevronDown, ChevronRight, History, RefreshCw, HelpCircle } from "lucide-react";
 import { type CharacterConn, type FileConn, type WireTick } from "@/lib/serverCacheStore";
-import { type CharacterSummary } from "@/lib/ws";
+import { type CharacterSummary, branchFileUrl } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
 import { WireTickList } from "./fileview";
 import { LoreSelector } from "./lore-selector";
@@ -288,9 +288,10 @@ function CharacterCard({
   // Same per-character color the journal panel/hover-highlight already use
   // (lib/utils.characterColor) rather than a uniform "connected" green —
   // this dot is the character's own identity marker, dimmed rather than
-  // recolored when the connection itself isn't up yet. Also the natural
-  // seat for a future avatar image (avatar.png/jpg, not built yet) to
-  // replace/ring this dot without disturbing anything else here.
+  // recolored when the connection itself isn't up yet. Swapped for an
+  // actual avatar.png below when the branch has one (see
+  // Server.Writer.Character's charHasAvatar) -- the dot remains the
+  // fallback for a character with no card-derived portrait.
   const color = characterColor(branch);
   const [hover, setHover] = useState(false);
 
@@ -309,7 +310,15 @@ function CharacterCard({
       >
         {expanded ? <ChevronDown style={{ width: 11, height: 11, color: "var(--text-dim)", flexShrink: 0 }} />
                   : <ChevronRight style={{ width: 11, height: 11, color: "var(--text-dim)", flexShrink: 0 }} />}
-        <div style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: connected ? color : "var(--text-dim)" }} />
+        {conn?.avatar ? (
+          <img
+            src={branchFileUrl(branch, "avatar.png")}
+            alt=""
+            style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+          />
+        ) : (
+          <div style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: connected ? color : "var(--text-dim)" }} />
+        )}
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-heading)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {name}
         </span>

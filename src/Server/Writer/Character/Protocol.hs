@@ -19,16 +19,17 @@ import Data.Aeson hiding (Error)
 import qualified Data.Text as T
 
 data CharacterEvent
-  = CharacterUpdate { ceName :: T.Text, ceSheet :: Maybe T.Text }
+  = CharacterUpdate { ceName :: T.Text, ceSheet :: Maybe T.Text, ceHasAvatar :: Bool }
   | CharacterError  T.Text
   deriving (Show)
 
 instance ToJSON CharacterEvent where
   toJSON = \case
-    CharacterUpdate name sheet ->
+    CharacterUpdate name sheet hasAvatar ->
       object $
         [ "type" .= ("character.update" :: T.Text)
         , "name" .= name
+        , "avatar" .= hasAvatar
         ] <> maybe [] (\s -> ["sheet" .= s]) sheet
     CharacterError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]

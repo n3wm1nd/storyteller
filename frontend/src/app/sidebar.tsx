@@ -9,6 +9,7 @@ import { classifyBranch } from "@/lib/branches";
 import { extractPngCardPayload, parseCardJson, buildCharacterFiles, type ParsedCard } from "@/lib/taverncard";
 import { FileTree } from "./filetree";
 import { LibraryTree } from "./library";
+import { CharacterAvatar } from "./avatar";
 
 function flattenLibrary(nodes: LibraryNode[]): LibraryNode[] {
   return nodes.flatMap((n) => [n, ...flattenLibrary(n.children)]);
@@ -88,7 +89,7 @@ function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart
         borderRadius: 5, cursor: "pointer",
       }}
     >
-      <Users style={{ width: 11, height: 11, flexShrink: 0, color: active ? "var(--sky)" : "var(--text-dim)" }} />
+      <CharacterAvatar branch={character.branch} hasAvatar={character.avatar} color={active ? "var(--sky)" : "var(--text-dim)"} />
       <span onClick={onSelect} style={{
         flex: 1, fontSize: 12, color: active ? "var(--sky-text)" : "var(--text-secondary)",
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
