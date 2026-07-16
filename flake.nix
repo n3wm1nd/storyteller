@@ -90,6 +90,14 @@
         gitlib-effect = haskellPackages.gitlib-effect;
       };
 
+      apps.${system} = {
+        default = self.apps.${system}.story-server;
+        story-server = {
+          type = "app";
+          program = "${storyteller}/bin/story-server";
+        };
+      };
+
       devShells.${system}.default = haskellPackages.shellFor {
         packages = p: [ p.storyteller p.gitlib-effect ];
         buildInputs = [
