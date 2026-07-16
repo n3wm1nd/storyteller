@@ -1,5 +1,27 @@
 {
   "nodes": {
+    "frontend-dist": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dir": "frontend",
+        "lastModified": 1784231295,
+        "narHash": "sha256-Fajp2KdY1di6VkMyWUwV/FjMYZdPyr/DVj45b9WXv/0=",
+        "owner": "n3wm1nd",
+        "repo": "storyteller",
+        "rev": "abcc5b4d81bbf516ec5d111776902873c099f47f",
+        "type": "github"
+      },
+      "original": {
+        "dir": "frontend",
+        "owner": "n3wm1nd",
+        "repo": "storyteller",
+        "type": "github"
+      }
+    },
     "libgit2-src": {
       "flake": false,
       "locked": {
@@ -35,6 +57,7 @@
     },
     "root": {
       "inputs": {
+        "frontend-dist": "frontend-dist",
         "libgit2-src": "libgit2-src",
         "nixpkgs": "nixpkgs",
         "runix-flake": "runix-flake",
