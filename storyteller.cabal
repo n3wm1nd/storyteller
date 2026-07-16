@@ -227,6 +227,7 @@ test-suite storyteller-test
                   , Storage.OpsSpec
                   , Storage.CommitWorktreeSpec
                   , Storage.FoldIntoOpCountSpec
+                  , Storage.StoreOpCountSpec
                   , Storage.ChainEditSpec
                   , Storage.TickSpec
                   , Storyteller.FileAtomsSpec

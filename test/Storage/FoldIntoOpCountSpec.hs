@@ -49,21 +49,6 @@ opsFor n atoms target = snd <$> runMeasuring
       writeFile path (TE.encodeUtf8 target))
   (commitFile path)
 
--- | Duplicates 'Storage.MockStore.runChain's own root-commit setup rather
---   than calling it directly: 'runChain' is self-contained (one
---   'runMockGit' call, discarding the store's internal state once it
---   returns), and @setup@\/@measure@ need to share the *same* underlying
---   store so @measure@ can see everything @setup@ wrote.
-runMeasuring :: StoreT Mock a -> StoreT (Counting Mock) b -> Either String (b, OpCounts)
-runMeasuring setup measure = runMockGit $ do
-  emptyTreeHash <- writeObject (TreeObject [])
-  rootHash <- writeCommit CommitData
-    { commitParents = []
-    , commitTree    = emptyTreeHash
-    , commitMessage = "type:root\n"
-    }
-  measureOps rootHash setup measure
-
 -- | @big@ is the "actual" side and @small@ the "expected" one, so a
 --   failure reads the intuitive way round: "expected (the small-graph
 --   baseline) X, but got (the huge-graph run) Y" -- a graph-size

@@ -65,6 +65,7 @@ module Storage.Core
   , emptyWorkingTree
   , loadWorkingTree
   , lookupPathAt
+  , lookupPathInTree
   , readPathAt
 
     -- * The monad
@@ -79,6 +80,7 @@ module Storage.Core
     -- * Chain contents
   , Tick(..)
   , readTick
+  , readCommitTick
   , removedTagKey
   , isRemoval
 
@@ -111,6 +113,7 @@ module Storage.Core
 import Prelude hiding (drop, readFile, writeFile)
 import qualified Data.List as List
 
+import Control.Monad (foldM)
 import Control.Monad.State.Strict
   (StateT(..), MonadState, MonadTrans, gets, lift, runStateT, modify)
 import qualified Data.ByteString as BS
@@ -295,7 +298,14 @@ readTreeRecursive prefix treeHash = do
 lookupPathAt :: StoreM m => ObjectHash -> FilePath -> m (Maybe ObjectHash)
 lookupPathAt commitHash path = do
   cd <- readCommit commitHash
-  go (splitDirectories path) (commitTree cd)
+  lookupPathInTree (commitTree cd) path
+
+-- | 'lookupPathAt' from an already-known root *tree* hash rather than a
+--   commit -- for a caller mid-walk that has the 'CommitData' in hand
+--   already (e.g. from 'readCommitTick') and shouldn't pay a second
+--   commit read just to get back to its own tree.
+lookupPathInTree :: StoreM m => ObjectHash -> FilePath -> m (Maybe ObjectHash)
+lookupPathInTree rootTree path = go (splitDirectories path) rootTree
   where
     go []           _        = return Nothing
     go [name]       treeHash = do
@@ -316,43 +326,113 @@ readPathAt :: StoreM m => ObjectHash -> FilePath -> m (Maybe BS.ByteString)
 readPathAt commitHash path = lookupPathAt commitHash path >>= traverse readBlobM
 
 -- | Write the 'WorkingTree' to the store, returning the root tree hash.
---   An empty tree is written like any other -- 'buildTree' naturally
---   produces @writeTreeM []@ for it, with no backend-specific shortcut
+--   An empty tree is written like any other -- an empty 'Nested' level
+--   naturally produces @writeTreeM []@, with no backend-specific shortcut
 --   (a concrete store's own hash for "the empty tree" isn't something
 --   this module can assume, unlike git's well-known one).
+--
+--   The flat path map is grouped into its nested per-directory shape in
+--   one pass first ('nestTree'), then each level written bottom-up --
+--   rather than re-scanning the whole flat map once per directory to
+--   find its children, which cost O(paths) *per directory* however deep
+--   or wide the tree.
 flushWorkingTree :: StoreM m => WorkingTree -> m ObjectHash
-flushWorkingTree = buildTree ""
+flushWorkingTree = buildNested . nestTree
 
-buildTree :: StoreM m => FilePath -> WorkingTree -> m ObjectHash
-buildTree prefix wt = do
-  let children = directChildren prefix wt
-  entries <- mapM (\name -> toEntry prefix name wt) children
-  writeTreeM entries
+-- | One directory level of a working tree in nested form: a blob, or a
+--   subdirectory holding its own children by name.
+data Nested = NFile !ObjectHash | NDir (Map FilePath Nested)
 
-directChildren :: FilePath -> WorkingTree -> [String]
-directChildren prefix wt =
-  let prefixParts = if null prefix then [] else splitDirectories prefix
-      len         = length prefixParts
-      names       = [ c
-                    | p <- Map.keys wt
-                    , let parts = splitDirectories p
-                    , length parts > len
-                    , List.take len parts == prefixParts
-                    , c : _ <- [List.drop len parts]
-                    ]
-  in dedupe names
+-- | Group a flat path map into its nested per-directory shape. Entries
+--   arrive in ascending path order ('Map.toList'), so a directory's own
+--   marker (and any blob shadowing a nested path -- a quirk 'writeFile's
+--   own @keepExisting@ can produce, where @"a"@ is a blob and @"a/b"@ also
+--   has an entry) is always seen before anything beneath it: a blob at a
+--   spine position deliberately shadows deeper entries, matching what the
+--   per-directory scan this replaces resolved via its own lookup
+--   precedence.
+nestTree :: WorkingTree -> Map FilePath Nested
+nestTree = List.foldl' insert Map.empty . Map.toList
   where
-    dedupe [] = []
-    dedupe (x:xs) = x : dedupe (filter (/= x) xs)
+    insert acc (p, node) = go acc (splitDirectories p) node
+    go m [] _ = m
+    go m [n] (FSFile h) = Map.insert n (NFile h) m
+    go m [n] FSDir      = Map.insertWith (\_ old -> old) n (NDir Map.empty) m
+    go m (n : rest) node = case Map.lookup n m of
+      Just (NFile _) -> m
+      Just (NDir s)  -> Map.insert n (NDir (go s rest node)) m
+      Nothing        -> Map.insert n (NDir (go Map.empty rest node)) m
 
-toEntry :: StoreM m => FilePath -> FilePath -> WorkingTree -> m TreeEntry
-toEntry prefix name wt =
-  let path = if null prefix then name else prefix <> "/" <> name
-  in case Map.lookup path wt of
-    Just (FSFile hash') -> return (BlobEntry name hash')
-    _ -> do
-      hash' <- buildTree path wt
-      return (SubTree name hash')
+buildNested :: StoreM m => Map FilePath Nested -> m ObjectHash
+buildNested m = do
+  entries <- mapM entryOf (Map.toList m)
+  writeTreeM entries
+  where
+    entryOf (n, NFile h) = return (BlobEntry n h)
+    entryOf (n, NDir s)  = SubTree n <$> buildNested s
+
+-- | Splice a single path's entry into a committed tree: rebuild only the
+--   trees along @path@'s own spine, reusing every sibling entry verbatim
+--   -- O(depth) reads and writes, independent of how many other files the
+--   tree holds. @Just (FSFile h)@ inserts or replaces the blob at @path@
+--   (creating intermediate directories as needed); @Just FSDir@ ensures a
+--   (possibly empty) directory exists there, never clobbering an existing
+--   one's children; @Nothing@ removes whatever entry is there -- a blob,
+--   or a whole subtree -- leaving a directory emptied by the removal in
+--   place as an empty tree, exactly as flushing the equivalent
+--   'WorkingTree' (whose 'FSDir' marker survives a child's deletion)
+--   always has.
+--
+--   Entries are kept in ascending-name order -- the same order
+--   'flushWorkingTree' produces from its 'Map' -- so splicing and
+--   re-flushing the same logical tree mint the identical hash: real
+--   backends canonicalize entry order themselves, but a purely
+--   content-addressed store (the test mock) hashes exactly what it's
+--   handed.
+spliceTree :: StoreM m => ObjectHash -> FilePath -> Maybe FSNode -> m ObjectHash
+spliceTree rootTree path mbNode = go (splitDirectories path) rootTree
+  where
+    go [] t = return t
+    go [name] treeHash = do
+      entries <- readTreeM treeHash
+      let siblings = filter ((/= name) . entryName) entries
+      case mbNode of
+        Nothing          -> writeTreeM siblings
+        Just (FSFile h)  -> writeTreeM (insertEntry (BlobEntry name h) siblings)
+        Just FSDir       -> case List.find ((== name) . entryName) entries of
+          Just (SubTree _ _) -> return treeHash
+          _ -> do
+            empty <- writeTreeM []
+            writeTreeM (insertEntry (SubTree name empty) siblings)
+    go (seg : rest) treeHash = do
+      entries <- readTreeM treeHash
+      let siblings = filter ((/= seg) . entryName) entries
+      case List.find ((== seg) . entryName) entries of
+        Just (SubTree _ h) -> do
+          h' <- go rest h
+          writeTreeM (insertEntry (SubTree seg h') siblings)
+        -- A blob at a spine position shadows anything nested beneath it
+        -- (same precedence 'nestTree' documents); with nothing nested
+        -- there, a removal has nothing to remove either.
+        Just (BlobEntry _ _) -> return treeHash
+        Nothing -> case mbNode of
+          Nothing -> return treeHash
+          Just _  -> do
+            h' <- fresh rest
+            writeTreeM (insertEntry (SubTree seg h') entries)
+
+    -- A brand-new spine below the deepest existing directory.
+    fresh [] = writeTreeM []
+    fresh [name] = case mbNode of
+      Just (FSFile h) -> writeTreeM [BlobEntry name h]
+      _               -> do
+        empty <- writeTreeM []
+        writeTreeM [SubTree name empty]
+    fresh (seg : rest) = do
+      h <- fresh rest
+      writeTreeM [SubTree seg h]
+
+    insertEntry e = List.insertBy (\a b -> compare (entryName a) (entryName b)) e
 
 -- ---------------------------------------------------------------------------
 -- Chain contents: every commit holds one Tick, either an Atom or a NonAtom
@@ -504,9 +584,18 @@ decodeTick refs raw
 --   through 'readCommitResolved', so the tick's own 'tickRefs' come back
 --   already pointing at whatever their targets have since become.
 readTick :: StoreM m => ObjectHash -> m Tick
-readTick h = do
+readTick h = snd <$> readCommitTick h
+
+-- | 'readTick' handing back the (resolved -- see 'readCommitResolved')
+--   'CommitData' it decoded the tick from alongside it. Every chain walk
+--   needs both -- the tick to inspect, the commit's own parents\/tree to
+--   navigate by -- and reading them together costs one physical commit
+--   read instead of the two that calling 'readTick' and 'readCommit'
+--   separately at every single step would.
+readCommitTick :: StoreM m => ObjectHash -> m (CommitData, Tick)
+readCommitTick h = do
   cd <- readCommitResolved h
-  return (decodeTick (List.drop 1 (commitParents cd)) (commitMessage cd))
+  return (cd, decodeTick (List.drop 1 (commitParents cd)) (commitMessage cd))
 
 -- ---------------------------------------------------------------------------
 -- The monad: the current position in the chain, plus an ambient working
@@ -657,28 +746,25 @@ store :: StoreM m => Tick -> StoreT m ObjectHash
 store t = do
   h    <- headHash
   refs <- mapM resolveId (tickRefs t)
+  parentTree <- commitTree <$> liftG (readCommit h)
   treeHash <- case t of
-    NonAtom {} -> commitTree <$> liftG (readCommit h)
-    Atom { atomPath = path, atomTags = tags } | isRemoval tags -> do
-      parentWt <- liftG (loadWorkingTree h)
-      liftG (flushWorkingTree (Map.delete path parentWt))
+    NonAtom {} -> return parentTree
+    Atom { atomPath = path, atomTags = tags } | isRemoval tags ->
+      liftG (spliceTree parentTree path Nothing)
     Atom { atomPath = path, atomContent = suffix } -> do
-      parentWt   <- liftG (loadWorkingTree h)
-      oldContent <- liftG $ case Map.lookup path parentWt of
-        Just (FSFile bh) -> readBlobM bh
-        _                -> return BS.empty
-      newBlob <- liftG (writeBlobM (oldContent <> TE.encodeUtf8 suffix))
-      liftG (flushWorkingTree (Map.insert path (FSFile newBlob) parentWt))
+      oldBlob    <- liftG (lookupPathInTree parentTree path)
+      oldContent <- liftG (maybe (return BS.empty) readBlobM oldBlob)
+      newBlob    <- liftG (writeBlobM (oldContent <> TE.encodeUtf8 suffix))
+      liftG (spliceTree parentTree path (Just (FSFile newBlob)))
     Binary { binaryPath = path } -> do
       -- Unlike Atom, a Binary tick carries no content field of its own --
       -- whatever's currently in the *ambient* tree at this path (already
       -- written there by the caller, e.g. via 'writeFile') is what gets
       -- committed, verbatim, replacing whatever was there before.
-      parentWt  <- liftG (loadWorkingTree h)
       ambientWt <- getAmbientTree
       case Map.lookup path ambientWt of
-        Just node -> liftG (flushWorkingTree (Map.insert path node parentWt))
-        Nothing   -> liftG (flushWorkingTree parentWt)
+        Just node -> liftG (spliceTree parentTree path (Just node))
+        Nothing   -> return parentTree
     Opaque {} ->
       -- No path to splice -- adopt the whole ambient tree as-is. Safe
       -- for every already-atom-tracked path too: by the time anything
@@ -702,13 +788,44 @@ store t = do
 --   it precomputed rather than re-derived from ambient state).
 treeDelta :: StoreM m => ObjectHash -> ObjectHash -> StoreT m (Map FilePath (Maybe FSNode))
 treeDelta commitHash parentHash = do
-  cur <- liftG (loadWorkingTree commitHash)
-  par <- liftG (loadWorkingTree parentHash)
-  return $ Map.fromList
-    [ (p, Map.lookup p cur)
-    | p <- Set.toList (Map.keysSet cur `Set.union` Map.keysSet par)
-    , Map.lookup p cur /= Map.lookup p par
-    ]
+  cur <- commitTree <$> liftG (readCommit commitHash)
+  par <- commitTree <$> liftG (readCommit parentHash)
+  Map.fromList <$> liftG (diffTrees "" cur par)
+
+-- | Structural recursion for 'treeDelta': under content addressing, two
+--   subtrees with the same hash are the same subtree, so only levels
+--   whose hashes actually differ are ever read -- cost proportional to
+--   the delta (times path depth), not to the size of either tree.
+diffTrees :: StoreM m => FilePath -> ObjectHash -> ObjectHash -> m [(FilePath, Maybe FSNode)]
+diffTrees prefix new old
+  | new == old = return []
+  | otherwise  = do
+      newM <- entryMap <$> readTreeM new
+      oldM <- entryMap <$> readTreeM old
+      let names = Set.toList (Map.keysSet newM `Set.union` Map.keysSet oldM)
+      concat <$> mapM (\n -> diffEntry (childPath n) (Map.lookup n newM) (Map.lookup n oldM)) names
+  where
+    entryMap es = Map.fromList [ (entryName e, e) | e <- es ]
+    childPath n = if null prefix then n else prefix <> "/" <> n
+
+    diffEntry _    Nothing Nothing = return []  -- unreachable: n came from one of the two
+    diffEntry path (Just (BlobEntry _ h)) (Just (BlobEntry _ h'))
+      | h == h'   = return []
+      | otherwise = return [(path, Just (FSFile h))]
+    diffEntry path (Just (SubTree _ h)) (Just (SubTree _ h')) = diffTrees path h h'
+    diffEntry path (Just (BlobEntry _ h)) (Just (SubTree _ h')) =
+      ((path, Just (FSFile h)) :) . asRemoved <$> readTreeRecursive path h'
+    diffEntry path (Just (SubTree _ h)) (Just (BlobEntry _ _)) =
+      ((path, Just FSDir) :) . asAdded <$> readTreeRecursive path h
+    diffEntry path (Just (BlobEntry _ h)) Nothing = return [(path, Just (FSFile h))]
+    diffEntry path (Just (SubTree _ h)) Nothing =
+      ((path, Just FSDir) :) . asAdded <$> readTreeRecursive path h
+    diffEntry path Nothing (Just (BlobEntry _ _)) = return [(path, Nothing)]
+    diffEntry path Nothing (Just (SubTree _ h)) =
+      ((path, Nothing) :) . asRemoved <$> readTreeRecursive path h
+
+    asAdded   sub = [ (p, Just node) | (p, node) <- Map.toList sub ]
+    asRemoved sub = [ (p, Nothing)   | (p, _)    <- Map.toList sub ]
 
 -- | Commit @t@ with its tree built by applying @delta@ (see 'treeDelta')
 --   onto the *current* head's own tree, instead of 'store's usual
@@ -720,11 +837,12 @@ storeWithDelta :: StoreM m => Tick -> Map FilePath (Maybe FSNode) -> StoreT m Ob
 storeWithDelta t delta = do
   h    <- headHash
   refs <- mapM resolveId (tickRefs t)
-  parentWt <- liftG (loadWorkingTree h)
-  let apply wt (p, Just node) = Map.insert p node wt
-      apply wt (p, Nothing)   = Map.delete p wt
-      newWt = foldl apply parentWt (Map.toList delta)
-  treeHash <- liftG (flushWorkingTree newWt)
+  parentTree <- commitTree <$> liftG (readCommit h)
+  -- One spine splice per delta entry, applied in ascending path order so
+  -- a directory's own entry lands before anything beneath it (and a
+  -- removed directory takes its children with it before their own
+  -- removals no-op) -- never a whole-tree load\/flush.
+  treeHash <- liftG (foldM (\tree (p, node) -> spliceTree tree p node) parentTree (Map.toList delta))
   newHash  <- liftG $ writeCommit CommitData
     { commitParents = h : refs
     , commitTree    = treeHash
@@ -738,9 +856,8 @@ storeWithDelta t delta = do
 --   place.
 drop :: StoreM m => StoreT m Tick
 drop = do
-  h  <- headHash
-  t  <- liftG (readTick h)
-  cd <- liftG (readCommit h)
+  h        <- headHash
+  (cd, t)  <- liftG (readCommitTick h)
   case commitParents cd of
     []      -> return ()
     (p : _) -> putHead p
@@ -780,15 +897,13 @@ follow :: StoreM m => b -> (b -> ObjectHash -> Tick -> (b, Bool)) -> StoreT m b
 follow seed step = headHash >>= \h -> liftG (walk seed h)
   where
     walk acc h = do
-      t <- readTick h
+      (cd, t) <- readCommitTick h
       let (acc', continue) = step acc h t
       if not continue
         then return acc'
-        else do
-          cd <- readCommit h
-          case commitParents cd of
-            []      -> return acc'
-            (p : _) -> walk acc' p
+        else case commitParents cd of
+          []      -> return acc'
+          (p : _) -> walk acc' p
 
 -- | Fold from head back to whichever cached ancestor is nearest (or all the
 --   way to root, if none is cached), then combine forward from there back up
@@ -853,8 +968,7 @@ memoFold combine seed cache = do
     collect cur acc = case Map.lookup cur cacheMap of
       Just cachedVal -> return (cachedVal, acc)
       Nothing -> do
-        t  <- liftG (readTick cur)
-        cd <- liftG (readCommit cur)
+        (cd, t) <- liftG (readCommitTick cur)
         case commitParents cd of
           []      -> return (seed, (cur, t) : acc)
           (p : _) -> collect p ((cur, t) : acc)
@@ -960,7 +1074,7 @@ atWith onReplay target0 action = do
             else return ()
           return a
         else do
-          cd <- liftG (readCommit current)
+          (cd, t0) <- liftG (readCommitTick current)
           case commitParents cd of
             [] -> fail ("at: " <> T.unpack (unObjectHash target) <> " not found in history")
             (par : _) -> do
@@ -972,7 +1086,6 @@ atWith onReplay target0 action = do
               -- themselves, before 'drop' discards this position -- then
               -- reapplied via 'storeWithDelta' once the parent's replay
               -- below has rebuilt whatever it rebuilds onto.
-              t0    <- liftG (readTick current)
               delta <- case t0 of
                 Binary {} -> Just <$> treeDelta current par
                 Opaque {} -> Just <$> treeDelta current par

@@ -8,6 +8,7 @@ module Storage.MockStore
   ( Mock
   , runMockGit
   , runChain
+  , runMeasuring
   , committedContent
   ) where
 
@@ -22,6 +23,7 @@ import Numeric (showHex)
 import qualified Data.Text as T
 
 import Storage.Core
+import Storage.OpCounting
 
 data MockState = MockState
   { msObjects :: Map T.Text StoreObject
@@ -105,10 +107,29 @@ committedContent path = inWorktree (readFile path)
 --   its result and the final scope state.
 runChain :: StoreT Mock a -> Either String (a, ScopeState)
 runChain action = runMockGit $ do
+  root <- seedRoot
+  runStoreT root action
+
+-- | 'runChain' split into an uninstrumented @setup@ phase and a counted
+--   @measure@ phase over the same underlying store -- 'Storage.OpCounting.
+--   measureOps' seeded with the same root commit 'runChain' uses.
+--   'runChain' itself can't be reused for this: it's self-contained (one
+--   'runMockGit' call, discarding the store's internal state on return),
+--   and @setup@\/@measure@ need to share the one store so @measure@ can
+--   see everything @setup@ wrote.
+runMeasuring :: StoreT Mock a -> StoreT (Counting Mock) b -> Either String (b, OpCounts)
+runMeasuring setup measure = runMockGit $ do
+  root <- seedRoot
+  measureOps root setup measure
+
+-- | One root commit over an empty tree (written the same way any other
+--   empty tree would be), holding a plain 'NonAtom' so it decodes like
+--   any other tick.
+seedRoot :: Mock ObjectHash
+seedRoot = do
   emptyTreeHash <- writeObject (TreeObject [])
-  rootHash <- writeCommit CommitData
+  writeCommit CommitData
     { commitParents = []
     , commitTree    = emptyTreeHash
     , commitMessage = "type:root\n"
     }
-  runStoreT rootHash action

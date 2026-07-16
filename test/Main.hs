@@ -6,6 +6,7 @@ import qualified Storage.FSSpec
 import qualified Storage.OpsSpec
 import qualified Storage.CommitWorktreeSpec
 import qualified Storage.FoldIntoOpCountSpec
+import qualified Storage.StoreOpCountSpec
 import qualified Storage.ChainEditSpec
 import qualified Storage.TickSpec
 import qualified Storyteller.FileAtomsSpec
@@ -57,6 +58,7 @@ main = hspec $ do
   describe "Storage.Ops"                Storage.OpsSpec.spec
   describe "Storage.CommitWorktree"     Storage.CommitWorktreeSpec.spec
   describe "Storage.FoldIntoOpCount"    Storage.FoldIntoOpCountSpec.spec
+  describe "Storage.StoreOpCount"       Storage.StoreOpCountSpec.spec
   describe "Storage.ChainEdit"          Storage.ChainEditSpec.spec
   describe "Storage.Tick"               Storage.TickSpec.spec
   describe "Storyteller.FileAtoms"      Storyteller.FileAtomsSpec.spec
