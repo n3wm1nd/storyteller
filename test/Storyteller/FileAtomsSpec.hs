@@ -159,7 +159,7 @@ spec = describe "fileTicks" $ do
           [atom] -> Tick.ftMessage atom `shouldBe` "x\n"
           atoms  -> fail $ "expected 1 atom, got " <> show (length atoms)
 
-  it "fileTicksOf alone does not include a note referencing a file atom -- that's fetchRelatedTicks's job" $ do
+  it "fileTicksOf alone does not include a note referencing a file atom -- that's relatedTicksOf's job" $ do
     let result = runTestFS $ do
           atomId <- Ops.addAtom "scene.md" "content\n"
           _noteId <- Tick.storeAs (Note [TickId (Core.unObjectHash atomId)] "a note")
@@ -168,12 +168,12 @@ spec = describe "fileTicks" $ do
       Left err    -> fail err
       Right ticks -> map Tick.ftKind ticks `shouldBe` ["atom"]
 
-  it "fetchRelatedTicks adds a note referencing a file atom" $ do
+  it "relatedTicksOf adds a note referencing a file atom" $ do
     let result = runTestFS $ do
           atomId <- Ops.addAtom "scene.md" "content\n"
           _noteId <- Tick.storeAs (Note [TickId (Core.unObjectHash atomId)] "a note")
           base   <- Tick.fileTicksOf "scene.md"
-          Tick.fetchRelatedTicks "scene.md" base
+          Tick.relatedTicksOf "scene.md" base
     case result of
       Left err    -> fail err
       Right ticks -> do
@@ -197,13 +197,13 @@ spec = describe "fileTicks" $ do
         -- only the scene.md atom, no note (it refs other.md's atom)
         map Tick.ftKind ticks `shouldBe` ["atom"]
 
-  it "fetchRelatedTicks includes a note referencing a note transitively" $ do
+  it "relatedTicksOf includes a note referencing a note transitively" $ do
     let result = runTestFS $ do
           atomId  <- Ops.addAtom "scene.md" "content\n"
           noteId  <- Tick.storeAs (Note [TickId (Core.unObjectHash atomId)] "first note")
           _note2Id <- Tick.storeAs (Note [TickId (Core.unObjectHash noteId)] "note about note")
           base    <- Tick.fileTicksOf "scene.md"
-          Tick.fetchRelatedTicks "scene.md" base
+          Tick.relatedTicksOf "scene.md" base
     case result of
       Left err    -> fail err
       Right ticks ->

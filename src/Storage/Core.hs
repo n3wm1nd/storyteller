@@ -178,8 +178,8 @@ data StoreObject
 --   * 'resolveHash' answers what an id has since become -- itself, if
 --     never replaced. Every operation here already calls it at the point
 --     an id is actually used ('store' for a tick's refs, 'at'\/'readAt'
---     for their target), and every commit read decodes its
---     cross-reference parents through it (see 'readCommitResolved' --
+--     for their target), and every tick read decodes its
+--     cross-reference parents through it (see 'readCommitTick' --
 --     never the chain parent) -- so a reference to a replaced tick reads
 --     as pointing at its replacement *before* any physical rewrite has
 --     happened. Applying the table for real (rewriting other branches'
@@ -196,38 +196,6 @@ class Monad m => MonadStore m where
 -- | Shorthand for the constraints every operation here needs: a pluggable
 --   object store, plus the ability to fail (an unknown tick, ...).
 type StoreM m = (MonadStore m, MonadFail m)
-
--- | 'readCommit', with every *cross-reference* parent (everything after
---   the first -- a tick's 'tickRefs') resolved through the store's remap
---   table, so a ref to a tick some rebase has since replaced is
---   transparently read as a ref to its replacement, before any physical
---   rewrite of the referencing commit has happened. The commit's own hash
---   then no longer matches its (virtual) content -- deliberately
---   irrelevant: trees are never remapped and tick content is identical,
---   so nothing downstream can tell.
---
---   The chain parent (the first slot) is deliberately *never* resolved:
---   navigation must walk the live chain exactly as written. Under content
---   addressing an old hash can come back from the dead -- re-storing a
---   tick with the same content on the same parent re-mints the identical
---   hash (a swipe carousel returning to an earlier rotation does exactly
---   this) -- so a superseded id in the table isn't proof the hash isn't
---   also a live chain member again, and redirecting a live commit's
---   structural parent through the table can teleport a walk off the chain
---   onto orphaned history (or into a cycle). A dangling *ref* resolved
---   too eagerly is a wrong answer; a rewritten *parent* is a broken walk.
---   Structural rewriting of chains is the transaction boundary's job
---   (the cascade), never a read's. Reads that only want a commit's tree
---   ('loadWorkingTree', 'store''s 'NonAtom' case) use raw 'readCommit';
---   nothing they touch is an id.
-readCommitResolved :: StoreM m => ObjectHash -> m CommitData
-readCommitResolved h = do
-  cd <- readCommit h
-  case commitParents cd of
-    []              -> return cd
-    (chain : refs)  -> do
-      refs' <- mapM resolveHash refs
-      return cd { commitParents = chain : refs' }
 
 readBlobM :: StoreM m => ObjectHash -> m BS.ByteString
 readBlobM h = readObject h >>= \case
@@ -580,22 +548,53 @@ decodeTick refs raw
         Just (path, tags, content) -> Atom refs path tags content
         Nothing                     -> NonAtom refs raw
 
--- | Read and decode the tick held by the commit at a given hash. Reads
---   through 'readCommitResolved', so the tick's own 'tickRefs' come back
---   already pointing at whatever their targets have since become.
+-- | Read and decode the tick held by the commit at a given hash. The
+--   tick's own 'tickRefs' come back already pointing at whatever their
+--   targets have since become -- see 'readCommitTick'.
 readTick :: StoreM m => ObjectHash -> m Tick
 readTick h = snd <$> readCommitTick h
 
--- | 'readTick' handing back the (resolved -- see 'readCommitResolved')
---   'CommitData' it decoded the tick from alongside it. Every chain walk
---   needs both -- the tick to inspect, the commit's own parents\/tree to
---   navigate by -- and reading them together costs one physical commit
---   read instead of the two that calling 'readTick' and 'readCommit'
---   separately at every single step would.
+-- | 'readTick' handing back the 'CommitData' it decoded the tick from
+--   alongside it. Every chain walk needs both -- the tick to inspect, the
+--   commit's own parents\/tree to navigate by -- and reading them
+--   together costs one physical commit read instead of the two that
+--   calling 'readTick' and 'readCommit' separately at every single step
+--   would.
+--
+--   The two halves deliberately see refs differently. The 'Tick''s own
+--   'tickRefs' are resolved through the store's remap table, so a ref to
+--   a tick some rebase has since replaced is transparently read as a ref
+--   to its replacement, before any physical rewrite of the referencing
+--   commit has happened -- everything this module does with a tick
+--   ('store' re-baking it on replay, an edit deciding what it refers to
+--   *now*) wants an id's current meaning, and the tick's content being
+--   identical means nothing downstream can tell its commit's hash no
+--   longer matches its (virtual) content. The 'CommitData' is raw,
+--   exactly as written, on both counts:
+--
+--   * Its *chain parent* is never resolved anywhere: navigation must walk
+--     the live chain exactly as written. Under content addressing an old
+--     hash can come back from the dead -- re-storing a tick with the same
+--     content on the same parent re-mints the identical hash (a swipe
+--     carousel returning to an earlier rotation does exactly this) -- so
+--     a superseded id in the table isn't proof the hash isn't also a live
+--     chain member again, and redirecting a live commit's structural
+--     parent through the table can teleport a walk off the chain onto
+--     orphaned history (or into a cycle). A dangling *ref* resolved too
+--     eagerly is a wrong answer; a rewritten *parent* is a broken walk.
+--     Structural rewriting of chains is the transaction boundary's job
+--     (the cascade), never a read's.
+--   * Its *cross-reference* parents stay raw too: the typed layer above
+--     ("Storage.Tick") reads refs from here precisely because some of its
+--     ref kinds are *pins*, not annotations -- a 'Summary' tick's ref
+--     names the exact alternate-chain commit its pass produced, and must
+--     keep naming it even after a later pass's reconciliation has logged
+--     that commit's content-successor in the remap table.
 readCommitTick :: StoreM m => ObjectHash -> m (CommitData, Tick)
 readCommitTick h = do
-  cd <- readCommitResolved h
-  return (cd, decodeTick (List.drop 1 (commitParents cd)) (commitMessage cd))
+  cd   <- readCommit h
+  refs <- mapM resolveHash (List.drop 1 (commitParents cd))
+  return (cd, decodeTick refs (commitMessage cd))
 
 -- ---------------------------------------------------------------------------
 -- The monad: the current position in the chain, plus an ambient working

@@ -182,7 +182,7 @@ spec = do
         Left err -> expectationFailure err
         Right ticks -> map ftContent ticks `shouldBe` [Just "p1\n"]
 
-    it "does not include a note that references one of the file's own atoms -- that's fetchRelatedTicks's job" $ do
+    it "does not include a note that references one of the file's own atoms -- that's relatedTicksOf's job" $ do
       let result = runChain $ do
             h <- addAtom "scene.md" "p1\n"
             _ <- store (NonAtom [h] "type:note\n\nabout p1")
@@ -191,12 +191,12 @@ spec = do
         Left err -> expectationFailure err
         Right (ticks, _finalState) -> map ftKind ticks `shouldBe` ["atom"]
 
-    it "fetchRelatedTicks adds a note that references one of the file's own atoms" $ do
+    it "relatedTicksOf adds a note that references one of the file's own atoms" $ do
       let result = runChain $ do
             h     <- addAtom "scene.md" "p1\n"
             _     <- store (NonAtom [h] "type:note\n\nabout p1")
             ticks <- fileTicksOf "scene.md"
-            fetchRelatedTicks "scene.md" ticks
+            relatedTicksOf "scene.md" ticks
       case result of
         Left err -> expectationFailure err
         Right (ticks, _finalState) -> map ftKind ticks `shouldBe` ["atom", "note"]
@@ -206,14 +206,14 @@ spec = do
     -- (atom <- note1 <- note2, already covered above) but would silently
     -- have dropped a third hop. The current single forward pass has no
     -- depth limit at all.
-    it "fetchRelatedTicks captures a reference chain three levels deep" $ do
+    it "relatedTicksOf captures a reference chain three levels deep" $ do
       let result = runChain $ do
             h1    <- addAtom "scene.md" "p1\n"
             h2    <- store (NonAtom [h1] "type:note\n\nfirst note")
             h3    <- store (NonAtom [h2] "type:note\n\nsecond note, about the first")
             _     <- store (NonAtom [h3] "type:note\n\nthird note, about the second")
             ticks <- fileTicksOf "scene.md"
-            fetchRelatedTicks "scene.md" ticks
+            relatedTicksOf "scene.md" ticks
       case result of
         Left err -> expectationFailure err
         Right (ticks, _finalState) ->

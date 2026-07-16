@@ -19,7 +19,7 @@ module Storage.Tick
   , findTick
   , FileTick(..)
   , fileTicksOf
-  , fetchRelatedTicks
+  , relatedTicksOf
   , recentAtomsOf
   , encodeTickData
   ) where
@@ -130,8 +130,15 @@ storeAs a = do
 -- Reading
 -- ---------------------------------------------------------------------------
 
--- | @h@'s own commit, decoded as a typed 'Tick' -- an 'Atom'\'s @"file"@
---   field is reconstructed ('Storage.Core' strips it off into 'atomPath'
+-- | @h@'s own commit, decoded as a typed 'Tick' -- one physical commit
+--   read ('Storage.Core.readCommitTick'), with the position's refs
+--   ('ST.posRefs') taken from the raw commit, exactly as written: a typed
+--   ref can be a *pin* (a 'Storyteller.Common.Summary.Summary' tick's
+--   alternate-chain head, which must keep naming the exact commit its
+--   own pass produced), not just an annotation, so this layer never
+--   reads refs through the remap table -- see 'Storage.Core.
+--   readCommitTick' for the two layers' split. An 'Atom'\'s
+--   @"file"@ field is reconstructed ('Storage.Core' strips it off into 'atomPath'
 --   directly on the way in, along with any other header field into
 --   'atomTags' -- e.g. a "hide" tag) alongside a @"type":"atom"@ entry, so
 --   it decodes via 'Storyteller.Core.Atom.Atom's own 'TickType' instance
@@ -147,8 +154,7 @@ storeAs a = do
 --   else is decoded via 'decodeTickData'.
 readTypesTick :: StoreM m => ObjectHash -> StoreT m ST.Tick
 readTypesTick h = do
-  t  <- lift (readTick h)
-  cd <- lift (readCommit h)
+  (cd, t) <- lift (readCommitTick h)
   let parents = commitParents cd
       pos = ST.TickPos
         { ST.posId     = uncoerceRef h
@@ -274,8 +280,8 @@ data FileTick = FileTick
 lifetimeTicksOf :: StoreM m => FilePath -> StoreT m [FileTick]
 lifetimeTicksOf path = headHash >>= \h -> collectLifetime h []
   where
-    -- Oldest-first, same trick 'recentAtomsOf'\/'currentLifetimeAtoms' use:
-    -- each older commit is prepended in front of what's already been
+    -- Oldest-first, same trick 'recentAtomsOf'\/'Storage.Ops.lifetimeAtoms'
+    -- use: each older commit is prepended in front of what's already been
     -- collected, so by the time recursion bottoms out (root, or the
     -- tree-presence boundary) the accumulator already reads
     -- oldest-to-newest. A currently-removed file (deleted, not yet
@@ -284,12 +290,12 @@ lifetimeTicksOf path = headHash >>= \h -> collectLifetime h []
     -- stops the walk with nothing collected.
     collectLifetime :: StoreM m => ObjectHash -> [FileTick] -> StoreT m [FileTick]
     collectLifetime h acc = do
-      present <- lift (lookupPathAt h path)
+      (cd, t) <- lift (readCommitTick h)
+      present <- lift (lookupPathInTree (commitTree cd) path)
       case present of
         Nothing -> return acc
         Just _  -> do
-          cd <- lift (readCommit h)
-          ft <- toFileTick path h cd
+          let ft = toFileTick path h cd t
           case commitParents cd of
             []      -> return (ft : acc)
             (p : _) -> collectLifetime p (ft : acc)
@@ -305,7 +311,7 @@ relinkParents included lastIncluded (ft : rest)
 --   that path, and non-atom ticks whose own "file" field hints at it
 --   (presence events, etc.) -- deliberately *not* anything that merely
 --   references one of those atoms (notes, fixups, swipes); see
---   'fetchRelatedTicks' for that, layered on top explicitly by whichever
+--   'relatedTicksOf' for that, layered on top explicitly by whichever
 --   caller actually needs it, rather than paid for by everyone. This is
 --   the cheap half: 'lifetimeTicksOf's own bounded walk plus one plain
 --   filter, no search.
@@ -327,6 +333,8 @@ fileTicksOf path = do
 --   they're attached to ('Server.Core.File.fileStateSince'); nothing else
 --   in the codebase does. The expensive half, and the reason it's split
 --   out rather than folded into 'fileTicksOf' itself.
+--   ('Storage.Ops.checkpointFile' applies the same transitive rule when
+--   *cloning* a lifetime's annotations.)
 --
 --   Descends from head first, following @commitParents@ only -- no tick
 --   decoding at all -- until it reaches @ticks@'s own oldest member (a
@@ -350,9 +358,9 @@ fileTicksOf path = do
 --   O(1) to prepend, unlike an @allTicks ++ [ft]@ append repeated once per
 --   tick, which is quadratic over a long lifetime) and reverses once at
 --   the very end.
-fetchRelatedTicks :: StoreM m => FilePath -> [FileTick] -> StoreT m [FileTick]
-fetchRelatedTicks _ [] = return []
-fetchRelatedTicks path ticks@(oldest : _) = do
+relatedTicksOf :: StoreM m => FilePath -> [FileTick] -> StoreT m [FileTick]
+relatedTicksOf _ [] = return []
+relatedTicksOf path ticks@(oldest : _) = do
   let seedIds = Set.fromList (map ftTickId ticks)
       stopId  = ftTickId oldest -- ticks is oldest-first (see fileTicksOf)
   h <- headHash
@@ -365,14 +373,14 @@ fetchRelatedTicks path ticks@(oldest : _) = do
     -- than 'stopId' without decoding any of it.
     ascend :: StoreM m => Set.Set Text -> Text -> ObjectHash -> StoreT m ([FileTick], Maybe Text, Set.Set Text)
     ascend seedIds stopId h = do
-      cd <- lift (readCommit h)
+      (cd, t) <- lift (readCommitTick h)
       (olderRev, lastId, included) <-
         if unObjectHash h == stopId
           then return ([], Nothing, seedIds)
           else case commitParents cd of
             []      -> return ([], Nothing, seedIds) -- reached root without finding stopId; shouldn't happen for a real seed from this same path's own lifetime
             (p : _) -> ascend seedIds stopId p
-      ft <- toFileTick path h cd
+      let ft = toFileTick path h cd t
       if Set.member (ftTickId ft) included || any (`Set.member` included) (ftRefs ft)
         then return (ft { ftParent = lastId } : olderRev, Just (ftTickId ft), Set.insert (ftTickId ft) included)
         else return (olderRev, lastId, included)
@@ -380,13 +388,13 @@ fetchRelatedTicks path ticks@(oldest : _) = do
 -- | Decode a single commit as a 'FileTick', without regard to whether it's
 --   relevant to @path@ at all -- 'ftContent' carries that verdict
 --   ('Just' iff this is an atom on exactly @path@), everything else about
---   the shape mirrors 'readTypesTick's per-kind decoding. Shared by
---   'fileTicksOf' (which decodes the whole chain up front) and
---   'recentAtomsOf' (which decodes one commit at a time, lazily, and never
---   further back than it needs to).
-toFileTick :: StoreM m => FilePath -> ObjectHash -> CommitData -> StoreT m FileTick
-toFileTick path h cd = do
-  t <- lift (readTick h)
+--   the shape mirrors 'readTypesTick's per-kind decoding -- including
+--   'ftRefs' coming from the raw commit, unresolved, for the same
+--   pin-vs-annotation reason given there. Pure: the one
+--   'Storage.Core.readCommitTick' its callers' walks already perform per
+--   commit hands over everything it needs.
+toFileTick :: FilePath -> ObjectHash -> CommitData -> Tick -> FileTick
+toFileTick path h cd t =
   let refs = List.drop 1 (commitParents cd)
       (kind, fields, msg, mContent) = case t of
         Atom _ p tags content ->
@@ -404,7 +412,7 @@ toFileTick path h cd = do
               otherFields = filter ((/= "type") . fst) (ST.tickFields td)
           in ( fromMaybe "unknown" (lookup "type" (ST.tickFields td))
              , otherFields, ST.tickMessage td, Nothing )
-  return FileTick
+  in FileTick
     { ftTickId  = unObjectHash h
     , ftKind    = kind
     , ftRefs    = map unObjectHash refs
@@ -462,43 +470,46 @@ recentAtomsOf
   -> StoreT m [FileTick]
 recentAtomsOf path lookback maxOut padding
   | maxOut <= 0 = return []
-  | otherwise   = headHash >>= \h -> trimOverflow <$> go h 0 [] [] 0
+  | otherwise   = headHash >>= \h -> trimOverflow <$> go h 0 0 [] [] 0
   where
     trimOverflow acc = let over = length acc - maxOut in if over > 0 then List.drop over acc else acc
 
     -- @acc@: kept atoms so far, oldest-first (a newly-decided, older
     -- segment is always prepended in front of it -- see the two branches
-    -- below). @pending@: the last (at most @padding@) skipped on-@path@
-    -- atoms, oldest-first among themselves, held in case the next kept
-    -- atom wants them as its newer-side padding. @forceLeft@: atoms still
-    -- owed as some earlier kept atom's older-side padding, regardless of
-    -- their own status.
-    go :: ObjectHash -> Int -> [FileTick] -> [FileTick] -> Int -> StoreT m [FileTick]
-    go h examined acc pending forceLeft = do
-      cd <- lift (readCommit h)
-      ft <- toFileTick path h cd
-      let next = case commitParents cd of { [] -> Nothing; (p : _) -> Just p }
-      (examined', acc', pending', forceLeft') <-
+    -- below), with @kept@ tracking its length alongside (so the stop
+    -- check below isn't an O(result) 'length' at every step). @pending@:
+    -- the last (at most @padding@) skipped on-@path@ atoms, oldest-first
+    -- among themselves, held in case the next kept atom wants them as its
+    -- newer-side padding. @forceLeft@: atoms still owed as some earlier
+    -- kept atom's older-side padding, regardless of their own status.
+    go :: ObjectHash -> Int -> Int -> [FileTick] -> [FileTick] -> Int -> StoreT m [FileTick]
+    go h examined kept acc pending forceLeft = do
+      (cd, t) <- lift (readCommitTick h)
+      let ft   = toFileTick path h cd t
+          next = case commitParents cd of { [] -> Nothing; (p : _) -> Just p }
+      (examined', kept', acc', pending', forceLeft') <-
         if not (isJust (ftContent ft))
-          then return (examined, acc, pending, forceLeft)
+          then return (examined, kept, acc, pending, forceLeft)
           else do
             unique <- carriesUniqueInfo ft
             if forceLeft > 0 || unique
               then return
                 ( examined + 1
+                , kept + 1 + length pending
                 , (ft : pending) ++ acc
                 , []
                 , if unique then padding else max 0 (forceLeft - 1)
                 )
               else return
                 ( examined + 1
+                , kept
                 , acc
                 , take padding (ft : pending)
                 , forceLeft
                 )
-      if length acc' >= maxOut || examined' >= lookback
+      if kept' >= maxOut || examined' >= lookback
         then return acc'
-        else maybe (return acc') (\p -> go p examined' acc' pending' forceLeft') next
+        else maybe (return acc') (\p -> go p examined' kept' acc' pending' forceLeft') next
 
     carriesUniqueInfo :: FileTick -> StoreT m Bool
     carriesUniqueInfo ft
