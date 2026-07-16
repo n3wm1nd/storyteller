@@ -94,3 +94,35 @@ Working, not finished. The data model and design are documented in `DESIGN.md` a
 Built and working: character branches (`sheet.md`/`journal.md`) with scene-scoped presence tracking; full context assembly for prose generation (world lore, a style guide, per-character sheet/context/journal, pinned short-term context, earlier-chapter continuity, and the current file's own conversation history, assembled into a real per-call message list rather than one flattened prompt); the outline → beat-sheet → chapter pipeline; a fixer agent that can target one atom with either a full rewrite or an exact-match span replacement; a flow-aware writer that revises in-flight prose before continuing; a read-only discuss-the-story chat agent; undo; and an agent-integration test suite that runs these agents against real models (cached, replayable) rather than only mocked unit tests.
 
 Not built yet, despite being described in `DESIGN.md`: semantic/RAG search, the consistency-checker/merge/synthesis/task-tracking agents, manuscript/character-card import and EPUB/PDF export, and the RP/Wiki surfaces mentioned above. Treat anything in `DESIGN.md` not corroborated by this section as a direction, not a status.
+
+---
+
+## Building and running
+
+**Quickest path**, if you have Nix with flakes enabled:
+
+```
+nix run github:n3wm1nd/storyteller
+```
+
+This builds `story-server` and points it at a pre-built copy of the frontend (see below), so it serves a working UI out of the box.
+
+### Backend (Haskell)
+
+The backend is a standard Cabal project; `nix develop` (via `flake.nix`) drops you into a shell with GHC, `cabal-install`, and the native deps `gitlib-effect` needs (`libgit2` build tooling). From there, `cabal build` / `cabal run story-server` / `cabal test` work as usual. Individual executables (`story-write`, `story-outline`, `story-chapter`, `story-track`, `story-rebase`, `story-chargen`, …) are also defined in the cabal file for CLI-driven workflows.
+
+### Frontend (Next.js)
+
+The frontend lives in `frontend/` and normally runs as its own dev server against the backend over WebSocket (see `frontend/next.config.ts` for the dev-vs-static-export split). For a static, backend-served build:
+
+```
+bun run build:static   # writes frontend/out
+```
+
+`story-server` serves that directory directly when pointed at it via the `STATIC_DIR` env var (`app/Server.hs`), with SPA-style fallback to `index.html`.
+
+### How the two are packaged together
+
+`frontend/out` is committed to git (not gitignored) and packaged by its own tiny subflake, `frontend/flake.nix`. The root `flake.nix` consumes it as a self-referential input (`github:n3wm1nd/storyteller?dir=frontend`) and wraps `story-server` so `STATIC_DIR` defaults to that build — overridable at runtime with `STATIC_DIR=/some/other/dir nix run .#story-server`. This keeps the actual Next.js build out of Nix entirely (no fixed-output-derivation wrangling for `bun.lock`); only the compiled static output is versioned as a flake input.
+
+Bumping the packaged frontend after a UI change means two commits: rebuild and commit `frontend/out`, push, then run `nix flake lock --update-input frontend-dist` and commit/push the updated `flake.lock` so it repins to the new build. (If `nix run github:n3wm1nd/storyteller` still shows the old frontend right after pushing, add `--refresh` — Nix may be serving a cached tarball of the repo.)
