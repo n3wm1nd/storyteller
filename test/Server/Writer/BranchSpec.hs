@@ -9,15 +9,18 @@
 module Server.Writer.BranchSpec (spec) where
 
 import qualified Data.ByteString as BS
+import Data.Maybe (mapMaybe)
 import qualified Data.Text.Encoding as TE
 import Test.Hspec
 
 import Polysemy (Sem, run)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listFiles, listAllFiles, readFile)
 import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
+import Storyteller.Common.Types (Note(..))
 import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
-import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Core.Types (BranchName(..), fromTick)
 
 import Server.Core.Branch (Main)
 import Server.Writer.Branch (summarize, uploadFiles, importCharacterCard)
@@ -168,7 +171,7 @@ importCharacterCardSpec runner = describe "importCharacterCard" $ do
             [ ("sheet.md", "Alice is a curious explorer.")
             , ("instructions.md", "Speaks in short sentences.")
             ]
-            Nothing
+            Nothing Nothing
           runBranchAndFS @Main (BranchName "character/alice") $ do
             sheet        <- readFile @(BranchTag Main) "sheet.md"
             instructions <- readFile @(BranchTag Main) "instructions.md"
@@ -177,7 +180,7 @@ importCharacterCardSpec runner = describe "importCharacterCard" $ do
 
   it "the branch is discoverable via getBranch afterwards" $ do
     let result = run $ runner $ do
-          importCharacterCard (BranchName "character/bob") [("sheet.md", "Bob.")] Nothing
+          importCharacterCard (BranchName "character/bob") [("sheet.md", "Bob.")] Nothing Nothing
           getBranch (BranchName "character/bob")
     result `shouldSatisfy` either (const False) (/= Nothing)
 
@@ -188,10 +191,32 @@ importCharacterCardSpec runner = describe "importCharacterCard" $ do
   -- not sit as an opaque binary blob.
   it "deposited files are atom-tracked, unlike a plain upload" $ do
     let result = run $ runner $ do
-          importCharacterCard (BranchName "character/carol") [("sheet.md", "Carol.")] Nothing
+          importCharacterCard (BranchName "character/carol") [("sheet.md", "Carol.")] Nothing Nothing
           runBranchAndFS @Main (BranchName "character/carol") $
             runStorage @Main (Ops.hasAnyAtom "sheet.md")
     result `shouldBe` Right True
+
+  -- The card's provenance (imported-from/creator attribution, creator
+  -- notes) is metadata about the import for the human author, not part of
+  -- what an agent reading sheet.md should treat as the character's
+  -- identity/voice -- see this function's own Haddock. It lands as a
+  -- free-floating Note tick instead, found here the same way
+  -- 'Storyteller.Common.Annotation.addNote' itself checks ref validity:
+  -- walking every tick reachable from the branch head.
+  it "deposits the note as a free-floating Note tick, not sheet.md prose" $ do
+    let result = run $ runner $ do
+          importCharacterCard (BranchName "character/erin") [("sheet.md", "Erin.")] Nothing
+            (Just "Imported from a SillyTavern character card by Some Creator.")
+          runBranchAndFS @Main (BranchName "character/erin") $ do
+            sheet <- readFile @(BranchTag Main) "sheet.md"
+            (_, ticks) <- runStorage @Main (Tick.newTypesTicksSince Nothing)
+            return (TE.decodeUtf8 sheet, mapMaybe (fromTick @Note) ticks)
+    case result of
+      Left err -> expectationFailure err
+      Right (sheet, notes) -> do
+        sheet `shouldBe` "Erin."
+        map noteBody notes `shouldBe` ["Imported from a SillyTavern character card by Some Creator."]
+        map noteRefs notes `shouldBe` [[]]
 
   -- The avatar rides in the same atomic command now (see this function's
   -- own Haddock for why: a separate follow-up PUT raced the branch's own
@@ -200,7 +225,7 @@ importCharacterCardSpec runner = describe "importCharacterCard" $ do
   it "deposits the avatar alongside the text files when given one" $ do
     let bytes = BS.pack [0x89, 0x50, 0x4e, 0x47]
     let result = run $ runner $ do
-          importCharacterCard (BranchName "character/dana") [("sheet.md", "Dana.")] (Just ("avatar.png", bytes))
+          importCharacterCard (BranchName "character/dana") [("sheet.md", "Dana.")] (Just ("avatar.png", bytes)) Nothing
           runBranchAndFS @Main (BranchName "character/dana") $ do
             content <- readFile @(BranchTag Main) "avatar.png"
             tracked <- runStorage @Main (Ops.hasAnyAtom "avatar.png")

@@ -122,10 +122,11 @@ interface PendingCard {
   branch: string;
   files: { path: string; content: string }[];
   avatar?: File;
+  note: string;
 }
 
 function CardImportZone({ onImport }: {
-  onImport: (branch: string, files: { path: string; content: string }[], avatar?: File) => Promise<void>;
+  onImport: (branch: string, files: { path: string; content: string }[], avatar?: File, note?: string) => Promise<void>;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const [pending, setPending] = useState<PendingCard | null>(null);
@@ -139,8 +140,8 @@ function CardImportZone({ onImport }: {
       const raw = isPng ? extractPngCardPayload(await file.arrayBuffer()) : await file.text();
       if (raw === null) throw new Error("no character card metadata found in this PNG");
       const card = parseCardJson(raw);
-      const { branch, files } = buildCharacterFiles(card);
-      setPending({ card, branch, files, avatar: isPng ? file : undefined });
+      const { branch, files, note } = buildCharacterFiles(card);
+      setPending({ card, branch, files, avatar: isPng ? file : undefined, note });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
     }
@@ -171,10 +172,11 @@ function CardImportZone({ onImport }: {
         <div style={{ fontSize: 9, color: "var(--text-ghost)", marginBottom: 8 }}>
           Creates {pending.files.map((f) => f.path).join(", ")}
           {pending.avatar ? ", avatar.png" : ""}
+          {" + a note (provenance, not sheet.md)"}
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           <button
-            onClick={() => { onImport(pending.branch, pending.files, pending.avatar); setPending(null); }}
+            onClick={() => { onImport(pending.branch, pending.files, pending.avatar, pending.note); setPending(null); }}
             disabled={!pending.branch.trim()}
             style={{
               flex: 1, fontSize: 10, padding: "4px 8px", background: "var(--amber)", border: "none",
@@ -268,7 +270,7 @@ export function LeftSidebar({
   // SillyTavern character card import (see CardImportZone) — one branch
   // plus its generated files, and the source PNG itself when the card came
   // from one (used as the character's avatar.png).
-  onImportCharacterCard: (branch: string, files: { path: string; content: string }[], avatar?: File) => Promise<void>;
+  onImportCharacterCard: (branch: string, files: { path: string; content: string }[], avatar?: File, note?: string) => Promise<void>;
   conns: ConnInfo[];
   error: string | null;
 }) {

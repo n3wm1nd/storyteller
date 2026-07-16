@@ -141,8 +141,13 @@ export type SessionCommand =
   // separate avatar PUT — that split raced the avatar's upload against
   // the branch's own creation in practice, not just in theory). `avatar`
   // is `undefined` for a card with no image (any .json card, or a .png
-  // with no embedded portrait a viewer would show).
-  | { type: "import-character-card"; id?: string; branch: string; files: { path: string; content: string }[]; avatar?: string };
+  // with no embedded portrait a viewer would show). `note`, when given,
+  // lands as a free-floating Note tick rather than sheet.md prose — a
+  // card's provenance/creator-notes are metadata about the import for the
+  // human author, not part of what an agent should read as the
+  // character's identity or voice (see lib/taverncard.ts's
+  // buildImportNote).
+  | { type: "import-character-card"; id?: string; branch: string; files: { path: string; content: string }[]; avatar?: string; note?: string };
 
 // One character branch's raw summary — sheet.md content, unprocessed (see
 // WS-PROTOCOL.md's "read is raw-but-complete" rule). The client is

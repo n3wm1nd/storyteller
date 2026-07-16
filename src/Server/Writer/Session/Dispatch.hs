@@ -90,7 +90,7 @@ runCommand env conn cmd = case cmd of
   -- function should know about. A malformed payload throws (caught the
   -- same way any other command failure is, see 'Server.Writer.Session.
   -- Connection') rather than silently dropping the avatar.
-  ImportCharacterCard _mid branch files avatarB64 -> do
+  ImportCharacterCard _mid branch files avatarB64 note -> do
     let name = BranchName branch
     avatar <- case avatarB64 of
       Nothing -> return Nothing
@@ -100,7 +100,7 @@ runCommand env conn cmd = case cmd of
     getBranch name >>= \case
       Just _  -> throw @String ("branch already exists: " <> T.unpack branch)
       Nothing -> do
-        importCharacterCard name [(cfPath f, cfContent f) | f <- files] avatar
+        importCharacterCard name [(cfPath f, cfContent f) | f <- files] avatar note
         branchNames >>= push . BranchList
         characterSummaries >>= push . CharacterList
 

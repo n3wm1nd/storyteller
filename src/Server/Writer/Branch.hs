@@ -42,6 +42,7 @@ import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
 import Server.Core.Util (withBranch)
 
+import qualified Storyteller.Common.Annotation as Annotation
 import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryGenerate)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
@@ -159,7 +160,16 @@ charGen name path scenario seed = do
 --   content -- e.g. @sheet.md@ for identity/personality, @instructions.md@
 --   for the roleplay-flavored fields a future impersonation agent would
 --   consume, an optional lore file for an embedded @character_book@ --
---   this function only knows "branch, files, optional avatar."
+--   this function only knows "branch, files, optional avatar, optional
+--   note."
+--
+--   @note@, when given, lands as a free-floating 'Storyteller.Common.
+--   Types.Note' (no refs -- a remark on the import as a whole, not on any
+--   one atom) rather than prose in a file: a card's provenance
+--   (imported-from/creator attribution) and the creator's own notes are
+--   metadata about the import for the human author, not part of what an
+--   agent reading @sheet.md@ should treat as the character's identity or
+--   voice -- see lib/taverncard.ts's own 'buildImportNote'.
 --
 --   Unlike 'charGen', does not tolerate the branch already existing --
 --   an import always names a fresh branch (checked by the caller before
@@ -170,8 +180,9 @@ importCharacterCard
   => BranchName
   -> [(FilePath, T.Text)]
   -> Maybe (FilePath, BS.ByteString)
+  -> Maybe T.Text
   -> Sem r ()
-importCharacterCard name files avatar = do
+importCharacterCard name files avatar note = do
   _ <- createBranch name
   runBranchAndFS @ImportBranch name $ do
     mapM_ (\(path, content) -> writeFile @(BranchTag ImportBranch) path (TE.encodeUtf8 content)) files
@@ -179,6 +190,9 @@ importCharacterCard name files avatar = do
     case avatar of
       Nothing              -> return ()
       Just (path, content) -> void $ runStorage @ImportBranch (Ops.addBinary path content)
+    case note of
+      Nothing -> return ()
+      Just n  -> runStorage @ImportBranch (Annotation.addNote [] n)
 
 -- | Write one or more files' content directly into the branch, bypassing
 --   the chat-agent pipeline entirely (an upload isn't an LLM-authored

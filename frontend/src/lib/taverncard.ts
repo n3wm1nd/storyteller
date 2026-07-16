@@ -155,7 +155,14 @@ export function slugify(name: string): string {
 // lorebook — when present — becomes its own lore file rather than being
 // force-fit into either. Sections with no source content are omitted
 // entirely rather than left as empty headings.
-export function buildCharacterFiles(card: ParsedCard): { branch: string; files: { path: string; content: string }[] } {
+//
+// Provenance (imported-from/creator attribution) and the creator's own
+// notes are neither of those: they're metadata about the import for the
+// human author to see, not part of the character the LLM should read as
+// identity/voice. Both go out as a free-floating Note tick (see
+// Server.Writer.Branch.importCharacterCard) instead of prose lines in
+// sheet.md.
+export function buildCharacterFiles(card: ParsedCard): { branch: string; files: { path: string; content: string }[]; note: string } {
   const branch = `character/${slugify(card.name)}`;
   const files: { path: string; content: string }[] = [{ path: "sheet.md", content: buildSheet(card) }];
 
@@ -165,7 +172,13 @@ export function buildCharacterFiles(card: ParsedCard): { branch: string; files: 
   const lore = buildLore(card);
   if (lore) files.push({ path: "lore.md", content: lore });
 
-  return { branch, files };
+  return { branch, files, note: buildImportNote(card) };
+}
+
+function buildImportNote(card: ParsedCard): string {
+  const lines = [`Imported from a SillyTavern character card${card.creator ? ` by ${card.creator}` : ""}.`];
+  if (card.creatorNotes) lines.push(card.creatorNotes);
+  return lines.join("\n\n");
 }
 
 function buildSheet(card: ParsedCard): string {
@@ -174,8 +187,6 @@ function buildSheet(card: ParsedCard): string {
   if (card.personality) sections.push(`## Personality\n\n${card.personality}`);
   if (card.scenario) sections.push(`## Scenario\n\n${card.scenario}`);
   if (card.tags && card.tags.length > 0) sections.push(`Tags: ${card.tags.join(", ")}`);
-  if (card.creatorNotes) sections.push(`## Creator Notes\n\n${card.creatorNotes}`);
-  if (card.creator) sections.push(`_Imported from a SillyTavern character card by ${card.creator}._`);
   return sections.join("\n\n") + "\n";
 }
 

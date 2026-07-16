@@ -50,8 +50,13 @@ data SessionCommand
   -- separate @PUT@ is a second, independent HTTP connection racing this
   -- command's own branch creation, which turned out to be a real problem
   -- in practice, not just a theoretical one — see
-  -- 'Server.Writer.Branch.importCharacterCard'.
-  | ImportCharacterCard { scId :: Maybe T.Text, scBranch :: T.Text, scFiles :: [CardFile], scAvatar :: Maybe T.Text }
+  -- 'Server.Writer.Branch.importCharacterCard'. 'scNote', when given,
+  -- lands as a free-floating Note tick rather than prose in a file — a
+  -- card's provenance (imported-from/creator attribution) and the
+  -- creator's own notes are metadata about the import for the human
+  -- author, not part of the character an agent reading @sheet.md@ should
+  -- treat as identity/voice.
+  | ImportCharacterCard { scId :: Maybe T.Text, scBranch :: T.Text, scFiles :: [CardFile], scAvatar :: Maybe T.Text, scNote :: Maybe T.Text }
   deriving (Show)
 
 instance FromJSON SessionCommand where
@@ -63,7 +68,7 @@ instance FromJSON SessionCommand where
       "delete-branch"          -> DeleteBranch i <$> o .: "branch"
       "undo.reset"             -> UndoReset i <$> o .: "entryId"
       "cancel"                 -> Cancel i <$> o .: "targetId"
-      "import-character-card"  -> ImportCharacterCard i <$> o .: "branch" <*> o .: "files" <*> o .:? "avatar"
+      "import-character-card"  -> ImportCharacterCard i <$> o .: "branch" <*> o .: "files" <*> o .:? "avatar" <*> o .:? "note"
       _                        -> fail ("unknown session command: " <> T.unpack t)
 
 -- | Short label for logging — see 'Server.Writer.File.Protocol.commandKind'.

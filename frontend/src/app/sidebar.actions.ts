@@ -70,9 +70,9 @@ export function createBranch(name: string) {
 // in the same command instead of being reconciled after the fact —
 // avatars from a character card are small enough that folding them in
 // costs nothing.
-export async function importCharacterCard(branch: string, files: { path: string; content: string }[], avatar?: Blob) {
+export async function importCharacterCard(branch: string, files: { path: string; content: string }[], avatar?: Blob, note?: string) {
   const avatarB64 = avatar ? await blobToBase64(avatar) : undefined;
-  getServerCache()._session?.send({ type: "import-character-card", branch, files, avatar: avatarB64 });
+  getServerCache()._session?.send({ type: "import-character-card", branch, files, avatar: avatarB64, note });
 }
 
 // FileReader's own base64 encoder, via a data URL ("data:<mime>;base64,
