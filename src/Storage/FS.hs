@@ -18,6 +18,7 @@ module Storage.FS
   , remove
   , removeRecursive
   , list
+  , exists
   , isDirectory
   , listChildren
 
@@ -75,6 +76,16 @@ list :: Monad m => StoreT m [FilePath]
 list = do
   wt <- getAmbientTree
   return [ p | (p, FSFile _) <- Map.toList wt ]
+
+-- | Whether @path@ currently exists as a *file* in the ambient tree --
+--   one map lookup, never a scan of 'list'. A directory entry answers
+--   'False'; that's 'isDirectory's question.
+exists :: Monad m => FilePath -> StoreT m Bool
+exists path = do
+  wt <- getAmbientTree
+  return $ case Map.lookup path wt of
+    Just (FSFile _) -> True
+    _               -> False
 
 -- | Whether @path@ is an explicit directory entry in the ambient tree.
 isDirectory :: Monad m => FilePath -> StoreT m Bool

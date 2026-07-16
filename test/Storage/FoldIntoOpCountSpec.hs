@@ -19,6 +19,7 @@ module Storage.FoldIntoOpCountSpec (spec) where
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)
 
+import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
@@ -103,3 +104,23 @@ spec = do
       case opsFor 2000 atoms edited of
         Left err     -> expectationFailure err
         Right counts -> ocReads counts `shouldSatisfy` (< 50)
+
+  describe "commitWorktree: untracked (binary) paths share one tracking walk" $
+    -- A path with no atom history can only be answered by walking to
+    -- root; what must *not* happen is one such walk per path
+    -- ('atomTrackedAmong' batches them into one). The walk itself is
+    -- inherently O(chain), so the equality here is on the *marginal*
+    -- cost: six extra binary paths cost exactly the same handful of
+    -- extra operations over a huge chain as over a tiny one.
+    it "the marginal cost of six extra binary paths is independent of chain length" $ do
+      let run n j = snd <$> runMeasuring
+            (do noise n
+                mapM_ (\i -> writeFile ("bin" <> show (i :: Int) <> ".dat")
+                               (BS.pack [0xff, 0xfe, fromIntegral i]))
+                      [1 .. j])
+            commitWorktree
+          marginal n = (\small big -> (ocReads big - ocReads small, ocWrites big - ocWrites small))
+                         <$> run n 2 <*> run n 8
+      case (marginal 5, marginal 2000) of
+        (Right m5, Right m2000) -> m2000 `shouldBe` m5
+        (a, b)                  -> expectationFailure ("a run failed: " <> show (a, b))

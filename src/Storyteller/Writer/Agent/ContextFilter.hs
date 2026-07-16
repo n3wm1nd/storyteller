@@ -31,7 +31,6 @@ module Storyteller.Writer.Agent.ContextFilter
   , applyContextLayout
   ) where
 
-import Control.Monad (filterM)
 import Data.Aeson (FromJSON(..), withObject, (.:), (.:?))
 import Data.List (sortOn)
 import Data.Maybe (listToMaybe, mapMaybe)
@@ -63,8 +62,9 @@ hideBinaryFiles
   .  ( Members '[FileSystem project, FileSystemRead project, BranchOp branch, Fail] r )
   => Sem r a -> Sem r a
 hideBinaryFiles action = do
-  paths  <- listAllFiles @project "/"
-  binary <- filterM (\p -> not <$> runStorage @branch (Ops.hasAnyAtom p)) paths
+  paths   <- listAllFiles @project "/"
+  tracked <- runStorage @branch (Ops.atomTrackedAmong paths)
+  let binary = filter (`Set.notMember` tracked) paths
   let resolved = Set.fromList (map (Path.resolveRelative "/") binary)
       filt = PathFilter
         { shouldInclude = \p -> not (Set.member p resolved)

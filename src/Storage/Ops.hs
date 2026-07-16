@@ -22,6 +22,7 @@ module Storage.Ops
   , commitFiles
   , atomHistory
   , hasAnyAtom
+  , atomTrackedAmong
   , exists
 
     -- * Chain-editing operations -- position-aware moves\/merges\/splits
@@ -39,7 +40,7 @@ module Storage.Ops
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)
 
-import Control.Monad (foldM, filterM)
+import Control.Monad (foldM)
 import Control.Monad.State.Strict (lift)
 import Data.Array (Array, listArray, (!))
 import qualified Data.ByteString as BS
@@ -52,11 +53,7 @@ import qualified Data.Text.Encoding as TE
 
 import Storage.Core
 import qualified Storage.FS as FS
-import Storage.FS (list)
-
--- | Whether @path@ currently has any content in the ambient tree.
-exists :: StoreM m => FilePath -> StoreT m Bool
-exists path = elem path <$> list
+import Storage.FS (list, exists)
 
 -- | Append @content@ to @path@ in the ambient tree, creating it if
 --   absent: read whatever's there already (if anything), write the
@@ -112,14 +109,12 @@ deleteFile path = do
 --   left) without finding one.
 findAtom :: StoreM m => ObjectHash -> StoreT m ObjectHash
 findAtom start = do
-  t <- lift (readTick start)
+  (cd, t) <- lift (readCommitTick start)
   case t of
     Atom {} -> return start
-    _       -> do
-      cd <- lift (readCommit start)
-      case commitParents cd of
-        []      -> fail "findAtom: no atom in history"
-        (p : _) -> findAtom p
+    _       -> case commitParents cd of
+      []      -> fail "findAtom: no atom in history"
+      (p : _) -> findAtom p
 
 -- | Apply @f@ to the nearest atom's own content -- walking back from
 --   head, skipping over anything since (notes and other bookkeeping
@@ -246,7 +241,16 @@ commitWorktree :: StoreM m => StoreT m ()
 commitWorktree = do
   ambient   <- list
   committed <- inWorktree list
-  mapM_ commitFile (List.nub (ambient ++ committed))
+  commitPathSet (Set.toList (Set.fromList ambient `Set.union` Set.fromList committed))
+
+-- | The shared tail of 'commitWorktree'\/'commitFiles': answer "which of
+--   these are atom-tracked" for every path in *one* chain walk
+--   ('atomTrackedAmong') instead of one 'hasAnyAtom' walk per path, then
+--   reconcile each and sweep up whatever's left ('syncOpaqueContent').
+commitPathSet :: StoreM m => [FilePath] -> StoreT m ()
+commitPathSet paths = do
+  tracked <- atomTrackedAmong paths
+  mapM_ (\p -> commitFileKnown (p `Set.member` tracked) p) paths
   syncOpaqueContent
 
 -- | Whatever the per-path loop above left untouched -- any path that was
@@ -280,7 +284,7 @@ syncOpaqueContent = do
   case divergentPaths current committed of
     []    -> return ()
     diffs -> do
-      tracked <- filterM hasAnyAtom diffs
+      tracked <- Set.toList <$> atomTrackedAmong diffs
       case tracked of
         [] -> () <$ store (Opaque [])
         _  -> fail
@@ -313,6 +317,13 @@ divergentPaths a b =
 commitFile :: StoreM m => FilePath -> StoreT m ()
 commitFile path = do
   tracked <- hasAnyAtom path
+  commitFileKnown tracked path
+
+-- | 'commitFile' with the path's atom-tracked status already known --
+--   so a batch caller ('commitPathSet') that answered it for every path
+--   in one walk doesn't pay a separate walk per path here.
+commitFileKnown :: StoreM m => Bool -> FilePath -> StoreT m ()
+commitFileKnown tracked path = do
   if not tracked
     then do
       present <- exists path
@@ -347,17 +358,29 @@ commitFile path = do
 --   proves @path@ is atom-governed from here on -- there's no need to see
 --   the rest of its history (let alone reach root) just to answer this.
 hasAnyAtom :: StoreM m => FilePath -> StoreT m Bool
-hasAnyAtom path = headHash >>= go
+hasAnyAtom path = Set.member path <$> atomTrackedAmong [path]
+
+-- | Which of @paths@ have ever had at least one 'Atom' tick --
+--   'hasAnyAtom' for a whole batch, sharing one walk: each commit is
+--   read once however many paths are still open, and the walk stops the
+--   moment every path has been answered (the same short-circuit
+--   'hasAnyAtom' has always had, generalized). The worst case -- some
+--   path never atom-tracked at all -- is one full walk *total*, where
+--   asking per path paid it once per such path.
+atomTrackedAmong :: StoreM m => [FilePath] -> StoreT m (Set.Set FilePath)
+atomTrackedAmong paths = headHash >>= go (Set.fromList paths) Set.empty
   where
-    go h = do
-      t <- lift (readTick h)
-      case t of
-        Atom _ p _ _ | p == path -> return True
-        _ -> do
-          cd <- lift (readCommit h)
+    go pending found h
+      | Set.null pending = return found
+      | otherwise = do
+          (cd, t) <- lift (readCommitTick h)
+          let (pending', found') = case t of
+                Atom _ p _ _ | Set.member p pending
+                  -> (Set.delete p pending, Set.insert p found)
+                _ -> (pending, found)
           case commitParents cd of
-            []      -> return False
-            (p : _) -> go p
+            []        -> return found'
+            (par : _) -> go pending' found' par
 
 -- | This file's own *current lifetime*, oldest first: every atom strictly
 --   after @path@'s most recent deletion event (see
@@ -370,21 +393,50 @@ hasAnyAtom path = headHash >>= go
 --   nor drop it. (Dropping a marker would splice the previous lifetime's
 --   content back into the tree underneath every atom after it.)
 atomHistory :: StoreM m => FilePath -> StoreT m [(ObjectHash, Text)]
-atomHistory path = headHash >>= \h -> go h []
+atomHistory path = do
+  atoms <- lifetimeAtoms path
+  return [ (h, content) | (h, Atom _ _ _ content) <- atoms ]
+
+-- | Every atom in @path@'s current lifetime, oldest first, each with its
+--   own id -- the walk 'atomHistory' (content only) and
+--   'checkpointFile' (ids and tags too) both project from. Two
+--   boundaries end it, whichever is hit first, both strictly about the
+--   *current* lifetime:
+--
+--   * a removal marker ('Storage.Core.removedTagKey') -- the previous
+--     lifetime it seals off is not this one;
+--   * the lifetime's own creation atom: an atom on @path@ whose parent
+--     commit doesn't have @path@ in its tree at all (the same tree-truth
+--     definition 'findCreationTick' uses). Everything below it is either
+--     unrelated, or an earlier lifetime that ended *without* a marker
+--     (an external\/'Storage.Core.Opaque' deletion) -- and, crucially,
+--     it's what stops a never-deleted file's walk at its creation
+--     instead of paying for the entire chain below it.
+--
+--   The creation check costs one 'lookupPathInTree' (O(path depth)) per
+--   on-@path@ atom -- never per commit; commits that aren't @path@'s own
+--   atoms are passed over with a single read.
+lifetimeAtoms :: StoreM m => FilePath -> StoreT m [(ObjectHash, Tick)]
+lifetimeAtoms path = do
+  h <- headHash
+  (cd, t) <- lift (readCommitTick h)
+  go h cd t []
   where
-    go h acc = do
-      t <- lift (readTick h)
-      case t of
-        Atom _ p tags content | p == path ->
-          if isRemoval tags
-            then return acc
-            else continue h ((h, content) : acc)
-        _ -> continue h acc
-    continue h acc = do
-      cd <- lift (readCommit h)
-      case commitParents cd of
-        []      -> return acc
-        (p : _) -> go p acc
+    go h cd t acc = case t of
+      Atom _ p tags _ | p == path, isRemoval tags -> return acc
+      a@(Atom _ p _ _) | p == path -> case commitParents cd of
+        [] -> return ((h, a) : acc)
+        (par : _) -> do
+          (pcd, pt) <- lift (readCommitTick par)
+          present   <- lift (lookupPathInTree (commitTree pcd) path)
+          case present of
+            Nothing -> return ((h, a) : acc)   -- @h@ is the creation atom
+            Just _  -> go par pcd pt ((h, a) : acc)
+      _ -> case commitParents cd of
+        [] -> return acc
+        (par : _) -> do
+          (pcd, pt) <- lift (readCommitTick par)
+          go par pcd pt acc
 
 -- | @path@'s current ambient content as text -- empty if the path
 --   doesn't exist there at all. Fails loudly on invalid UTF-8 rather
@@ -478,8 +530,7 @@ fullContentAt h path = do
 -- same way 'atomHistory' does.
 reconcileAtom :: StoreM m => FilePath -> Bool -> Text -> ObjectHash -> StoreT m ()
 reconcileAtom path present target h = do
-  t  <- lift (readTick h)
-  cd <- lift (readCommit h)
+  (cd, t) <- lift (readCommitTick h)
   let mbParent = case commitParents cd of (p : _) -> Just p; [] -> Nothing
   case t of
     Atom _ p tags _ | p == path, isRemoval tags -> emitRemainder path h target
@@ -564,10 +615,9 @@ splitAroundExact needle haystack = case T.breakOn needle haystack of
 --   is only ever judged by @present@ (see 'classify').
 settleTrailingMarkers :: StoreM m => FilePath -> Bool -> ObjectHash -> StoreT m ()
 settleTrailingMarkers path present h = do
-  t <- lift (readTick h)
+  (cd, t) <- lift (readCommitTick h)
   case t of
     Atom _ p _ c | p == path, T.null c -> do
-      cd <- lift (readCommit h)
       if present then return () else () <$ at h drop
       case commitParents cd of
         []       -> return ()
@@ -598,18 +648,16 @@ historyFrom :: StoreM m => FilePath -> ObjectHash -> StoreT m ([(ObjectHash, Tex
 historyFrom path h0 = go h0 []
   where
     go h acc = do
-      t <- lift (readTick h)
+      (cd, t) <- lift (readCommitTick h)
       case t of
         Atom _ p tags content | p == path ->
           if isRemoval tags
             then return (acc, h)
-            else continue h ((h, content) : acc)
-        _ -> continue h acc
-    continue h acc = do
-      cd <- lift (readCommit h)
-      case commitParents cd of
-        []      -> return (acc, h)
-        (p : _) -> go p acc
+            else continue cd h ((h, content) : acc)
+        _ -> continue cd h acc
+    continue cd h acc = case commitParents cd of
+      []      -> return (acc, h)
+      (p : _) -> go p acc
 
 -- | The general case 'resolveLocal' can't settle from a single atom's own
 --   edges: a change spanning more than one atom's own boundary. Falls
@@ -818,7 +866,7 @@ zip6 _ _ _ _ _ _ = []
 --   deliberately left untouched by 'commitFile' itself, and wouldn't
 --   otherwise ever land in a real commit at all.
 commitFiles :: StoreM m => [FilePath] -> StoreT m ()
-commitFiles paths = mapM_ commitFile paths >> syncOpaqueContent
+commitFiles = commitPathSet
 
 -- | Every non-root tick reachable from head, oldest first -- the position
 --   vocabulary 'chainPositions'\/'moveTick'\/'mergeAtoms' all share.
@@ -836,11 +884,17 @@ findPos oid chain = case List.findIndex ((== oid) . fst) chain of
 
 -- | Resolve each id's position among content ticks (root excluded),
 --   oldest-first -- for a caller that needs to process a batch of ids in
---   chain order without walking the chain once per id.
+--   chain order without walking the chain once per id. One position map
+--   built from the one chain walk, then a lookup per id -- not a
+--   'findPos' list scan per id on top of it.
 chainPositions :: StoreM m => [ObjectHash] -> StoreT m [(ObjectHash, Int)]
 chainPositions oids = do
   chain <- contentChain
-  mapM (\oid -> (,) oid <$> findPos oid chain) oids
+  let posMap = Map.fromList (zip (map fst chain) [0 ..])
+  mapM (\oid -> case Map.lookup oid posMap of
+          Just i  -> return (oid, i)
+          Nothing -> fail ("chainPositions: not found: " <> T.unpack (unObjectHash oid)))
+       oids
 
 -- | Remove @tid@ from the chain entirely, replaying the tail on top of
 --   whatever comes before it.
@@ -1012,21 +1066,21 @@ splitTick tid pieces = at tid $ do
 --   path that was deleted and later reused at the same path has two (or
 --   more) such ticks in its history; this always finds the one closest to
 --   head, i.e. the file as it currently stands. Checks presence via
---   'readPathAt' -- a direct walk down @path@'s own segments -- rather
---   than 'loadWorkingTree', which would materialize every other file in
---   the parent's tree just to answer a single-path question, once per
---   atom on @path@ encountered along the way.
+--   'lookupPathAt' -- a direct walk down @path@'s own segments, never
+--   touching the blob's own bytes -- rather than 'loadWorkingTree', which
+--   would materialize every other file in the parent's tree just to
+--   answer a single-path question, once per atom on @path@ encountered
+--   along the way.
 findCreationTick :: StoreM m => FilePath -> StoreT m ObjectHash
 findCreationTick path = headHash >>= go
   where
     go h = do
-      t  <- lift (readTick h)
-      cd <- lift (readCommit h)
+      (cd, t) <- lift (readCommitTick h)
       case t of
         Atom _ p _ _ | p == path -> case commitParents cd of
           []        -> return h
           (par : _) -> do
-            parentHas <- lift (readPathAt par path)
+            parentHas <- lift (lookupPathAt par path)
             case parentHas of
               Just _  -> descend cd
               Nothing -> return h
