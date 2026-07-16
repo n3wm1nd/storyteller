@@ -111,6 +111,14 @@ spec runner = describe "characters present in a scene (real LLM, cached)" $
       seedCharacter rennickBranch rennickSheet
       seedCharacter oyelaranBranch oyelaranSheet
 
+      -- A presence tick only marks who's in a scene that already exists --
+      -- 'chapters/ch1.md' has to actually land in the tree first (a real
+      -- atom, not just a tick that mentions its path), or fileTicksOf's
+      -- tree-presence-scoped walk correctly finds nothing to attach the
+      -- presence ticks below to. See PresenceSpec's own 'writeAtom' for the
+      -- same requirement.
+      _ <- runStorage @Main (Ops.addAtom sceneFile "")
+
       _ <- recordPresence @Main sceneFile (Character rennickBranch) Enter
       _ <- recordPresence @Main sceneFile (Character oyelaranBranch) Enter
       active <- activeCharactersFor @Main sceneFile

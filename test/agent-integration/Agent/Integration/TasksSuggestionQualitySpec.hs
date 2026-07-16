@@ -17,9 +17,11 @@
 --   quiet pattern of petty theft, a flinch at a specific trigger) rather
 --   than one diffuse arc -- a generic suggestion has nothing to snag on;
 --   a grounded one should visibly pick at least one of them up. Also
---   checks the aversions section actually lands as an anti-goal (a
---   specific outcome steered away from) rather than a bare trait/dislike --
---   the distinction the module's system prompt was written to draw.
+--   checks the passive-goals section actually lands as a conditional
+--   "if X happens, character does/becomes Y" reaction to a possible scene
+--   development, specific to this character, rather than a bare trait,
+--   dislike, or feeling stated on its own -- the distinction
+--   'Storyteller.Writer.Agent.Tasks.tasksFormatNote' was written to draw.
 --
 --   Direct 'tasksGenerateAgent' call, no branch/storage needed -- same
 --   "call the LLM function directly" shape
@@ -78,17 +80,18 @@ judgeQuestionConcreteness = T.unwords
   , "journal actually shows?"
   ]
 
-judgeQuestionAversionShape :: T.Text
-judgeQuestionAversionShape = T.unwords
-  [ "Look only at the \"## Aversions\" section of this proposed tasks.md."
-  , "Does every entry in it describe a specific outcome or event the"
-  , "character is steering away from (an anti-goal -- something that could"
-  , "actually happen in the story and be avoided or not) rather than a bare"
-  , "personality trait, dislike, or feeling stated on its own (e.g. \"is"
-  , "anxious\" or \"dislikes crowds\" would fail this, but \"being caught and"
-  , "losing the only trust Harun still has in him\" would pass)? Answer no if"
-  , "the Aversions section is empty, or if any entry is just a trait/dislike"
-  , "with no concrete outcome attached."
+judgeQuestionPassiveShape :: T.Text
+judgeQuestionPassiveShape = T.unwords
+  [ "Look only at the \"## Passive goals\" section of this proposed"
+  , "tasks.md. Does every entry in it describe a specific, possible scene"
+  , "development and this particular character's own reaction to it (an"
+  , "\"if X happens, character does/becomes Y\" shape, e.g. \"if Harun"
+  , "notices the missing coppers, claim it was a mistake\") rather than a"
+  , "bare personality trait, dislike, or feeling stated on its own with no"
+  , "triggering situation attached (e.g. \"is anxious\" or \"dislikes"
+  , "crowds\" would fail this)? Answer no if the Passive goals section is"
+  , "empty, or if any entry is just a trait/feeling with no conditional"
+  , "situation attached."
   ]
 
 spec
@@ -104,12 +107,12 @@ spec runner = describe "tasksGenerateAgent (real LLM, cached)" $
         content `shouldNotBe` ""
         content `shouldSatisfy` T.isInfixOf "## Short-term goals"
         content `shouldSatisfy` T.isInfixOf "## Long-term goals"
-        content `shouldSatisfy` T.isInfixOf "## Aversions"
+        content `shouldSatisfy` T.isInfixOf "## Passive goals"
 
       Verdict concrete concreteReason <- judge @judgeModel content judgeQuestionConcreteness
       info ("concreteness verdict: " <> T.pack (show concrete) <> " -- " <> concreteReason)
       embed $ concrete `shouldBe` True
 
-      Verdict shaped shapedReason <- judge @judgeModel content judgeQuestionAversionShape
-      info ("aversion-shape verdict: " <> T.pack (show shaped) <> " -- " <> shapedReason)
+      Verdict shaped shapedReason <- judge @judgeModel content judgeQuestionPassiveShape
+      info ("passive-goal-shape verdict: " <> T.pack (show shaped) <> " -- " <> shapedReason)
       embed $ shaped `shouldBe` True

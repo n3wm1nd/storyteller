@@ -156,15 +156,20 @@ logFileTree = do
 --   production), run 'writeAgent', then split and append the result. No
 --   pinned character branches or extra context items -- neither journey
 --   step here has any.
+--   History has to be read *before* this turn's own prompt is stored -- see
+--   'Server.Writer.File.chatWriter''s own Haddock: storing first would make
+--   'writeAgent' see this turn's own instruction twice, once via that
+--   history and once as 'Storyteller.Writer.Agent.Write.buildChapterMessages'\'s
+--   own trailing instruction message.
 writeChat
   :: forall r
   .  JourneyEffects r
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
-  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   (_existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
   currentTicks <- runStorage @Main (Tick.fileTicksOf path)
   Prose generated <- writeAgent [] [] [] fileCtx [] currentTicks (Instruction prompt)
+  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   appendGenerated path generated
   return generated
 

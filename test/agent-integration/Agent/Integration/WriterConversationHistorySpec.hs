@@ -76,21 +76,23 @@ spec
 spec runner = describe "same-file conversation history reaching the writer (real LLM, cached)" $
   it "keeps a second turn consistent with a detail only the first turn's own reply established" $
     runExpect @judgeModel runner $ do
-      -- Turn one: store the prompt, gather this file's history so far (just
-      -- that prompt, mirroring 'Server.Writer.File.chatWriter''s own
-      -- store-then-gather order), generate, then persist the result as an
-      -- atom -- exactly what turns this into a real prior turn for turn two
-      -- to see.
-      _ <- runStorage @Main (Tick.storeAs (Prompt scenePath turnOneInstruction))
+      -- Turn one: gather this file's history so far (empty), generate, store
+      -- the prompt, then persist the result as an atom -- exactly what turns
+      -- this into a real prior turn for turn two to see. History has to be
+      -- read *before* this turn's own prompt is stored -- see
+      -- 'Server.Writer.File.chatWriter''s own Haddock on why storing first
+      -- would make 'writeAgent' see this turn's own instruction twice (once
+      -- via history, once as its trailing instruction message).
       historySoFar1 <- runStorage @Main (Tick.fileTicksOf scenePath)
       Prose turnOneText <- writeAgent [] [] [] [] [] historySoFar1 (Instruction turnOneInstruction)
       info ("turn one output:\n" <> turnOneText)
       embed $ turnOneText `shouldNotBe` ""
+      _ <- runStorage @Main (Tick.storeAs (Prompt scenePath turnOneInstruction))
       _ <- runStorage @Main (Ops.append scenePath turnOneText)
 
       -- Turn two: same file, new prompt, history now includes turn one's
-      -- own prompt/reply pair.
-      _ <- runStorage @Main (Tick.storeAs (Prompt scenePath turnTwoInstruction))
+      -- own prompt/reply pair -- read before this turn's own prompt is
+      -- stored, same discipline as turn one.
       historySoFar2 <- runStorage @Main (Tick.fileTicksOf scenePath)
       info $ "history ticks for turn two: " <> T.pack (show (length historySoFar2))
       embed $ length historySoFar2 `shouldSatisfy` (> length historySoFar1)

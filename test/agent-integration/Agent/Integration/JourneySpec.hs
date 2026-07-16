@@ -56,7 +56,7 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
         -- heading per chapter with a few sentences under each, so even at
         -- eight chapters this should stay well under a single chapter's
         -- own word budget (below).
-        wordCount (jrOutline result) `shouldSatisfy` (<= 900)
+        checkWordCount "outline" 0 900 (jrOutline result)
 
         -- Asked for five chapters; models don't always land on the exact
         -- count, but wildly off means the split step ignored the outline
@@ -78,10 +78,10 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
         -- 2-3x, so this is a sanity bound (catches a one-line non-answer or
         -- a runaway multi-chapter wall of text), not a precision check.
         length (jrProse result) `shouldBe` length (jrChapters result)
-        mapM_ (\((_, BeatSheet sheet), (_, prose)) -> do
+        mapM_ (\((_, BeatSheet sheet), (path, prose)) -> do
                  prose `shouldNotBe` ""
                  prose `shouldNotBe` sheet
-                 wordCount prose `shouldSatisfy` \n -> n >= 100 && n <= 1200)
+                 checkWordCount path 100 1200 prose)
               (zip (map (\cb -> (cbPath cb, cbSheet cb)) (jrChapters result)) (jrProse result))
 
         -- Every beat sheet and its chapter file both actually landed on
@@ -120,3 +120,17 @@ spec runner = describe "a full outline -> beat sheets -> chapters session (real 
 
 wordCount :: T.Text -> Int
 wordCount = length . T.words
+
+-- | 'wordCount' bounds-check with a message that actually says what went
+--   wrong -- the bare @shouldSatisfy@ this replaced only ever reported the
+--   raw count ("predicate failed on: 1713"), leaving no way to tell which
+--   text (outline vs. which chapter) or which bound was missed without
+--   re-running with @VERBOSE=1@ and matching counts up by hand.
+checkWordCount :: String -> Int -> Int -> T.Text -> Expectation
+checkWordCount label lo hi text
+  | n >= lo && n <= hi = pure ()
+  | otherwise = expectationFailure $ concat
+      [ label, ": word count ", show n, " outside expected range ["
+      , show lo, ", ", show hi, "]"
+      ]
+  where n = wordCount text
