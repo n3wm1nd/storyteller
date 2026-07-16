@@ -298,6 +298,16 @@ export default function Home() {
     return bars;
   }, [showAllPresence, hoveredCharacter, hoverHighlight, fileChainTicks, fileChainHead]);
 
+  // Same reasoning as fileTicks above, but for the whole-branch chain the
+  // Ticks tab shows (which can run into the hundreds) — without this, every
+  // unrelated re-render while that tab is open re-walks and re-reverses the
+  // entire branch history and hands TicksView a new array identity, which
+  // then can't tell "nothing changed" from "everything changed".
+  const branchTicksNewestFirst = useMemo(
+    () => tickChain(ticks, branchHead).reverse(),
+    [ticks, branchHead],
+  );
+
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
     setSelectedFile(path);
@@ -665,7 +675,7 @@ export default function Home() {
           {centerTab === "ticks" && (
             <TicksView
               activeBranch={activeBranch}
-              ticks={tickChain(ticks, branchHead).reverse()}
+              ticks={branchTicksNewestFirst}
               onAddNote={addNote} onMoveTick={moveTick} onDeleteTick={deleteTickEntry}
               onSelectFile={handleSelectFile}
             />

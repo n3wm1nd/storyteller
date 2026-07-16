@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.20",
+    "@tanstack/react-virtual": "^3.14.6",
     "@tiptap/core": "^3.27.3",
     "@tiptap/pm": "^3.27.3",
     "@tiptap/react": "^3.27.3",

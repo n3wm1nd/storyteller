@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare, LogIn, LogOut } from "lucide-react";
 import { type WireTick } from "@/lib/serverCacheStore";
 import { tickPreview, tickField, characterDisplayName } from "@/lib/utils";
@@ -47,8 +48,13 @@ function MoveButton({ disabled, onClick, title, danger, children }: {
 
 // ── Tick row ──────────────────────────────────────────────────────────────────
 
-function TickRow({
-  tick, isFirst, isLast, prevTick, nextTick, related,
+// memo()'d because the list can run into the hundreds — with 400+ rows,
+// only the handful whose own props actually changed (typically just the
+// hover-related pair) should re-render, not the whole list. That only pays
+// off because the parent passes stable per-row primitives (ids, not fresh
+// closures) — see TicksView's onMoveUp/onMoveDown/onDelete below.
+const TickRow = memo(function TickRow({
+  tick, isFirst, isLast, prevTick, nextTick, afterNextTickId, related,
   onAddNote, onMoveUp, onMoveDown, onDelete, onHoverChange, onSelectFile,
 }: {
   tick: WireTick;
@@ -56,15 +62,16 @@ function TickRow({
   isLast: boolean;
   prevTick: WireTick | undefined;
   nextTick: WireTick | undefined;
+  afterNextTickId: string | undefined;
   // Whether the tick currently hovered elsewhere in the list references
   // this row, or is referenced by it — the "highlight referenced ticks on
   // hover" relation, computed once at the list level (see TicksView) since
   // it depends on every other row, not just this one.
   related: boolean;
   onAddNote: (refTickId: string, text: string) => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onDelete: () => void;
+  onMoveUp: (tickId: string, afterTickId?: string) => void;
+  onMoveDown: (tickId: string, afterTickId?: string) => void;
+  onDelete: (tickId: string) => void;
   onHoverChange: (tickId: string | null) => void;
   onSelectFile: (path: string) => void;
 }) {
@@ -153,12 +160,12 @@ function TickRow({
       <div style={{ position: "relative", display: "flex", alignItems: "center", padding: "5px 0", paddingRight: hovered ? 88 : 0, transition: "padding-right 0.12s" }}>
         {tickContent()}
         <div style={{ position: "absolute", right: 0, display: "flex", gap: 2, opacity: hovered ? 1 : 0, transition: "opacity 0.12s", pointerEvents: hovered ? "auto" : "none", background: "var(--surface-deep)", paddingLeft: 4 }}>
-          <MoveButton disabled={!canMoveUp} onClick={onMoveUp} title="Move up"><MoveUp style={{ width: 10, height: 10 }} /></MoveButton>
-          <MoveButton disabled={!canMoveDown} onClick={onMoveDown} title="Move down"><MoveDown style={{ width: 10, height: 10 }} /></MoveButton>
+          <MoveButton disabled={!canMoveUp} onClick={() => onMoveUp(tick.tickId, prevTick?.tickId)} title="Move up"><MoveUp style={{ width: 10, height: 10 }} /></MoveButton>
+          <MoveButton disabled={!canMoveDown} onClick={() => onMoveDown(tick.tickId, afterNextTickId)} title="Move down"><MoveDown style={{ width: 10, height: 10 }} /></MoveButton>
           {tick.kind === "atom" && (
             <MoveButton disabled={false} onClick={() => setAddingNote((v) => !v)} title="Add note"><MessageSquare style={{ width: 10, height: 10 }} /></MoveButton>
           )}
-          <MoveButton disabled={false} onClick={onDelete} title="Delete tick" danger><Trash2 style={{ width: 10, height: 10 }} /></MoveButton>
+          <MoveButton disabled={false} onClick={() => onDelete(tick.tickId)} title="Delete tick" danger><Trash2 style={{ width: 10, height: 10 }} /></MoveButton>
         </div>
       </div>
 
@@ -182,7 +189,7 @@ function TickRow({
       )}
     </div>
   );
-}
+});
 
 // ── Ticks view ────────────────────────────────────────────────────────────────
 
@@ -213,6 +220,31 @@ export function TicksView({
     return ids;
   }, [hoveredTickId, ticks]);
 
+  // A branch's chain routinely runs into the hundreds — mounting every row's
+  // DOM subtree up front is exactly what made *opening* this tab noticeably
+  // slow (scrolling was already fine, since that's just compositing already-
+  // mounted layers). Windowing keeps the mount cost independent of chain
+  // length: only the rows actually in view (plus overscan) ever exist as
+  // real DOM nodes. Row height isn't fixed (wrapping text, the add-note
+  // input toggling) so this measures each row after layout rather than
+  // assuming a constant.
+  const virtualizer = useVirtualizer({
+    count: ticks.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 34,
+    overscan: 12,
+  });
+
+  // Stable, identity-preserving handlers passed to every row — TickRow is
+  // memo()'d specifically so that most of 400+ rows can skip re-rendering
+  // when only the hovered pair changes, which only works if the callback
+  // props aren't a fresh closure every render. These just forward the
+  // tickId (and, for move, the target neighbor's id) to the already-stable
+  // top-level actions.
+  const handleMoveUp   = useCallback((tickId: string, afterTickId?: string) => onMoveTick(tickId, afterTickId), [onMoveTick]);
+  const handleMoveDown = useCallback((tickId: string, afterTickId?: string) => onMoveTick(tickId, afterTickId), [onMoveTick]);
+  const handleDelete   = useCallback((tickId: string) => onDeleteTick(tickId), [onDeleteTick]);
+
   if (!activeBranch) return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
       Select a branch to view ticks
@@ -233,8 +265,10 @@ export function TicksView({
         </div>
       ) : (
         <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
-          <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 32px 48px" }}>
-            {ticks.map((tick, i) => {
+          <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 32px 48px", position: "relative", height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((vRow) => {
+              const i = vRow.index;
+              const tick      = ticks[i];
               const isFirst   = i === 0;
               const isLast    = i === ticks.length - 1;
               const prevTick  = i > 0 ? ticks[i - 1] : undefined;
@@ -242,20 +276,27 @@ export function TicksView({
               // After a down-swap, tid's new older neighbor is whatever
               // currently sits two rows below it (nextTick's own nextTick) —
               // undefined (root) once that runs off the end of the list.
-              const afterNextTick = i + 2 < ticks.length ? ticks[i + 2] : undefined;
+              const afterNextTickId = i + 2 < ticks.length ? ticks[i + 2].tickId : undefined;
               return (
-                <TickRow
+                <div
                   key={tick.tickId}
-                  tick={tick}
-                  isFirst={isFirst} isLast={isLast} prevTick={prevTick} nextTick={nextTick}
-                  related={relatedIds.has(tick.tickId)}
-                  onAddNote={onAddNote}
-                  onMoveUp={() => onMoveTick(tick.tickId, prevTick?.tickId)}
-                  onMoveDown={() => !isLast && onMoveTick(tick.tickId, afterNextTick?.tickId)}
-                  onDelete={() => onDeleteTick(tick.tickId)}
-                  onHoverChange={setHoveredTickId}
-                  onSelectFile={onSelectFile}
-                />
+                  ref={virtualizer.measureElement}
+                  data-index={i}
+                  style={{ position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${vRow.start}px)` }}
+                >
+                  <TickRow
+                    tick={tick}
+                    isFirst={isFirst} isLast={isLast} prevTick={prevTick} nextTick={nextTick}
+                    afterNextTickId={afterNextTickId}
+                    related={relatedIds.has(tick.tickId)}
+                    onAddNote={onAddNote}
+                    onMoveUp={handleMoveUp}
+                    onMoveDown={handleMoveDown}
+                    onDelete={handleDelete}
+                    onHoverChange={setHoveredTickId}
+                    onSelectFile={onSelectFile}
+                  />
+                </div>
               );
             })}
           </div>
