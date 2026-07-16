@@ -14,6 +14,7 @@ import Polysemy.State (evalState)
 
 import Git.Mock
 import Runix.FileSystem (writeFile, readFile, fileExists)
+import Runix.Logging (loggingNull)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -43,6 +44,7 @@ data Tracker
 --   Effect row is inferred; interpreters peel from the action outward.
 runTwoTrack action =
   run
+  . loggingNull
   . runFail
   . evalState emptyGitState
   . runGitMock
@@ -101,6 +103,33 @@ spec = do
           n1 `shouldBe` 1
           n2 `shouldBe` 1
           content `shouldBe` "atom one\n\natom two"
+
+    it "recovers via ref-dedup when the last-synced trackee tick is deleted, without re-copying earlier already-synced atoms" $ do
+      let result = runTwoTrack $ do
+            _ <- runStorage @Source (Ops.addAtom "story.md" "atom one")
+            _ <- runStorage @Source (Ops.addAtom "story.md" "\n\natom two")
+            lastHash <- runStorage @Source (Ops.addAtom "story.md" "\n\natom three")
+            tids1 <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
+            -- Delete the tick that was just synced as the marker -- it's
+            -- the head at this point, so nothing above it gets replayed
+            -- (and remapped); its ref goes dangling for good, the
+            -- 'tracker-resync' case.
+            _ <- runStorage @Source (Ops.deleteTick lastHash)
+            _ <- runStorage @Source (Ops.addAtom "story.md" "\n\natom four")
+            -- Second track: the marker no longer resolves, so the walk
+            -- runs to root and finds atom one/two again alongside the
+            -- genuinely new atom four -- ref-dedup against story.md's
+            -- existing tracker content must drop the former and keep
+            -- only the latter.
+            tids2 <- trackBranch @Source @Tracker (Just "story.md") keepAll "story.md"
+            content <- readFile @(BranchTag Tracker) "story.md"
+            return (length tids1, length tids2, content)
+      case result of
+        Left err -> expectationFailure err
+        Right (n1, n2, content) -> do
+          n1 `shouldBe` 3
+          n2 `shouldBe` 1
+          content `shouldBe` "atom one\n\natom two\n\natom three\n\natom four"
 
     it "tracker with own ticks does not confuse sync state" $ do
       let result = runTwoTrack $ do

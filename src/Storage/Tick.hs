@@ -205,12 +205,23 @@ getTypesTick = headHash >>= readTypesTick
 --   'Nothing' means "never synced" -- walks all the way to root. Oldest-
 --   first, the order every caller of this shape (a sync marker walk)
 --   wants ticks folded in.
-newTypesTicksSince :: StoreM m => Maybe ObjectHash -> StoreT m [ST.Tick]
-newTypesTicksSince since = followC [] step
+--
+--   The 'Bool' says whether @since@ (when given) was actually found
+--   during the walk, as opposed to the walk running all the way to root
+--   without ever seeing it -- the latter happens not just on a genuine
+--   first sync (@since@ is 'Nothing', where it's expected and free of
+--   any special meaning), but also when a non-'Nothing' @since@ has gone
+--   dangling (its commit no longer exists, e.g. deleted rather than
+--   remapped -- see 'Storyteller.Writer.Agent.Tracker.trackBranch's own
+--   @tracker-resync@ note). A caller that cares about telling those two
+--   apart -- "nothing to sync from yet" vs. "the sync point vanished" --
+--   should inspect this alongside whether @since@ itself was 'Just'.
+newTypesTicksSince :: StoreM m => Maybe ObjectHash -> StoreT m (Bool, [ST.Tick])
+newTypesTicksSince since = followC (False, []) step
   where
-    step acc h cd t
-      | since == Just h = (acc, False)
-      | otherwise        = (mkTypesTick h cd t : acc, True)
+    step (_, acc) h cd t
+      | since == Just h = ((True, acc), False)
+      | otherwise        = ((False, mkTypesTick h cd t : acc), True)
 
 -- | Walk the chain backward from @start@, decoding one tick at a time via
 --   'readTypesTick' and stopping at the first one @f@ answers with a

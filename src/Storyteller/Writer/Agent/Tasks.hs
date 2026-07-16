@@ -184,7 +184,7 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
     h    <- Core.headHash
     return (name, old, ref, h)
 
-  newTicks <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
+  (_, newTicks) <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
 
   if null newTicks then do
     info "syncTasksWith: nothing new since the last sync, skipping"
@@ -278,7 +278,7 @@ suggestTasksWith generate fallbackName tasksPath = do
       return (True, body)
     Just _ -> do
       info "suggestTasksWith: reading what's new since the last sync/suggest..."
-      newTicks <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
+      (_, newTicks) <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
       return (False, newSourceText (/= "sheet.md") tasksPath newTicks)
 
   -- A first pass needs *something* at all (a sheet alone is enough to

@@ -94,7 +94,7 @@ branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
   _ <- runStorage @Main Core.reset
   files <- listAllFiles @(BranchTag Main) "/"
-  ticks <- runStorage @Main $
+  (_, ticks) <- runStorage @Main $
     Tick.newTypesTicksSince (Core.ObjectHash . unTickId <$> since)
   case (reverse ticks, since) of
     (headTk : _, _) ->
