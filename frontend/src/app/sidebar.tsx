@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Folder, GitBranch, Plus, Users, BookOpen, Settings } from "lucide-react";
-import { type ConnInfo } from "@/lib/uiStore";
+import { useUI, type ConnInfo } from "@/lib/uiStore";
 import { type CharacterSummary, type LibraryNode, type ChapterUnit } from "@/lib/ws";
 import { statusColor, characterDisplayName } from "@/lib/utils";
 import { classifyBranch } from "@/lib/branches";
@@ -268,19 +268,30 @@ export function LeftSidebar({
         </div>
       )}
 
-      <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "6px 10px" }}>
-        {conns.map((c) => (
-          <div key={c.label} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
-            <div style={{ position: "relative", width: 5, height: 5, flexShrink: 0, color: statusColor(c.status) }}>
-              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
-              <div key={c.lastActivity} className={c.lastActivity ? "ws-pulse" : undefined} style={{ position: "absolute", inset: 0, borderRadius: "50%" }} />
-            </div>
-            <span style={{ fontSize: 9, color: "var(--text-dim)", fontFamily: "monospace", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
-            <span style={{ fontSize: 9, color: statusColor(c.status) }}>{c.status}</span>
+      <ConnList conns={conns} error={error} />
+    </div>
+  );
+}
+
+// Split out of LeftSidebar so the activity-pulse subscription (which ticks
+// on every WS message, on every connection) only re-renders this small
+// footer strip, not the whole sidebar — see connActivity's own comment in
+// uiStore.ts for why it's a separate field from `conns` in the first place.
+function ConnList({ conns, error }: { conns: ConnInfo[]; error: string | null }) {
+  const connActivity = useUI((s) => s.connActivity);
+  return (
+    <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "6px 10px" }}>
+      {conns.map((c) => (
+        <div key={c.label} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
+          <div style={{ position: "relative", width: 5, height: 5, flexShrink: 0, color: statusColor(c.status) }}>
+            <div style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
+            <div key={connActivity[c.label]} className={connActivity[c.label] ? "ws-pulse" : undefined} style={{ position: "absolute", inset: 0, borderRadius: "50%" }} />
           </div>
-        ))}
-        {error && <div style={{ fontSize: 9, color: "var(--rose)", lineHeight: 1.3, marginTop: 2 }}>{error}</div>}
-      </div>
+          <span style={{ fontSize: 9, color: "var(--text-dim)", fontFamily: "monospace", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
+          <span style={{ fontSize: 9, color: statusColor(c.status) }}>{c.status}</span>
+        </div>
+      ))}
+      {error && <div style={{ fontSize: 9, color: "var(--rose)", lineHeight: 1.3, marginTop: 2 }}>{error}</div>}
     </div>
   );
 }

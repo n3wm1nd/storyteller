@@ -14,11 +14,17 @@ export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 export interface ConnInfo {
   label: string;
   status: ConnStatus;
-  lastActivity?: number;
 }
 
 interface UIState {
   conns: ConnInfo[];
+  // Per-label "message just arrived" timestamp, split out of `conns` itself
+  // so a pulse ping on a background connection (any open file/character's
+  // WS traffic bumps its own label on every message) doesn't force a
+  // reference change on `conns` — which every render of the root page reads
+  // for session status — and cascade a full-app re-render on every message.
+  // Only the connection-list pulse animation (sidebar.tsx) subscribes to this.
+  connActivity: Record<string, number>;
   error: string | null;
 
   // Each active character's own independent time-travel position in their
@@ -90,6 +96,7 @@ interface UIState {
 
 export const useUI = create<UIState>((set) => ({
   conns: [],
+  connActivity: {},
   error: null,
   journalMarkers: {},
   hoverHighlight: null,
@@ -162,7 +169,7 @@ export function removeConn(label: string) {
 }
 
 export function bumpActivity(label: string) {
-  useUI.setState((s) => ({ conns: s.conns.map((c) => (c.label === label ? { ...c, lastActivity: Date.now() } : c)) }));
+  useUI.setState((s) => ({ connActivity: { ...s.connActivity, [label]: Date.now() } }));
 }
 
 export function setError(message: string) {

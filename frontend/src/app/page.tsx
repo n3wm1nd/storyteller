@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode, Pilcrow, BookMarked } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
@@ -157,16 +157,42 @@ function Toolbar({ leftOpen, onToggleLeft, rightOpen, onToggleRight, rightAvaila
 // ── Root ──────────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const {
-    branches, characterBranches, activeBranch, files, ticks, branchHead, libraryTree, libraryChapters, openFiles,
-    openCharacters, openJournals, preview,
-  } = useServerCache();
+  // Selected field-by-field rather than one bulk destructure off the store
+  // hook — with no selector, zustand subscribes to *every* field, so any
+  // unrelated slice changing (a different open file's ticks, a background
+  // character update) would re-render this entire root component and, with
+  // it, every unmemoized tab below. Per-field selectors mean each only
+  // triggers a re-render when the thing it actually reads changes.
+  const branches          = useServerCache((s) => s.branches);
+  const characterBranches = useServerCache((s) => s.characterBranches);
+  const activeBranch      = useServerCache((s) => s.activeBranch);
+  const files             = useServerCache((s) => s.files);
+  const ticks             = useServerCache((s) => s.ticks);
+  const branchHead        = useServerCache((s) => s.branchHead);
+  const libraryTree       = useServerCache((s) => s.libraryTree);
+  const libraryChapters   = useServerCache((s) => s.libraryChapters);
+  const openFiles         = useServerCache((s) => s.openFiles);
+  const openCharacters    = useServerCache((s) => s.openCharacters);
+  const openJournals      = useServerCache((s) => s.openJournals);
+  const preview           = useServerCache((s) => s.preview);
 
-  const {
-    conns, error, journalMarkers, agentLogs, characterAnswers, contextAtoms, contextAnnotations, rebaseMarker, hoverHighlight,
-    setJournalMarker, setHoverHighlight, clearHoverHighlight,
-    toggleContextAtom, toggleContextAnnotation, clearContext, clearAgentLogs, setRebaseMarker,
-  } = useUI();
+  const conns               = useUI((s) => s.conns);
+  const error               = useUI((s) => s.error);
+  const journalMarkers      = useUI((s) => s.journalMarkers);
+  const agentLogs           = useUI((s) => s.agentLogs);
+  const characterAnswers    = useUI((s) => s.characterAnswers);
+  const contextAtoms        = useUI((s) => s.contextAtoms);
+  const contextAnnotations  = useUI((s) => s.contextAnnotations);
+  const rebaseMarker        = useUI((s) => s.rebaseMarker);
+  const hoverHighlight      = useUI((s) => s.hoverHighlight);
+  const setJournalMarker       = useUI((s) => s.setJournalMarker);
+  const setHoverHighlight      = useUI((s) => s.setHoverHighlight);
+  const clearHoverHighlight    = useUI((s) => s.clearHoverHighlight);
+  const toggleContextAtom       = useUI((s) => s.toggleContextAtom);
+  const toggleContextAnnotation = useUI((s) => s.toggleContextAnnotation);
+  const clearContext            = useUI((s) => s.clearContext);
+  const clearAgentLogs          = useUI((s) => s.clearAgentLogs);
+  const setRebaseMarker         = useUI((s) => s.setRebaseMarker);
 
   const [annotationMode, setAnnotationMode] = useState<AnnotationMode>("expanded");
   const [showAllPresence, setShowAllPresence] = useState(false);
@@ -238,29 +264,39 @@ export default function Home() {
   }, [selectedFile, editAtom]);
 
   const fileConn = selectedFile ? openFiles[selectedFile] : null;
-  const fileTicks = tickChain(fileConn?.ticks ?? {}, fileConn?.head ?? null);
+  const fileChainTicks = fileConn?.ticks ?? {};
+  const fileChainHead  = fileConn?.head ?? null;
   const isAbsent = fileConn?.absent ?? false;
-  const atomCount       = fileTicks.filter((t) => t.kind === "atom").length;
-  const annotationCount = fileTicks.filter((t) => t.kind !== "atom").length;
+  // tickChain walks the whole chain and allocates a fresh reversed array —
+  // memoized on the conn's own ticks/head so an unrelated re-render of this
+  // component (a different file's WS traffic, a sidebar hover, etc.) doesn't
+  // redo that walk for no reason.
+  const fileTicks = useMemo(
+    () => tickChain(fileChainTicks, fileChainHead),
+    [fileChainTicks, fileChainHead],
+  );
+  const atomCount       = useMemo(() => fileTicks.filter((t) => t.kind === "atom").length, [fileTicks]);
+  const annotationCount = useMemo(() => fileTicks.filter((t) => t.kind !== "atom").length, [fileTicks]);
   // Presence is scoped to the open file (a scene), not the whole branch —
   // see WRITER.md — so this folds the file's own chain, not the branch-wide
   // one. "Show all" (persistent, toolbar toggle) wins over hover —
   // first-appearance order both here and in 'allPresentCharacters' itself,
   // so lane 0 (closest to the text) is always whoever entered first, per
   // the same ordering 'activeCharacterBranches' already uses for the sidebar.
-  const fileChainTicks = fileConn?.ticks ?? {};
-  const fileChainHead  = fileConn?.head ?? null;
-  const presenceBars: PresenceBar[] = showAllPresence
-    ? allPresentCharacters(fileChainTicks, fileChainHead).map((c) => ({
-        character: c, color: characterColor(c), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, c),
-      }))
-    : hoveredCharacter
-    ? [{ character: hoveredCharacter, color: characterColor(hoveredCharacter), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, hoveredCharacter) }]
-    : [];
-  // Global cross-component highlight (e.g. hovering a journal entry in the
-  // character sidebar) — folded into the same bar mechanism as an extra
-  // lane, since it's the same shape (tickIds + color -> a colored run).
-  if (hoverHighlight) presenceBars.push({ character: "__hover__", color: hoverHighlight.color, tickIds: hoverHighlight.tickIds });
+  const presenceBars: PresenceBar[] = useMemo(() => {
+    const bars: PresenceBar[] = showAllPresence
+      ? allPresentCharacters(fileChainTicks, fileChainHead).map((c) => ({
+          character: c, color: characterColor(c), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, c),
+        }))
+      : hoveredCharacter
+      ? [{ character: hoveredCharacter, color: characterColor(hoveredCharacter), tickIds: presentDuringAtoms(fileChainTicks, fileChainHead, hoveredCharacter) }]
+      : [];
+    // Global cross-component highlight (e.g. hovering a journal entry in the
+    // character sidebar) — folded into the same bar mechanism as an extra
+    // lane, since it's the same shape (tickIds + color -> a colored run).
+    if (hoverHighlight) bars.push({ character: "__hover__", color: hoverHighlight.color, tickIds: hoverHighlight.tickIds });
+    return bars;
+  }, [showAllPresence, hoveredCharacter, hoverHighlight, fileChainTicks, fileChainHead]);
 
   function handleSelectFile(path: string) {
     if (selectedFile && selectedFile !== path) closeFile(selectedFile);
@@ -378,9 +414,17 @@ export default function Home() {
     }
   }
 
-  function handleCorrect(tickId: string) {
+  const handleCorrect = useCallback((tickId: string) => {
     if (selectedFile) correctAtom(selectedFile, tickId);
-  }
+  }, [selectedFile]);
+
+  const handleCycleSwipe = useCallback((tickId: string) => {
+    if (selectedFile) cycleSwipe(selectedFile, tickId);
+  }, [selectedFile]);
+
+  const handleEditPrompt = useCallback((tickId: string, content: string) => {
+    if (selectedFile) editPrompt(selectedFile, tickId, content);
+  }, [selectedFile]);
 
   function onSidebarResizeMouseDown(e: React.MouseEvent) {
     e.preventDefault();
@@ -590,9 +634,9 @@ export default function Home() {
                 onEdit={handleEditAtom}
                 onToggleContextAtom={toggleContextAtom}
                 onToggleContextAnnotation={toggleContextAnnotation}
-                onCycleSwipe={(tickId) => selectedFile && cycleSwipe(selectedFile, tickId)}
+                onCycleSwipe={handleCycleSwipe}
                 onCorrect={handleCorrect}
-                onEditPrompt={(tickId, content) => selectedFile && editPrompt(selectedFile, tickId, content)}
+                onEditPrompt={handleEditPrompt}
               />
             )}
 
