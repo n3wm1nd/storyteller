@@ -16,7 +16,7 @@
 -- can't be: the branch's current file list ('listAllFiles'), each
 -- chapter's own heading, and each leaf's binary\/tracked flag. Both of the
 -- latter are folded incrementally over the tick chain in one pass via
--- 'Storage.Core.memoFold' ('LibraryFoldCache') rather than re-derived from
+-- 'Storage.Ops.memoFold' ('LibraryFoldCache') rather than re-derived from
 -- scratch on every push — a chapter's whole content lives directly in its
 -- own commit message (see 'Storage.Core.readTick'), so the fold needs no
 -- filesystem access at all, just commit reads, and "has this path ever had
@@ -47,7 +47,6 @@ import Runix.FileSystem (listAllFiles)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.Git (BranchTag, runStorage)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Writer.Library
@@ -55,7 +54,7 @@ import Storyteller.Writer.Library
 
 -- | The 'memoFold' accumulator: every chapter path's currently-known full
 --   content, keyed by path, plus every path that has ever carried at
---   least one 'Core.Atom' tick anywhere in history.
+--   least one 'Ops.Atom' tick anywhere in history.
 --
 --   Full content, not just the first line: a plain sequential fold can't
 --   tell in advance whether a later tick will turn out to be the file's
@@ -79,14 +78,14 @@ emptyLibraryFoldCache = LibraryFoldCache Map.empty Set.empty
 -- | The memoFold step: any atom marks its own path as tracked; one whose
 --   path also classifies as a chapter additionally folds its content in.
 --   Everything else (a 'NonAtom', or an atom for some other kind of path)
---   leaves the relevant half of the cache untouched. No 'Storage.Core.StoreT'
+--   leaves the relevant half of the cache untouched. No 'Storage.Ops.StoreT'
 --   capability is actually exercised here — an atom's content lives in its
 --   own commit message (see 'Storage.Core.readTick'), not a separate blob
 --   'Storage.Core.readFile' would have to fetch — but the step still has
---   to be monadic in 'StoreT' to satisfy 'Core.memoFold's own signature.
-foldLibraryState :: Core.StoreM m => LibraryFoldCache -> Core.ObjectHash -> Core.Tick -> Core.StoreT m LibraryFoldCache
+--   to be monadic in 'StoreT' to satisfy 'Ops.memoFold's own signature.
+foldLibraryState :: Ops.StoreM m => LibraryFoldCache -> Ops.ObjectHash -> Ops.Tick -> Ops.StoreT m LibraryFoldCache
 foldLibraryState acc _h tick = return $ case tick of
-  Core.Atom _ path _ content ->
+  Ops.Atom _ path _ content ->
     let tracked'  = Set.insert path (lfcTracked acc)
         chapters' = case classifyPath path of
           Unit -> Map.insertWith (flip (<>)) path content (lfcChapters acc)
@@ -106,11 +105,11 @@ foldLibraryState acc _h tick = return $ case tick of
 --   accumulator).
 libraryTree
   :: BranchOpen r
-  => [(Core.ObjectHash, LibraryFoldCache)]
-  -> Sem r ([LibraryNode], [UnitInfo], [(Core.ObjectHash, LibraryFoldCache)])
+  => [(Ops.ObjectHash, LibraryFoldCache)]
+  -> Sem r ([LibraryNode], [UnitInfo], [(Ops.ObjectHash, LibraryFoldCache)])
 libraryTree cache = do
   paths <- listAllFiles @(BranchTag Main) "/"
-  (folded, nextCache) <- runStorage @Main (Core.memoFold foldLibraryState emptyLibraryFoldCache cache)
+  (folded, nextCache) <- runStorage @Main (Ops.memoFold foldLibraryState emptyLibraryFoldCache cache)
   let tree = withBinaryFlags (lfcTracked folded) (withHeadings (lfcChapters folded) (buildLibraryTree paths))
   return (tree, narrativeUnits tree, nextCache)
 

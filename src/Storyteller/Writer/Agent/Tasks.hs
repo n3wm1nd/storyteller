@@ -65,7 +65,6 @@ import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
-import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
@@ -89,11 +88,11 @@ import Storyteller.Core.Types (Tick, fromTick)
 --   found, wrongly treating a run against the now-empty file as a
 --   continuation of a sync history that, as far as the current file is
 --   concerned, doesn't exist.
-lastSyncedTasksRef :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Core.ObjectHash)
+lastSyncedTasksRef :: FS.StoreM m => FilePath -> FS.StoreT m (Maybe Ops.ObjectHash)
 lastSyncedTasksRef tasksPath = do
   ticks <- Tick.fileTicksOf tasksPath
   return $ listToMaybe
-    [ Core.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ]
+    [ Ops.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ]
 
 -- | Every atom-tick among @ticks@ on a file @keep@ accepts (never
 --   @tasksPath@ itself, regardless of what @keep@ says -- tasks.md is
@@ -111,11 +110,11 @@ newSourceText keep tasksPath ticks = T.intercalate "\n\n---\n\n"
   ]
 
 -- | Read @tasksPath@'s current content, if it exists.
-readTasksFile :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Text)
+readTasksFile :: FS.StoreM m => FilePath -> FS.StoreT m (Maybe Text)
 readTasksFile tasksPath = do
   files <- FS.list
   if tasksPath `elem` files
-    then Just . TE.decodeUtf8 <$> Core.readFile tasksPath
+    then Just . TE.decodeUtf8 <$> FS.readFile tasksPath
     else return Nothing
 
 -- | The character's real name, read from @sheetPath@'s first @"# "@
@@ -135,17 +134,17 @@ firstHeadingName content = case filter (T.isPrefixOf "# ") (T.lines content) of
   (h : _) -> Just (T.strip (T.drop 2 h))
   []      -> Nothing
 
-resolveCharacterName :: Core.StoreM m => FilePath -> Text -> Core.StoreT m Text
+resolveCharacterName :: FS.StoreM m => FilePath -> Text -> FS.StoreT m Text
 resolveCharacterName sheetPath fallbackName = do
   files <- FS.list
   if sheetPath `elem` files
-    then fromMaybe fallbackName . firstHeadingName . TE.decodeUtf8 <$> Core.readFile sheetPath
+    then fromMaybe fallbackName . firstHeadingName . TE.decodeUtf8 <$> FS.readFile sheetPath
     else return fallbackName
 
 -- | Replace @tasksPath@ with @newContent@, preserving whatever was there
 --   before behind a checkpoint boundary (skipped on a first pass, when
 --   there's nothing yet to preserve), then append the sync marker.
-exchangeTasksFile :: Core.StoreM m => FilePath -> Bool -> Text -> Core.ObjectHash -> Core.StoreT m ()
+exchangeTasksFile :: FS.StoreM m => FilePath -> Bool -> Text -> Ops.ObjectHash -> FS.StoreT m ()
 exchangeTasksFile tasksPath hadContent newContent markerRef = do
   when hadContent (Ops.checkpointFile tasksPath)
   Ops.saveFileAsNew tasksPath tasksPath newContent
@@ -181,7 +180,7 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
     name <- resolveCharacterName "sheet.md" fallbackName
     old  <- readTasksFile tasksPath
     ref  <- lastSyncedTasksRef tasksPath
-    h    <- Core.headHash
+    h    <- Ops.headHash
     return (name, old, ref, h)
 
   (_, newTicks) <- runStorage @branch (Tick.newTypesTicksSince lastSynced)
@@ -257,8 +256,8 @@ suggestTasksWith generate fallbackName tasksPath = do
     old   <- readTasksFile tasksPath
     ref   <- lastSyncedTasksRef tasksPath
     files <- FS.list
-    sheet <- if "sheet.md" `elem` files then TE.decodeUtf8 <$> Core.readFile "sheet.md" else return ""
-    h     <- Core.headHash
+    sheet <- if "sheet.md" `elem` files then TE.decodeUtf8 <$> FS.readFile "sheet.md" else return ""
+    h     <- Ops.headHash
     return (name, old, ref, sheet, h)
 
   -- Whether to do a full grounding read or just the delta hinges on
@@ -273,7 +272,7 @@ suggestTasksWith generate fallbackName tasksPath = do
       info "suggestTasksWith: first pass for this lifetime of tasks.md -- reading full context..."
       body <- runStorage @branch $ do
         files <- FS.list
-        texts <- mapM (\p -> TE.decodeUtf8 <$> Core.readFile p) (filter (\p -> p /= tasksPath && p /= "sheet.md") files)
+        texts <- mapM (\p -> TE.decodeUtf8 <$> FS.readFile p) (filter (\p -> p /= tasksPath && p /= "sheet.md") files)
         return (T.intercalate "\n\n---\n\n" texts)
       return (True, body)
     Just _ -> do

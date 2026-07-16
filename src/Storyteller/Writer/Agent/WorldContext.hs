@@ -9,7 +9,7 @@
 -- split, not two independent classification schemes -- 'style.md' at the
 -- branch root is 'SystemContext', everything else eligible is 'WorldLore'.
 --
--- Lives at the 'Core.StoreT' level directly, same reasoning as
+-- Lives at the 'FS.StoreT' level directly, same reasoning as
 -- 'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal': a caller
 -- opens the branch scope once and passes 'worldContextOf' straight to
 -- 'Storyteller.Core.Git.runStorage', one dispatch for both halves rather
@@ -27,7 +27,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import System.FilePath (takeDirectory, takeFileName)
 
-import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 
 import Storyteller.Writer.Agent (ContextBlock(..), renderEmbeddedFile)
@@ -88,7 +87,7 @@ newtype SystemContext = SystemContext [ContextBlock]
 --   since a beat sheet is now eligible lore alongside everything else
 --   (see 'isWorldContextEligible') and @ch2.outline.md@\/@ch10.outline.md@
 --   need to land in reading order, not @ch10@ before @ch2@.
-worldContextOf :: forall m. Core.StoreM m => Core.StoreT m (WorldLore, SystemContext)
+worldContextOf :: forall m. FS.StoreM m => FS.StoreT m (WorldLore, SystemContext)
 worldContextOf = do
   files <- List.sortOn (Library.naturalKey . T.pack) . filter isWorldContextEligible <$> FS.list
   let (styleFiles, loreFiles) = List.partition isSystemContextPath files
@@ -97,5 +96,5 @@ worldContextOf = do
   return (lore, sysCtx)
   where
     readBlock path = do
-      content <- TE.decodeUtf8 <$> Core.readFile path
+      content <- TE.decodeUtf8 <$> FS.readFile path
       return $ ContextBlock $ renderEmbeddedFile path content

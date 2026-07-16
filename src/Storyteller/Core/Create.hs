@@ -17,8 +17,8 @@ module Storyteller.Core.Create
   ( createFile
   ) where
 
-import Storage.Core (StoreM, StoreT, ObjectHash)
 import qualified Storage.Ops as Ops
+import Storage.Ops (StoreM, StoreT, ObjectHash)
 
 -- | Write @path@ as an empty file and commit that as an empty atom tick.
 --   'Storage.Ops.addAtom' both commits and lands the same content in the

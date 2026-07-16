@@ -80,7 +80,6 @@ import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 import Storyteller.Core.Git (BranchOp, runStorage)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
@@ -266,8 +265,8 @@ reworkAtomsAt path instruction idxs = do
             Just (ReplaceProposal newText reason) -> do
               info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": " <> reason
               newTid <- runStorage @branch (do
-                newHash <- Ops.editAtomAt (Core.ObjectHash tid) newText
-                let tid' = TickId (Core.unObjectHash newHash)
+                newHash <- Ops.editAtomAt (Ops.ObjectHash tid) newText
+                let tid' = TickId (Ops.unObjectHash newHash)
                 _ <- Tick.storeAs (Fixup [tid'] reason)
                 return tid')
               return (Just newTid)

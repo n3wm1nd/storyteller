@@ -15,7 +15,6 @@ import qualified Data.Text.Encoding as TE
 
 import Data.Maybe (mapMaybe)
 
-import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 
 import Storyteller.Writer.Library (LibraryKind(..), UnitInfo(..), classifyPath, buildLibraryTree, narrativeUnits)
@@ -33,11 +32,11 @@ import Storyteller.Writer.Library (LibraryKind(..), UnitInfo(..), classifyPath, 
 --   Writer.Library.classifyPath') -- writing into some other kind of file
 --   has no "earlier chapters" concept, and that's a normal, not an error,
 --   case.
-earlierChaptersOf :: forall m. Core.StoreM m => FilePath -> Core.StoreT m [(FilePath, T.Text)]
+earlierChaptersOf :: forall m. FS.StoreM m => FilePath -> FS.StoreT m [(FilePath, T.Text)]
 earlierChaptersOf path = case classifyPath path of
   Unit -> do
     files <- FS.list
     let units = narrativeUnits (buildLibraryTree files)
         earlierPaths = takeWhile (/= path) (mapMaybe uiPath units)
-    mapM (\p -> (,) p . TE.decodeUtf8 <$> Core.readFile p) earlierPaths
+    mapM (\p -> (,) p . TE.decodeUtf8 <$> FS.readFile p) earlierPaths
   _ -> return []

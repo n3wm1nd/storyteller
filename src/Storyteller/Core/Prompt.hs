@@ -77,7 +77,7 @@ import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.LLM.Settings (RoleSettings)
 import Storyteller.Core.Runtime (Prompts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import qualified Storage.Core as Core
+import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import UniversalLLM (ModelConfig(..), ProviderOf, SupportsSystemPrompt)
@@ -163,7 +163,7 @@ interpretPromptStorageFS action = do
       runStorage @Prompts (do
         exists <- Ops.exists path
         if exists
-          then Prompt . TE.decodeUtf8 <$> Core.readFile path
+          then Prompt . TE.decodeUtf8 <$> FS.readFile path
           else return def)
     GetConfig (PromptKey key) (defaults :: [ModelConfig model]) -> runBranchOpGit @Prompts promptsBranchName $ do
       let path = "/" <> T.unpack (T.replace "." "/" key) <> ".llmsettings.yaml"
@@ -171,7 +171,7 @@ interpretPromptStorageFS action = do
         exists <- Ops.exists path
         if exists
           then do
-            bytes <- Core.readFile path
+            bytes <- FS.readFile path
             case Yaml.decodeEither' @(RoleSettings model) bytes of
               Left _          -> return defaults
               Right overrides -> return (toModelConfigs overrides ++ defaults)

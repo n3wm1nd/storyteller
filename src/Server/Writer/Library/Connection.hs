@@ -57,9 +57,9 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Core.Git (withStorage)
-import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 
-type Cache = [(Core.ObjectHash, LibraryFoldCache)]
+type Cache = [(Ops.ObjectHash, LibraryFoldCache)]
 
 runLibrary :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runLibrary env branch conn = do

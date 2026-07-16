@@ -54,7 +54,6 @@ import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, withStorage)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..), Tick, TickId, fromTick, tickId)
@@ -108,7 +107,7 @@ trackFiles target source onlyFile toFile = do
 --   'Storyteller.Writer.Agent.Tracker.dropUntilAfterLastSynced'), so a
 --   later sync pass simply reconsiders it -- harmless, since presence at a
 --   fixed historical position never changes, so it drops again every time.
-onlyWhilePresent :: Core.StoreM m => Character -> Tick -> Core.StoreT m (Maybe Tick)
+onlyWhilePresent :: Ops.StoreM m => Character -> Tick -> Ops.StoreT m (Maybe Tick)
 onlyWhilePresent character tick = case fromTick @Atom tick of
   Nothing -> pure Nothing
   Just (Atom file _) -> do

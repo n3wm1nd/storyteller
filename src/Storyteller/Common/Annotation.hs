@@ -18,7 +18,7 @@ module Storyteller.Common.Annotation
 
 import qualified Data.Text as T
 
-import Storage.Core (StoreM, StoreT, ObjectHash(..), follow)
+import Storage.Ops (StoreM, StoreT, ObjectHash(..), follow)
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (TickId(..))
 import Storyteller.Common.Types (Note(..))

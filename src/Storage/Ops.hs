@@ -5,9 +5,20 @@
 -- writeFile) -- nothing here reaches around them, or touches the
 -- chain\/ambient tree any other way. Re-exports the read-only chain
 -- queries ("Storage.Query") and worktree reconciliation
--- ("Storage.Reconcile"), so @import Storage.Ops@ is the complete
--- storage toolkit; "Storage.FS" holds the ambient file operations, and
--- "Storage.Tick" the typed-tick bridge.
+-- ("Storage.Reconcile"), plus the chain-navigation primitives themselves
+-- ("Storage.Core"'s own @headHash@\/@store@\/@drop@\/@at@\/@follow@\/...),
+-- so @import Storage.Ops@ is the complete storage toolkit for anything
+-- that *does something* with the chain; "Storage.FS" holds the ambient
+-- file operations, and "Storage.Tick" the typed-tick bridge.
+--
+-- "Storage.Core" itself stays reserved for the actual machinery: the
+-- 'Storage.Core.MonadStore' class and object vocabulary, running\/
+-- bootstrapping the 'Storage.Core.StoreT' scope itself
+-- ('Storage.Core.runStoreT'\/'Storage.Core.freshScope'\/...), and the
+-- remap-log internals -- things a caller reaching for an operation to run
+-- has no business touching directly. A module that genuinely needs one of
+-- those (the git interpreter itself, or something constructing raw
+-- commits\/objects) still imports "Storage.Core" directly alongside this.
 module Storage.Ops
   ( -- * Committing atoms
     addAtom
@@ -39,6 +50,26 @@ module Storage.Ops
   , module Storage.Query
   , module Storage.Reconcile
   , exists
+
+    -- * Re-exported from "Storage.Core": chain-navigation and -editing
+    -- primitives, and the vocabulary they're expressed in
+  , ObjectHash(..)
+  , StoreM
+  , StoreT
+  , Tick(..)
+  , headHash
+  , store
+  , drop
+  , readAt
+  , at
+  , atWith
+  , editTick
+  , replaceTick
+  , resolveId
+  , follow
+  , followC
+  , memoFold
+  , syncTo
   ) where
 
 import Prelude hiding (drop, readFile, writeFile, appendFile)

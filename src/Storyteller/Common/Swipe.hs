@@ -25,8 +25,8 @@ module Storyteller.Common.Swipe
 
 import Data.Text (Text)
 
-import Storage.Core (StoreM, StoreT, ObjectHash(..), at, follow, resolveId)
 import qualified Storage.Ops as Ops
+import Storage.Ops (StoreM, StoreT, ObjectHash(..), at, follow, resolveId)
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (TickId(..), Tick(..), fromTick)
 import Storyteller.Core.Atom (Atom(..))

@@ -64,7 +64,6 @@ import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
@@ -214,7 +213,7 @@ splitFileAtoms tids = do
   mapM_ splitOne (map (fromHash . fst) (sortOn (Down . snd) positioned))
   where
     splitOne tid = do
-      tick <- runStorage @Main (Core.readAt (toHash tid) Tick.getTypesTick)
+      tick <- runStorage @Main (Ops.readAt (toHash tid) Tick.getTypesTick)
       case fromTick @Atom tick of
         Nothing -> fail ("splitFileAtoms: not an atom: " <> T.unpack (unTickId tid))
         Just (Atom _path msg) -> do
@@ -250,11 +249,11 @@ unhideFileAtoms tids = setFileAtomsHidden tids False
 cycleAtomSwipe :: FileOpen r => TickId -> Sem r ()
 cycleAtomSwipe tid = void $ runStorage @Main (Swipe.cycleSwipe (toHash tid))
 
-toHash :: TickId -> Core.ObjectHash
-toHash (TickId t) = Core.ObjectHash t
+toHash :: TickId -> Ops.ObjectHash
+toHash (TickId t) = Ops.ObjectHash t
 
-fromHash :: Core.ObjectHash -> TickId
-fromHash (Core.ObjectHash t) = TickId t
+fromHash :: Ops.ObjectHash -> TickId
+fromHash (Ops.ObjectHash t) = TickId t
 
 -- | Attach a note referencing @targets@ — zero or more atoms; empty is a
 --   free-floating remark rather than a comment on any specific one.

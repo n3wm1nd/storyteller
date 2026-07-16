@@ -42,7 +42,7 @@ import Server.Core.Protocol (Update(..), tickToWireTick)
 import qualified Storyteller.Common.Annotation as Annotation
 import Storyteller.Core.Git (BranchTag, BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storage.Core as Core
+import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (TickId(..), tickId, unTickId)
@@ -92,10 +92,10 @@ branchState = branchStateSince Nothing
 --   this to see writes made by other connections since we last synced.
 branchStateSince :: BranchOpen r => Maybe TickId -> Sem r ([FilePath], Update)
 branchStateSince since = do
-  _ <- runStorage @Main Core.reset
+  _ <- runStorage @Main FS.reset
   files <- listAllFiles @(BranchTag Main) "/"
   (_, ticks) <- runStorage @Main $
-    Tick.newTypesTicksSince (Core.ObjectHash . unTickId <$> since)
+    Tick.newTypesTicksSince (Ops.ObjectHash . unTickId <$> since)
   case (reverse ticks, since) of
     (headTk : _, _) ->
       return (files, Update (map tickToWireTick ticks) (unTickId (tickId headTk)))
@@ -124,5 +124,5 @@ deleteTickFromBranch :: BranchOpen r => TickId -> Sem r ()
 deleteTickFromBranch tid =
   void $ runStorage @Main (Ops.deleteTick (toHash tid))
 
-toHash :: TickId -> Core.ObjectHash
-toHash (TickId t) = Core.ObjectHash t
+toHash :: TickId -> Ops.ObjectHash
+toHash (TickId t) = Ops.ObjectHash t

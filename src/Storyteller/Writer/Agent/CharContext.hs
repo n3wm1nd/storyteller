@@ -32,7 +32,6 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 
-import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Tick as Tick
 
@@ -78,11 +77,11 @@ charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
 -- | 'charSummaryAgent's read, split into 'CharSummary's three independently
 --   placeable shapes, plus a curated slice of @journalPath@'s own recent
 --   atom history (see 'Storage.Tick.recentAtomsOf') -- all composed into
---   one 'Core.StoreT' computation rather than several calls a caller would
+--   one 'FS.StoreT' computation rather than several calls a caller would
 --   otherwise dispatch back-to-back: one 'Storyteller.Core.Git.runStorage'
 --   pays for every read here.
 --
---   Lives at the 'Core.StoreT' level directly (unlike 'charSummaryAgent',
+--   Lives at the 'FS.StoreT' level directly (unlike 'charSummaryAgent',
 --   which goes through the 'FileSystem' Polysemy effects) precisely so it
 --   composes this way; a caller opens the branch scope once (e.g. via
 --   'Storyteller.Core.Git.runBranchOpGit') and passes this straight to
@@ -96,14 +95,14 @@ charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
 --   the one path in for a single file.
 charSummaryWithJournal
   :: forall m
-  .  Core.StoreM m
+  .  FS.StoreM m
   => FilePath             -- ^ sheet path, e.g. @"sheet.md"@ -- included verbatim if present
   -> FilePath             -- ^ journal path, e.g. @"journal.md"@
   -> (FilePath -> Bool)   -- ^ which other files to include (caller's layout policy; never sheet or journal, regardless of what it answers for either)
   -> Int                  -- ^ lookback: max journal atoms to examine (see 'Tick.recentAtomsOf')
   -> Int                  -- ^ maxOut: max journal atoms to include
   -> Int                  -- ^ padding: journal atoms kept on each side of a kept one
-  -> Core.StoreT m CharSummary
+  -> FS.StoreT m CharSummary
 charSummaryWithJournal sheetPath journalPath keep lookback maxOut padding = do
   files <- List.sort <$> FS.list
   let otherFiles = [ p | p <- files, p /= sheetPath, p /= journalPath, keep p ]
@@ -118,7 +117,7 @@ charSummaryWithJournal sheetPath journalPath keep lookback maxOut padding = do
     , csJournal = renderJournalContext journal
     }
   where
-    readPair p = (,) p . TE.decodeUtf8 <$> Core.readFile p
+    readPair p = (,) p . TE.decodeUtf8 <$> FS.readFile p
 
 -- | A non-empty journal slice becomes one block, not one per atom: the
 --   header names what this is (so a model doesn't mistake it for

@@ -62,7 +62,6 @@ import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
 import Storyteller.Writer.Types (Character(..), CharacterAnswer(..), PresenceEvent)
 import Storyteller.Core.Runtime (Main)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
@@ -219,7 +218,7 @@ chatWriter path prompt context layout mFlowTid charLayouts = do
 --   present when it starts winding back would simply reappear.
 correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> ContextLayout -> Map.Map T.Text ContextLayout -> Sem r ()
 correctGroup path promptTid targets prompt context layout charLayouts = do
-  typed <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash (unTickId promptTid)))
+  typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash (unTickId promptTid)))
   case tickParent typed of
     Nothing -> fail "correctGroup: prompt tick has no parent to rebase onto"
     Just parentTid -> do
@@ -302,7 +301,7 @@ chatConverseSwipe path promptTid atomTid newPromptText = do
   info $ "chat agent regenerating (swipe): " <> T.pack path
   added <- chatAgent @(BranchTag Main) (history ++ [UserText newPromptText])
   let reply = mconcat [t | AssistantText t <- added]
-  _ <- runStorage @Main (Swipe.pushSwipe (Core.ObjectHash (unTickId atomTid)) reply)
+  _ <- runStorage @Main (Swipe.pushSwipe (Ops.ObjectHash (unTickId atomTid)) reply)
   info $ "chat agent regen (swipe) done: " <> T.pack path
 
 -- | Edit a chat prompt's text in place. A 'Prompt' is not an atom — its
@@ -325,13 +324,13 @@ chatConverseSwipe path promptTid atomTid newPromptText = do
 --   whatever it puts in the header is exactly what it'll expect back out.
 editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
 editChatPrompt (TickId tid) content = do
-  typed <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash tid))
+  typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash tid))
   case fromTick @Prompt typed of
     Nothing -> fail "editChatPrompt: not a chat prompt"
     Just (Prompt file _) -> do
       newMsg <- Tick.encodeTickData (toDraft (Prompt file content))
-      void $ runStorage @Main $ Core.at (Core.ObjectHash tid) $ Core.editTick $ \case
-        Core.NonAtom refs _ -> return (Core.NonAtom refs newMsg)
+      void $ runStorage @Main $ Ops.at (Ops.ObjectHash tid) $ Ops.editTick $ \case
+        Ops.NonAtom refs _ -> return (Ops.NonAtom refs newMsg)
         _                    -> fail "editChatPrompt: not a chat prompt (it's an atom)"
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter

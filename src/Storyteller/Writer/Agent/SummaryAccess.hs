@@ -46,8 +46,8 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 import Polysemy (Member, Sem)
 
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import qualified Storage.FS as FS
 import Storyteller.Common.Summary
   (Summary(..), lastSummaryOf, lastTouchedIn, previewPath, summaryContent, summaryTickFor, ticksSince)
 import Storyteller.Core.Atom (contentFor)
@@ -103,7 +103,7 @@ contentAt path zl = runStorage @source $ case zlSummary zl of
   Nothing -> do
     there <- Ops.exists path
     if there
-      then Just . TE.decodeUtf8With TE.lenientDecode <$> Core.readFile path
+      then Just . TE.decodeUtf8With TE.lenientDecode <$> FS.readFile path
       else return Nothing
   Just s -> summaryContent s path
 

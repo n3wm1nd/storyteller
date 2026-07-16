@@ -23,7 +23,6 @@ import Polysemy
 import Runix.Logging (Logging, warning)
 import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp, runStorage)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (Tick(..), TickId(..), fromTick, tickId, tickParent)
@@ -88,19 +87,19 @@ trackBranch
   .  Members '[BranchOp trackeeBranch, BranchOp trackerBranch, Logging] r
   => Maybe FilePath
      -- ^ restrict to one trackee file; 'Nothing' tracks every file
-  -> (forall m. Core.StoreM m => Tick -> Core.StoreT m (Maybe Tick))
+  -> (forall m. Ops.StoreM m => Tick -> Ops.StoreT m (Maybe Tick))
      -- ^ per-tick filter\/transform, run against the trackee branch
   -> FilePath   -- ^ destination file on the tracker branch
   -> Sem r [TickId]
 trackBranch onlyFile atomFilter toFile = do
   lastSynced <- runStorage @trackerBranch $
-    Core.follow Nothing $ \acc _h t -> case t of
-      Core.Atom (r : _) _ _ _ -> (Just r, False)
+    Ops.follow Nothing $ \acc _h t -> case t of
+      Ops.Atom (r : _) _ _ _ -> (Just r, False)
       _                       -> (acc, True)
 
   -- One read per commit, not two: 'Tick.newTypesTicksSince' decodes each
   -- typed tick inline during the same backward walk that looks for
-  -- 'lastSynced', via 'Storage.Core.followC' -- no separate hash
+  -- 'lastSynced', via 'Storage.Ops.followC' -- no separate hash
   -- collection pass for 'readTypesTick' to redundantly re-read afterward.
   (foundSince, newTicks) <- runStorage @trackeeBranch (Tick.newTypesTicksSince lastSynced)
 
@@ -142,6 +141,6 @@ copyAtom
   => FilePath -> FilePath -> Tick -> Sem r TickId
 copyAtom fromFile toFile tick = do
   let content = contentFor fromFile tick
-      ref     = Core.ObjectHash (unTickId (tickId tick))
+      ref     = Ops.ObjectHash (unTickId (tickId tick))
   newHash <- runStorage @trackerBranch (Ops.addAtomWithRefs [ref] toFile content)
-  return (TickId (Core.unObjectHash newHash))
+  return (TickId (Ops.unObjectHash newHash))

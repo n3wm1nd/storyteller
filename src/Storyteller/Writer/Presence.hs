@@ -26,7 +26,6 @@ import Polysemy.Fail
 
 import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
@@ -69,8 +68,8 @@ recordPresence file character@(Character branch) event =
         then pure Nothing
         else Just . toTickId <$> Tick.storeAs (Presence file character event))
   where
-    toHash (TickId t) = Core.ObjectHash t
-    toTickId (Core.ObjectHash t) = TickId t
+    toHash (TickId t) = Ops.ObjectHash t
+    toTickId (Ops.ObjectHash t) = TickId t
 
 -- | Every character active as of the end of @ticks@ -- the "list everyone
 --   present" counterpart to 'presentOn's "is this one character present":
@@ -100,7 +99,7 @@ activeCharactersFor file = do
 
 -- | Is @character@ currently present on @file@ -- a universal, composable
 --   "is this character here" building block, usable from *inside* a bare
---   'Core.StoreT' computation already reading @file@'s own branch (unlike
+--   'Ops.StoreT' computation already reading @file@'s own branch (unlike
 --   'activeCharactersFor', which needs a full 'BranchOp' dispatch). Not
 --   specific to any one caller -- 'Storyteller.Writer.Agent.Tracker' and
 --   anything else asking "is X here right now" reach for this the same way.
@@ -112,9 +111,9 @@ activeCharactersFor file = do
 --   own walk reads and decodes *every* tick in the file's history before
 --   handing any of them back, no matter how early the answer was actually
 --   sitting. See 'presentAt' for the point-in-time variant.
-presentOn :: Core.StoreM m => FilePath -> Character -> Core.StoreT m Bool
+presentOn :: Ops.StoreM m => FilePath -> Character -> Ops.StoreT m Bool
 presentOn file character = do
-  h <- Core.headHash
+  h <- Ops.headHash
   presentAsOf h file character
 
 -- | Like 'presentOn', but starting the backward walk from an arbitrary
@@ -126,8 +125,8 @@ presentOn file character = do
 --   atom would answer every one of them identically, using whatever the
 --   *current* state happens to be -- wrong for exactly the atoms this
 --   exists to tell apart.
-presentAt :: Core.StoreM m => TickId -> FilePath -> Character -> Core.StoreT m Bool
-presentAt (TickId tid) = presentAsOf (Core.ObjectHash tid)
+presentAt :: Ops.StoreM m => TickId -> FilePath -> Character -> Ops.StoreT m Bool
+presentAt (TickId tid) = presentAsOf (Ops.ObjectHash tid)
 
 -- | The walk both 'presentOn' and 'presentAt' are built on, via
 --   'Tick.findTickFrom': stop at the first presence tick naming
@@ -140,7 +139,7 @@ presentAt (TickId tid) = presentAsOf (Core.ObjectHash tid)
 --   'Tick.readTypesTick' -- no upfront pass over the rest of the chain, so
 --   a character whose last word was one tick back costs one read, not a
 --   read of everything that ever happened on @file@.
-presentAsOf :: Core.StoreM m => Core.ObjectHash -> FilePath -> Character -> Core.StoreT m Bool
+presentAsOf :: Ops.StoreM m => Ops.ObjectHash -> FilePath -> Character -> Ops.StoreT m Bool
 presentAsOf start file character = fromMaybe False <$> Tick.findTickFrom start step
   where
     step _ t = case fromTick @Presence t of
@@ -158,12 +157,12 @@ presentAsOf start file character = fromMaybe False <$> Tick.findTickFrom start s
 --   skips anything else (atoms on other files, other characters' presence
 --   ticks, prompts, notes — none of them represent "an atom happened on
 --   this file" or say anything about this character) and keeps walking.
-trailingPresenceFor :: Core.StoreM m => FilePath -> Character -> Core.StoreT m (Maybe TickId)
+trailingPresenceFor :: Ops.StoreM m => FilePath -> Character -> Ops.StoreT m (Maybe TickId)
 trailingPresenceFor file character = join <$> Tick.findTick step
   where
     step h t
       | Just a <- fromTick @Atom t, atomFile a == file = Just Nothing
       | Just p <- fromTick @Presence t
       , presenceFile p == file, presenceCharacter p == character
-      = Just (Just (TickId (Core.unObjectHash h)))
+      = Just (Just (TickId (Ops.unObjectHash h)))
       | otherwise = Nothing
