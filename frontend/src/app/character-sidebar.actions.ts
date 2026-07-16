@@ -6,7 +6,7 @@
 // file — see lib/serverCacheStore.ts's header for the write-access
 // convention.
 
-import { branchConn, characterConn, fileConn, type BranchCommand } from "@/lib/ws";
+import { characterConn, fileConn } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent, remapSet, atRebase } from "@/lib/wsHelpers";
@@ -146,123 +146,6 @@ export function closeJournal(branch: string) {
     return { journalMarkers: nextMarkers };
   });
   removeConn(`journal:${branch}`);
-}
-
-// Explicit, one-shot invocation of the raw Tracker agent (see
-// Storyteller.Writer.Agent.Tracker) — copies new deltas into this
-// character's journal.md, verbatim, with a cross-branch ref back to each
-// source atom (that ref is what lets the journal panel's hover highlight
-// find the matching atom in the main view). 'track' is a 'BranchCommand'
-// sent on the *character* branch's own connection, not the currently open
-// story branch's — so this opens a short-lived branch connection just to
-// fire it, and closes it the moment the resulting update/error lands. No
-// persistent state needed: the journal's own file connection (if open)
-// receives the new ticks through its own push, same as any other write to
-// that branch.
-//
-// 'onlyFile' omitted pulls every file on the source branch (not just the
-// one currently open) into the journal in one call — presence gating
-// (Server.Writer.Branch.onlyWhilePresent) still applies per atom, so this
-// is safe (and cheap, see trackBranch's own Haddock on the shallow walk)
-// to call for a character who isn't even in the current scene; see
-// 'trackAllJournals' below for the sidebar's "Track All" button.
-function trackOne(characterBranch: string, source: string, onlyFile: string | undefined) {
-  const conn = branchConn(characterBranch);
-  conn.subscribe((evt) => {
-    if (evt.type === "update" || evt.type === "error") conn.close();
-    if (evt.type === "error") setError(evt.message);
-  });
-  conn.connect().then(() => {
-    conn.send({ type: "track", source, onlyFile, to: JOURNAL_PATH });
-  }).catch(() => { conn.close(); });
-}
-
-export function trackJournal(characterBranch: string, fromPath: string) {
-  const source = getServerCache().activeBranch;
-  if (!source) return;
-  trackOne(characterBranch, source, fromPath);
-}
-
-// The sidebar's "Track All" button: every known character branch (not just
-// the ones present in the current scene), pulling every source file (not
-// just whatever's open) into each one's own journal — see 'trackOne's
-// Haddock for why this is safe/cheap to run indiscriminately, including for
-// characters absent from every recent scene.
-export function trackAllJournals(characterBranches: string[]) {
-  const source = getServerCache().activeBranch;
-  if (!source) return;
-  for (const branch of characterBranches) trackOne(branch, source, undefined);
-}
-
-export const TASKS_PATH = "tasks.md";
-
-// Same short-lived-connection shape as 'trackOne': fire the command on the
-// character branch's own connection, close on the resulting update/error.
-// Resolves once the command has actually landed (or failed) — not on send
-// — so a caller that wants to refetch tasks.md afterward (see
-// character-sidebar.tsx's TasksPanel) doesn't race the mutation.
-//
-// Unlike trackOne, this also forwards "agent.log" events to the global
-// agent log strip (same as openJournal's own connection handler) — the
-// server interprets a branch connection's Logging effect via loggingWS
-// (Server.Writer.Run), which pushes every info/warning straight to this
-// connection as agent.log, never to the server's own stdout. Without this,
-// Storyteller.Writer.Agent.Tasks's own progress logging (querying the
-// model, "no source material found", etc.) would be sent and then
-// silently dropped, on a connection nobody's watching.
-//
-// Every /branch/{name} connection unconditionally pushes one "branch.ready"
-// + one "update" the instant it opens (Server.Writer.Branch.Connection's
-// pushInitial) -- before the server has even read this connection's first
-// message, let alone processed our command. That initial "update" is
-// *never* our command's own result; treating it as one (an earlier version
-// of this function did, matching trackOne's own shape) closes the
-// connection within milliseconds of connecting, every single time -- not a
-// race, a guaranteed miss -- so every agent.log this command was ever
-// going to emit, and its real completion event, land on an already-dead
-// socket. 'seenUpdate' skips exactly that first one.
-function runTasksCommand(characterBranch: string, cmd: BranchCommand): Promise<void> {
-  return new Promise((resolve) => {
-    const conn = branchConn(characterBranch);
-    let seenUpdate = false;
-    conn.subscribe((evt) => {
-      if (evt.type === "agent.log") useUI.getState().addAgentLog(evt.level, evt.message);
-      if (evt.type === "update" && !seenUpdate) {
-        seenUpdate = true; // the connection's own initial push, not our command's result
-        return;
-      }
-      if (evt.type === "update" || evt.type === "error" || evt.type === "file.added") {
-        conn.close();
-        resolve();
-      }
-      if (evt.type === "error") setError(evt.message);
-    });
-    conn.connect().then(() => {
-      conn.send(cmd);
-    }).catch(() => { conn.close(); resolve(); });
-  });
-}
-
-// Reconcile this character's tasks.md against whatever's new in their own
-// journal since the last sync — see Storyteller.Writer.Agent.Tasks.syncTasks.
-// Restricted to journal.md, same "only what this character actually
-// witnessed" reasoning as trackJournal itself (the journal is already
-// presence-gated on the way in).
-export function syncTasks(characterBranch: string) {
-  return runTasksCommand(characterBranch, { type: "sync.tasks", onlyFile: JOURNAL_PATH, to: TASKS_PATH });
-}
-
-// Propose new tasks for this character from their full character context
-// (sheet, other context files, recent journal) plus the active story's
-// world lore — never the story's raw scene content (see
-// Server.Writer.Branch.Protocol.SuggestTasks's own Haddock on why). No
-// onlyFile here (unlike syncTasks) — suggestion always reads this
-// character's whole context, not a caller-picked file.
-export function suggestTasks(characterBranch: string) {
-  const loreSource = getServerCache().activeBranch;
-  return runTasksCommand(characterBranch, {
-    type: "suggest.tasks", loreSource: loreSource ?? undefined, to: TASKS_PATH,
-  });
 }
 
 // Basic editing on a character's journal — same commands the main file

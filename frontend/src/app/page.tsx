@@ -13,10 +13,11 @@ import {
   chatConverse, chatConverseRegen, cycleSwipe, correctAtom,
 } from "./fileview.actions";
 import {
-  openCharacter, closeCharacter, openJournal, closeJournal, trackJournal, trackAllJournals,
-  syncTasks, suggestTasks,
+  openCharacter, closeCharacter, openJournal, closeJournal,
   editJournalAtom, deleteJournalAtom, journalFix, appendJournal, cycleJournalSwipe,
 } from "./character-sidebar.actions";
+import { trackJournal, trackAllJournals } from "./tracker.actions";
+import { syncTasks, suggestTasks } from "./tasks-panel.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
