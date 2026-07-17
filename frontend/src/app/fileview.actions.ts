@@ -394,6 +394,15 @@ export function chatWrite(path: string, text: string) {
   sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text: cleanText, context, contextLayout, flowTid, characterLayouts }));
 }
 
+// Roleplay writer — every character present on this file is interrogated,
+// in character, before one scene gets written (see Server.Writer.File.
+// roleplayWriter). No pinned context/layout of its own yet — each
+// interrogated character reads their own full branch, not a curated
+// ambient slice — so this doesn't go through writerCommandContext.
+export function roleplayWrite(path: string, text: string) {
+  sendChatCommand(path, () => ({ type: "chat.roleplay", text }));
+}
+
 // "Correct this" — regenerate the whole instruction-group a given atom
 // belongs to (see lib/utils.promptGroupForAtom), via the same agent/context
 // chatWrite already uses, landing back at the same position instead of

@@ -31,7 +31,7 @@ import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
 import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
-import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup)
+import Server.Writer.File (chatWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -91,6 +91,9 @@ runCommand path cmd = case cmd of
 
   ChatWriter _mid prompt context layout flowTid charLayouts ->
     [] <$ chatWriter path prompt context layout (TickId <$> flowTid) charLayouts
+
+  RoleplayWrite _mid prompt ->
+    [] <$ roleplayWriter path prompt
 
   ChatFixer _mid prompt context targets ->
     [] <$ chatFixer path prompt context (map TickId targets)

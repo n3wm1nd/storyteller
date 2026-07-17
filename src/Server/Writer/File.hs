@@ -15,6 +15,7 @@
 -- 'Server.Core.File': plain 'Sem' functions, no JSON/WebSocket.
 module Server.Writer.File
   ( chatWriter
+  , roleplayWriter
   , chatFixer
   , chatConverse
   , chatConverseSwipe
@@ -43,16 +44,17 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary, flattenCharSummary, WordCount(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary, flattenCharSummary, WordCount(..), renderEmbeddedFile)
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, hideChapters, hideLore, classifyPath)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
+import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal, charSummaryAgent)
 import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
 import qualified Storyteller.Writer.Agent.ChapterContext as ChapterContext
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
+import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
 import Storyteller.Writer.Agent.Outline
@@ -195,6 +197,64 @@ chatWriter path prompt context layout mFlowTid charLayouts = do
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
+
+-- | The roleplay writer: rather than one call producing the scene directly
+--   (the shape 'chatWriter' uses), every character present is interrogated
+--   for what they'd do or say (via 'Storyteller.Writer.Agent.Roleplay.
+--   roleplayAgent''s own @ask_character@ tool loop) before one coherent
+--   scene gets written and appended -- see that module's Haddock for the
+--   two-tier design. Presence ('activeCharactersFor') is, same as
+--   'activeCharacterContext', the sole source of truth for who's "in this
+--   scene" and thus askable; there is no separate client-supplied roster.
+--
+--   Once the scene lands, every present character -- whether or not the
+--   orchestrator ever asked them anything -- gets one post-scene
+--   'Storyteller.Writer.Agent.Roleplay.characterReflectAgent' pass: their
+--   own account of what just happened, filtered to what they could
+--   plausibly perceive, appended to their own @journal.md@ with a ref back
+--   to the scene atom it's about (same cross-branch-ref convention
+--   'Storyteller.Writer.Agent.Tracker.trackBranch' already uses). A scene
+--   that produced no atoms at all (an empty generation) has nothing for
+--   anyone to react to, so the reflection pass is skipped entirely rather
+--   than running against nothing.
+roleplayWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
+roleplayWriter path prompt = do
+  (_existing, fileCtx) <- hideLore @(BranchTag Main) (hideChapters @(BranchTag Main) (hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)))
+  (loreBlocks, earlierBlocks) <- runStorage @Main $ do
+    (WorldContext.WorldLore lore, _style) <- WorldContext.worldContextOf
+    earlier <- ChapterContext.earlierChaptersOf path
+    return (lore, [ ContextBlock (renderEmbeddedFile p t) | (p, t) <- earlier ])
+  active <- activeCharactersFor @Main path
+  let characters    = [ (CharLabel (characterLabel c), c) | c <- active ]
+      sceneContext  = loreBlocks <> earlierBlocks <> fileCtx
+  info $ "roleplay agent starting: " <> T.pack path
+  Prose narrative <- roleplayAgent sceneContext characters prompt
+  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
+  sceneRefs <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms narrative
+  info $ "roleplay agent done: " <> T.pack path
+  case sceneRefs of
+    [] -> pure ()
+    _  -> mapM_ (reflectFor narrative (last sceneRefs)) active
+  where
+    characterLabel (Character (BranchName name)) = branchDisplayName name
+
+      -- Full, uncurated branch context (sheet, whole journal, notes.md if
+      -- any) -- not the windowed 'charSummaryWithJournal' slice
+      -- 'activeCharacterContext' uses for ambient generation context.
+      -- Reflecting on a scene just witnessed needs everything this
+      -- character actually knows going in, the same reasoning
+      -- 'Storyteller.Writer.Agent.Roleplay.askCharacterImpl' already
+      -- applies to interrogation. One scope covers the whole pass --
+      -- context read, 'characterReflectAgent''s own tool calls (it may
+      -- update characters/*.md or add a thought based on what actually
+      -- happened, not just what was planned), and the final ref-carrying
+      -- journal commit -- since all three need this same branch's effects
+      -- live at once.
+    reflectFor narrative sceneRef character@(Character branch) =
+      runBranchAndFS @ActiveChar branch $ do
+        ownContext <- charSummaryAgent @(BranchTag ActiveChar) (const True)
+        entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
+        void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] journalPath entry)
 
 -- | "Correct this": delete an instruction group -- 'promptTid' (a
 --   'Prompt' tick) and every atom it produced ('targets') -- then

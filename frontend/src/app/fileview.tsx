@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square, Users } from "lucide-react";
 import { StickyNote, HelpCircle, Image as ImageIcon } from "lucide-react";
 import { cancelGeneration, referenceImage } from "./fileview.actions";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
@@ -1557,7 +1557,7 @@ export function ChatPreviewStrip({ preview }: {
 // nothing selected) on the file's HEAD tick. 'regen' still covers beat-by-
 // beat via the "/regen @beat" command (lib/commands.ts) — that's a command
 // parameter, not a separate mode, so it doesn't get its own pill.
-type AgentId = "write" | "fix" | "append" | "note" | "regen";
+type AgentId = "write" | "fix" | "append" | "note" | "regen" | "roleplay";
 
 // One color per mode so the input bar's own border/pill tells you where a
 // plain (non-"/command") send will land, without having to check anything
@@ -1565,27 +1565,29 @@ type AgentId = "write" | "fix" | "append" | "note" | "regen";
 // in this file (see WireTickList); the rest are fresh hues not otherwise
 // claimed in the app's palette.
 const MODE_COLOR: Record<AgentId, string> = {
-  write:  "0.78 0.10 65",
-  fix:    "0.68 0.12 200",
-  append: "0.62 0.02 60",
-  note:   "0.60 0.15 240",
-  regen:  "0.68 0.15 300",
+  write:    "0.78 0.10 65",
+  fix:      "0.68 0.12 200",
+  append:   "0.62 0.02 60",
+  note:     "0.60 0.15 240",
+  regen:    "0.68 0.15 300",
+  roleplay: "0.72 0.14 20",
 };
 function modeColor(id: AgentId, alpha?: number): string {
   return alpha === undefined ? `oklch(${MODE_COLOR[id]})` : `oklch(${MODE_COLOR[id]} / ${alpha})`;
 }
 
-const MODE_ORDER: AgentId[] = ["write", "fix", "append", "note", "regen"];
+const MODE_ORDER: AgentId[] = ["write", "fix", "append", "note", "regen", "roleplay"];
 
 const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof Sparkles | null }> = {
-  write:  { label: "Write",  title: "Send to writer agent",               icon: Sparkles },
-  fix:    { label: "Fix",    title: "Send to fixer agent (edit targets)",  icon: Wrench },
-  append: { label: "Append", title: "Append verbatim, instant",            icon: null },
-  note:   { label: "Note",   title: "Attach as a note, instant",           icon: StickyNote },
-  regen:  { label: "Regen",  title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
+  write:    { label: "Write",    title: "Send to writer agent",               icon: Sparkles },
+  fix:      { label: "Fix",      title: "Send to fixer agent (edit targets)",  icon: Wrench },
+  append:   { label: "Append",   title: "Append verbatim, instant",            icon: null },
+  note:     { label: "Note",     title: "Attach as a note, instant",           icon: StickyNote },
+  regen:    { label: "Regen",    title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
+  roleplay: { label: "Roleplay", title: "Interrogate every character present, then write the scene", icon: Users },
 };
 
-export function InputBar({ enabled, generating, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onAsk, onInform }: {
+export function InputBar({ enabled, generating, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform }: {
   enabled: boolean;
   // Whether a chat.writer/fixer/regen/etc call is currently streaming on
   // this file's connection — see lib/serverCacheStore.ts's 'preview'.
@@ -1605,6 +1607,7 @@ export function InputBar({ enabled, generating, activeBranch, contextAtomCount, 
   onFix:    (text: string) => void;
   onNote:   (text: string) => void;
   onRegen:  (text: string, byBeat: boolean) => void;
+  onRoleplay: (text: string) => void;
   // Not a mode in AGENT_META (this doesn't edit the file) — only reachable
   // via the "/ask @character=..." command, never the mode pill/dropdown.
   onAsk:    (character: string, question: string) => void;
@@ -1654,6 +1657,7 @@ export function InputBar({ enabled, generating, activeBranch, contextAtomCount, 
 
   const actionFor: Record<AgentId, (t: string) => void> = {
     write: onWrite, fix: onFix, append: onAppend, note: onNote, regen: (t) => onRegen(t, false),
+    roleplay: onRoleplay,
   };
 
   // A recognized leading "/command" always wins over the currently selected
@@ -1661,6 +1665,7 @@ export function InputBar({ enabled, generating, activeBranch, contextAtomCount, 
   const commandActions: Record<string, (t: string, params: Record<string, string>) => void> = {
     write: (t) => onWrite(t), fix: (t) => onFix(t), append: (t) => onAppend(t), note: (t) => onNote(t),
     regen: (t, p) => onRegen(t, p.beat !== undefined),
+    roleplay: (t) => onRoleplay(t),
     ask: (t, p) => { if (p.character) onAsk(p.character, t); },
     inform: (t, p) => { if (p.character) onInform(p.character, t); },
   };

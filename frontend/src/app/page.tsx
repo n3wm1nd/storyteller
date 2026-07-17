@@ -9,7 +9,7 @@ import {
   openFile, createFile, deleteFile, renameFile, checkpointFile, closeFile, enterScene, leaveScene, askCharacter,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
-  chatWrite, chatFix, chatNote, chatRegen, chatOutline,
+  chatWrite, roleplayWrite, chatFix, chatNote, chatRegen, chatOutline,
   chatConverse, chatConverseRegen, cycleSwipe, correctAtom,
 } from "./fileview.actions";
 import {
@@ -677,6 +677,7 @@ export default function Home() {
                 onFix={handleFix}
                 onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
                 onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
+                onRoleplay={(text) => selectedFile && roleplayWrite(selectedFile, text)}
                 onAsk={(character, question) => selectedFile && askCharacter(selectedFile, character, question)}
                 onInform={(character, fact) => appendJournal(character, fact, journalMarkers[character] ?? null)}
               />

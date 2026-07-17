@@ -33,6 +33,7 @@ library
                   , Storyteller.Core.LLM.Registry
                   , Storyteller.Core.LLM.Role
                   , Storyteller.Core.LLM.Settings
+                  , Storyteller.Core.LLM.Interceptor
                   , Storyteller.Writer.Agent.Continuation
                   , Storyteller.Writer.Agent.ContextFilter
                   , Storyteller.Writer.Agent.Chat
@@ -54,6 +55,7 @@ library
                   , Storyteller.Writer.Agent.SummaryAccess
                   , Storyteller.Writer.Agent.ChapterSummarizer
                   , Storyteller.Writer.Agent.Tasks
+                  , Storyteller.Writer.Agent.Roleplay
                   , Storyteller.Core.Atom
                   , Storyteller.Core.Image
                   , Storyteller.Core.Create
@@ -339,6 +341,9 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.OutlineSplitFreeformSpec
                   , Agent.Integration.OutlineSplitBulkSpec
                   , Agent.Integration.CharacterPresenceSpec
+                  , Agent.Integration.RoleplayHarness
+                  , Agent.Integration.RoleplaySpec
+                  , Agent.Integration.RoleplayMidStorySpec
                   , Agent.Integration.WorldLoreSpec
                   , Agent.Integration.JournalInstructionSpec
                   , Agent.Integration.JournalIronySpec

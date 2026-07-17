@@ -118,6 +118,17 @@ data FileCommand
   --   context UI) means "no override", which reads as today's fixed
   --   sheet-in/journal-out behavior, not "show nothing".
   | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcFlowTid :: Maybe T.Text, fcCharacterLayouts :: Map.Map T.Text [PickerRule] }
+  -- | Roleplay writer: every character present on this file (see
+  --   'Storyteller.Writer.Presence.activeCharactersFor') is interrogated,
+  --   in character, for what they'd do or say before one scene gets
+  --   written and appended -- see 'Server.Writer.File.roleplayWriter'.
+  --   'fcPromptText' may be empty (the orchestrator continues the scene
+  --   naturally in that case). No @context@\/@contextLayout@\/character
+  --   layouts here yet, unlike 'ChatWriter' -- the per-character context a
+  --   roleplay turn reads is each interrogated character's own full branch,
+  --   not a curated ambient slice, so there's nothing for those knobs to
+  --   configure yet.
+  | RoleplayWrite { fcId :: Maybe T.Text, fcPromptText :: T.Text }
   | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
   -- | Discuss, don't write: send a message to the chat agent, which sees
   --   this file's own prior 'ChatConverse' exchanges as conversation
@@ -223,6 +234,7 @@ instance FromJSON FileCommand where
         flowTid      <- o .:? "flowTid"
         charLayouts  <- fromMaybe Map.empty <$> o .:? "characterLayouts"
         ChatWriter i <$> o .: "text" <*> pure context <*> pure layout <*> pure flowTid <*> pure charLayouts
+      "chat.roleplay" -> RoleplayWrite i . fromMaybe "" <$> o .:? "text"
       "chat.fixer"  -> do
         context <- fromMaybe [] <$> o .:? "context"
         targets <- fromMaybe [] <$> o .:? "targets"
@@ -275,6 +287,7 @@ commandKind = \case
   HideAtoms {}    -> "hide.atoms"
   UnhideAtoms {}  -> "unhide.atoms"
   ChatWriter {}   -> "chat.writer"
+  RoleplayWrite {} -> "chat.roleplay"
   ChatFixer {}    -> "chat.fixer"
   ChatRegen {}    -> "chat.regen"
   CorrectGroup {} -> "correct.group"

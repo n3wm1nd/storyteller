@@ -53,7 +53,7 @@ import qualified Data.Aeson as Aeson
 import Data.Aeson.Types (parseEither)
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.LLM (LLM(..), queryLLM)
+import Runix.LLM (queryLLM)
 import Runix.LLM.ToolInstances ()
 import Runix.Logging (Logging, info, warning)
 import UniversalLLM (Message(..), ModelConfig(..))
@@ -63,6 +63,7 @@ import UniversalLLM.Tools
   )
 
 import Storyteller.Core.LLM.Role (LLMs, ProseModel, AgentModel)
+import Storyteller.Core.LLM.Interceptor (withTurnBudget)
 import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock, ContextBlock(..)
   , ExistingContent(..), WordCount(..) )
@@ -361,71 +362,6 @@ splitOutlineFreeform contextBlocks (OutlineDoc doc) = do
 --   a single chapter's *prose* is finished, not the whole split.
 outlineCompleteSentinel :: Text
 outlineCompleteSentinel = "[[OUTLINE-COMPLETE]]"
-
--- | The general mechanism underneath 'withTurnBudget': intercept every
---   'Runix.LLM.QueryLLM' call, and once @shouldIntervene history@ is true
---   for the growing history so far, stop actually querying the model and
---   run @respond history@ instead to produce what comes back in its place.
---   Turn count past a budget is only one condition ('withTurnBudget');
---   "does the history already contain N tool calls," "has this specific
---   message appeared," or anything else over the same @[Message model]@ is
---   just a different @shouldIntervene@, and @respond@ deciding whether to
---   hand back a synthetic message, look something up, or 'Polysemy.Fail.fail'
---   outright is what let 'withTurnBudget' build its own "don't inject the
---   sentinel twice" safety check purely as an instance of this, not a
---   special case baked in here.
---
---   Cross-cutting behaviour a caller's own loop doesn't have to know exists
---   -- the same way @Agent.Integration.Harness.assertToolCallBudget@ taps
---   the same effect for the agent-integration test suite's own
---   cross-cutting concerns (recording, fail-fast retries). Only
---   'withTurnBudget' builds on this so far; worth lifting both out of here
---   (this module, or even @Runix.LLM@ itself, if useful beyond Storyteller)
---   once a second, genuinely different condition wants it -- see PLAN.md's
---   preference for that order, not the reverse.
-withInterception
-  :: forall model r a
-  .  Member (LLM model) r
-  => ([Message model] -> Bool)                     -- ^ condition on the history so far
-  -> ([Message model] -> Sem r [Message model])    -- ^ what to return instead, given that history
-  -> Sem r a -> Sem r a
-withInterception shouldIntervene respond = intercept @(LLM model) recorder
-  where
-    recorder :: forall m x. LLM model m x -> Sem r x
-    recorder (QueryLLM configs history)
-      | shouldIntervene history = Right <$> respond history
-      | otherwise               = send (QueryLLM configs history)
-
--- | Cap a multi-turn conversation at @maxTurns@ actual model queries: once
---   reached, inject a synthetic response containing @sentinel@ instead of
---   querying the model again, so a loop already watching for that sentinel
---   (see 'outlineCompleteSentinel'\/'doneSentinel') terminates the normal
---   way, with no separate "budget ran out" branch of its own to get right.
---
---   Refuses (via 'Polysemy.Fail.Fail') to inject the sentinel a second time
---   -- if the caller's own loop isn't stopping once the sentinel shows up,
---   injecting it again would just spin forever instead of actually
---   terminating anything.
-withTurnBudget
-  :: forall model r a
-  .  Members '[LLM model, Fail] r
-  => Int   -- ^ turn budget: queries beyond this get the sentinel instead of a real response
-  -> Text  -- ^ the sentinel to inject once the budget is reached
-  -> Sem r a -> Sem r a
-withTurnBudget maxTurns sentinel = withInterception @model overBudget respond
-  where
-    overBudget = (>= maxTurns) . length . filter isAssistantTurn
-
-    respond history
-      | sentinel `T.isInfixOf` mconcat [ t | AssistantText t <- history ] =
-          fail "withTurnBudget: sentinel already in history but the loop kept going -- refusing to inject it again"
-      | otherwise = pure [AssistantText sentinel]
-
-    isAssistantTurn (AssistantText _)      = True
-    isAssistantTurn (AssistantTool _)      = True
-    isAssistantTurn (AssistantReasoning _) = True
-    isAssistantTurn (AssistantJSON _)      = True
-    isAssistantTurn _                      = False
 
 -- | Second variant of the same experiment 'splitOutlineFreeform' runs: same
 --   job, same no-tool-calls premise, but the whole split in a single

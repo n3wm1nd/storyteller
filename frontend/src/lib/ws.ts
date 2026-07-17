@@ -310,6 +310,14 @@ export type FileCommand =
   // override", which the server reads as today's fixed sheet-in/journal-out
   // behavior, not "show nothing" (see Server.Writer.File.activeCharacterContext).
   | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; flowTid?: string; characterLayouts?: Record<string, PickerRule[]> }
+  // Roleplay: every character present on this file is interrogated, in
+  // character, for what they'd do or say before one scene gets written and
+  // appended — see Server.Writer.File.roleplayWriter. `text` is the
+  // author's direction and may be empty (the scene just continues
+  // naturally). No context/contextLayout/characterLayouts yet — each
+  // interrogated character reads their own full branch, not a curated
+  // ambient slice.
+  | { type: "chat.roleplay"; id?: string; text: string }
   // Fixer: `targets` are the atoms flagged as the subject of `text`.
   | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
   // Regen: rewrite this chapter to fit its beat sheet (ch{N}.outline.md by
