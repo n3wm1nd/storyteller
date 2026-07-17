@@ -38,9 +38,12 @@ function encodePath(path: string) {
 
 // Current raw content of a branch file — for downloading or embedding
 // (e.g. <img src>) directly, without tunneling bytes through the WS
-// connection just to simulate it.
+// connection just to simulate it. Real file paths always sit under the
+// fixed "file/" segment (see app/Server.hs's httpApp) — never bare at the
+// branch's own root — so a path that happens to be named "$raw"/"$image"
+// can never be misrouted into one of those reserved-command endpoints.
 export function branchFileUrl(branch: string, path: string) {
-  return `${httpBase()}/branch/${encodeURIComponent(branch)}/${encodePath(path)}`;
+  return `${httpBase()}/branch/${encodeURIComponent(branch)}/file/${encodePath(path)}`;
 }
 
 // Upload/replace a branch file's content directly from its bytes — the PUT
@@ -644,7 +647,10 @@ export function branchConn(name: string) {
 
 export function fileConn(branch: string, path: string) {
   const encodedPath = path.split("/").map((p) => encodeURIComponent(decodeURIComponent(p))).join("/");
-  return new StoryWS<FileCommand, FileEvent>(`${wsBase()}/branch/${encodeURIComponent(branch)}/${encodedPath}`);
+  // "file/" is a fixed, reserved segment (see app/Server.hs's wsRouter) —
+  // real file paths always sit under it, never bare at the branch's own
+  // root, so a path named "$context" can't be mistaken for that connection.
+  return new StoryWS<FileCommand, FileEvent>(`${wsBase()}/branch/${encodeURIComponent(branch)}/file/${encodedPath}`);
 }
 
 // No commands, so 'Cmd' is 'never' — nothing can be sent on this connection.

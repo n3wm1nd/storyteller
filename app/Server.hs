@@ -20,15 +20,18 @@
 --   /library/{name}   — writer-facing book/chapter/scene tree for a branch
 --
 -- HTTP endpoints (alongside):
---   GET /branch/{name}/{path}   — a branch file's current raw content, for
---                                 direct download or embedding (e.g. <img>)
---                                 instead of tunneling bytes through the WS
---                                 connection just to simulate one
---   PUT /branch/{name}/{path}   — upload/replace a file's content from the
---                                 request body directly (see
+--   GET /branch/{name}/file/{path} — a branch file's current raw content,
+--                                 for direct download or embedding (e.g.
+--                                 <img>) instead of tunneling bytes through
+--                                 the WS connection just to simulate one
+--   PUT /branch/{name}/file/{path} — upload/replace a file's content from
+--                                 the request body directly (see
 --                                 'Server.Writer.Branch.uploadFile') — the
 --                                 only way to upload now; there is no WS
 --                                 command for this anymore
+--   Real file paths always sit under the fixed "file/" segment, never bare
+--   at the branch's own root, so a path that happens to be named "$raw" or
+--   "$image" can never collide with the reserved command segments below.
 --   PUT /branch/{name}/$raw/{path} — raw-edit-mode save: like the plain PUT
 --                                 above, but the body must be UTF-8 text and
 --                                 is reconciled against the path's existing
@@ -90,14 +93,14 @@ wsRouter env pending =
   case BC.split '/' . BC.dropWhile (== '/') . Network.WebSockets.requestPath $ pendingRequest pending of
     ["session"]              -> accept $ runSession env
     ["branch", name]         -> accept $ runBranch  env (T.pack (BC.unpack (urlDecode False name)))
-    -- Reserved segment ahead of the generic file-path catch-all below —
-    -- "$context" can't collide with a real file path, and this can move
-    -- wholesale once /branch's routing is reworked. See
-    -- Server.Writer.ContextView.Connection.
+    -- "$context" is a reserved sibling of "file", same convention as the
+    -- HTTP router's httpApp — a real file path only ever appears after the
+    -- fixed "file" segment, never bare at the branch's own root, so it can
+    -- never be mistaken for this (or any future reserved command).
     ("branch" : name : "$context" : path) -> accept $ runContextView env
                                            (T.pack (BC.unpack (urlDecode False name)))
                                            (joinPath path)
-    ("branch" : name : path) -> accept $ runFile env
+    ("branch" : name : "file" : path) -> accept $ runFile env
                                            (T.pack (BC.unpack (urlDecode False name)))
                                            (joinPath path)
     ["character", name]      -> accept $ runCharacter env (T.pack (BC.unpack (urlDecode False name)))
@@ -124,7 +127,16 @@ httpApp env req respond
   | requestMethod req == methodOptions =
       respond $ responseLBS status200 (corsHeaders req) ""
   | otherwise = case (requestMethod req, pathInfo req) of
-      (m, "branch" : name : path@(_:_)) | m == methodGet -> do
+      -- A branch's real file paths all live under "file/" (never bare at
+      -- the branch's own root) so a file that happens to be *named* "$raw",
+      -- "$image", etc. can never be mistaken for one of the reserved
+      -- command segments below -- those are matched as this same-position
+      -- literal, so "file" being a distinct, fixed literal itself (not
+      -- something a path segment could coincidentally equal from the
+      -- outside, since real paths only ever appear *after* it) closes off
+      -- the collision entirely, not just for the specific words reserved
+      -- today.
+      (m, "branch" : name : "file" : path@(_:_)) | m == methodGet -> do
         let filePath = T.unpack (T.intercalate "/" path)
         result <- runAction env (readFileContent name filePath)
         case result of
@@ -181,7 +193,7 @@ httpApp env req respond
           Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
           Right () -> respond $ responseLBS status200 (corsHeaders req) ""
 
-      (m, "branch" : name : path@(_:_)) | m == methodPut -> do
+      (m, "branch" : name : "file" : path@(_:_)) | m == methodPut -> do
         let filePath = T.unpack (T.intercalate "/" path)
         body   <- strictRequestBody req
         result <- runAction env (uploadFile name filePath (LBS.toStrict body))

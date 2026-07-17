@@ -215,19 +215,26 @@ export default function Home() {
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
+  // Same "reserved literal ahead of a name that could be anything" shape as
+  // the backend's own /branch/{name}/file/{path} split (see app/Server.hs) —
+  // a branch could otherwise be named the same as some future top-level
+  // route, and a file within it the same as some future reserved segment
+  // under a branch, so both "branch" and "file" are fixed prefixes a real
+  // name can never coincide with, rather than the name sitting bare at
+  // whatever position happens to be unclaimed today.
   function parsePath(pathname: string): { branch: string | null; file: string | null } {
     const parts = pathname.replace(/^\//, "").split("/").filter(Boolean);
-    if (parts.length === 0) return { branch: null, file: null };
+    if (parts.length < 2 || parts[0] !== "branch") return { branch: null, file: null };
     return {
-      branch: decodeURIComponent(parts[0]),
-      file: parts.length > 1 ? parts.slice(1).map(decodeURIComponent).join("/") : null,
+      branch: decodeURIComponent(parts[1]),
+      file: parts.length > 3 && parts[2] === "file" ? parts.slice(3).map(decodeURIComponent).join("/") : null,
     };
   }
 
   function pushPath(branch: string | null, file: string | null) {
     if (!branch) { history.pushState(null, "", "/"); return; }
-    const encodedFile = file ? "/" + file.split("/").map(encodeURIComponent).join("/") : "";
-    history.pushState(null, "", `/${encodeURIComponent(branch)}${encodedFile}`);
+    const encodedFile = file ? "/file/" + file.split("/").map(encodeURIComponent).join("/") : "";
+    history.pushState(null, "", `/branch/${encodeURIComponent(branch)}${encodedFile}`);
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
