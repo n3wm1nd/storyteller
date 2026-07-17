@@ -204,8 +204,12 @@ defaultQuestionSystemPrompt = Prompt $ T.unlines
 --   Haddock: a reasoning-capable model's thinking tokens draw from this
 --   same budget before any answer text, and a cap sized only for the
 --   visible answer leaves nothing for the answer once reasoning runs.
+--   Anthropic's own thinking budget is @min 5000 (maxTokens \`div\` 2)@ (see
+--   'UniversalLLM.Providers.Anthropic.anthropicReasoning'), so anything
+--   below ~3000 here can't even reach that cap -- 5000 leaves 2500 for
+--   thinking and 2500 for the answer, with real margin either way.
 defaultQuestionConfig :: [ModelConfig ProseModel]
-defaultQuestionConfig = [MaxTokens 1500, Temperature 0.8]
+defaultQuestionConfig = [MaxTokens 5000, Temperature 0.8]
 
 -- | Write the scene's continuation from every present character's own
 --   answer -- a plain prose call, same shape as 'questionForCharacterAgent':
@@ -248,8 +252,11 @@ defaultComposeSystemPrompt = Prompt $ T.unlines
   , "Output only the finished prose, nothing else."
   ]
 
+-- | Same thinking-budget headroom reasoning as 'defaultQuestionConfig' --
+--   the finished scene itself can run long, so this needs both the
+--   thinking-model margin and genuine room for the prose.
 defaultComposeConfig :: [ModelConfig ProseModel]
-defaultComposeConfig = [MaxTokens 3000, Temperature 0.8]
+defaultComposeConfig = [MaxTokens 6000, Temperature 0.8]
 
 -- ---------------------------------------------------------------------------
 -- The character subagent
@@ -592,9 +599,11 @@ defaultCharacterSystemPrompt =
 -- | Room for a reasoning-capable model's thinking tokens plus the full
 --   three-section answer ('characterIdentityNote') -- see
 --   'defaultQuestionConfig's own Haddock on why this needs real headroom,
---   not just what the visible answer looks like it needs.
+--   not just what the visible answer looks like it needs. This path also
+--   runs a tool loop ('characterTools'), so a low cap can starve the final
+--   text-only turn of both thinking and answer room simultaneously.
 defaultCharacterConfig :: [ModelConfig AgentModel]
-defaultCharacterConfig = [MaxTokens 3000, Temperature 0.8]
+defaultCharacterConfig = [MaxTokens 8000, Temperature 0.8]
 
 -- ---------------------------------------------------------------------------
 -- Post-scene reflection
@@ -687,8 +696,12 @@ defaultReflectSystemPrompt = Prompt $ T.unlines
   , "verbatim -- output only that, nothing else."
   ]
 
+-- | Same headroom reasoning as 'defaultCharacterConfig' -- this is the
+--   config actually implicated in a thinking model returning an empty
+--   journal entry: the final tool-loop turn has to fit both the model's
+--   thinking tokens and the visible entry inside one budget.
 defaultReflectConfig :: [ModelConfig AgentModel]
-defaultReflectConfig = [MaxTokens 3000, Temperature 0.8]
+defaultReflectConfig = [MaxTokens 8000, Temperature 0.8]
 
 defaultReflectInstructions :: Prompt
 defaultReflectInstructions = "Update your notes or record a thought if anything actually changed, then write this character's journal entry for what just happened."
