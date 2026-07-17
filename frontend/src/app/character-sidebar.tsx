@@ -370,6 +370,32 @@ function CharacterCard({
   );
 }
 
+// One row in the "Add to scene" list — same identity treatment
+// (CharacterAvatar + characterColor, hover tint) as CharacterListItem in
+// sidebar.tsx and CharacterCard's own header above, so a not-yet-present
+// character reads as "the same kind of thing" here as everywhere else it's
+// listed, instead of a plain unstyled text button.
+function AddCharacterRow({ character, onSelect }: { character: CharacterSummary; onSelect: () => void }) {
+  const [hover, setHover] = useState(false);
+  const color = characterColor(character.branch);
+  return (
+    <button
+      onClick={onSelect}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left",
+        fontSize: 11, padding: "4px 6px", borderRadius: 4,
+        background: hover ? "var(--sky-tint)" : "transparent", border: "none", cursor: "pointer",
+        color: "var(--text-secondary)",
+      }}
+    >
+      <CharacterAvatar branch={character.branch} hasAvatar={character.avatar} color={color} size={14} />
+      {displayName(character.branch, character.sheet)}
+    </button>
+  );
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export function CharacterSidebar({
@@ -431,7 +457,7 @@ export function CharacterSidebar({
   // below, same shape AgentLogStrip reads agentLogs in.
   characterAnswers: { character: string; question: string; answer: string }[];
 }) {
-  const effectiveHead = rebaseMarker ?? head;
+    const effectiveHead = rebaseMarker ?? head;
   const active = activeCharacterBranches(ticks, effectiveHead);
   const activeKey = active.join("|");
   const [showAdd, setShowAdd] = useState(false);
@@ -575,18 +601,11 @@ export function CharacterSidebar({
                 <div style={{ fontSize: 10, color: "var(--text-ghost)", padding: "4px 2px" }}>No other character branches</div>
               ) : (
                 available.map((c) => (
-                  <button
+                  <AddCharacterRow
                     key={c.branch}
-                    onClick={() => { enterScene(selectedFile, c.branch); setShowAdd(false); }}
-                    style={{
-                      display: "block", width: "100%", textAlign: "left",
-                      fontSize: 11, padding: "4px 6px", borderRadius: 4,
-                      background: "transparent", border: "none", cursor: "pointer",
-                      color: "var(--text-secondary)",
-                    }}
-                  >
-                    {displayName(c.branch, c.sheet)}
-                  </button>
+                    character={c}
+                    onSelect={() => { enterScene(selectedFile, c.branch); setShowAdd(false); }}
+                  />
                 ))
               )}
               <button onClick={() => setShowAdd(false)} style={{
