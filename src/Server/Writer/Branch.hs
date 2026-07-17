@@ -21,22 +21,27 @@ module Server.Writer.Branch
   , suggestTasksOnBranch
   , uploadFiles
   , uploadFile
+  , uploadImage
   , saveFile
   , saveFileAsNew
   , onlyWhilePresent
   ) where
 
 import Control.Monad (void)
+import Data.Bits ((.&.))
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Members, Sem)
+import Numeric (showHex)
+import Polysemy (Member, Members, Sem)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (writeFile)
 import Runix.Git (Git)
 import Runix.Logging (Logging)
+import Runix.Random (Random, randomInt)
+import System.FilePath (dropExtension, takeFileName, (</>))
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
@@ -54,9 +59,11 @@ import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, withStorage)
+import Storyteller.Core.Image (Image(..))
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import qualified Storage.Ops as Ops
+import qualified Storage.Tick as Tick
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..), Tick, TickId, fromTick, tickId)
 import qualified Data.Yaml as Yaml
@@ -230,6 +237,48 @@ uploadFiles files = do
 uploadFile :: SessionEffects r => T.Text -> FilePath -> BS.ByteString -> Sem r ()
 uploadFile branch path content =
   withStorage (withBranch @Main branch (void (uploadFiles [(path, content)])))
+
+-- | Find an unused path under @dir@ for @name@, prefixed with a random
+--   8-hex-digit tag to avoid collisions between drops that share a
+--   filename (two screenshots both called @image.png@, say). Checked
+--   against the branch's current tree rather than assumed unique outright,
+--   since a caller could in principle re-drop the exact same tag twice in
+--   a row; the loop is only ever expected to run once in practice.
+freshAssetPath :: (BranchOpen r, Member Random r) => FilePath -> FilePath -> Sem r FilePath
+freshAssetPath dir name = go (8 :: Int)
+  where
+    go 0 = fail "freshAssetPath: could not find a free asset path"
+    go n = do
+      tag <- hex8 <$> randomInt
+      let candidate = dir </> (tag <> "-" <> name)
+      taken <- runStorage @Main (Ops.exists candidate)
+      if taken then go (n - 1) else return candidate
+
+    hex8 :: Int -> String
+    hex8 i = let h = showHex (i .&. (0xFFFFFFFF :: Int)) ""
+              in replicate (8 - length h) '0' <> h
+
+-- | Attach an image to @path@'s timeline: deposits the bytes as their own
+--   opaque 'Ops.addBinary' asset under @\<path minus extension\>.assets\/@
+--   (same "deposit, not a claim about the bytes" stance as 'uploadFiles'),
+--   then records an 'Image' tick on @path@ itself pointing at that asset.
+--   Two ticks, two commits (no way to fold a 'Storage.Core.store' call in
+--   two) inside one atomic branch-ref transaction, same shape as
+--   'importCharacterCard's file-then-avatar sequencing.
+attachImage
+  :: (BranchOpen r, Member Random r)
+  => FilePath -> FilePath -> T.Text -> BS.ByteString -> Sem r ()
+attachImage path origName caption content = do
+  assetPath <- freshAssetPath (dropExtension path <> ".assets") (takeFileName origName)
+  void $ runStorage @Main (Ops.addBinary assetPath content)
+  void $ runStorage @Main (Tick.storeAs (Image path assetPath caption))
+
+-- | One-shot variant of 'attachImage' for the HTTP
+--   @PUT /branch/{name}/$image/{path}@ endpoint, same one-shot
+--   branch-scope-opening shape as 'uploadFile' and for the same reason.
+uploadImage :: SessionEffects r => T.Text -> FilePath -> FilePath -> T.Text -> BS.ByteString -> Sem r ()
+uploadImage branch path origName caption content =
+  withStorage (withBranch @Main branch (attachImage path origName caption content))
 
 -- | One-shot save for the HTTP @PUT /branch/{name}/$raw/{path}@ endpoint —
 --   the raw-edit-mode counterpart to 'uploadFile'. Where an upload deposits

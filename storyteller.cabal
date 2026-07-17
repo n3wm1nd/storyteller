@@ -54,6 +54,7 @@ library
                   , Storyteller.Writer.Agent.ChapterSummarizer
                   , Storyteller.Writer.Agent.Tasks
                   , Storyteller.Core.Atom
+                  , Storyteller.Core.Image
                   , Storyteller.Core.Create
                   , Storyteller.Common.Types
                   , Storyteller.Common.Annotation

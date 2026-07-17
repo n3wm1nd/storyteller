@@ -3,7 +3,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square } from "lucide-react";
-import { StickyNote, HelpCircle } from "lucide-react";
+import { StickyNote, HelpCircle, Image as ImageIcon } from "lucide-react";
 import { cancelGeneration } from "./fileview.actions";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
@@ -301,16 +301,47 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
 
 // ── Annotation card ───────────────────────────────────────────────────────────
 
-const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleContext }: {
+const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleContext, activeBranch }: {
   tick: WireTick;
   inContext: boolean;
   onToggleContext: (tickId: string) => void;
+  // Only an "image" tick needs this, to build its thumbnail's GET URL.
+  activeBranch?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  const isNote = tick.kind === "note";
-  const isAsk  = tick.kind === "character-answer";
-  if (!isNote && !isAsk) return null;
+  const isNote  = tick.kind === "note";
+  const isAsk   = tick.kind === "character-answer";
+  const isImage = tick.kind === "image";
+  if (!isNote && !isAsk && !isImage) return null;
+
+  if (isImage) {
+    const asset   = tick.fields?.asset;
+    const caption = tick.message;
+    return (
+      <div
+        onClick={(e) => { if (e.ctrlKey || e.metaKey) onToggleContext(tick.tickId); }}
+        style={{
+          margin: "4px 0 10px 12px", borderRadius: 5, padding: "6px 10px",
+          background: "oklch(0.22 0.03 300 / 0.4)", border: "1px solid oklch(0.5 0.15 300 / 0.35)",
+          outline: inContext ? "2px solid var(--amber)" : "none", outlineOffset: 1,
+          display: "flex", alignItems: "center", gap: 8,
+        }}
+      >
+        <ImageIcon style={{ width: 11, height: 11, color: "oklch(0.65 0.15 300)", flexShrink: 0 }} />
+        {asset && activeBranch && (
+          <img
+            src={branchFileUrl(activeBranch, asset)}
+            alt={caption || asset}
+            style={{ maxWidth: 220, maxHeight: 160, borderRadius: 4, flexShrink: 0, display: "block" }}
+          />
+        )}
+        {caption && (
+          <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>{caption}</span>
+        )}
+      </div>
+    );
+  }
 
   // An ask has its own two-part shape (who was asked + the question, then
   // the answer). Which character answered is a field (same wire convention
@@ -503,10 +534,11 @@ const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }:
 
 // ── Annotation dots ───────────────────────────────────────────────────────────
 
-const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnotations, onToggleContext }: {
+const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnotations, onToggleContext, activeBranch }: {
   annotations: WireTick[];
   contextAnnotations: Set<string>;
   onToggleContext: (tickId: string) => void;
+  activeBranch?: string | null;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -517,6 +549,7 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
   function dotColor(ann: WireTick): string {
     if (ann.kind === "note")             return "oklch(0.55 0.15 240)";
     if (ann.kind === "character-answer") return characterColor(ann.fields?.character ?? "");
+    if (ann.kind === "image")            return "oklch(0.65 0.15 300)";
     return "var(--text-dim)";
   }
 
@@ -563,6 +596,7 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
             tick={ann}
             inContext={contextAnnotations.has(ann.tickId)}
             onToggleContext={onToggleContext}
+            activeBranch={activeBranch}
           />
         );
       })()}
@@ -658,6 +692,7 @@ export function WireTickList({
   rebaseMarker, onSetRebaseMarker, presenceBars,
   onEdit, onToggleContextAtom, onToggleContextAnnotation, onCycleSwipe,
   onHoverAtom, onHoverEnd, compact, onCorrect, onEditPrompt,
+  activeBranch, targetFile, onUploadImages,
 }: {
   ticks: WireTick[];
   annotationMode: AnnotationMode;
@@ -685,9 +720,32 @@ export function WireTickList({
   // all keeps that call site honest about not supporting them).
   onCorrect?: (tickId: string) => void;
   onEditPrompt?: (tickId: string, content: string) => void;
+  // Needed for image annotations' thumbnail URLs (activeBranch), and to
+  // support dropping an image onto the prose (targetFile/onUploadImages) —
+  // omitted entirely by the journal panel's compact usage, same as
+  // onCorrect/onEditPrompt, which disables the drop zone there too.
+  activeBranch?: string | null;
+  targetFile?: string | null;
+  onUploadImages?: (path: string, files: FileList | File[]) => void;
 }) {
   const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[ticks.length - 1].tickId}` : 0;
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
+
+  const [imageDragOver, setImageDragOver] = useState(false);
+  const canDropImage = !!(targetFile && onUploadImages);
+  const handleImageDragOver = (e: React.DragEvent) => {
+    if (!canDropImage) return;
+    e.preventDefault();
+    setImageDragOver(true);
+  };
+  const handleImageDragLeave = () => setImageDragOver(false);
+  const handleImageDrop = (e: React.DragEvent) => {
+    if (!canDropImage) return;
+    e.preventDefault();
+    setImageDragOver(false);
+    const images = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
+    if (images.length > 0) onUploadImages!(targetFile!, images);
+  };
 
   const atoms = ticks.filter((t) => t.kind === "atom");
   // How many alternates (see Storyteller.Common.Swipe) currently sit in a
@@ -857,7 +915,17 @@ export function WireTickList({
   }, [barsKey, atomsKey]);
 
   return (
-    <div style={{ position: "relative", flex: compact ? undefined : 1, display: "flex", flexDirection: "column", overflow: compact ? "visible" : "hidden" }}>
+    <div
+      onDragOver={handleImageDragOver}
+      onDragLeave={handleImageDragLeave}
+      onDrop={handleImageDrop}
+      style={{
+        position: "relative", flex: compact ? undefined : 1, display: "flex", flexDirection: "column",
+        overflow: compact ? "visible" : "hidden",
+        background: imageDragOver ? "var(--amber-wash)" : "transparent",
+        outline: imageDragOver ? "1px dashed var(--amber)" : "none", outlineOffset: -2,
+      }}
+    >
       <div ref={scrollRef} style={{ flex: compact ? undefined : 1, overflow: compact ? "visible" : "auto" }}>
         <div ref={contentRef} style={compact
           ? { padding: "6px 8px", position: "relative" }
@@ -884,13 +952,14 @@ export function WireTickList({
           ))}
           {leading.length > 0 && annotationMode !== "hidden" && (
             annotationMode === "dots" ? (
-              <AnnotationDots annotations={leading} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
+              <AnnotationDots annotations={leading} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} activeBranch={activeBranch} />
             ) : (
               leading.map((ann) => (
                 <AnnotationCard
                   key={ann.tickId} tick={ann}
                   inContext={contextAnnotations.has(ann.tickId)}
                   onToggleContext={onToggleContextAnnotation}
+                  activeBranch={activeBranch}
                 />
               ))
             )
@@ -933,13 +1002,14 @@ export function WireTickList({
                     onCorrect={onCorrect}
                   />
                   {annotationMode === "dots" && anns.length > 0 && (
-                    <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} />
+                    <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} activeBranch={activeBranch} />
                   )}
                   {annotationMode === "expanded" && anns.map((ann) => (
                     <AnnotationCard
                       key={ann.tickId} tick={ann}
                       inContext={contextAnnotations.has(ann.tickId)}
                       onToggleContext={onToggleContextAnnotation}
+                      activeBranch={activeBranch}
                     />
                   ))}
                 </div>

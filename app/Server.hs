@@ -66,7 +66,7 @@ import System.IO (hPutStrLn, stderr)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Server.Core.File (readFileContent)
-import Server.Writer.Branch (uploadFile, saveFile, saveFileAsNew)
+import Server.Writer.Branch (uploadFile, uploadImage, saveFile, saveFileAsNew)
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort, envStaticDir)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
@@ -161,6 +161,25 @@ httpApp env req respond
             case result of
               Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
               Right () -> respond $ responseLBS status200 (corsHeaders req) ""
+
+      -- Reserved segment ahead of the generic upload PUT below, same
+      -- convention as "$raw" above: an image drop attaches an 'Image' tick
+      -- to @path@'s timeline (see 'Server.Writer.Branch.attachImage')
+      -- instead of depositing a plain opaque asset at @path@ itself.
+      -- "?filename=..." carries the dropped file's original name (used for
+      -- the sibling asset's path, since @path@ here names the *timeline*
+      -- being dropped onto, not the image); "?caption=..." is optional.
+      (m, "branch" : name : "$image" : path@(_:_)) | m == methodPut -> do
+        let filePath = T.unpack (T.intercalate "/" path)
+            origName = maybe (takeFileName filePath) (T.unpack . TE.decodeUtf8Lenient)
+                             (join (lookup "filename" (Wai.queryString req)))
+            caption  = maybe "" TE.decodeUtf8Lenient
+                             (join (lookup "caption" (Wai.queryString req)))
+        body   <- strictRequestBody req
+        result <- runAction env (uploadImage name filePath origName caption (LBS.toStrict body))
+        case result of
+          Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
+          Right () -> respond $ responseLBS status200 (corsHeaders req) ""
 
       (m, "branch" : name : path@(_:_)) | m == methodPut -> do
         let filePath = T.unpack (T.intercalate "/" path)

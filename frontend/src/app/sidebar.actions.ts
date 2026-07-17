@@ -7,7 +7,7 @@
 // safe (writes go through the loudly-named 'mirrorServerEvent', importable
 // from anywhere).
 
-import { sessionConn, branchConn, libraryConn, loreConn, uploadBranchFile } from "@/lib/ws";
+import { sessionConn, branchConn, libraryConn, loreConn, uploadBranchFile, uploadImage } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent } from "@/lib/wsHelpers";
@@ -280,6 +280,22 @@ export function uploadFiles(files: { path: string; content: Blob }[]) {
       .then(() => mirrorServerEvent((s) => ({
         files: s.files.includes(path) ? s.files : [...s.files, path].sort(),
       })))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  });
+}
+
+// Drag-and-drop image attach — one or more images dropped onto the open
+// file's own tick timeline (TicksView), each landing as its own Image tick
+// via 'uploadImage' (see its own doc comment: a sibling asset plus a
+// reference tick, not a plain file replacement). No optimistic file-list
+// mirroring the way 'uploadFiles' does — TicksView's data already reacts to
+// the branch's own RefMoved-driven incremental push, which this upload
+// triggers same as any other write.
+export function uploadImageToTimeline(path: string, files: FileList | File[]) {
+  const branch = getServerCache().activeBranch;
+  if (!branch) return;
+  Array.from(files).forEach((file) => {
+    uploadImage(branch, path, file)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   });
 }

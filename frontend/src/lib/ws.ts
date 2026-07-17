@@ -52,6 +52,21 @@ export async function uploadBranchFile(branch: string, path: string, content: Bl
   if (!res.ok) throw new Error(`upload failed: ${res.status} ${path}`);
 }
 
+// Attach an image to `path`'s own tick timeline (see app/Server.hs's
+// PUT /branch/{name}/$image/{path} and Server.Writer.Branch.uploadImage):
+// the bytes land as their own sibling asset, and a new Image tick pointing
+// at it joins `path`'s timeline — not a plain file replacement the way
+// 'uploadBranchFile' is. `path` here names the file whose timeline is being
+// dropped onto, not the image itself, so the original filename travels
+// separately as a query param for the server to derive the asset's path from.
+export async function uploadImage(branch: string, path: string, file: File, caption?: string) {
+  const q = new URLSearchParams({ filename: file.name });
+  if (caption) q.set("caption", caption);
+  const url = `${httpBase()}/branch/${encodeURIComponent(branch)}/$image/${encodePath(path)}?${q.toString()}`;
+  const res = await fetch(url, { method: "PUT", body: file });
+  if (!res.ok) throw new Error(`image upload failed: ${res.status} ${path}`);
+}
+
 // Raw-edit-mode save: whole-file text replace, reconciled against the
 // path's existing atom chain server-side (see app/Server.hs's
 // PUT /branch/{name}/$raw/{path} and Server.Writer.Branch.saveFile) rather

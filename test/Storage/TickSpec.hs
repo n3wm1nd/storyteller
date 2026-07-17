@@ -21,6 +21,7 @@ import Storyteller.Core.Types
   )
 import qualified Storyteller.Core.Types as ST
 import Storyteller.Common.Types (Note(..))
+import Storyteller.Core.Image (Image(..))
 
 spec :: Spec
 spec = do
@@ -143,6 +144,22 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right ticks -> map ftContent ticks `shouldBe` [Just "p1\n"]
+
+    -- Regression-shaped: an 'Image' tick's own "file" field names the
+    -- *chapter* it's attached to, while the sibling Binary asset's "file"
+    -- field names the image bytes' own path -- if that scheme were ever
+    -- reversed, the image would silently vanish from the chapter's
+    -- timeline (or the binary would wrongly show up in it instead).
+    it "surfaces an Image tick attached to the file, but not its sibling Binary asset" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "scene.md" "p1\n"
+            writeFile "scene.assets/ab12cd34-portrait.png" "\xFF\xFE\x00"
+            _ <- store (Binary [] "scene.assets/ab12cd34-portrait.png")
+            _ <- storeAs (Image "scene.md" "scene.assets/ab12cd34-portrait.png" "a portrait")
+            fileTicksOf "scene.md")
+      case result of
+        Left err -> expectationFailure err
+        Right ticks -> map ftKind ticks `shouldBe` ["atom", "image"]
 
   describe "tick position" $ do
     it "posParent of the second atom is the first atom's own id" $ do

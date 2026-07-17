@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode, Pilcrow, BookMarked } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
-import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, createChapter, importCharacterCard } from "./sidebar.actions";
+import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, uploadImageToTimeline, createChapter, importCharacterCard } from "./sidebar.actions";
 import {
   openFile, createFile, deleteFile, renameFile, checkpointFile, closeFile, enterScene, leaveScene, askCharacter,
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
@@ -648,6 +648,9 @@ export default function Home() {
                 onCycleSwipe={handleCycleSwipe}
                 onCorrect={handleCorrect}
                 onEditPrompt={handleEditPrompt}
+                activeBranch={activeBranch}
+                targetFile={selectedFile}
+                onUploadImages={uploadImageToTimeline}
               />
             )}
 
