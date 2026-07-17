@@ -458,6 +458,14 @@ export function chatNote(path: string, text: string) {
   sendChatCommand(path, () => ({ type: "chat.note", text, targets }));
 }
 
+// Attach an image that's already stored in the branch (e.g. dragged in from
+// the file tree — see filetree.tsx's IMAGE_DRAG_MIME) to path's timeline, by
+// its existing asset path — no bytes re-uploaded, contrast with
+// uploadImageToTimeline (sidebar.actions.ts), which is for a fresh OS file.
+export function referenceImage(path: string, assetPath: string) {
+  sendFileCommand(path, { type: "reference.image", asset: assetPath });
+}
+
 export function chatRegen(path: string, text: string, byBeat: boolean) {
   const context = buildContextItems(path);
   sendChatCommand(path, () => ({ type: "chat.regen", text, context, byBeat }));

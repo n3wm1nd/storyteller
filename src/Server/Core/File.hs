@@ -38,6 +38,7 @@ module Server.Core.File
   , unhideFileAtoms
   , chatNote
   , cycleAtomSwipe
+  , referenceImage
   , readFileContent
   ) where
 
@@ -61,6 +62,7 @@ import qualified Storyteller.Common.Annotation as Annotation
 import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Image (Image(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
 import Storyteller.Core.Storage (StoryStorage)
@@ -259,6 +261,22 @@ fromHash (Ops.ObjectHash t) = TickId t
 --   free-floating remark rather than a comment on any specific one.
 chatNote :: FileOpen r => T.Text -> [TickId] -> Sem r ()
 chatNote text targets = void $ runStorage @Main (Annotation.addNote targets text)
+
+-- | Attach an image already sitting in the branch to @path@'s timeline, by
+-- pointing an 'Image' tick at its existing asset path — unlike
+-- 'Server.Writer.Branch.attachImage' (the raw-bytes HTTP upload path), this
+-- deposits no new asset: for an image dragged in from the file tree, whose
+-- bytes are already stored, minting a duplicate copy would just be waste.
+-- Fails on an asset that isn't currently present, same tree-existence
+-- discipline as 'createFile'/'renameFile'.
+referenceImage :: (FileOpen r, Member Logging r) => FilePath -> FilePath -> T.Text -> Sem r ()
+referenceImage path assetPath caption = do
+  present <- runStorage @Main (Ops.exists assetPath)
+  if not present
+    then fail ("referenceImage: no such asset: " <> assetPath)
+    else do
+      info $ "referencing image: " <> T.pack assetPath <> " -> " <> T.pack path
+      void $ runStorage @Main (Tick.storeAs (Image path assetPath caption))
 
 -- | Raw current content of a file, for the HTTP download/embed endpoint —
 --   a one-shot fetch outside any connection's lifetime, so (unlike the

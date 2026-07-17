@@ -341,6 +341,11 @@ export type FileCommand =
   // annotation on each of `targets`, or (when empty) on the file's current
   // HEAD tick.
   | { type: "chat.note";   id?: string; text: string; targets?: string[] }
+  // Reference: attach an image already sitting in the branch (dragged in
+  // from the file tree) to this file's timeline by its existing asset path
+  // — instant, non-LLM, no bytes travel. Contrast with uploadImage (ws.ts),
+  // which PUTs fresh bytes via the $image HTTP endpoint for an OS file drop.
+  | { type: "reference.image"; id?: string; asset: string; caption?: string }
   // Presence: a character (character/{id} branch) enters or leaves the
   // scene on this file — recorded as a "presence" tick scoped to this
   // file's own chain, not the whole branch (a scene is a file — see

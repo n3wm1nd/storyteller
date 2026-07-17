@@ -4,7 +4,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square } from "lucide-react";
 import { StickyNote, HelpCircle, Image as ImageIcon } from "lucide-react";
-import { cancelGeneration } from "./fileview.actions";
+import { cancelGeneration, referenceImage } from "./fileview.actions";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
@@ -17,6 +17,7 @@ import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autoco
 import { useMentionAutocomplete } from "./mention-autocomplete";
 import { useLoreTree, flattenLore } from "./lore-selector";
 import { branchFileUrl, saveRawFile, saveRawFileAsNew } from "@/lib/ws";
+import { IMAGE_DRAG_MIME } from "@/lib/library";
 
 // tiptap-markdown's Markdown extension adds `storage.markdown` at runtime
 // (see TextEditPanel below) but ships no type augmentation for it, so
@@ -743,6 +744,16 @@ export function WireTickList({
     if (!canDropImage) return;
     e.preventDefault();
     setImageDragOver(false);
+    // An existing branch image dragged out of the file tree (filetree.tsx)
+    // carries its path via IMAGE_DRAG_MIME instead of real File objects —
+    // it's already stored, so this just points a new Image tick at that
+    // same asset (referenceImage) rather than re-uploading a duplicate copy
+    // of its bytes the way an OS file drop (onUploadImages, below) has to.
+    const draggedPath = e.dataTransfer.getData(IMAGE_DRAG_MIME);
+    if (draggedPath) {
+      referenceImage(targetFile!, draggedPath);
+      return;
+    }
     const images = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
     if (images.length > 0) onUploadImages!(targetFile!, images);
   };

@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Folder, FolderOpen, FileText, FileWarning, BookOpen, ListTree, ChevronRight, Plus, Trash2, Pencil, Camera } from "lucide-react";
+import { Folder, FolderOpen, FileText, FileWarning, BookOpen, ListTree, ChevronRight, Plus, Trash2, Pencil, Camera, Image as ImageIcon } from "lucide-react";
+import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
 import { branchFileUrl } from "@/lib/ws";
-import { classifyPath, naturalCompare, type LibraryKind } from "@/lib/library";
+import { classifyPath, naturalCompare, isImagePath, IMAGE_DRAG_MIME, type LibraryKind } from "@/lib/library";
 
 // ── Tree building ─────────────────────────────────────────────────────────────
 
@@ -101,6 +102,17 @@ function FileTreeNode({
   const active = selectedFile === node.path;
   const pad = 8 + depth * 14;
 
+  // Hover preview for image leaves only (see below) — declared unconditionally,
+  // same reasoning as avatar.tsx's CharacterAvatar: hooks can't sit behind the
+  // isDir/isBinary early returns below.
+  const [imgHovered, setImgHovered] = useState(false);
+  const imgPreview = useFloating({
+    open: imgHovered,
+    placement: "right",
+    middleware: [offset(8), flip(), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+  });
+
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -161,23 +173,47 @@ function FileTreeNode({
   // content is actually there — open the raw bytes in a new tab instead
   // of calling onSelectFile (same endpoint uploadFiles PUTs to).
   if (node.isBinary) {
+    const isImage = isImagePath(node.name);
+    const imageUrl = isImage && activeBranch ? branchFileUrl(activeBranch, node.path) : null;
     return (
-      <button
-        draggable
-        onDragStart={(e) => e.dataTransfer.setData(MOVE_MIME, node.path)}
-        onDoubleClick={() => onStartRename(node.path)}
-        onClick={() => activeBranch && window.open(branchFileUrl(activeBranch, node.path), "_blank")}
-        title="Binary file — opens raw, not editable here (double-click to rename)"
-        style={{
-          display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
-          padding: `3px 8px 3px ${pad}px`,
-          background: "transparent", color: "var(--text-ghost)",
-          border: "none", borderLeft: "2px solid transparent",
-          cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: 400,
-        }}>
-        <FileWarning style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
-      </button>
+      <>
+        <button
+          ref={imgPreview.refs.setReference}
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData(MOVE_MIME, node.path);
+            if (isImage) e.dataTransfer.setData(IMAGE_DRAG_MIME, node.path);
+          }}
+          onDoubleClick={() => onStartRename(node.path)}
+          onClick={() => activeBranch && window.open(branchFileUrl(activeBranch, node.path), "_blank")}
+          onMouseEnter={() => imageUrl && setImgHovered(true)}
+          onMouseLeave={() => setImgHovered(false)}
+          title={isImage ? "Image file — opens raw, drag onto the editor to attach (double-click to rename)" : "Binary file — opens raw, not editable here (double-click to rename)"}
+          style={{
+            display: "flex", alignItems: "center", gap: 5, width: "100%", textAlign: "left",
+            padding: `3px 8px 3px ${pad}px`,
+            background: "transparent", color: "var(--text-ghost)",
+            border: "none", borderLeft: "2px solid transparent",
+            cursor: "pointer", borderRadius: 5, fontSize: 12, fontWeight: 400,
+          }}>
+          {isImage
+            ? <ImageIcon style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />
+            : <FileWarning style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.6 }} />}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+        </button>
+        {imgHovered && imageUrl && (
+          <div
+            ref={imgPreview.refs.setFloating}
+            style={{
+              ...imgPreview.floatingStyles, zIndex: 20, pointerEvents: "none",
+              background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8,
+              boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", padding: 4,
+            }}
+          >
+            <img src={imageUrl} alt="" style={{ maxWidth: 220, maxHeight: 220, borderRadius: 6, objectFit: "contain", display: "block" }} />
+          </div>
+        )}
+      </>
     );
   }
 

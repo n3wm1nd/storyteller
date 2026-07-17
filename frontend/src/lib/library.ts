@@ -11,6 +11,24 @@
 
 export type LibraryKind = "folder" | "unit" | "unit-outline" | "other";
 
+// Extension-based image detection — filetree.tsx's binary leaves have no
+// richer classification than raw bytes to go on (see buildTree's isBinary),
+// so "is this an image" is judged the same crude way a browser's own file
+// picker would, by suffix alone.
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+
+export function isImagePath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase();
+  return !!ext && IMAGE_EXTENSIONS.has(ext);
+}
+
+// Custom drag MIME carrying an existing branch file's path — set by
+// filetree.tsx when an image leaf is dragged, read by fileview.tsx's
+// WireTickList drop zone to fetch that file's bytes and attach them as a
+// new Image tick, the same "drop a File" path already used for OS drags
+// (see uploadImageToTimeline), just sourced from the branch instead of disk.
+export const IMAGE_DRAG_MIME = "application/x-storyteller-image-path";
+
 // Same fixed vocabulary as Storyteller.Writer.Library.storyMarkers — keep
 // the two lists in sync if this ever changes (see WRITER.md).
 const STORY_MARKERS = new Set([

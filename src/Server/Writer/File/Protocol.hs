@@ -160,6 +160,12 @@ data FileCommand
   -- | Instant, non-LLM: attach a note to each of 'fcTargets', or (when
   --   empty) to the file's current HEAD tick.
   | ChatNote   { fcId :: Maybe T.Text, fcNoteText :: T.Text, fcTargets :: [T.Text] }
+  -- | Attach an image already sitting in the branch (e.g. dragged in from
+  --   the file tree) to this file's timeline, by asset path rather than raw
+  --   bytes -- see 'Server.Core.File.referenceImage'. Distinct from the HTTP
+  --   @$image@ upload endpoint ('Server.Writer.Branch.uploadImage'), which
+  --   deposits new bytes; this just points at ones that already exist.
+  | ReferenceImage { fcId :: Maybe T.Text, fcAssetPath :: T.Text, fcCaption :: T.Text }
   -- | Presence: a character (character/{id} branch) enters or leaves the
   --   scene on this file — recorded as a "presence" tick scoped to this
   --   file's own chain, not the whole branch. See WRITER.md.
@@ -239,6 +245,9 @@ instance FromJSON FileCommand where
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatNote i <$> o .: "text" <*> pure targets
+      "reference.image" -> do
+        caption <- fromMaybe "" <$> o .:? "caption"
+        ReferenceImage i <$> o .: "asset" <*> pure caption
       "enter.scene" -> EnterScene i <$> o .: "character"
       "leave.scene" -> LeaveScene i <$> o .: "character"
       "ask.character" -> AskCharacter i <$> o .: "character" <*> o .: "question"
@@ -274,6 +283,7 @@ commandKind = \case
   CycleSwipe {}   -> "atom.swipe.cycle"
   ChatOutline {}  -> "chat.outline"
   ChatNote {}     -> "chat.note"
+  ReferenceImage {} -> "reference.image"
   EnterScene {}   -> "enter.scene"
   LeaveScene {}   -> "leave.scene"
   AskCharacter {} -> "ask.character"

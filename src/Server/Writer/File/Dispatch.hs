@@ -30,7 +30,7 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
-import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe)
+import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
 import Server.Writer.File (chatWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
@@ -115,6 +115,9 @@ runCommand path cmd = case cmd of
 
   ChatNote _mid text targets ->
     [] <$ chatNote text (map TickId targets)
+
+  ReferenceImage _mid assetPath caption ->
+    [] <$ referenceImage path (T.unpack assetPath) caption
 
   EnterScene _mid character ->
     [] <$ setPresence path (Character (BranchName character)) Enter
