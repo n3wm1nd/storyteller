@@ -5,7 +5,8 @@ synopsis:           General-purpose git effect + libgit2 FFI interpreter.
 description:        Pure git vocabulary as a Polysemy effect, with a CLI
                     -callout interpreter and a libgit2 FFI interpreter.
                     Intended to migrate to runix proper once stable.
-license:            MIT
+license:            GPL-3.0-only
+license-file:       LICENCE
 author:             storyteller authors
 maintainer:         authors@storyteller.dev
 category:           Development

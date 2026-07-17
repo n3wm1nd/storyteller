@@ -196,6 +196,8 @@ What's actually built today, in `src/Storyteller/Writer/Agent/`:
 
 **Tracker** (`Tracker.hs`) — copies new atoms from a trackee branch into a tracker branch, one tracker atom per trackee atom, with cross-branch refs recording the source. The mechanical "carbon-copy" baseline described below, as a real, working primitive rather than just a fallback story.
 
+**Images** (`Storyteller.Core.Image`) — a dedicated tick type, not an agent: an image asset can be attached to a file's timeline (uploaded, or referenced by dragging one from the file tree) and renders inline as an author-facing annotation, same tier as a Note. Not passed to any agent's context today — no vision model call exists yet, so an attached image informs the author, not the LLM. Straightforward to add (bind it in as another message part for vision-capable models), deliberately not done yet: it would be a surprising default (images silently entering the prompt) and a hard compatibility gate (many configured models, especially local ones, aren't vision-capable). Planned as opt-in, not assumed.
+
 None of the following, despite being useful ideas, exist yet: a dedicated Knowledge Filter Agent beyond the Tracker baseline, a Consistency Checker Agent, a Merge/Reconciliation Agent for divergent branches (not to be confused with `Outline.hs`'s `reconcileChapter`, which reconciles one chapter against an edited beat sheet — a different, smaller, already-built thing), a Synthesis Agent, or a Task Tracking Agent. They're worth building; nothing below this line should be read as already true.
 
 The baseline (Tracker's carbon-copy) is already doing real work: a character who was present for a scene has that scene's prose in their branch, which is enough for the LLM to write them consistently in subsequent scenes. LLMs have contextual understanding of what a character notices based on how the prose is written — a character written as oblivious will be treated as oblivious even if the information they're missing appears nearby. Knowledge leaks that do occur are caught on author read and fixed by amending the entity branch at the point of the leak; the fix is permanent. Whether a leak goes unnoticed... if it doesn't cause a visible problem in the prose, it doesn't matter.
@@ -405,11 +407,15 @@ Each connection is scoped by URL: `/session` for storage-level operations (branc
 
 Unit tests (`test/`) run against mocked, deterministic interpreters — they check plumbing, not whether an agent actually gets a real model to do the right thing. A separate suite (`test/agent-integration/`, see its own `PLAN.md`/`FINDINGS.md`) answers that second question directly: real LLM calls, cached to disk so a passing run replays without hitting the network, checking things like "does a character actually get recognized when added to a scene," "does a planted lore fact reach the model," "does editing a character's journal retroactively produce correct dramatic irony." A mismatch there is a finding about the configured model or prompt, not a bug in the suite — the suite existing and passing isn't the goal, what it reveals about the model is.
 
-### Import/Export *(design, not yet built)*
-- **Import:** Blank project (templates), existing manuscript (parse and commit), character cards
+### Import/Export
+
+**Character card import is built**: SillyTavern-style Tavern Card V1/V2/V3 (JSON or PNG with embedded `tEXt` metadata) imports as a new character branch in one atomic command (`ImportCharacterCard`) — identity/personality/scenario into `sheet.md`, opening message/example dialogue/system prompts into `instructions.md` (parked for a future roleplay agent), an embedded `character_book` into `lore.md`, and provenance/creator notes as a free-floating `Note` tick rather than sheet.md prose. Parsing is client-side (`frontend/src/lib/taverncard.ts`), no server-side dependency on the card format.
+
+Everything else here is still *(design, not yet built)*:
+- **Import:** Blank project (templates), existing manuscript (parse and commit)
 - **Export:** `cat chapters/*/*.md > story.md`, clean manuscript, EPUB/PDF via pandoc, screenplay format
 
-None of this exists yet. `cat chapters/*/*.md` already works today because it's just shell against plain files, not a feature of the system.
+`cat chapters/*/*.md` already works today because it's just shell against plain files, not a feature of the system.
 
 ### External Editor Integration *(design, not yet built)*
 
