@@ -15,10 +15,17 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Plain `\b...\b` fails whenever the name/alias itself starts or ends on a
+// non-word character (an alias like "What?" or "D'Artagnan") — `\b` only
+// fires on a transition between a word and non-word character, so a match
+// abutting another non-word character (the "?" before a trailing space)
+// never gets one. Lookaround for "not immediately preceded/followed by a
+// word character" instead — the same "isolated word" intent, without
+// depending on what the match itself starts/ends with.
 function mentionsWord(text: string, word: string): boolean {
   const trimmed = word.trim();
   if (!trimmed) return false;
-  return new RegExp(`\\b${escapeRegExp(trimmed)}\\b`, "i").test(text);
+  return new RegExp(`(?<!\\w)${escapeRegExp(trimmed)}(?!\\w)`, "i").test(text);
 }
 
 // Every Triggered-flagged entry (see `triggeredPaths`, sourced from

@@ -16,6 +16,7 @@ import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsSt
 import { WRITER_STORY_SOURCE_ID, CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
 import { resolveMentions } from "@/lib/mentions";
 import { triggeredLorePaths } from "@/lib/loreTrigger";
+import { composeContextLayout } from "@/lib/contextAssembly";
 
 export async function openFile(path: string): Promise<void> {
   const { activeBranch, openFiles } = getServerCache();
@@ -383,14 +384,7 @@ function writerCommandContext(path: string, text: string) {
   // lib/loreTrigger.ts) — same outcome either way, so they're deduped into
   // one forced-bucket-1 list.
   const forcedPaths = [...new Set([...mentionedPaths, ...triggeredLoreForText(cleanText)])];
-  // An empty base layout already means "show everything" — a forced path
-  // adds nothing there. Only a curated (non-empty) layout needs the
-  // force-inclusion, prepended so it claims ahead of whatever the curated
-  // layout would otherwise do (first-match-wins, see
-  // Storyteller.Writer.Agent.ContextFilter.classifyPath).
-  const contextLayout = baseLayout.length === 0
-    ? []
-    : [...forcedPaths.map((p) => ({ pattern: p, bucket: 1 })), ...baseLayout];
+  const contextLayout = composeContextLayout(baseLayout, forcedPaths);
   const characterLayouts = activeCharacterLayouts(path);
   return { cleanText, context, contextLayout, characterLayouts };
 }
