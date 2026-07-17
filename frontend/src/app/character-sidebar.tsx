@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Users, UserPlus, UserMinus, ChevronDown, ChevronRight, History, RefreshCw, HelpCircle } from "lucide-react";
 import { type CharacterConn, type FileConn, type WireTick } from "@/lib/serverCacheStore";
 import { type CharacterSummary } from "@/lib/ws";
-import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker } from "@/lib/utils";
+import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker, presentDuringAtoms } from "@/lib/utils";
 import { WireTickList } from "./fileview";
 import { LoreSelector } from "./lore-selector";
 import { CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
@@ -250,7 +250,7 @@ function CharacterCard({
   journalMarker, onSetJournalMarker, journalBehind,
   contextAtoms, contextAnnotations, onToggleContextAtom, onToggleContextAnnotation,
   onTrack, onSyncTasks, onSuggestTasks, onHoverAtoms, onHoverEnd, onEditAtom, onCycleSwipe, onAppend,
-  onAsk, answers,
+  onAsk, answers, presentTickIds,
 }: {
   branch: string;
   conn: CharacterConn | undefined;
@@ -278,6 +278,11 @@ function CharacterCard({
   onAppend: (text: string, marker: string | null) => void;
   onAsk: (question: string) => void;
   answers: { question: string; answer: string }[];
+  // This character's own atom ids in the current scene (see
+  // lib/utils.presentDuringAtoms) — precomputed by CharacterSidebar (which
+  // already has the scene's ticks/head) so the card itself doesn't need
+  // either as a prop just to answer "hovering me, what do I highlight".
+  presentTickIds: Set<string>;
 }) {
   const connected = conn !== undefined;
   // 'conn.name' (from the /character/{branch} connection's CharacterState)
@@ -298,8 +303,8 @@ function CharacterCard({
 
   return (
     <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      onMouseEnter={() => { setHover(true); onHoverAtoms(presentTickIds, color); }}
+      onMouseLeave={() => { setHover(false); onHoverEnd(); }}
       style={{
         border: "1px solid var(--border-subtle)", borderRadius: 6,
         background: hover ? "var(--surface)" : "var(--card)", padding: "8px 10px", marginBottom: 6,
@@ -556,6 +561,7 @@ export function CharacterSidebar({
               onAppend={(text, marker) => appendJournal(b, text, marker)}
               onAsk={(question) => selectedFile && askCharacter(selectedFile, b, question)}
               answers={characterAnswers.filter((a) => a.character === b)}
+              presentTickIds={presentDuringAtoms(ticks, effectiveHead, b)}
             />
           ))
         )}

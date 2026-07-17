@@ -51,7 +51,7 @@ function BranchItem({ name, active, onSelect, onDelete }: {
       style={{
         display: "flex", alignItems: "center", gap: 6,
         padding: "5px 8px",
-        background: active ? tint : hover ? "var(--surface)" : "transparent",
+        background: active || hover ? tint : "transparent",
         borderLeft: active ? `2px solid ${solid}` : "2px solid transparent",
         borderRadius: 5, cursor: "pointer",
       }}
@@ -84,7 +84,7 @@ function CharacterListItem({ character, active, onSelect, onDelete, onHoverStart
       style={{
         display: "flex", alignItems: "center", gap: 6,
         padding: "5px 8px",
-        background: active ? "var(--sky-tint)" : hover ? "var(--surface)" : "transparent",
+        background: active || hover ? "var(--sky-tint)" : "transparent",
         borderLeft: active ? "2px solid var(--sky)" : "2px solid transparent",
         borderRadius: 5, cursor: "pointer",
       }}
