@@ -35,6 +35,7 @@ import qualified Storyteller.Writer.ReplaceToolSpec
 import qualified Storyteller.UndoSpec
 import qualified Storyteller.ChatSpec
 import qualified Storyteller.LibrarySpec
+import qualified Storyteller.LoreSpec
 import qualified Storyteller.BranchesSpec
 import qualified Storyteller.ContextFilterSpec
 import qualified Storyteller.ContextPreviewSpec
@@ -87,6 +88,7 @@ main = hspec $ do
   describe "Storyteller.Undo"           Storyteller.UndoSpec.spec
   describe "Storyteller.Writer.Agent.Chat" Storyteller.ChatSpec.spec
   describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec
+  describe "Storyteller.Writer.Lore"       Storyteller.LoreSpec.spec
   describe "Storyteller.Writer.Branches"   Storyteller.BranchesSpec.spec
   describe "Storyteller.Writer.Agent.ContextFilter" Storyteller.ContextFilterSpec.spec
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec

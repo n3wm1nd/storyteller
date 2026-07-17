@@ -63,7 +63,7 @@ import { buildTree, type TreeNode } from "./filetree";
 import { BucketBadge } from "./BucketBadge";
 import { nextBucket } from "./bucket";
 
-const DEFAULT_FILTER: ContextFilter = { tags: [] };
+const DEFAULT_FILTER: ContextFilter = { tags: [], triggers: [] };
 
 function isHidden(name: string): boolean {
   return name.startsWith(".");

@@ -14,11 +14,12 @@
 -- can't be: the branch's current file list, binary-hiding (reusing
 -- 'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles', the same
 -- interceptor 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
--- already wraps its own reads in), and each eligible file's blurb (reusing
--- 'Storyteller.Writer.Agent.ContextPreview.blurb'). No incremental cache
--- like 'Server.Writer.Library.LibraryFoldCache' — a full codex re-read on
--- every ref-move is cheap enough (short files, first-line-only reads) not
--- to need one.
+-- already wraps its own reads in), and each eligible file's blurb and
+-- aliases (reusing 'Storyteller.Writer.Agent.ContextPreview.blurb' and
+-- 'Storyteller.Writer.Lore.parseAliases' off the same content read). No
+-- incremental cache like 'Server.Writer.Library.LibraryFoldCache' — a full
+-- codex re-read on every ref-move is cheap enough (short files, first-
+-- line-only reads) not to need one.
 module Server.Writer.Lore
   ( loreTree
   ) where
@@ -31,13 +32,14 @@ import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 import Storyteller.Writer.Agent.ContextPreview (blurb)
-import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree)
+import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree, parseAliases)
 
 import Prelude hiding (readFile)
 
 -- | The full codex forest for this branch: every eligible path (see
 --   'Storyteller.Writer.Lore.isLoreEligible'), paired with the first
---   non-blank line of its own content, built into a tree.
+--   non-blank line and the parsed aliases of its own content, built into a
+--   tree.
 loreTree :: BranchOpen r => Sem r [LoreNode]
 loreTree = hideBinaryFiles @(BranchTag Main) @Main $ do
   paths <- filter isLoreEligible <$> listAllFiles @(BranchTag Main) "/"
@@ -46,4 +48,4 @@ loreTree = hideBinaryFiles @(BranchTag Main) @Main $ do
   where
     readWithBlurb path = do
       content <- TE.decodeUtf8 <$> readFile @(BranchTag Main) path
-      return (path, blurb content)
+      return (path, blurb content, parseAliases content)

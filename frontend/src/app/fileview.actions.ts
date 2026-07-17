@@ -15,6 +15,7 @@ import { tickChain, promptGroupForAtom, activeCharacterBranches } from "@/lib/ut
 import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
 import { WRITER_STORY_SOURCE_ID, CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
 import { resolveMentions } from "@/lib/mentions";
+import { triggeredLorePaths } from "@/lib/loreTrigger";
 
 export async function openFile(path: string): Promise<void> {
   const { activeBranch, openFiles } = getServerCache();
@@ -339,6 +340,19 @@ function writerContextLayout(): PickerRule[] {
   return filter ? toContextLayout(filter) : [];
 }
 
+// Every codex-entry path the active branch's writer:story filter has
+// flagged "Triggered" (see settingsStore.ts's ContextFilter.triggers and
+// lore-selector.tsx) whose name or an alias is actually mentioned in
+// `text` — see lib/loreTrigger.ts. Empty whenever there's no active
+// branch, no triggers configured, or nothing matches.
+function triggeredLoreForText(text: string): string[] {
+  const branch = getServerCache().activeBranch;
+  if (!branch) return [];
+  const filter = useSettings.getState().contextFilters[contextFilterKey(branch, WRITER_STORY_SOURCE_ID)];
+  if (!filter || filter.triggers.length === 0) return [];
+  return triggeredLorePaths(text, getServerCache().loreTree, new Set(filter.triggers));
+}
+
 // One entry per currently-active (in-scene) character branch that's
 // actually been curated via character-sidebar.tsx's Context panel — a
 // branch with no configured override (the common case) is simply omitted,
@@ -361,16 +375,22 @@ function activeCharacterLayouts(path: string): Record<string, PickerRule[]> {
 // back at the group's old position instead of appending at file end.
 function writerCommandContext(path: string, text: string) {
   const context = buildContextItems(path);
-  const { cleanText, paths } = resolveMentions(text);
+  const { cleanText, paths: mentionedPaths } = resolveMentions(text);
   const baseLayout = writerContextLayout();
-  // An empty base layout already means "show everything" — a mention adds
-  // nothing there. Only a curated (non-empty) layout needs the mention
-  // force-included, prepended so it claims ahead of whatever the curated
+  // Two independent sources force a path to the front, ahead of the
+  // curated layout: an explicit `@mention` and a Triggered lore entry whose
+  // alias got matched in the raw text (see triggeredLoreForText/
+  // lib/loreTrigger.ts) — same outcome either way, so they're deduped into
+  // one forced-bucket-1 list.
+  const forcedPaths = [...new Set([...mentionedPaths, ...triggeredLoreForText(cleanText)])];
+  // An empty base layout already means "show everything" — a forced path
+  // adds nothing there. Only a curated (non-empty) layout needs the
+  // force-inclusion, prepended so it claims ahead of whatever the curated
   // layout would otherwise do (first-match-wins, see
   // Storyteller.Writer.Agent.ContextFilter.classifyPath).
   const contextLayout = baseLayout.length === 0
     ? []
-    : [...paths.map((p) => ({ pattern: p, bucket: 1 })), ...baseLayout];
+    : [...forcedPaths.map((p) => ({ pattern: p, bucket: 1 })), ...baseLayout];
   const characterLayouts = activeCharacterLayouts(path);
   return { cleanText, context, contextLayout, characterLayouts };
 }

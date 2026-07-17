@@ -7,69 +7,53 @@
 // branch, sourceId = WRITER_STORY_SOURCE_ID) and character-sidebar.tsx's
 // per-character "Context" section (branch = that character's own branch,
 // sourceId = CHARACTER_CONTEXT_SOURCE_ID) — both key off the exact same
-// `branch`/`sourceId` pair for the candidate list, the assignment preview,
-// and the settingsStore filter itself, so one component genuinely covers
-// both with no site-specific branching inside it.
+// `branch`/`sourceId` pair for the candidate list and the settingsStore
+// filter itself, so one component genuinely covers both with no site-
+// specific branching inside it.
 //
-// Two independent data sources feed it:
+// The candidate list is this component's own /lore/{branch} connection
+// (see Storyteller.Writer.Lore): that branch's freeform lore content, with
+// chapters/outlines/chat, sheet.md, journal.md, and binaries all already
+// excluded server-side — one uniform "get me all the lore for this branch"
+// definition, identical for a story branch or a character branch. Owned
+// locally (connect on mount, reconnect on `branch` change, close on
+// unmount) rather than through a global serverCacheStore singleton —
+// several instances (the Codex tab plus one per expanded character card)
+// can be mounted at once, each against a different branch.
 //
-//  - The candidate list (this component's own /lore/{branch} connection —
-//    see Storyteller.Writer.Lore): that branch's freeform lore content,
-//    with chapters/outlines/chat, sheet.md, journal.md, and binaries all
-//    already excluded server-side — one uniform "get me all the lore for
-//    this branch" definition, identical for a story branch or a character
-//    branch. This is "the filesystem" the filter below gets applied to
-//    (see the /lore vs /library design discussion) — never assembled by a
-//    client-side glob or folder-name guess.
-//  - The assignment (this component's own context.preview connection, the
-//    same one context-source.tsx's ContextSourceConfig uses): which of
-//    those candidates the real, persisted filter currently claims, and
-//    into which bucket. Only 'ceBucket' is read from it — content/blurb are
-//    ignored, since the lore tree already supplies description text for
-//    every candidate, claimed or not.
-//
-// Both connections are owned locally (connect on mount, reconnect on
-// `branch` change, close on unmount) rather than through a global
-// serverCacheStore singleton — several instances (the Codex tab plus one
-// per expanded character card) can be mounted at once, each against a
-// different branch.
-//
-// A card's first click always lands it in bucket 1 (see 'nextBucket':
-// trash -> 1 is the very first step of the cycle, so adding a fresh tag and
-// immediately cycling it once already does the right thing with no special
-// case). Clicking again cycles through the rest of the buckets same as the
-// tree editor's own badge. The reset button clears the filter back to
-// `{tags: []}` — for either site that's "no override configured", which
-// reads as "show everything" (unchanged default behavior for anyone who
-// never opens this UI).
+// Each card exposes a 3-way Off / Triggered / Always control (see
+// 'LoreState' below) derived directly from the persisted 'ContextFilter' —
+// no server round-trip needed to know a card's own state, unlike
+// context-source.tsx's tree editor, which needs a live context.preview
+// resolution to show bucket assignment for arbitrary glob patterns. "Just
+// include it" (Always, a fixed bucket-1 tag) and "ambient, pulled in only
+// when mentioned" (Triggered) are the two choices this design is actually
+// asking curators to make; precise bucket ordering is still there for power
+// users via the raw glob editor, just not in this view. The reset button
+// clears the filter back to `{tags: [], triggers: []}` — for either site
+// that's "no override configured", which reads as "show everything"
+// (unchanged default behavior for anyone who never opens this UI).
 
-import { useEffect, useRef, useState } from "react";
-import { RotateCcw } from "lucide-react";
-import { contextViewConn, loreConn } from "@/lib/ws";
-import type { ContextSlotPreview, LoreNode } from "@/lib/ws";
+import { useEffect, useState } from "react";
+import { RotateCcw, Trash2, Zap, Check } from "lucide-react";
+import { loreConn } from "@/lib/ws";
+import type { LoreNode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import {
-  useSettings, contextFilterKey, toContextLayout,
-  addPatternTag, cycleFilterTagBucket,
+  useSettings, contextFilterKey,
+  setAlwaysIncluded, setTriggered,
   type ContextFilter,
 } from "@/lib/settingsStore";
-import { nextBucket } from "./bucket";
-import { BucketBadge } from "./BucketBadge";
 import { SectionHeader } from "./library";
-import { basenameNoExt } from "@/lib/utils";
+import { basenameNoExt, flattenLore } from "@/lib/utils";
+import { bucketColor } from "./bucket";
 
-const DEFAULT_FILTER: ContextFilter = { tags: [] };
+// Re-exported for existing importers (app/fileview.tsx's mention
+// autocomplete) — the implementation now lives in lib/utils.ts so
+// lib/loreTrigger.ts can use it too without a lib -> app import.
+export { flattenLore };
 
-// Flatten a lore tree into its leaves, depth-first — used both for card
-// grouping below and by mention-autocomplete.tsx, which wants a flat,
-// searchable list rather than the folder tree.
-export function flattenLore(nodes: LoreNode[], acc: LoreNode[] = []): LoreNode[] {
-  for (const n of nodes) {
-    if (n.children.length > 0) flattenLore(n.children, acc);
-    else acc.push(n);
-  }
-  return acc;
-}
+const DEFAULT_FILTER: ContextFilter = { tags: [], triggers: [] };
 
 // This branch's live codex tree, via its own /lore/{branch} connection —
 // owned locally (connect on mount, reconnect on `branch` change, close on
@@ -141,22 +125,64 @@ function groupByTopFolder(tree: LoreNode[]): LoreGroup[] {
   return groups;
 }
 
-function LoreCard({ entry, bucket, compact, onClick }: {
-  entry: LoreNode;
-  bucket: number | null | undefined;
-  compact?: boolean;
-  onClick: () => void;
-}) {
-  const claimed = !!bucket;
+// The three states a codex entry's inclusion can be in, as this simplified
+// view exposes it — see the module header for why this replaces the raw
+// glob editor's numbered bucket cycle here specifically.
+type LoreState = "off" | "triggered" | "always";
+
+function loreState(filter: ContextFilter, path: string): LoreState {
+  if (filter.triggers.includes(path)) return "triggered";
+  if (filter.tags.some((t) => t.pattern === path)) return "always";
+  return "off";
+}
+
+const STATE_LABEL: Record<LoreState, string> = { off: "Off", triggered: "Triggered", always: "Always" };
+const STATE_ICON: Record<LoreState, typeof Trash2> = { off: Trash2, triggered: Zap, always: Check };
+// "Always" reuses bucket 1's own colour (setAlwaysIncluded always assigns
+// bucket 1) so it reads as the same group as the raw glob editor's bucket-1
+// tags; "Triggered" gets its own accent since it has no bucket equivalent.
+const STATE_COLOR: Record<LoreState, string> = { off: "var(--text-ghost)", triggered: "var(--amber)", always: bucketColor(1) };
+
+function InclusionControl({ state, onSelect }: { state: LoreState; onSelect: (s: LoreState) => void }) {
   return (
-    <button
-      onClick={onClick}
-      title={`Toggle ${entry.path} in this context filter`}
+    <div style={{ display: "flex", gap: 2 }}>
+      {(["off", "triggered", "always"] as const).map((s) => {
+        const Icon = STATE_ICON[s];
+        const active = state === s;
+        return (
+          <button
+            key={s}
+            onClick={(e) => { e.stopPropagation(); onSelect(s); }}
+            title={s === "off" ? "Not included" : s === "triggered" ? "Include only when its name/alias is mentioned" : "Always included"}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: 18, height: 18, borderRadius: 5, flexShrink: 0, border: "none", padding: 0, cursor: "pointer",
+              background: active ? `color-mix(in srgb, ${STATE_COLOR[s]} 22%, transparent)` : "transparent",
+              color: active ? STATE_COLOR[s] : "var(--text-ghost)",
+            }}
+          >
+            <Icon style={{ width: 10, height: 10 }} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function LoreCard({ entry, state, compact, onSelect }: {
+  entry: LoreNode;
+  state: LoreState;
+  compact?: boolean;
+  onSelect: (s: LoreState) => void;
+}) {
+  return (
+    <div
+      title={`${entry.path} — ${STATE_LABEL[state]}`}
       style={{
         display: "flex", flexDirection: "column", gap: 4, textAlign: "left",
-        width: compact ? 140 : 190, padding: compact ? "6px 8px" : "8px 10px", borderRadius: 7, cursor: "pointer",
+        width: compact ? 140 : 190, padding: compact ? "6px 8px" : "8px 10px", borderRadius: 7,
         border: "1px solid var(--border-subtle)",
-        background: "var(--card)", opacity: claimed ? 1 : 0.6,
+        background: "var(--card)", opacity: state === "off" ? 0.6 : 1,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -166,7 +192,7 @@ function LoreCard({ entry, bucket, compact, onClick }: {
         }}>
           {basenameNoExt(entry.path)}
         </span>
-        <BucketBadge bucket={bucket ?? null} title={claimed ? `bucket ${bucket}` : "not included — click to add"} />
+        <InclusionControl state={state} onSelect={onSelect} />
       </div>
       {!compact && (
         <span style={{
@@ -176,7 +202,15 @@ function LoreCard({ entry, bucket, compact, onClick }: {
           {entry.blurb || "—"}
         </span>
       )}
-    </button>
+      {!compact && entry.aliases.length > 0 && (
+        <span style={{
+          fontSize: 9.5, color: "var(--text-ghost)", fontStyle: "italic",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          aka: {entry.aliases.join(", ")}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -189,73 +223,25 @@ export function LoreSelector({ branch, sourceId, compact }: {
   const filterKey = branch ? contextFilterKey(branch, sourceId) : null;
   const filter = useSettings((s) => (filterKey ? s.contextFilters[filterKey] : undefined) ?? DEFAULT_FILTER);
   const setContextFilter = useSettings((s) => s.setContextFilter);
-  const [preview, setPreview] = useState<ContextSlotPreview | null>(null);
-  const previewConnRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
-
-  function sendPreview(conn: ReturnType<typeof contextViewConn>, f: ContextFilter) {
-    conn.send({
-      type: "context.preview",
-      slots: [{ label: "lore-selector", mode: "on-demand", layout: toContextLayout(f) }],
-    });
-  }
-
-  // Assignment — this component's own context.preview connection.
-  useEffect(() => {
-    if (!branch) return;
-    const connLabel = `lore-assignment:${branch}:${sourceId}`;
-    setConnStatus(connLabel, "connecting");
-
-    const conn = contextViewConn(branch, "_lore-selector");
-    previewConnRef.current = conn;
-    setPreview(null);
-
-    conn.onStatus((s) => {
-      if (s !== "connected") setConnStatus(connLabel, "connecting");
-    });
-    conn.subscribe((evt) => {
-      bumpActivity(connLabel);
-      if (evt.type === "context.preview") setPreview(evt.slots[0] ?? null);
-      else if (evt.type === "error") setError(evt.message);
-    });
-
-    (async () => {
-      try {
-        await conn.connect();
-        setConnStatus(connLabel, "connected");
-        sendPreview(conn, filter);
-      } catch (err) {
-        setConnStatus(connLabel, "error");
-        setError(String(err));
-      }
-    })();
-
-    return () => {
-      conn.close();
-      previewConnRef.current = null;
-      removeConn(connLabel);
-    };
-    // filter is re-sent explicitly on every edit (see commitFilter below) —
-    // this effect only re-runs on branch/sourceId change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branch, sourceId]);
 
   function commitFilter(next: ContextFilter) {
     if (filterKey) setContextFilter(filterKey, next);
-    if (previewConnRef.current) sendPreview(previewConnRef.current, next);
   }
 
-  function onClickCard(path: string) {
-    const withTag = filter.tags.some((t) => t.pattern === path) ? filter : addPatternTag(filter, path);
-    commitFilter(cycleFilterTagBucket(withTag, path, nextBucket));
+  function onSelectState(path: string, state: LoreState) {
+    switch (state) {
+      case "off":       commitFilter(setTriggered(setAlwaysIncluded(filter, path, false), path, false)); break;
+      case "triggered": commitFilter(setTriggered(filter, path, true)); break;
+      case "always":    commitFilter(setAlwaysIncluded(filter, path, true)); break;
+    }
   }
 
   function onReset() {
-    commitFilter({ tags: [] });
+    commitFilter({ tags: [], triggers: [] });
   }
 
-  const bucketByPath = new Map(preview?.entries.map((e) => [e.path, e.bucket] as const) ?? []);
   const groups = groupByTopFolder(loreTree);
-  const hasOverride = filter.tags.length > 0;
+  const hasOverride = filter.tags.length > 0 || filter.triggers.length > 0;
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: compact ? "2px 2px 8px" : "4px 4px 16px" }}>
@@ -305,9 +291,9 @@ export function LoreSelector({ branch, sourceId, compact }: {
                   <LoreCard
                     key={entry.path}
                     entry={entry}
-                    bucket={bucketByPath.get(entry.path)}
+                    state={loreState(filter, entry.path)}
                     compact={compact}
-                    onClick={() => onClickCard(entry.path)}
+                    onSelect={(s) => onSelectState(entry.path, s)}
                   />
                 ))}
               </div>

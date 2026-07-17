@@ -33,5 +33,6 @@ nodeToJSON n = object
   [ "path"     .= lnPath n
   , "name"     .= lnName n
   , "blurb"    .= lnBlurb n
+  , "aliases"  .= lnAliases n
   , "children" .= map nodeToJSON (lnChildren n)
   ]

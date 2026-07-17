@@ -1,4 +1,4 @@
-import type { WireTick } from "./ws";
+import type { WireTick, LoreNode } from "./ws";
 import { branchDisplayName } from "./branches";
 
 export type AnnotationMode = "hidden" | "dots" | "expanded";
@@ -180,6 +180,20 @@ export function basenameNoExt(path: string): string {
   const base = path.split("/").pop() ?? path;
   const idx = base.lastIndexOf(".");
   return idx > 0 ? base.slice(0, idx) : base;
+}
+
+// Flatten a lore tree into its leaves, depth-first — shared by
+// app/lore-selector.tsx's card grouping, app/fileview.tsx's mention
+// autocomplete, and lib/loreTrigger.ts's trigger-scan, all of which want a
+// flat, searchable list rather than the folder tree. Lives in lib/ (not
+// lore-selector.tsx, its original home) so lib/loreTrigger.ts can use it
+// without a lib -> app import.
+export function flattenLore(nodes: LoreNode[], acc: LoreNode[] = []): LoreNode[] {
+  for (const n of nodes) {
+    if (n.children.length > 0) flattenLore(n.children, acc);
+    else acc.push(n);
+  }
+  return acc;
 }
 
 // Display name for a character/{id} branch. Per WRITER.md's convention, the

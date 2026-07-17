@@ -500,11 +500,14 @@ export type LibraryEvent =
 // Storyteller.Writer.Lore.isLoreEligible), so unlike LibraryNode there's no
 // 'kind' to branch on client-side. 'blurb' is a file's raw first non-blank
 // line, same "server hands over raw text, client decides" contract as
-// LibraryNode's 'heading'.
+// LibraryNode's 'heading'. 'aliases' is parsed server-side from a plain
+// "**Aliases:** a, b, c" markdown line in the file's first section (see
+// Storyteller.Writer.Lore.parseAliases) — empty when the file declares none.
 export interface LoreNode {
   path: string;
   name: string;
   blurb: string;
+  aliases: string[];
   children: LoreNode[];
 }
 

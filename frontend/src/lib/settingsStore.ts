@@ -31,8 +31,19 @@ export interface FilterTag {
 // *after* specific patterns reproduces "hide these", while specific
 // patterns with nothing broad after them reproduces "show only these".
 // There is no longer a mode flag — just the tag list and each tag's bucket.
+//
+// `triggers` is a second, independent axis, populated and consumed only by
+// the Codex tab (lore-selector.tsx) and the trigger-scan step
+// (lib/loreTrigger.ts) — a lore-entry path here means "auto-include this
+// entry, but only for a generation call whose text actually mentions one of
+// its aliases", same forced-bucket-1 mechanism `@mention` already uses (see
+// fileview.actions.ts's writerCommandContext), just triggered by matched
+// text instead of an explicit `@[Name](path)`. context-source.tsx's raw
+// glob editor never reads or writes this field — a glob pattern has no
+// notion of "mentioned in text" to trigger on.
 export interface ContextFilter {
   tags: FilterTag[];
+  triggers: string[];
 }
 
 interface SettingsState {
@@ -55,11 +66,12 @@ export const useSettings = create<SettingsState>()(
       // invert} to {tags: FilterTag[], invert} (bucket-picker rework, see
       // context-source.tsx). v2 -> v3: dropped the `invert` mode flag
       // entirely — ordering the tags themselves now covers what it did (see
-      // ContextFilter's doc comment above). Old entries aren't worth
-      // translating either time — this is client-local, low-stakes UI
+      // ContextFilter's doc comment above). v3 -> v4: added `triggers`
+      // (lore-mentions trigger-based inclusion). Old entries aren't worth
+      // translating any of these times — this is client-local, low-stakes UI
       // config, not user content — so a version bump just resets
       // contextFilters wholesale rather than crashing on the old shape.
-      version: 3,
+      version: 4,
       migrate: () => ({ contextFilters: {} }),
     }
   )
@@ -90,11 +102,11 @@ export function defaultBucket(): number | null {
 // the tree editor.
 export function addPatternTag(filter: ContextFilter, pattern: string): ContextFilter {
   if (!pattern || filter.tags.some((t) => t.pattern === pattern)) return filter;
-  return { tags: [...filter.tags, { pattern }] };
+  return { ...filter, tags: [...filter.tags, { pattern }] };
 }
 
 export function removeFilterTag(filter: ContextFilter, pattern: string): ContextFilter {
-  return { tags: filter.tags.filter((t) => t.pattern !== pattern) };
+  return { ...filter, tags: filter.tags.filter((t) => t.pattern !== pattern) };
 }
 
 export function toggleFilterTag(filter: ContextFilter, pattern: string): ContextFilter {
@@ -105,12 +117,37 @@ export function toggleFilterTag(filter: ContextFilter, pattern: string): Context
 
 export function cycleFilterTagBucket(filter: ContextFilter, pattern: string, next: (b: number | null) => number | null): ContextFilter {
   return {
+    ...filter,
     tags: filter.tags.map((t) => {
       if (t.pattern !== pattern) return t;
       const current = t.bucket !== undefined ? t.bucket : defaultBucket();
       return { ...t, bucket: next(current) };
     }),
   };
+}
+
+// The Codex tab's simplified Off/Triggered/Always control (lore-selector.tsx)
+// — "Always" is exactly a bucket-1 tag, same substrate `cycleFilterTagBucket`
+// already claims into, just fixed to bucket 1 instead of exposing the full
+// 1/2/3 cycle. Turning it off also clears any Triggered flag for the same
+// path, since the three states are mutually exclusive in that UI (the raw
+// glob editor's tags are untouched by this — only a tag whose pattern is
+// exactly `path` is affected).
+export function setAlwaysIncluded(filter: ContextFilter, path: string, on: boolean): ContextFilter {
+  const withoutTrigger = setTriggered(filter, path, false);
+  if (!on) return removeFilterTag(withoutTrigger, path);
+  const withTag = withoutTrigger.tags.some((t) => t.pattern === path)
+    ? withoutTrigger
+    : addPatternTag(withoutTrigger, path);
+  return { ...withTag, tags: withTag.tags.map((t) => (t.pattern === path ? { ...t, bucket: 1 } : t)) };
+}
+
+// Same mutual-exclusion stance as 'setAlwaysIncluded': flagging a path
+// Triggered clears any Always (bucket) tag for it first.
+export function setTriggered(filter: ContextFilter, path: string, on: boolean): ContextFilter {
+  const withoutTag = removeFilterTag(filter, path);
+  const triggers = withoutTag.triggers.filter((p) => p !== path);
+  return { ...withoutTag, triggers: on ? [...triggers, path] : triggers };
 }
 
 // Compile a persisted {tags} filter into the PickerRule[] layout actually

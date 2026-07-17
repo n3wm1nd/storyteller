@@ -259,6 +259,7 @@ test-suite storyteller-test
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec
+                  , Storyteller.LoreSpec
                   , Storyteller.BranchesSpec
                   , Storyteller.ContextFilterSpec
                   , Storyteller.ContextPreviewSpec
