@@ -32,7 +32,7 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (CharLabel(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent.CharContext (charSummaryFull)
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Presence (activeCharactersFor)
@@ -72,7 +72,7 @@ runRoleplayTurn path prompt = do
 
     reflectFor narrative sceneRef character@(Character branch) = do
       entry <- runBranchAndFS @ActiveChar branch $ do
-        ownContext <- charSummaryAgent @(BranchTag ActiveChar) (const True)
+        ownContext <- charSummaryFull @(BranchTag ActiveChar) (const True)
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
         void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] "journal.md" entry)
         pure entry

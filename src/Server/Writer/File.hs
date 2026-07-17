@@ -49,7 +49,7 @@ import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, hideChapters, hideLore, classifyPath)
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal, charSummaryAgent)
+import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal, charSummaryFull)
 import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
 import qualified Storyteller.Writer.Agent.ChapterContext as ChapterContext
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
@@ -252,7 +252,7 @@ roleplayWriter path prompt = do
       -- live at once.
     reflectFor narrative sceneRef character@(Character branch) =
       runBranchAndFS @ActiveChar branch $ do
-        ownContext <- charSummaryAgent @(BranchTag ActiveChar) (const True)
+        ownContext <- charSummaryFull @(BranchTag ActiveChar) (const True)
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
         void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] journalPath entry)
 

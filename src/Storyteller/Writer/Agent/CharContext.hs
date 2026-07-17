@@ -19,6 +19,7 @@
 -- half.
 module Storyteller.Writer.Agent.CharContext
   ( charSummaryAgent
+  , charSummaryFull
   , readCharFiles
   , renderCharContext
   , charSummaryWithJournal
@@ -27,6 +28,7 @@ module Storyteller.Writer.Agent.CharContext
 import qualified Data.List as List
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import System.FilePath (takeFileName)
 
 import Polysemy
 import Polysemy.Fail
@@ -73,6 +75,31 @@ charSummaryAgent
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
   => (FilePath -> Bool) -> Sem r [CharContextBlock]
 charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
+
+-- | 'readCharFiles' split into a 'CharSummary' by exact filename --
+--   @sheet.md@, @journal.md@, everything else -- rather than
+--   'charSummaryWithJournal's tick-windowed slice: @journal.md@ here is read
+--   verbatim and in full, straight off the filesystem, same as any other
+--   file 'readCharFiles' already reads. Built for a caller that wants a
+--   character's whole, uncurated context (unlike 'charSummaryWithJournal',
+--   which deliberately curates) but still split by how often each part
+--   actually changes -- @csJournal@ grows every turn, @csSheet@\/@csContext@
+--   don't -- so it can place the volatile part in its own late message
+--   rather than fuse it into an otherwise-stable one; see
+--   'Storyteller.Writer.Agent.Roleplay''s own opening-message construction
+--   for why that split is what actually protects a prompt-cache hit.
+charSummaryFull
+  :: forall project r
+  .  Members '[FileSystem project, FileSystemRead project, Fail] r
+  => (FilePath -> Bool) -> Sem r CharSummary
+charSummaryFull keep = categorize <$> readCharFiles @project keep
+  where
+    categorize files = CharSummary
+      { csSheet   = renderCharContext (filter (named "sheet.md") files)
+      , csContext = renderCharContext (filter (\f -> not (named "sheet.md" f || named "journal.md" f)) files)
+      , csJournal = renderCharContext (filter (named "journal.md") files)
+      }
+    named n (p, _) = takeFileName p == n
 
 -- | 'charSummaryAgent's read, split into 'CharSummary's three independently
 --   placeable shapes, plus a curated slice of @journalPath@'s own recent

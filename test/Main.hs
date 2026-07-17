@@ -30,6 +30,7 @@ import qualified Storyteller.WorldContextSpec
 import qualified Storyteller.PresenceSpec
 import qualified Storyteller.Writer.CharacterAnswerSpec
 import qualified Storyteller.Writer.WriteSpec
+import qualified Storyteller.Writer.RoleplaySpec
 import qualified Storyteller.Writer.MessageWindowSpec
 import qualified Storyteller.Writer.ReplaceToolSpec
 import qualified Storyteller.UndoSpec
@@ -83,6 +84,7 @@ main = hspec $ do
   describe "Storyteller.Presence"       Storyteller.PresenceSpec.spec
   describe "Storyteller.Writer.Types.CharacterAnswer" Storyteller.Writer.CharacterAnswerSpec.spec
   describe "Storyteller.Writer.Agent.Write (buildChapterMessages)" Storyteller.Writer.WriteSpec.spec
+  describe "Storyteller.Writer.Agent.Roleplay (opening messages)" Storyteller.Writer.RoleplaySpec.spec
   describe "Storyteller.Writer.Agent.MessageWindow" Storyteller.Writer.MessageWindowSpec.spec
   describe "Storyteller.Writer.Agent.ReplaceTool (replaceOnce)" Storyteller.Writer.ReplaceToolSpec.spec
   describe "Storyteller.Undo"           Storyteller.UndoSpec.spec

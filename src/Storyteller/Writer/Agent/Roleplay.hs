@@ -78,6 +78,8 @@ module Storyteller.Writer.Agent.Roleplay
   ( roleplayAgent
   , characterIntentAgent
   , characterReflectAgent
+  , characterOpeningMessages
+  , reflectOpeningMessages
   ) where
 
 import Control.Monad (forM)
@@ -105,8 +107,8 @@ import Storyteller.Core.LLM.Role (LLMs, AgentModel, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Writer.Agent (CharContextBlock(..), CharLabel(..), ContextBlock(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent (CharContextBlock(..), CharLabel(..), CharSummary(..), ContextBlock(..), Prose(..))
+import Storyteller.Writer.Agent.CharContext (charSummaryFull)
 import Storyteller.Writer.Lore (isLoreEligible)
 import Storyteller.Writer.Types (Character(..))
 
@@ -159,7 +161,7 @@ askCharacter
 askCharacter (Character branch) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   answer <- runBranchAndFS @RoleplayChar branch $ do
-    ownContext <- charSummaryAgent @(BranchTag RoleplayChar) (const True)
+    ownContext <- charSummaryFull @(BranchTag RoleplayChar) (const True)
     characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question
   info (name <> " answers: " <> answer)
   pure answer
@@ -264,6 +266,22 @@ defaultComposeConfig = [MaxTokens 3000, Temperature 0.8]
 --   'Storyteller.Writer.Agent.Chat.chatAgent''s exact shape, reused rather
 --   than redesigned: query, execute any tool calls, recurse; the first turn
 --   with no calls has its text taken as the answer.
+--
+--   Its opening turn is a real @['Message']@, not one flattened 'UserText'
+--   (see 'characterOpeningMessages') -- the same reasoning
+--   'Storyteller.Writer.Agent.Write.buildChapterMessages' already applies to
+--   chapter continuation: a scene beat re-derives and resends this whole
+--   opening fresh every single call (there's no persisted conversation
+--   across beats the way a chat history would give it), so whether a
+--   provider's prompt cache can reuse anything at all depends entirely on
+--   whether this call's opening messages are byte-identical, up to some
+--   point, to a previous call's. @ownContext@'s 'csJournal' is the one part
+--   guaranteed to differ every beat (it only ever grows -- see
+--   'characterReflectAgent'); everything else here is comparatively stable.
+--   Fusing all of it into one string, in any order, means a single changed
+--   byte anywhere invalidates the whole thing; splitting it into separate
+--   messages means only the messages at or after the change are ever paid
+--   for again.
 characterIntentAgent
   :: forall project r
   .  ( LLMs r
@@ -272,7 +290,7 @@ characterIntentAgent
                 , PromptStorage, Fail, Logging] r
      )
   => Text                  -- ^ this character's display name
-  -> [CharContextBlock]    -- ^ their own full, uncurated branch context
+  -> CharSummary            -- ^ their own full, uncurated branch context (see 'Storyteller.Writer.Agent.CharContext.charSummaryFull')
   -> [ContextBlock]        -- ^ the scene's own context (existing prose, world lore)
   -> Text                  -- ^ the question put to them
   -> Sem r Text
@@ -281,9 +299,9 @@ characterIntentAgent name ownContext sceneContext question = do
   lore <- loreFileList @r
   let tools = characterTools @project @(Fail ': r)
       configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
-      openingMsg = renderCharacterPrompt name ownContext sceneContext lore question
+      opening = characterOpeningMessages name ownContext sceneContext lore question
   withToolCallBudget @AgentModel toolCallSoftLimit toolCallHardRounds
-    (go tools configsWithTools [UserText openingMsg])
+    (go tools configsWithTools opening)
   where
     -- Room for a couple of real look-arounds before 'withToolCallBudget'
     -- starts transparently denying them -- 'go' below never sees that
@@ -443,15 +461,52 @@ addSuspicionTool = LLMTool $ mkToolWithMeta
   (addSuspicion @project)
   "text" "the suspicion to record"
 
-renderCharacterPrompt :: Text -> [CharContextBlock] -> [ContextBlock] -> [FilePath] -> Text -> Text
-renderCharacterPrompt name ownContext sceneContext lore question =
-  T.intercalate "\n\n" (characterIdentityNote name : ownBlocks ++ [renderLoreList lore] ++ sceneBlocks ++ [asked])
+-- | @characterIntentAgent@'s opening turn as a real @['Message']@ -- see its
+--   own Haddock for why this matters, not just how. Ordered stable to
+--   volatile: identity, then @ownContext@'s three parts in ascending order
+--   of how often each actually changes call to call (sheet -- never;
+--   context/tasks/notes -- only when the model's own tools edit them; lore
+--   list -- only when new lore is added; journal -- every single beat, via
+--   'characterReflectAgent'), then whatever's genuinely new this call
+--   (scene context, the question).
+--
+--   Each of the three 'CharSummary' parts (plus lore) is its own
+--   @('UserText' label, 'AssistantText' content)@ pair, dropped entirely
+--   when empty -- the same shape, for the same two reasons,
+--   'Storyteller.Writer.Agent.Write.buildChapterMessages' already uses for
+--   earlier chapters: framing established material as something this
+--   character already has (accurate -- it's their own sheet, their own
+--   notes, their own journal), and guaranteeing a role switch on both sides
+--   of every pair regardless of whether a provider concatenates adjacent
+--   same-role messages. That guarantee is what actually matters here: it's
+--   what keeps a change to the always-changing journal from being able to
+--   silently fuse backward into, and invalidate, the stable prefix in front
+--   of it, no matter how a given provider handles same-role adjacency.
+characterOpeningMessages :: Text -> CharSummary -> [ContextBlock] -> [FilePath] -> Text -> [Message m]
+characterOpeningMessages name ownContext sceneContext lore question =
+  UserText (characterIdentityNote name)
+    : labelledPair "## Your character sheet" (blocksText (csSheet ownContext))
+   ++ labelledPair "## What else I know" (T.intercalate "\n\n" (filter (not . T.null) [blocksText (csContext ownContext), renderLoreList lore]))
+   ++ labelledPair "## My own journal so far" (blocksText (csJournal ownContext))
+   ++ [UserText (T.intercalate "\n\n" (sceneBlocks ++ [asked]))]
   where
-    ownBlocks = map (\(CharContextBlock b) -> b) ownContext
     sceneBlocks
       | null sceneContext = []
       | otherwise          = "### The scene so far" : map (\(ContextBlock b) -> b) sceneContext
     asked = "You're being asked: " <> question
+
+-- | One labelled section as a @('UserText', 'AssistantText')@ pair -- see
+--   'characterOpeningMessages'\' own Haddock for why both the framing and
+--   the role switch matter. Dropped entirely (not sent as an empty pair)
+--   when @content@ is blank, so an absent file never surfaces as a header
+--   with nothing under it.
+labelledPair :: Text -> Text -> [Message m]
+labelledPair label content
+  | T.null (T.strip content) = []
+  | otherwise                 = [UserText label, AssistantText content]
+
+blocksText :: [CharContextBlock] -> Text
+blocksText = T.intercalate "\n\n" . map (\(CharContextBlock b) -> b)
 
 -- | Every shared lore path currently on the Main branch -- given to a
 --   character subagent as plain text up front (see 'renderLoreList'), so it
@@ -565,7 +620,7 @@ characterReflectAgent
                 , PromptStorage, Fail, Logging] r
      )
   => Text                 -- ^ this character's display name
-  -> [CharContextBlock]   -- ^ their own pre-scene branch context
+  -> CharSummary          -- ^ their own pre-scene branch context (see 'Storyteller.Writer.Agent.CharContext.charSummaryFull')
   -> Text                 -- ^ the scene's finished narrative
   -> Sem r Text
 characterReflectAgent name ownContext narrative = do
@@ -575,7 +630,7 @@ characterReflectAgent name ownContext narrative = do
   let tools = characterTools @project @(Fail ': r)
       configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
   withToolCallBudget @AgentModel toolCallSoftLimit toolCallHardRounds
-    (go tools configsWithTools [UserText (renderReflectPrompt name ownContext narrative lore closing)])
+    (go tools configsWithTools (reflectOpeningMessages name ownContext narrative lore closing))
   where
     toolCallSoftLimit  = 6 :: Int
     toolCallHardRounds = 3 :: Int
@@ -593,14 +648,22 @@ characterReflectAgent name ownContext narrative = do
             executeTool tools tc
           go tools configsWithTools (history ++ response ++ map ToolResultMsg results)
 
-renderReflectPrompt :: Text -> [CharContextBlock] -> Text -> [FilePath] -> Text -> Text
-renderReflectPrompt name ownContext narrative lore closing =
-  T.intercalate "\n\n" (identity : ownBlocks ++ [renderLoreList lore, sceneBlock, closing])
+-- | 'characterReflectAgent''s opening turn as a real @['Message']@ -- same
+--   shape and reasoning as 'characterOpeningMessages', reused directly
+--   rather than redesigned: stable-to-volatile 'CharSummary' parts as
+--   labelled pairs, then the one thing genuinely new this call (the scene's
+--   finished narrative plus closing instructions) last.
+reflectOpeningMessages :: Text -> CharSummary -> Text -> [FilePath] -> Text -> [Message m]
+reflectOpeningMessages name ownContext narrative lore closing =
+  UserText identity
+    : labelledPair "## Your character sheet" (blocksText (csSheet ownContext))
+   ++ labelledPair "## What else I know" (T.intercalate "\n\n" (filter (not . T.null) [blocksText (csContext ownContext), renderLoreList lore]))
+   ++ labelledPair "## My own journal so far" (blocksText (csJournal ownContext))
+   ++ [UserText (sceneBlock <> "\n\n" <> closing)]
   where
     identity = "This journal entry is " <> name <> "'s own private account -- write strictly from "
              <> name <> "'s own point of view, using their context above (if any) as what they"
              <> " already knew going in."
-    ownBlocks = map (\(CharContextBlock b) -> b) ownContext
     sceneBlock = "What just happened in the scene:\n\n" <> narrative
 
 defaultReflectSystemPrompt :: Prompt

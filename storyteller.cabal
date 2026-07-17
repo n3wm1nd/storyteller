@@ -258,6 +258,7 @@ test-suite storyteller-test
                   , Storyteller.PresenceSpec
                   , Storyteller.Writer.CharacterAnswerSpec
                   , Storyteller.Writer.WriteSpec
+                  , Storyteller.Writer.RoleplaySpec
                   , Storyteller.Writer.MessageWindowSpec
                   , Storyteller.Writer.ReplaceToolSpec
                   , Storyteller.UndoSpec
