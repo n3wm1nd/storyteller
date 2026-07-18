@@ -320,6 +320,9 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
 
   if (isSummary) {
     const kind = tick.fields?.kind ?? "";
+    const text = tick.content ?? tick.message;
+    const expandable = text.length > 140;
+    const preview = expandable ? text.slice(0, 140) + "…" : text;
     return (
       <div
         onClick={(e) => {
@@ -330,13 +333,29 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
           margin: "4px 0 10px 12px", borderRadius: 5, padding: "5px 10px",
           background: "oklch(0.24 0.05 80 / 0.4)", border: "1px solid oklch(0.6 0.15 80 / 0.35)",
           outline: inContext ? "2px solid var(--amber)" : "none", outlineOffset: 1,
-          display: "flex", alignItems: "center", gap: 7, cursor: "pointer",
+          cursor: "pointer",
         }}
       >
-        <History style={{ width: 11, height: 11, color: "oklch(0.7 0.15 80)", flexShrink: 0 }} />
-        <span style={{ fontSize: 12, color: "oklch(0.75 0.13 80)", fontStyle: "italic", lineHeight: 1.5 }}>
-          {summaryKindLabel(kind)}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <History style={{ width: 11, height: 11, color: "oklch(0.7 0.15 80)", flexShrink: 0 }} />
+          <span style={{ fontSize: 12, color: "oklch(0.75 0.13 80)", fontStyle: "italic", flex: 1 }}>
+            {summaryKindLabel(kind)}
+          </span>
+          {text && (
+            <ChevronDown
+              onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+              style={{
+                width: 10, height: 10, color: "var(--text-ghost)", flexShrink: 0,
+                transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s",
+              }}
+            />
+          )}
+        </div>
+        {text && (
+          <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, marginTop: 3 }}>
+            {expanded ? text : preview}
+          </div>
+        )}
       </div>
     );
   }
@@ -590,7 +609,10 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
           const color  = dotColor(ann);
           const isSummary = ann.kind === "summary";
           const title  = (() => {
-            if (isSummary) return summaryKindLabel(ann.fields?.kind ?? "");
+            if (isSummary) {
+              const text = ann.content ?? ann.message;
+              return `${summaryKindLabel(ann.fields?.kind ?? "")}${text ? `\n${text.slice(0, 80)}` : ""}`;
+            }
             if (ann.kind !== "character-answer") return ann.message.slice(0, 80);
             const [question, answer] = splitQuestionAnswer(ann.message);
             return `Asked ${characterDisplayName(ann.fields?.character ?? "")}: ${question}\n${answer.slice(0, 80)}`;
