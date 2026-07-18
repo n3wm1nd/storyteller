@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyUpdate, atRebase, isChatPreviewEvent, remapSet, remapTickId } from "./wsHelpers";
+import { applyFileUpdate, applyUpdate, atRebase, isChatPreviewEvent, remapSet, remapTickId } from "./wsHelpers";
 import type { FileCommand, WireTick } from "./ws";
 
 function tick(id: string, parent: string | null, overrides: Partial<WireTick> = {}): WireTick {
@@ -18,6 +18,38 @@ describe("applyUpdate", () => {
     const before = { a: tick("a", null, { message: "old" }) };
     const after = applyUpdate(before, { type: "update", head: "a", ticks: [tick("a", null, { message: "new" })] });
     expect(after.a.message).toBe("new");
+  });
+});
+
+describe("applyFileUpdate", () => {
+  function summaryTick(id: string, kind: string): WireTick {
+    return { tickId: id, kind: "summary", refs: [], message: "", parent: null, fields: { kind } };
+  }
+
+  test("drops a summary-kind tick that no longer appears in the push (deleted, or its kind rebased away)", () => {
+    const before = { s1: summaryTick("s1", "prose/chapter"), a: tick("a", null) };
+    // summaryTicksFor always resends the *complete* current summary set —
+    // an update with no summary ticks at all means none currently exist.
+    const after = applyFileUpdate(before, { type: "update", head: "a", ticks: [tick("a", null)] });
+    expect(after).toEqual({ a: tick("a", null) });
+  });
+
+  test("keeps a summary-kind tick that's still present in the push", () => {
+    const before = { s1: summaryTick("s1", "prose/chapter") };
+    const after = applyFileUpdate(before, { type: "update", head: "a", ticks: [summaryTick("s1", "prose/chapter")] });
+    expect(after).toEqual({ s1: summaryTick("s1", "prose/chapter") });
+  });
+
+  test("a real (non-summary) tick is never dropped just for being absent from one push", () => {
+    const before = { a: tick("a", null) };
+    const after = applyFileUpdate(before, { type: "update", head: "a", ticks: [] });
+    expect(after).toEqual({ a: tick("a", null) });
+  });
+
+  test("replaces a stale summary tick with a newer one of the same kind, not both", () => {
+    const before = { old: summaryTick("old", "prose/chapter") };
+    const after = applyFileUpdate(before, { type: "update", head: "a", ticks: [summaryTick("new", "prose/chapter")] });
+    expect(after).toEqual({ new: summaryTick("new", "prose/chapter") });
   });
 });
 

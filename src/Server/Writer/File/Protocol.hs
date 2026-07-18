@@ -6,6 +6,12 @@
 -- Commands: intent-based file operations. The server executes them and
 --           pushes the resulting state back as a FileUpdate. No read or
 --           resync commands — reconnect triggers a full state push.
+--           'AskCharacter' is the one exception: its answer lands on the
+--           *character's* branch, not this file's, so a ref-move
+--           notification here would never surface it — see its own
+--           Haddock. Summary content (see 'Server.Writer.File.summaryTicksFor')
+--           needs no such exception: it rides along in the ordinary
+--           'FileUpdate' push as synthetic ticks instead.
 -- Events:   FilePresent/FileAbsent on connect, FileUpdate after mutations,
 --           plus AgentLog and FileError.
 module Server.Writer.File.Protocol
@@ -168,6 +174,13 @@ data FileCommand
   --   the whole input; the model decides the chapter breakdown. See
   --   'Server.Writer.File.chatSplitOutline'.
   | ChatOutline { fcId :: Maybe T.Text }
+  -- | Summarize exactly this file -- unlike the branch-level "summarize"
+  --   command (which runs a whole kind across every file that qualifies,
+  --   see 'Server.Writer.Branch.summarize'), this never touches any
+  --   other file, even one that's also stale. See
+  --   'Server.Writer.File.summarizePath's own Haddock for why that's a
+  --   real capability, not just a narrower version of the same thing.
+  | SummarizeFile { fcId :: Maybe T.Text }
   -- | Instant, non-LLM: attach a note to each of 'fcTargets', or (when
   --   empty) to the file's current HEAD tick.
   | ChatNote   { fcId :: Maybe T.Text, fcNoteText :: T.Text, fcTargets :: [T.Text] }
@@ -254,6 +267,7 @@ instance FromJSON FileCommand where
         ChatConverseSwipe i <$> o .: "promptTickId" <*> o .: "atomTickId" <*> o .: "text"
       "atom.swipe.cycle" -> CycleSwipe i <$> o .: "tickId"
       "chat.outline" -> pure (ChatOutline i)
+      "summarize.file" -> pure (SummarizeFile i)
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatNote i <$> o .: "text" <*> pure targets
@@ -295,6 +309,7 @@ commandKind = \case
   ChatConverseSwipe {} -> "chat.converse.regen"
   CycleSwipe {}   -> "atom.swipe.cycle"
   ChatOutline {}  -> "chat.outline"
+  SummarizeFile {} -> "summarize.file"
   ChatNote {}     -> "chat.note"
   ReferenceImage {} -> "reference.image"
   EnterScene {}   -> "enter.scene"

@@ -76,6 +76,41 @@ export function classifyPath(path: string): LibraryKind {
   return eligible ? "unit" : "other";
 }
 
+// Mirrors Server.Writer.File.summaryKindsFor (Haskell) -- which summary
+// tiers, if any, a file's raw/summary toggle should offer. Advisory only
+// (see WS-PROTOCOL.md's "Backend-authoritative vs. frontend-advisory
+// duplication"): the server alone decides what actually gets pushed as a
+// synthetic "summary" tick (see Server.Writer.File.summaryTicksFor), so a
+// stale or wrong guess here is only ever a UI nit -- offering a toggle
+// button for a tier that turns out to have nothing pushed for this path,
+// never a data problem.
+const JOURNAL_PATH = "journal.md";
+
+function isLoreEligiblePath(path: string): boolean {
+  const parts = path.split("/").filter(Boolean);
+  if (parts[0] === "chat") return false;
+  const base = parts[parts.length - 1];
+  const isRootFile = (name: string) => base === name && parts.length === 1;
+  return classifyPath(path) === "other" && !isRootFile("sheet.md") && !isRootFile("journal.md");
+}
+
+// Mirrors Storyteller.Writer.Agent.JournalSummarizer.journalKindFor --
+// journal.md's summary tree is a recursive, open-ended tower of tiers
+// (tier 0 = raw entries, tier n = tier (n-1)'s own chunks), not two fixed
+// kinds -- listed generously (12 tiers covers 10^11 raw entries at the
+// default group size of 10) since SummaryAccess.zoomLevels stops at the
+// first tier that doesn't actually exist yet.
+function journalKindFor(level: number): string {
+  return `journal/L${level}`;
+}
+
+export function summaryKindsFor(path: string): string[] {
+  if (classifyPath(path) === "unit") return ["prose/chapter"];
+  if (path === JOURNAL_PATH) return Array.from({ length: 12 }, (_, i) => journalKindFor(i));
+  if (isLoreEligiblePath(path)) return ["lore/article"];
+  return [];
+}
+
 // Natural-sort comparator, mirroring Storyteller.Writer.Library.naturalKey
 // (Haskell) — "ch2" sorts before "ch11", "2 - the sequel" before "14 - the
 // finale", by comparing alternating digit/non-digit runs, digit runs by

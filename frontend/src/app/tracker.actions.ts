@@ -9,7 +9,7 @@
 
 import { branchConn } from "@/lib/ws";
 import { getServerCache } from "@/lib/serverCacheStore";
-import { setError } from "@/lib/uiStore";
+import { setError, useUI } from "@/lib/uiStore";
 
 const JOURNAL_PATH = "journal.md";
 
@@ -20,6 +20,16 @@ const JOURNAL_PATH = "journal.md";
 // journal's own file connection (if open) receives the new ticks through
 // its own push, same as any other write to that branch.
 //
+// A branch connection pushes its own current state ("update") immediately
+// on connect (Server.Writer.Branch.Connection.pushInitial), *before* the
+// command sent right after connecting even reaches the server — closing on
+// the first "update" seen closes on that unrelated initial push, not on
+// anything caused by 'track', aborting the command before it runs (a
+// closed connection genuinely aborts an in-flight command, see
+// Server.Writer.Branch.Connection.commandLoop's Haddock). The first
+// "update" is skipped for exactly that reason — see
+// fileview.actions.ts's summarizeFile, which hit the identical bug.
+//
 // 'onlyFile' omitted pulls every file on the source branch (not just the
 // one currently open) into the journal in one call — presence gating
 // (Server.Writer.Branch.onlyWhilePresent) still applies per atom, so this
@@ -28,9 +38,15 @@ const JOURNAL_PATH = "journal.md";
 // 'trackAllJournals' below for the sidebar's "Track All" button.
 function trackOne(characterBranch: string, source: string, onlyFile: string | undefined) {
   const conn = branchConn(characterBranch);
+  let sawInitialUpdate = false;
   conn.subscribe((evt) => {
-    if (evt.type === "update" || evt.type === "error") conn.close();
-    if (evt.type === "error") setError(evt.message);
+    if (evt.type === "agent.log") { useUI.getState().addAgentLog(evt.level, evt.message); return; }
+    if (evt.type === "update") {
+      if (!sawInitialUpdate) { sawInitialUpdate = true; return; }
+      conn.close();
+      return;
+    }
+    if (evt.type === "error") { setError(evt.message); conn.close(); }
   });
   conn.connect().then(() => {
     conn.send({ type: "track", source, onlyFile, to: JOURNAL_PATH });

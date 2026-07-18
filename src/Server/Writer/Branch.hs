@@ -49,6 +49,8 @@ import Server.Core.Util (withBranch)
 
 import qualified Storyteller.Common.Annotation as Annotation
 import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryGenerate)
+import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryGenerate)
+import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, journalChunkAgent, currentSheet)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
@@ -315,16 +317,20 @@ saveFileAsNew branch path newPath content =
 --   it extends has no branch of its own to open in the first place (see
 --   "Storyteller.Common.Summary"'s module Haddock).
 --
---   @"prose/chapter"@ is the one real per-domain summarizer wired in so
---   far -- 'Storyteller.Writer.Agent.ChapterSummarizer.chapterSummaryGenerate',
---   an LLM call per touched chapter. Every other @kind@ still falls back to
+--   @"prose/chapter"@, @"lore/article"@, and @"journal"@ (see
+--   "Storyteller.Writer.Agent.JournalSummarizer"'s own Haddock for why a
+--   chunked, unbounded file needs its own bespoke recursive write path
+--   rather than a plain 'runSummarizer' @generate@ hook -- it writes
+--   directly, at whatever tier(s) actually have new material, rather than
+--   going through 'runSummarizer' at all) are the real per-domain
+--   summarizers wired in so far. Every other @kind@ still falls back to
 --   'passthroughGenerate', a placeholder that copies each touched file's
 --   new content across verbatim, grouped by path, with no actual
 --   compression -- it exists so an experimental @kind@ is genuinely
 --   exercisable end-to-end (a real alternate chain, a real 'Summary' tick,
 --   discoverable through 'Storyteller.Writer.Agent.SummaryAccess') before
---   its own per-domain summarizer (character, lore, ...) exists to replace
---   it. Add a new @kind@ here the same way once one does; nothing about
+--   its own per-domain summarizer exists to replace it. Add a new @kind@
+--   here the same way once one does; nothing about
 --   'Storyteller.Writer.Agent.Summarizer.runSummarizer' itself ever needs
 --   to change.
 summarize
@@ -332,6 +338,10 @@ summarize
   => T.Text -> Sem r (Maybe TickId)
 summarize kind
   | kind == "prose/chapter" = runSummarizer @Main kind (chapterSummaryGenerate @Main kind)
+  | kind == "lore/article"  = runSummarizer @Main kind (loreSummaryGenerate @Main kind)
+  | kind == "journal"        = do
+      sheet <- currentSheet @Main
+      Nothing <$ journalSummarize @Main (journalChunkAgent sheet) 0
   | otherwise                = runSummarizer @Main kind passthroughGenerate
 
 passthroughGenerate :: [Tick] -> Sem r (Map.Map FilePath T.Text)

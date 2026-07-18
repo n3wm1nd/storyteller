@@ -32,6 +32,9 @@ module Storyteller.Writer.Agent.SummaryAccess
   ( ZoomLevel(..)
   , zoomLevels
   , contentAt
+  , rawContent
+  , completeContents
+  , unsummarizedTailSince
   , densestWithin
   , densest
   , withinBudget
@@ -52,13 +55,20 @@ import Storyteller.Common.Summary
   (Summary(..), lastSummaryOf, lastTouchedIn, previewPath, summaryContent, summaryTickFor, ticksSince)
 import Storyteller.Core.Atom (contentFor)
 import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.Types (TickId)
 
 -- | One rung on the "how compressed can this get" ladder for a given
 --   file: either the raw branch itself ('zlSummary' = 'Nothing'), or one
 --   summarizer's 'Summary' tick. 'contentAt' reads from whichever this
---   is, uniformly.
+--   is, uniformly. 'zlTickId' -- the 'Summary' tick's own id on @source@,
+--   not 'Storyteller.Common.Summary.summaryAltHead' (a *different* object,
+--   the alternate chain's own commit) -- exists for a caller that needs a
+--   stable, real identity for this level (e.g. a WS push representing it
+--   as a synthetic tick a client can dedupe/diff by id); nothing in this
+--   module's own logic uses it.
 data ZoomLevel = ZoomLevel
-  { zlSummary :: Maybe Summary  -- ^ 'Nothing' for the raw, unsummarized level
+  { zlTickId  :: Maybe TickId   -- ^ 'Nothing' for the raw, unsummarized level
+  , zlSummary :: Maybe Summary  -- ^ 'Nothing' for the raw, unsummarized level
   , zlPreview :: Maybe Text     -- ^ this level's optional blurb -- see 'Storyteller.Common.Summary.previewPath'
   } deriving (Show, Eq)
 
@@ -76,14 +86,14 @@ zoomLevels
   => [Text] -> FilePath -> Sem r [ZoomLevel]
 zoomLevels kinds path = do
   rest <- runStorage @source (go kinds)
-  return (ZoomLevel Nothing Nothing : rest)
+  return (ZoomLevel Nothing Nothing Nothing : rest)
   where
     go [] = return []
     go (kind : more) = do
       mSum <- lastSummaryOf kind
       case mSum of
         Nothing -> return []
-        Just (_, s) -> do
+        Just (tid, s) -> do
           mContent <- summaryContent s path
           case mContent of
             -- This kind's alternate chain doesn't cover @path@ at all (a
@@ -94,18 +104,30 @@ zoomLevels kinds path = do
             Just _  -> do
               preview <- summaryContent s previewPath
               restLevels <- go more
-              return (ZoomLevel (Just s) preview : restLevels)
+              return (ZoomLevel (Just tid) (Just s) preview : restLevels)
 
 -- | @path@'s current content at one zoom level -- 'Nothing' if that
 --   level doesn't have (or never had) this file at all.
 contentAt :: forall source r. Member (BranchOp source) r => FilePath -> ZoomLevel -> Sem r (Maybe Text)
-contentAt path zl = runStorage @source $ case zlSummary zl of
-  Nothing -> do
-    there <- Ops.exists path
-    if there
-      then Just . TE.decodeUtf8With TE.lenientDecode <$> FS.readFile path
-      else return Nothing
-  Just s -> summaryContent s path
+contentAt path zl = case zlSummary zl of
+  Nothing -> rawContent @source path
+  Just s  -> runStorage @source (summaryContent s path)
+
+-- | @path@'s current raw (unsummarized) content, live off the branch --
+--   'Nothing' if the path doesn't currently exist. The one place this read
+--   happens; 'contentAt's own raw case and every per-domain summarizer
+--   that re-derives its compression from current content each pass (rather
+--   than folding a prior compression forward -- see
+--   'Storyteller.Writer.Agent.ChapterSummarizer.chapterSummaryGenerate's
+--   own Haddock for why that's the correct shape: a summary has to be a
+--   pure function of current content, not of how many times or when it
+--   was triggered) both go through this.
+rawContent :: forall source r. Member (BranchOp source) r => FilePath -> Sem r (Maybe Text)
+rawContent path = runStorage @source $ do
+  there <- Ops.exists path
+  if there
+    then Just . TE.decodeUtf8With TE.lenientDecode <$> FS.readFile path
+    else return Nothing
 
 -- | @path@'s content at every zoom level, finest first, each one made
 --   *complete* on its own -- content plus whatever's been written since

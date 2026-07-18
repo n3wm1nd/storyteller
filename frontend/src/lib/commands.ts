@@ -18,6 +18,13 @@ export interface CommandDef {
   label: string;
   description: string;
   params: CommandParamDef[];
+  // True for a command that fires on its own, with no body text — e.g.
+  // /summarize just triggers a pass, there's nothing to say. Every other
+  // command needs real text to be worth sending at all (InputBar's fire()
+  // only dispatches a command when parsed.text is non-empty; this opts out
+  // of that check for the one command where an empty body is the norm, not
+  // an accidental blank send).
+  noText?: boolean;
 }
 
 export const COMMANDS: CommandDef[] = [
@@ -54,6 +61,18 @@ export const COMMANDS: CommandDef[] = [
   {
     name: "inform", label: "Inform", description: "Append a fact directly to a character's journal, without leaving the composer.",
     params: [{ name: "character", description: "Which character to inform (their branch id, e.g. character/alice)." }],
+  },
+  // See Server.Writer.File.summaryTicksFor and lib/library.ts's
+  // summaryKindsFor — this file's toolbar already exposes the same action
+  // as a button when a summarizable file is open; the command is a
+  // no-context-switch alternative, same relationship /ask has to the
+  // sidebar's own Ask panel. Idempotent: free to fire with nothing new to
+  // summarize, no params (which kind(s) to run is this file's own static
+  // classification, not something worth asking the user to name).
+  {
+    name: "summarize", label: "Summarize",
+    description: "Run a summarizer pass on this file — free to call, only does LLM work once there's actually something new to compress.",
+    params: [], noText: true,
   },
 ];
 

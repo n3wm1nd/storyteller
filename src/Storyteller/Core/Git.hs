@@ -57,11 +57,14 @@ module Storyteller.Core.Git
   , BranchOp(..)
   , runStorage
   , runBranchOpGit
+  , runBranchOpGitFrom
   , runStoryFSGit
   , runBranchAndFS
+  , runBranchAndFSFrom
 
     -- * Generic rebase (for inner actions that interleave other effects)
   , atGeneric
+  , foldAscend
 
     -- * Cross-branch reference cascade (exported for its own unit tests --
     -- see 'Storyteller.GitCascadeSpec')
@@ -593,7 +596,41 @@ runBranchOpGit branch action = do
   b <- getBranch branch >>= \case
     Nothing -> fail $ "branch not found: " <> T.unpack (unBranchName branch)
     Just b' -> pure b'
-  seed0 <- Core.freshScope (Core.ObjectHash (unTickId (branchHead b)))
+  runBranchOpGitFrom @branch
+    (Core.ObjectHash (unTickId (branchHead b)))
+    (\newHead -> setRef branch (Just newHead))
+    action
+
+-- | The general interpreter 'runBranchOpGit' is just one particular
+--   instance of: seed the scope from an explicit object hash rather than
+--   resolving one from a named branch, and publish an advanced head
+--   however @onAdvance@ says to rather than always calling 'setRef'.
+--   'BranchOp branch' itself has no idea whether @branch@'s own position
+--   came from a real ref or not -- it only ever reads\/writes through the
+--   scope this seeds -- so *every* operation built on 'BranchOp'
+--   ('Server.Core.File.fileStateSince', 'editFileAtom', the whole file
+--   command dispatcher, ...) already works unmodified against any seed,
+--   with no separate code path needed for "this branch happens not to be
+--   named."
+--
+--   This is exactly what an alternate chain is (see
+--   "Storyteller.Common.Summary"'s module Haddock: a real commit chain,
+--   just with no ref of its own) -- opening one for editing needs nothing
+--   beyond this: seed at its current 'Storyteller.Common.Summary.summaryAltHead',
+--   and give @onAdvance@ a callback that records the new head as a fresh
+--   'Storyteller.Common.Summary.Summary' tick on the real source branch
+--   instead of moving a ref. See 'Server.Writer.File.Connection' for
+--   'runBranchOpGit's own name-based @onAdvance@, and its summary-tier
+--   sibling for the alt-chain one.
+runBranchOpGitFrom
+  :: forall branch r a
+  .  Members '[Git, StoryStorage, Fail] r
+  => Core.ObjectHash
+  -> (TickId -> Sem r ())
+  -> Sem (BranchOp branch : r) a
+  -> Sem r a
+runBranchOpGitFrom seed onAdvance action = do
+  seed0 <- Core.freshScope seed
   evalState seed0 $ interpret
     (\case
         RunStorage comp -> do
@@ -601,7 +638,7 @@ runBranchOpGit branch action = do
           h <- coreHashOfTick <$> resolveTick (tickOfCoreHash h0)
           (result, scope'@(h', _)) <- Core.runStoreTFrom (h, wt) comp
           put @Core.ScopeState scope'
-          when (h' /= h) $ setRef branch (Just (TickId (Core.unObjectHash h')))
+          when (h' /= h) $ raise (onAdvance (TickId (Core.unObjectHash h')))
           flushRemaps
           return result
     )
@@ -714,6 +751,26 @@ runBranchAndFS
   -> Sem r a
 runBranchAndFS name = runBranchOpGit @branch name . runStoryFSGit @branch name
 
+-- | 'runBranchAndFS's own hash-seeded sibling -- see 'runBranchOpGitFrom'.
+--   @label@ is cosmetic only ('runStoryFSGit's own 'GetFileSystem' answer,
+--   nothing else reads it): a hash-seeded scope has no real branch name to
+--   report, so a caller (e.g. a summary-tier connection) passes whatever
+--   descriptive tag makes sense for logging/display.
+runBranchAndFSFrom
+  :: forall branch r a
+  .  Members '[Git, StoryStorage, Fail] r
+  => BranchName
+  -> Core.ObjectHash
+  -> (TickId -> Sem r ())
+  -> Sem ( FileSystemWrite (BranchTag branch)
+         : FileSystemRead  (BranchTag branch)
+         : FileSystem      (BranchTag branch)
+         : BranchOp branch
+         : r ) a
+  -> Sem r a
+runBranchAndFSFrom label seed onAdvance =
+  runBranchOpGitFrom @branch seed onAdvance . runStoryFSGit @branch label
+
 -- ---------------------------------------------------------------------------
 -- Generic rebase — for callers whose inner action interleaves other
 -- effects (LLM, logging, ...), not just storage
@@ -788,3 +845,75 @@ atGeneric tid inner = do
               [] -> fail $ "atGeneric: tick " <> T.unpack (unTickId tid) <> " not found in branch history"
               (_ : _) -> Core.drop
           goDown target ((current, t) : poppedRev)
+
+-- | Descend from HEAD to @target@ (@Nothing@ = walk all the way to root),
+--   then replay the popped tail back up one tick at a time, oldest
+--   (nearest @target@) first -- same descend/ascend shape 'atGeneric'
+--   already uses ("hold the final remap until the interesting part is
+--   done"), generalized: 'atGeneric' runs one fixed @inner@ exactly once
+--   at @target@ and replays everything else verbatim; this instead calls
+--   @step@ after *every* replayed tick, threading an accumulator @s@ and
+--   free to perform its own effects (an LLM call, further 'runStorage'
+--   writes of its own, e.g. inserting an extra tick) at any point along
+--   the ascent, not just at the very bottom. A @step@-inserted tick
+--   becomes the parent of whatever replays next for free, the same way
+--   'Core.store'\'s always-fresh 'Core.headHash' read already makes
+--   'atGeneric's own replay safe against interleaved writes.
+--
+--   @step@ sees each tick fully decoded and correctly positioned
+--   ('Storage.Tick.readTypesTick' on its just-replayed hash) -- not the
+--   pre-replay, raw 'Core.Tick' this function itself pops\/re-stores, so a
+--   caller gets the same typed shape 'fromTick'\/'contentFor' already
+--   expect elsewhere, never storage internals.
+--
+--   Binary\/Opaque ticks get the same delta-capture-before-drop treatment
+--   'Storage.Core.atWith' already gives them (captured from the
+--   *original* commit, before dropping -- their own tree contribution is
+--   read off the ambient tree at store time, which has nothing to do
+--   with the rebase in progress) -- 'atGeneric's own replay skips this
+--   (fine for its callers today, not safe to repeat in a generic
+--   primitive meant for arbitrary future ticks).
+foldAscend
+  :: forall branch r s
+  .  Member (BranchOp branch) r
+  => Maybe TickId -> s -> (s -> Tick -> Sem r s) -> Sem r s
+foldAscend mTarget seed step = do
+  mTargetHash <- traverse (\tid -> runStorage @branch (Core.resolveId (Core.ObjectHash (unTickId tid)))) mTarget
+  poppedRev <- goDown mTargetHash []
+  ascend poppedRev seed
+  where
+    goDown
+      :: Maybe Core.ObjectHash
+      -> [(Core.ObjectHash, Maybe (Map FilePath (Maybe Core.FSNode)), Core.Tick)]
+      -> Sem r [(Core.ObjectHash, Maybe (Map FilePath (Maybe Core.FSNode)), Core.Tick)]
+    goDown mTargetHash poppedRev = do
+      current  <- runStorage @branch Core.headHash
+      atTarget <- case mTargetHash of
+        Just h  -> return (current == h)
+        Nothing -> runStorage @branch (null . Core.commitParents <$> lift (Core.readCommit current))
+      if atTarget
+        then return poppedRev
+        else do
+          (delta, t) <- runStorage @branch $ do
+            (cd, t0) <- lift (Core.readCommitTick current)
+            case Core.commitParents cd of
+              [] -> fail "foldAscend: reached root before finding target"
+              (par : _) -> do
+                d <- case t0 of
+                  Core.Binary {} -> Just <$> Core.treeDelta current par
+                  Core.Opaque {} -> Just <$> Core.treeDelta current par
+                  _              -> return Nothing
+                t1 <- Core.drop
+                return (d, t1)
+          goDown mTargetHash ((current, delta, t) : poppedRev)
+
+    ascend [] acc = return acc
+    ascend ((oldHash, delta, t) : rest) acc = do
+      typed <- runStorage @branch $ do
+        h <- case delta of
+          Just d  -> Core.storeWithDelta t d
+          Nothing -> Core.store t
+        Core.logRemap oldHash h
+        Tick.readTypesTick h
+      acc' <- step acc typed
+      ascend rest acc'

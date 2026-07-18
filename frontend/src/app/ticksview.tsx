@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useMemo, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare, LogIn, LogOut } from "lucide-react";
+import { Sparkles, StickyNote, Trash2, MoveUp, MoveDown, MessageSquare, LogIn, LogOut, Layers } from "lucide-react";
 import { type WireTick } from "@/lib/serverCacheStore";
 import { tickPreview, tickField, characterDisplayName } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
@@ -112,6 +112,18 @@ const TickRow = memo(function TickRow({
         </div>
       );
     }
+    if (tick.kind === "summary") return (
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
+        <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>{tick.tickId.slice(0, 12)}</span>
+        <Layers style={{ width: 11, height: 11, color: "oklch(0.6 0.15 300)", flexShrink: 0 }} />
+        <span style={{ fontSize: 10, color: "oklch(0.6 0.15 300)", fontFamily: "inherit", flexShrink: 0, textTransform: "uppercase", letterSpacing: 0.3 }}>
+          {tickField(tick, "kind") ?? "summary"}
+        </span>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "inherit" }}>
+          {tickPreview(tick.content ?? tick.message)}
+        </span>
+      </div>
+    );
     if (tick.kind === "prompt") return (
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flex: 1, minWidth: 0, fontFamily: "monospace" }}>
         <span style={{ fontSize: 9, color: hovered ? "var(--text-dim)" : "var(--text-ghost)", flexShrink: 0, userSelect: "all", transition: "color 0.15s" }}>{tick.tickId.slice(0, 12)}</span>

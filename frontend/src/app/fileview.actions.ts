@@ -5,11 +5,11 @@
 // Colocated with fileview.tsx rather than living in a shared store file —
 // see lib/serverCacheStore.ts's header for the write-access convention.
 
-import { fileConn, saveRawFileAsNew } from "@/lib/ws";
+import { fileConn, branchConn, saveRawFileAsNew } from "@/lib/ws";
 import type { FileCommand, ContextItem, PickerRule } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
+import { applyUpdate, applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain, promptGroupForAtom, activeCharacterBranches } from "@/lib/utils";
 import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
@@ -53,7 +53,7 @@ export async function openFile(path: string): Promise<void> {
         return {
           openFiles: {
             ...s.openFiles,
-            [path]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
+            [path]: { ...prev, ticks: applyFileUpdate(prev.ticks, evt), head: evt.head, absent: false },
           },
           preview: null,
           previewCommandId: null,
@@ -147,6 +147,98 @@ export function closeFile(path: string) {
     return { openFiles: next };
   });
   removeConn(`file:${path}`);
+}
+
+function summaryKey(path: string, kind: string): string {
+  return `${path}::${kind}`;
+}
+
+// A summary tier is the exact same /branch/{name}/file/{path} connection
+// as any other file (see Server.Writer.File.Connection's own Haddock) --
+// this differs from openFile only in what it passes for the branch
+// segment ("{activeBranch}@{kind}" instead of "{activeBranch}") and where
+// it stores the result. No separate protocol, no read-only mode: the
+// server resolves that string to the alternate chain's current head and
+// mints a fresh Summary tick on write, same as a hand-run summarize pass.
+export async function openSummaryTier(path: string, kind: string): Promise<void> {
+  const { activeBranch, openSummaries } = getServerCache();
+  if (!activeBranch) return;
+  const key = summaryKey(path, kind);
+  if (openSummaries[key]) return;
+
+  const label = `summary:${key}`;
+  setConnStatus(label, "connecting");
+
+  const sc = fileConn(`${activeBranch}@${kind}`, path);
+
+  sc.onStatus((s) => {
+    if (s !== "connected") setConnStatus(label, "connecting");
+  });
+
+  sc.subscribe((evt) => {
+    bumpActivity(label);
+    if (evt.type === "file.present") {
+      mirrorServerEvent((s) => ({
+        openSummaries: { ...s.openSummaries, [key]: { path, ticks: {}, head: null, absent: false, conn: sc } },
+      }));
+      setConnStatus(label, "connected");
+    } else if (evt.type === "file.absent") {
+      mirrorServerEvent((s) => ({
+        openSummaries: { ...s.openSummaries, [key]: { path, ticks: {}, head: null, absent: true, conn: sc } },
+      }));
+      setConnStatus(label, "connected");
+    } else if (evt.type === "update") {
+      mirrorServerEvent((s) => {
+        const prev = s.openSummaries[key];
+        if (!prev) return {};
+        return {
+          openSummaries: {
+            ...s.openSummaries,
+            [key]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
+          },
+        };
+      });
+    } else if (evt.type === "tick.remap") {
+      // Summary-tier atom ids never enter contextAtoms/contextAnnotations
+      // or a rebase marker (this panel has no selection/rebase concept of
+      // its own — see fileview.tsx's SummaryTierPanel) -- nothing to remap.
+    } else if (evt.type === "error") {
+      setError(evt.message);
+    }
+  });
+
+  try {
+    await sc.connect();
+    mirrorServerEvent((s) => ({
+      openSummaries: { ...s.openSummaries, [key]: { path, ticks: {}, head: null, absent: false, conn: sc } },
+    }));
+  } catch (err) {
+    setConnStatus(label, "error");
+    setError(String(err));
+  }
+}
+
+export function closeSummaryTier(path: string, kind: string) {
+  const key = summaryKey(path, kind);
+  getServerCache().openSummaries[key]?.conn.close();
+  mirrorServerEvent((s) => {
+    const next = { ...s.openSummaries };
+    delete next[key];
+    return { openSummaries: next };
+  });
+  removeConn(`summary:${key}`);
+}
+
+export function editSummaryAtom(path: string, kind: string, tickId: string, content: string) {
+  getServerCache().openSummaries[summaryKey(path, kind)]?.conn.send({ type: "edit.atom", tickId, content });
+}
+
+export function appendSummary(path: string, kind: string, text: string) {
+  getServerCache().openSummaries[summaryKey(path, kind)]?.conn.send({ type: "chat.append", content: text });
+}
+
+export function cycleSummarySwipe(path: string, kind: string, tickId: string) {
+  getServerCache().openSummaries[summaryKey(path, kind)]?.conn.send({ type: "atom.swipe.cycle", tickId });
 }
 
 // rebaseMarker (see lib/utils.tailLeadTicks / wsHelpers.atRebase) is the
@@ -280,6 +372,58 @@ export function leaveScene(path: string, character: string) {
 // in openFile's subscribe callback above.
 export function askCharacter(path: string, character: string, question: string) {
   sendFileCommand(path, { type: "ask.character", character, question });
+}
+
+// One-shot "summarize" pass — a BranchCommand, not a FileCommand, so this
+// opens a short-lived connection to fire it and closes once the result (or
+// an error) lands, same shape as tracker.actions.ts's trackOne. No direct
+// response to thread back: any new "summary" tick arrives through the
+// already-open file connection's own ordinary push (see
+// Server.Writer.File.summaryTicksFor's Haddock for why that's enough) —
+// this connection only exists to carry the command and its live progress.
+//
+// A branch connection pushes its own state ("update") immediately on
+// connect (Server.Writer.Branch.Connection.pushInitial), *before* the
+// command sent right after connecting even reaches the server — closing on
+// the first "update" seen closes on that unrelated initial push, not on
+// anything caused by 'summarize', aborting the command outright (a closed
+// connection genuinely aborts an in-flight command — see
+// Server.Writer.Branch.Connection.commandLoop's Haddock — this isn't a case
+// of tolerating a stray close, it's this function closing its own
+// connection out from under its own command). The fix is exactly what the
+// comment above described wrong: skip that first push, close on the next
+// one — the real result of this command finishing, same as no id
+// correlation exists for it because WS-PROTOCOL.md's "update" push was
+// never meant to be treated as a command's response value in the first
+// place.
+export function summarizeFile(branch: string, kind: string, onDone?: () => void) {
+  const conn = branchConn(branch);
+  let sawInitialUpdate = false;
+  function finish() { onDone?.(); conn.close(); }
+  conn.subscribe((evt) => {
+    if (isChatPreviewEvent(evt)) { handleChatPreview(evt); return; }
+    if (evt.type === "agent.log") { useUI.getState().addAgentLog(evt.level, evt.message); return; }
+    if (evt.type === "update") {
+      if (!sawInitialUpdate) { sawInitialUpdate = true; return; }
+      finish();
+      return;
+    }
+    if (evt.type === "error") { setError(evt.message); finish(); }
+  });
+  conn.connect().then(() => {
+    conn.send({ type: "summarize", kind });
+  }).catch(() => { finish(); });
+}
+
+// The file-scoped sibling of 'summarizeFile': sent on the file's own
+// already-open connection (see Server.Writer.File.Protocol's
+// "summarize.file" — dispatches to Server.Writer.File.summarizePath),
+// never touching any other file even if it also happens to be stale. No
+// temporary connection dance needed the way the branch-wide command
+// requires — this file's own connection already pushes the resulting
+// update the normal way.
+export function summarizeThisFile(path: string) {
+  getServerCache().openFiles[path]?.conn.send({ type: "summarize.file" });
 }
 
 export function appendToFile(path: string, content: string) {

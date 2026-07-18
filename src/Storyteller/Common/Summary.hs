@@ -43,7 +43,6 @@ module Storyteller.Common.Summary
   ) where
 
 import Control.Monad.State.Strict (lift)
-import qualified Data.List as List
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
@@ -180,23 +179,59 @@ availableSummaries mKind = reverse <$> go Nothing []
 -- | The reverse of 'summaryAltHead': given a specific commit in *some*
 --   alternate chain (typically found by walking that chain's own history
 --   to whichever commit last introduced or replaced one particular file --
---   an ordinary content comparison, nothing summary-specific, since a
---   summary tree is never atom-tracked and so carries no per-file history
---   of its own the way source content does), this answers "which point on
---   *this* chain was that alternate-chain state built from" -- the
---   'Summary' tick whose 'summaryAltHead' names it, if any.
+--   an ordinary content comparison, nothing summary-specific), this
+--   answers "which point on *this* chain was that alternate-chain state
+--   built from" -- the earliest 'Summary' tick whose own 'summaryAltHead'
+--   already has @altCommit@ as an ancestor (or *is* @altCommit@ itself).
 --
---   This is the invariant a summarizer's writer side
---   ("Storyteller.Writer.Agent.Summarizer") has to uphold for this to ever
---   give a real answer: every file changed in one summarization pass must
---   land in exactly one alternate-chain commit, since only *that* commit
---   is ever recorded here -- a batch spread across several commits would
---   leave every commit but the last one with no 'Summary' tick pointing at
---   it at all.
+--   Reachability, not exact equality: a summarization pass covering
+--   several files is under no obligation to land every one of them in a
+--   single alternate-chain commit (a per-domain summarizer using
+--   'Storage.Ops.addAtom'\/'Storage.Ops.saveFileAsNew' per file, the way
+--   the alternate chain is meant to look like an ordinary branch's own
+--   file history, produces one commit *per file*, all chained together
+--   under the one @altHead@ the pass's own 'Summary' tick actually
+--   records). Matching only that final commit exactly would leave every
+--   earlier file in the same batch with no 'Summary' tick "reachable"
+--   from its own last-touched commit at all. Reachability finds the
+--   right answer either way: the *earliest* 'Summary' tick whose altHead
+--   already contains @altCommit@ is exactly the pass @altCommit@'s own
+--   file was actually written in, whether or not that pass's own altHead
+--   happens to equal @altCommit@ exactly.
+--
+--   'availableSummaries' is newest-first; this searches oldest-first
+--   (chronological) so the *first* match found really is the earliest
+--   pass that already covered @altCommit@, not some later pass that
+--   merely also carries it forward.
 summaryTickFor :: StoreM m => ObjectHash -> StoreT m (Maybe (TickId, Summary))
-summaryTickFor altCommit = List.find matches <$> availableSummaries Nothing
+summaryTickFor altCommit = do
+  oldestFirst <- reverse <$> availableSummaries Nothing
+  findM reachable oldestFirst
   where
-    matches (_, s) = summaryAltHead s == TickId (unObjectHash altCommit)
+    reachable (_, s) = isAncestorOrSelf altCommit (ObjectHash (unTickId (summaryAltHead s)))
+
+    findM _ []       = return Nothing
+    findM p (x : xs) = do
+      ok <- p x
+      if ok then return (Just x) else findM p xs
+
+-- | Is @candidate@ either @target@ itself or somewhere in @target@'s own
+--   history? The alternate chain is always a strictly linear commit
+--   chain -- every write to it goes through 'Storage.Ops.addAtom'\/
+--   'Storage.Ops.deleteFile' (directly, or via 'Storage.Ops.saveFileAsNew'),
+--   none of which ever attach an extra ref\/parent (see their own
+--   Haddocks) -- so a first-parent-only backward walk from @target@ is
+--   exact, not an approximation that happens to work for the common case.
+isAncestorOrSelf :: StoreM m => ObjectHash -> ObjectHash -> StoreT m Bool
+isAncestorOrSelf candidate = lift . go
+  where
+    go h
+      | h == candidate = return True
+      | otherwise = do
+          cd <- readCommit h
+          case commitParents cd of
+            []      -> return False
+            (p : _) -> go p
 
 -- | The forward half 'summaryTickFor' needs a hash to look up in the
 --   first place: walking @s@'s own alternate chain backward from its

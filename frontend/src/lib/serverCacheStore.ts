@@ -114,6 +114,17 @@ export interface ServerCacheState {
   // continuously even while collapsed.
   openJournals: Record<string, FileConn>;
 
+  // Summary-tier file connections, keyed by "path::kind" — a summary tier
+  // is not a special read-only projection, it's the exact same
+  // /branch/{name}/file/{path} connection as any other file, just opened
+  // against "{branch}@{kind}" instead of "{branch}" (see
+  // Server.Writer.File.Connection's own Haddock: that string resolves to
+  // the alternate chain's current head instead of a named branch's, and
+  // is otherwise indistinguishable — same ticks, same edit commands, same
+  // events). Opened lazily by fileview.tsx when a summary tab is
+  // selected, closed when it's deselected or the file changes.
+  openSummaries: Record<string, FileConn>;
+
   // Streamed LLM draft for the in-flight chat.prompt/chargen command, if
   // any — a best-effort preview only. Cleared on chat.preview.end, and
   // defensively on any update/error, since it may not match (or may not be
@@ -148,6 +159,7 @@ const _store = create<ServerCacheState>(() => ({
   openFiles: {},
   openCharacters: {},
   openJournals: {},
+  openSummaries: {},
   preview: null,
   previewCommandId: null,
   _session: null,

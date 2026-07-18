@@ -37,6 +37,7 @@ module Storyteller.Writer.Library
   , buildLibraryTree
   , narrativeUnits
   , naturalKey
+  , journalPath
   ) where
 
 import Data.Char (isAlpha, isDigit)
@@ -74,6 +75,16 @@ data LibraryNode = LibraryNode
   , lnHeading  :: Maybe T.Text
   , lnChildren :: [LibraryNode]
   } deriving (Show, Eq)
+
+-- | The one reserved path 'Storyteller.Writer.Agent.JournalSummarizer' and
+--   'Server.Writer.File' both need to agree on -- a character branch's
+--   fixed, append-only journal file (see WRITER.md's convention, and
+--   'Storyteller.Writer.Lore.isNotScratchOrCharacterFile', which excludes
+--   it from the codex by the same literal name). Lifted here, rather than
+--   left private to whichever module happened to need it first, so a
+--   second module never has to restate the literal.
+journalPath :: FilePath
+journalPath = "journal.md"
 
 -- | The fixed marker vocabulary — see the module Haddock and WRITER.md.
 --   Singular/plural pairs are listed explicitly rather than stemmed, so

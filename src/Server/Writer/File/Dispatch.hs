@@ -31,7 +31,7 @@ import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
 import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
-import Server.Writer.File (chatWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup)
+import Server.Writer.File (chatWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup, summarizePath)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -115,6 +115,9 @@ runCommand path cmd = case cmd of
 
   ChatOutline _mid ->
     [] <$ chatSplitOutline path
+
+  SummarizeFile _mid ->
+    [] <$ summarizePath path
 
   ChatNote _mid text targets ->
     [] <$ chatNote text (map TickId targets)

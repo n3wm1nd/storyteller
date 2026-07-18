@@ -94,6 +94,8 @@ module Storage.Core
   , replaceTick
   , resolveId
   , logRemap
+  , treeDelta
+  , storeWithDelta
   , composeMapping
   , follow
   , followC

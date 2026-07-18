@@ -10,6 +10,9 @@ module Server.Writer.FileSpec (spec) where
 
 import Test.Hspec
 
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Map.Strict as Map
 import Polysemy (Sem, run)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile)
 
@@ -18,12 +21,16 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Writer.Agent (Prompt(..))
+import Storyteller.Writer.Agent.Summarizer (runSummarizer)
+import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, defaultJournalGroupSize)
+import Storyteller.Writer.Library (journalPath)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 
 import Server.Core.File (deleteFileAtom)
-import Server.Writer.File (editChatPrompt)
+import Server.Core.Protocol (Update(..), WireTick(..))
+import Server.Writer.File (editChatPrompt, fileStateWithSummaries)
 import Server.TestStack
 
 import Prelude hiding (readFile)
@@ -47,6 +54,84 @@ withFile_ runner name action = run $ runner $ do
 
 spec :: TestRunner -> Spec
 spec runner = do
+
+  -- Regression coverage for the fact a 'Storyteller.Common.Summary.Summary'
+  -- tick carries no "file" field (see its own module Haddock), so it never
+  -- turns up in 'Server.Core.File.fileState' the way a real atom does --
+  -- 'fileStateWithSummaries' is what makes a summary tier's *existence*
+  -- visible on a file connection at all, as a synthetic 'WireTick' folded
+  -- in alongside the real ones (riding the ordinary push, not a
+  -- request/response command -- see 'Server.Writer.File.Protocol's module
+  -- Haddock for why). It carries no content any more -- a summary tier is
+  -- its own real file connection now (@branch\@kind@, see
+  -- 'Server.Writer.File.Connection'), this is purely an existence flag
+  -- for the client's tab UI.
+  describe "fileStateWithSummaries" $ do
+    it "includes a synthetic summary tick once this path's kind has been summarized" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one.")
+            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed."))
+            fileStateWithSummaries "chapters/ch1.md" Nothing
+      case result of
+        Left err -> expectationFailure err
+        Right (upd, sig) -> do
+          let summaryTicks = filter ((== "summary") . wtKind) (updateTicks upd)
+          map (lookup "kind" . wtFields) summaryTicks `shouldBe` [Just "prose/chapter"]
+          sig `shouldNotBe` ""
+
+    it "leaves the real atom head untouched by a summary -- presence still tracks only real content" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one.")
+            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed."))
+            fileStateWithSummaries "chapters/ch1.md" Nothing
+      case result of
+        Left err -> expectationFailure err
+        Right (upd, _sig) -> updateHead upd `shouldNotBe` ""
+
+    it "carries no summary ticks (and an empty signature) for a path with no matching summarizer kind" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- runStorage @Main (Ops.addAtom "notes.md" "hello")
+            fileStateWithSummaries "notes.md" Nothing
+      case result of
+        Left err -> expectationFailure err
+        Right (upd, sig) -> do
+          filter ((== "summary") . wtKind) (updateTicks upd) `shouldBe` []
+          sig `shouldBe` ""
+
+    -- A journal Summary tick (any tier) is a real tick on this same
+    -- branch -- 'Storyteller.Common.Summary's own module Haddock is
+    -- explicit that it has to be, since an alternate chain has no ref of
+    -- its own to attach anything to directly. That real tick belongs on
+    -- the branch; what it must *not* do is leak into journal.md's own
+    -- file-relevant chain the ordinary (non-summary) ticks come from --
+    -- 'Storage.Tick.fileTicksOf'/'relatedTicksOf' are supposed to filter
+    -- every non-file tick out and relink survivors' parents around the
+    -- gap (see their own Haddocks). This pins that guarantee once a real
+    -- multi-tier journal summarization has actually run, rather than
+    -- just trusting the filter reads correctly.
+    it "keeps journal Summary ticks (every tier) out of journal.md's own real chain, relinking around them" $ do
+      let n = defaultJournalGroupSize
+          stubCompress :: [Text] -> Sem r Text
+          stubCompress items = pure ("C[" <> T.intercalate "," items <> "]")
+          result = withFile_ runner (BranchName "b") $ do
+            mapM_ (\i -> runStorage @Main (Ops.addAtom journalPath (T.pack (show i)))) [1 .. n * n :: Int]
+            _ <- journalSummarize @Main stubCompress 0
+            fileStateWithSummaries journalPath Nothing
+      case result of
+        Left err -> expectationFailure err
+        Right (upd, _sig) -> do
+          let (summaryTicks, realTicks) = span' ((== "summary") . wtKind) (updateTicks upd)
+              span' p xs = (filter p xs, filter (not . p) xs)
+          -- Both tiers actually formed (n*n raw entries is exactly enough
+          -- for one full tier-1 group) -- otherwise this test would pass
+          -- vacuously by never having a summary tick to leak in the
+          -- first place.
+          map (lookup "kind" . wtFields) summaryTicks `shouldMatchList` [Just "journal/L0", Just "journal/L1"]
+          -- Every real (non-summary) tick's own id is one that could only
+          -- have come from an actual journal.md atom -- never a Summary
+          -- tick's id riding along under the wrong kind.
+          all ((== "atom") . wtKind) realTicks `shouldBe` True
+          length realTicks `shouldBe` n * n
 
   describe "editChatPrompt" $ do
 

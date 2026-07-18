@@ -11,6 +11,32 @@ export function applyUpdate(ticks: Record<string, WireTick>, upd: Update): Recor
   return next;
 }
 
+// 'applyUpdate's own sibling for a file (or journal) connection
+// specifically — the one place a "summary"-kind tick can ride along
+// (Server.Writer.File.summaryTicksFor). Those carry no parent (see
+// fileview.tsx's own comment on why), so nothing prunes a deleted one via
+// the ordinary chain-walk-from-head every real tick's visibility already
+// derives from — plain 'applyUpdate' would leave a deleted summary tick
+// (or one whose kind's last tick got rebased away) sitting in the local
+// map forever, a ghost tab that never goes away no matter what the
+// server's own current state actually is.
+//
+// The fix relies on one guarantee 'summaryTicksFor' already documents:
+// every push that includes summary ticks at all includes the *complete*
+// current set, never a delta. So every "summary"-kind entry gets dropped
+// here unconditionally before the update's own ticks are re-applied —
+// whatever's still current reappears immediately from 'upd.ticks' itself;
+// whatever doesn't is a ghost, and this is the one place that can tell
+// the difference.
+export function applyFileUpdate(ticks: Record<string, WireTick>, upd: Update): Record<string, WireTick> {
+  const next: Record<string, WireTick> = {};
+  for (const [id, t] of Object.entries(ticks)) {
+    if (t.kind !== "summary") next[id] = t;
+  }
+  for (const t of upd.ticks) next[t.tickId] = t;
+  return next;
+}
+
 export function isChatPreviewEvent(evt: { type: string }): evt is ChatPreviewEvent {
   return evt.type === "chat.preview.start" || evt.type === "chat.preview"
       || evt.type === "chat.preview.thinking" || evt.type === "chat.preview.end";

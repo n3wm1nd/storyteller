@@ -23,6 +23,8 @@ import qualified Storyteller.TrackerSpec
 import qualified Storyteller.SummarySpec
 import qualified Storyteller.SummaryAccessSpec
 import qualified Storyteller.ChapterSummarizerSpec
+import qualified Storyteller.LoreSummarizerSpec
+import qualified Storyteller.JournalSummarizerSpec
 import qualified Storyteller.TasksSpec
 import qualified Storyteller.CharGenSpec
 import qualified Storyteller.CharContextSpec
@@ -45,6 +47,7 @@ import qualified Storyteller.Common.SwipeSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.Writer.FileSpec
+import qualified Server.Writer.File.ConnectionSpec
 import qualified Server.FileSpec
 import qualified Server.CharacterSpec
 import qualified Server.LibrarySpec
@@ -77,6 +80,8 @@ main = hspec $ do
   describe "Storyteller.Summary"        Storyteller.SummarySpec.spec
   describe "Storyteller.Writer.Agent.SummaryAccess" Storyteller.SummaryAccessSpec.spec
   describe "Storyteller.Writer.Agent.ChapterSummarizer" Storyteller.ChapterSummarizerSpec.spec
+  describe "Storyteller.Writer.Agent.LoreSummarizer" Storyteller.LoreSummarizerSpec.spec
+  describe "Storyteller.Writer.Agent.JournalSummarizer" Storyteller.JournalSummarizerSpec.spec
   describe "Storyteller.Writer.Agent.Tasks" Storyteller.TasksSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
   describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
@@ -108,6 +113,15 @@ main = hspec $ do
   describe "Server.Writer.Branch (withStorage)" (Server.Writer.BranchSpec.spec testStackTransactional)
   describe "Server.Writer.File (eager)"         (Server.Writer.FileSpec.spec testStack)
   describe "Server.Writer.File (withStorage)"   (Server.Writer.FileSpec.spec testStackTransactional)
+  -- Not also run under 'testStackTransactional': every 'openCmd' call in
+  -- this spec already wraps itself in one 'withStorage', matching exactly
+  -- how a real client command dispatches (see 'commandLoop's own
+  -- 'handle') -- 'openTarget'\/'atGeneric's remap propagation genuinely
+  -- needs that boundary. 'testStackTransactional' instead wraps the
+  -- *whole test* in one big transaction; nesting the spec's own
+  -- per-command 'withStorage' inside that outer one is a real double-wrap
+  -- this module doesn't need checked, since production never does it.
+  describe "Server.Writer.File.Connection" (Server.Writer.File.ConnectionSpec.spec testStack)
   describe "Server.Core.File (eager)"           (Server.FileSpec.spec testStack)
   describe "Server.Core.File (withStorage)"     (Server.FileSpec.spec testStackTransactional)
   describe "Server.Writer.Character"            Server.CharacterSpec.spec

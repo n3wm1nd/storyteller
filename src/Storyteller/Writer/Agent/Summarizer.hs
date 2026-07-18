@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -25,25 +26,32 @@
 --   other tier uses -- only the @kind@ differs.
 module Storyteller.Writer.Agent.Summarizer
   ( runSummarizer
+  , runSummarizerForPath
+  , extendAltChain
+  , withTrailingNewline
   ) where
 
 import Prelude hiding (writeFile)
 
+import Control.Monad (void)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text.Encoding as TE
+import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import Storage.Query (lifetimeAtoms)
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Summary (Summary(..), bootstrapAltHead, lastSummaryOf, ticksSinceLastSummary)
-import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, atGeneric, runStorage)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (Tick(..), TickId(..))
+import Storyteller.Writer.Agent.SummaryAccess (rawContent, unsummarizedTailSince)
 
 -- | Extend an alternate chain by one commit: seed a fresh, unnamed
 --   'Core.StoreT' scope at @mPrev@ (the previous 'summaryAltHead' of this
@@ -64,6 +72,19 @@ extendAltChain mPrev action = do
   (result, (newHead, _)) <- Core.runStoreT seed action
   return (result, TickId (Core.unObjectHash newHead))
 
+-- | Every per-domain summarizer's own LLM call should route its raw
+--   output through this before returning: a summary is never the last
+--   thing written to its path -- 'Storyteller.Writer.Agent.SummaryAccess.
+--   completeContents' always appends whatever's unsummarized since (the
+--   raw tail), and 'Storyteller.Writer.Agent.JournalSummarizer' appends
+--   the *next* chunk directly onto this one's own cumulative content --
+--   so a model response with no trailing newline runs straight into
+--   whatever comes after it with no separator at all.
+withTrailingNewline :: Text -> Text
+withTrailingNewline t
+  | "\n" `T.isSuffixOf` t = t
+  | otherwise             = t <> "\n"
+
 -- | Run one summarization pass for @kind@: collect every tick on @source@
 --   since @kind@'s last summary there (or since root, if none yet),
 --   hand them to @generate@, extend the alternate chain with whatever
@@ -82,23 +103,18 @@ extendAltChain mPrev action = do
 --   history for as long as *some* 'Summary' tick still names it or a
 --   descendant of it.
 --
---   The alternate chain's own append-only invariant does not apply here
---   -- a summary tree is never atom-tracked, since nothing about it needs
---   per-atom history the way source prose does (see 'Storage.Ops.saveFile's
---   own reconciliation, which this deliberately does not use). Instead, a
---   different invariant has to hold: *every* file this writes lands in
---   exactly *one* new alternate-chain commit per call, all together --
---   never one commit per file -- so that commit is unambiguously "the one
---   the new 'Summary' tick points at." Answering "what source-chain state
---   was this particular file in the summary tree built from" is then
---   always the same two-step walk: find which alternate-chain commit last
---   introduced or replaced that file (an ordinary content comparison
---   across the chain's own history, nothing summary-specific), then find
---   the 'Summary' tick on @source@ whose 'summaryAltHead' names that
---   commit (see 'Storyteller.Common.Summary.summaryTickFor'). That second
---   step would silently give the wrong answer -- or no answer at all -- if
---   a batch ever spread across several commits, since only the *last* one
---   would ever be recorded.
+--   Each touched file lands in its own real 'Storage.Ops.addAtom' (or, for
+--   a file new to this alternate chain, 'Storage.Ops.saveFileAsNew')
+--   commit -- the alternate chain reads as an ordinary branch's own file
+--   history would, one commit per write, not one undifferentiated blob
+--   replace per pass. A pass touching several files therefore produces
+--   several alternate-chain commits, all chained together under the one
+--   final @altHead@ this call's own 'Summary' tick records -- answering
+--   "what source-chain state was this particular file in the summary tree
+--   built from" is then 'Storyteller.Common.Summary.summaryTickFor', which
+--   finds the *earliest* 'Summary' tick whose own 'summaryAltHead' already
+--   has that file's exact commit as an ancestor (not necessarily *this*
+--   pass's own tick, if a later pass carried the file forward untouched).
 runSummarizer
   :: forall source r
   .  Members '[BranchOp source, Git, StoryStorage, Fail] r
@@ -115,8 +131,89 @@ runSummarizer kind generate = do
         then return Nothing
         else do
           mPrev <- runStorage @source (fmap (summaryAltHead . snd) <$> lastSummaryOf kind)
-          (_, newAltHead) <- extendAltChain mPrev $ do
-            mapM_ (\(path, content) -> Core.writeFile path (TE.encodeUtf8 content)) (Map.toList files)
-            Ops.commitWorktree
+          (_, newAltHead) <- extendAltChain mPrev $
+            mapM_ (\(path, content) -> replaceWithAtom path content) (Map.toList files)
           newHash <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
           return (Just (TickId (Core.unObjectHash newHash)))
+
+-- | Summarize exactly @path@ -- never any other file of @kind@, even one
+--   that's also stale. There is deliberately no guarantee that calling
+--   this leaves *every* stale file of @kind@ freshly summarized, only
+--   that @path@ itself, if it needs one, gets one: a user regenerating
+--   one chapter by hand should never be forced to also regenerate every
+--   other chapter that happens to share its kind, and a batch pass run
+--   later must still find those other files exactly as stale as they
+--   really are.
+--
+--   Three cases, matching 'runSummarizer's own no-op contract:
+--
+--   * @path@ has never been summarized for @kind@ at all -- generate its
+--     first one;
+--   * @path@'s current alt-chain content still has some unsummarized
+--     tail ('Storyteller.Writer.Agent.SummaryAccess.unsummarizedTailSince')
+--     -- regenerate from @path@'s current full content (same "always a
+--     pure function of current content, never folds a prior compression
+--     forward" rule 'runSummarizer' upholds);
+--   * neither -- @path@ is already fully covered, so this is a genuine
+--     no-op, no new tick, exactly like calling 'runSummarizer' with
+--     nothing new to summarize.
+--
+--   The one thing this needs beyond 'runSummarizer's own shape: the new
+--   'Summary' tick is inserted (via 'Storyteller.Core.Git.atGeneric') at
+--   @path@'s own most recent atom, not wherever @source@'s head happens
+--   to be. Appending at current head would be wrong the same way a
+--   hand-edit through an already-open summary tier would be (see
+--   'Server.Writer.File.Connection.openTarget's own Haddock for that
+--   exact argument): this call never looked at whatever else landed on
+--   @source@ after @path@'s own last edit, so it must never advance
+--   @kind@'s shared "last summary" boundary past content it never
+--   actually processed -- anything interleaved after that point (another
+--   file's own edits, unrelated notes, even a *later* unrelated 'Summary'
+--   tick of the same @kind@) is replayed back on top exactly where it
+--   was, still exactly as stale to any later reader as it always was.
+runSummarizerForPath
+  :: forall source r
+  .  Members '[BranchOp source, Git, StoryStorage, Fail] r
+  => Text                      -- ^ summary kind, e.g. @"prose/chapter"@
+  -> FilePath
+  -> (Text -> Sem r Text)      -- ^ generation hook: this path's current full content -> its summary
+  -> Sem r (Maybe TickId)
+runSummarizerForPath kind path generate = do
+  mLast <- runStorage @source (lastSummaryOf kind)
+  upToDate <- case mLast of
+    Nothing     -> return False
+    Just (_, s) -> T.null <$> unsummarizedTailSince @source s path
+  if upToDate
+    then return Nothing
+    else do
+      lifetime <- runStorage @source (lifetimeAtoms path)
+      case lifetime of
+        [] -> return Nothing  -- path isn't atom-tracked at all -- nothing to summarize
+        _  -> do
+          let (lastAtomHash, _) = last lifetime
+          atGeneric @source (TickId (Core.unObjectHash lastAtomHash)) $ do
+            content    <- fromMaybe "" <$> rawContent @source path
+            compressed <- generate content
+            mPrev      <- runStorage @source (fmap (summaryAltHead . snd) <$> lastSummaryOf kind)
+            (_, newAltHead) <- extendAltChain mPrev (replaceWithAtom path compressed)
+            newHash    <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
+            return (Just (TickId (Core.unObjectHash newHash)))
+
+-- | Commit @content@ as @path@'s current state in whichever alternate
+--   chain @extendAltChain@ has seeded, as a real 'Storage.Ops.addAtom'
+--   write -- or, if @path@ hasn't been written there before, seed it
+--   fresh the same way ('Storage.Ops.saveFileAsNew' would fail otherwise,
+--   since 'Storage.Ops.deleteFile' assumes something to delete). Every
+--   per-domain summarizer always recomputes a file's *whole* current
+--   compression from scratch each pass (never folds a prior one forward
+--   -- see 'Storyteller.Writer.Agent.ChapterSummarizer.chapterSummaryGenerate's
+--   own Haddock for why), so this deliberately replaces the file's prior
+--   alternate-chain lifetime outright rather than appending onto it the
+--   way 'Storyteller.Writer.Agent.JournalSummarizer' does for its own,
+--   genuinely incremental, per-group writes.
+replaceWithAtom :: Core.StoreM m => FilePath -> Text -> Core.StoreT m ()
+replaceWithAtom path content = do
+  there <- Ops.exists path
+  if there
+    then Ops.saveFileAsNew path path content
+    else void (Ops.addAtom path content)

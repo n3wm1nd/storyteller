@@ -10,7 +10,8 @@ import {
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, roleplayWrite, chatFix, chatNote, chatRegen, chatOutline,
-  chatConverse, chatConverseRegen, cycleSwipe, correctAtom,
+  chatConverse, chatConverseRegen, cycleSwipe, correctAtom, summarizeThisFile,
+  openSummaryTier, closeSummaryTier, editSummaryAtom, appendSummary, cycleSummarySwipe,
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal,
@@ -21,7 +22,8 @@ import { syncTasks, suggestTasks } from "./tasks-panel.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, TextEditPanel, type PresenceBar } from "./fileview";
+import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, TextEditPanel, SummaryTierPanel, type PresenceBar } from "./fileview";
+import { summaryKindsFor } from "@/lib/library";
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
@@ -29,6 +31,25 @@ import { CodexTab } from "./codex";
 import { AgentsTab } from "./agentstab";
 import { isOutlineFile, isChatFile } from "@/lib/agents";
 import { UndoTimeline } from "./undo-timeline";
+
+// Display label for a summarizer kind — see lib/library.ts's
+// summaryKindsFor for which kinds a given file can offer. journal.md's own
+// kinds are "journal/L0", "journal/L1", ... (see
+// Storyteller.Writer.Agent.JournalSummarizer.journalKindFor) — tier 0 reads
+// as "Chunks", every tier above it as "Level N" (rarely reached in
+// practice; the tree only grows a level once the one below it has produced
+// a full group's worth of its own output).
+function summaryKindLabel(kind: string): string {
+  switch (kind) {
+    case "prose/chapter": return "Chapter summary";
+    case "lore/article":  return "Article summary";
+    case "journal/L0":    return "Chunks";
+    default: {
+      const m = /^journal\/L(\d+)$/.exec(kind);
+      return m ? `Level ${m[1]}` : kind;
+    }
+  }
+}
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -174,6 +195,7 @@ export default function Home() {
   const openFiles         = useServerCache((s) => s.openFiles);
   const openCharacters    = useServerCache((s) => s.openCharacters);
   const openJournals      = useServerCache((s) => s.openJournals);
+  const openSummaries     = useServerCache((s) => s.openSummaries);
   const preview           = useServerCache((s) => s.preview);
 
   const conns               = useUI((s) => s.conns);
@@ -212,6 +234,10 @@ export default function Home() {
   const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"blocks" | "text" | "source">("blocks");
+  // null = raw (whatever viewMode shows); otherwise the summarizer kind
+  // currently displayed instead, via SummaryTierPanel — its own connection
+  // (openSummaries) is opened/closed by the effect below as this changes.
+  const [summaryKind, setSummaryKind] = useState<string | null>(null);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
@@ -263,8 +289,19 @@ export default function Home() {
 
   // The Text/Source view mode is per-file, ephemeral UI state — never carry
   // it over to whatever gets selected next (a stale unsaved buffer for a
-  // different path would be actively misleading).
-  useEffect(() => { setViewMode("blocks"); }, [selectedFile]);
+  // different path would be actively misleading). Same for which summary
+  // tier (if any) is being shown.
+  useEffect(() => { setViewMode("blocks"); setSummaryKind(null); }, [selectedFile]);
+
+  // A summary tier's own connection — opened only while its tab is
+  // actually selected, closed the moment it isn't (a different tab, a
+  // different file, or navigating away entirely) rather than kept alive
+  // speculatively. See fileview.actions.ts's openSummaryTier.
+  useEffect(() => {
+    if (!selectedFile || !summaryKind) return;
+    openSummaryTier(selectedFile, summaryKind);
+    return () => closeSummaryTier(selectedFile, summaryKind);
+  }, [selectedFile, summaryKind]);
 
   const handleEditAtom = useCallback((tickId: string, content: string) => {
     if (selectedFile) editAtom(selectedFile, tickId, content);
@@ -284,6 +321,48 @@ export default function Home() {
   );
   const atomCount       = useMemo(() => fileTicks.filter((t) => t.kind === "atom").length, [fileTicks]);
   const annotationCount = useMemo(() => fileTicks.filter((t) => t.kind !== "atom").length, [fileTicks]);
+  // Synthetic "summary" ticks (see Server.Writer.File.summaryTicksFor)
+  // never sit on the chain 'tickChain' walks from head — they carry no
+  // parent — so they're read straight off the raw per-connection map
+  // instead of out of fileTicks.
+  const summaryTicks = useMemo(
+    () => Object.values(fileChainTicks).filter((t) => t.kind === "summary"),
+    [fileChainTicks],
+  );
+  // Every tier that already has a tick, plus exactly one more -- the next
+  // kind in line that doesn't yet ("stop at the first gap", the same rule
+  // Storyteller.Writer.Agent.SummaryAccess.zoomLevels itself uses) -- so a
+  // never-summarized file still offers one tab to manually create its
+  // first tier, without listing all twelve of journal.md's generous
+  // L0..L11 candidates up front.
+  const availableSummaryKinds = useMemo(() => {
+    if (!selectedFile) return [];
+    const allKinds = summaryKindsFor(selectedFile);
+    const existing = allKinds.filter((k) => summaryTicks.some((t) => t.fields?.kind === k));
+    const nextNew = allKinds.find((k) => !existing.includes(k));
+    return nextNew ? [...existing, nextNew] : existing;
+  }, [selectedFile, summaryTicks]);
+  // The currently-selected tier's own connection (see the effect above
+  // that opens/closes it) — a plain second FileConn, not a special case;
+  // 'summaryTicksChain' walks it exactly the way 'fileTicks' walks the
+  // real file's own.
+  const summaryConn = selectedFile && summaryKind ? openSummaries[`${selectedFile}::${summaryKind}`] : undefined;
+  const summaryTicksChain = useMemo(
+    () => tickChain(summaryConn?.ticks ?? {}, summaryConn?.head ?? null),
+    [summaryConn],
+  );
+  // Shared by the toolbar's "Summarize" button and the "/summarize" input
+  // command (see lib/commands.ts). Scoped to exactly this file (see
+  // Server.Writer.File.summarizePath's own Haddock: never regenerates
+  // some other stale file just because it shares a kind) — journal.md's
+  // own case still drives its whole recursive tier tree in one call
+  // (Storyteller.Writer.Agent.JournalSummarizer.journalSummarize), it's
+  // just dispatched per-file now like everything else.
+  const summarizeCurrentFile = useCallback(() => {
+    if (!selectedFile || !activeBranch) return;
+    if (summaryKindsFor(selectedFile).length === 0) return;
+    summarizeThisFile(selectedFile);
+  }, [selectedFile, activeBranch]);
   // Presence is scoped to the open file (a scene), not the whole branch —
   // see WRITER.md — so this folds the file's own chain, not the branch-wide
   // one. "Show all" (persistent, toolbar toggle) wins over hover —
@@ -578,6 +657,29 @@ export default function Home() {
                     Generate beat sheets
                   </button>
                 )}
+                {selectedFile && activeBranch && summaryKindsFor(selectedFile).length > 0 && <>
+                  {availableSummaryKinds.map((kind, i) => (
+                    <button
+                      key={kind}
+                      onClick={() => setSummaryKind(summaryKind === kind ? null : kind)}
+                      title={
+                        summaryKind === kind
+                          ? "Back to raw — the live, editable content"
+                          : `${summaryKindLabel(kind)} — editable, from the last summarize pass (or manually written)`
+                      }
+                      style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: i === 0 ? 8 : 4, background: summaryKind === kind ? "var(--amber-tint)" : "transparent", border: "1px solid " + (summaryKind === kind ? "var(--amber-border)" : "var(--border-subtle)"), color: summaryKind === kind ? "var(--amber)" : "var(--text-dim)" }}
+                    >
+                      {summaryKindLabel(kind)}
+                    </button>
+                  ))}
+                  <button
+                    onClick={summarizeCurrentFile}
+                    title="Run a summarize pass — free to call, only does LLM work once there's actually something new to compress (also available as /summarize)"
+                    style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 4, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
+                  >
+                    Summarize
+                  </button>
+                </>}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 9, color: "var(--text-ghost)", marginRight: 8 }}>
                   {atomCount} atom{atomCount !== 1 ? "s" : ""}
@@ -633,6 +735,20 @@ export default function Home() {
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 File does not exist yet — append to create it
               </div>
+            ) : summaryKind !== null ? (
+              summaryConn ? (
+                <SummaryTierPanel
+                  branch={activeBranch} kind={summaryKind}
+                  ticks={summaryTicksChain} absent={summaryConn.absent}
+                  onEdit={(tickId, content) => editSummaryAtom(selectedFile, summaryKind, tickId, content)}
+                  onAppend={(text) => appendSummary(selectedFile, summaryKind, text)}
+                  onCycleSwipe={(tickId) => cycleSummarySwipe(selectedFile, summaryKind, tickId)}
+                />
+              ) : (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+                  Loading…
+                </div>
+              )
             ) : viewMode === "source" ? (
               <RawEditPanel branch={activeBranch} path={selectedFile} />
             ) : viewMode === "text" ? (
@@ -680,6 +796,7 @@ export default function Home() {
                 onRoleplay={(text) => selectedFile && roleplayWrite(selectedFile, text)}
                 onAsk={(character, question) => selectedFile && askCharacter(selectedFile, character, question)}
                 onInform={(character, fact) => appendJournal(character, fact, journalMarkers[character] ?? null)}
+                onSummarize={summarizeCurrentFile}
               />
             </>}
           </>}

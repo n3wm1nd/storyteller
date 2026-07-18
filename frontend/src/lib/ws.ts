@@ -237,6 +237,16 @@ export type BranchCommand =
   | { type: "sync.tasks";    id?: string; onlyFile?: string; to?: string }
   | { type: "suggest.tasks"; id?: string; loreSource?: string; to?: string }
   | { type: "chargen";     id?: string; path: string; scenario: string; seed?: number }
+  // Run one summarizer pass for `kind` (see Server.Writer.Branch.summarize)
+  // — "prose/chapter", "lore/article", or "journal" (a convenience that
+  // cascades both journal tiers server-side; "journal/chunk"/"journal/meta"
+  // also work individually but nothing here needs to name them). Free to
+  // call with nothing new to summarize — idempotent, no LLM call happens
+  // unless a real trigger point (a touched file, a full chunk) is reached.
+  // No direct response: the result (if any) is a new "summary"-kind tick
+  // riding this file's ordinary push — see
+  // Server.Writer.File.summaryTicksFor's own Haddock.
+  | { type: "summarize";   id?: string; kind: string }
   | { type: "add.note";    id?: string; refTickId: string; text: string }
   | { type: "move.tick";   id?: string; tickId: string; afterTickId?: string }
   | { type: "delete.tick"; id?: string; tickId: string }
@@ -348,6 +358,11 @@ export type FileCommand =
   // into per-chapter beat sheets. No prompt — the outline text is the whole
   // input; the model decides the chapter breakdown and writes each sheet.
   | { type: "chat.outline"; id?: string }
+  // Summarize exactly this file — unlike the branch-level "summarize"
+  // command (BranchCommand, runs a whole kind across every file that
+  // qualifies), this never touches any other file, even one that's also
+  // stale. See Server.Writer.File.summarizePath's own Haddock.
+  | { type: "summarize.file"; id?: string }
   // Note: instant, non-LLM, like chat.append — attaches `text` as an
   // annotation on each of `targets`, or (when empty) on the file's current
   // HEAD tick.

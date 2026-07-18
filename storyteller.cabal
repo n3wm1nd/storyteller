@@ -54,6 +54,8 @@ library
                   , Storyteller.Writer.Agent.Summarizer
                   , Storyteller.Writer.Agent.SummaryAccess
                   , Storyteller.Writer.Agent.ChapterSummarizer
+                  , Storyteller.Writer.Agent.LoreSummarizer
+                  , Storyteller.Writer.Agent.JournalSummarizer
                   , Storyteller.Writer.Agent.Tasks
                   , Storyteller.Writer.Agent.Roleplay
                   , Storyteller.Core.Atom
@@ -251,6 +253,8 @@ test-suite storyteller-test
                   , Storyteller.SummarySpec
                   , Storyteller.SummaryAccessSpec
                   , Storyteller.ChapterSummarizerSpec
+                  , Storyteller.LoreSummarizerSpec
+                  , Storyteller.JournalSummarizerSpec
                   , Storyteller.TasksSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
@@ -274,6 +278,7 @@ test-suite storyteller-test
                   , Server.BranchSpec
                   , Server.Writer.BranchSpec
                   , Server.Writer.FileSpec
+                  , Server.Writer.File.ConnectionSpec
                   , Server.FileSpec
                   , Server.CharacterSpec
                   , Server.LibrarySpec

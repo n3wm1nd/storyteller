@@ -26,20 +26,27 @@ module Server.Writer.File
   , setPresence
   , askCharacter
   , correctGroup
+  , fileStateWithSummaries
+  , summarizePath
   ) where
 
 import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.List (isSuffixOf)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
-import Polysemy (Member, Sem)
-import Runix.Logging (info)
+import Polysemy (Member, Members, Sem)
+import Polysemy.Fail (Fail)
+import Runix.Git (Git)
+import Runix.Logging (info, Logging)
 import Runix.FileSystem (fileExists, readFile, writeFile)
 
 import Server.Core.File (FileOpen, deleteFileAtom)
+import qualified Server.Core.File as Core (fileStateSince)
 import Server.Core.Run (SessionEffects)
+import Server.Core.Protocol (WireTick(..), Update(..))
 import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
@@ -48,6 +55,18 @@ import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), 
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, hideChapters, hideLore, classifyPath)
+import Storyteller.Writer.Library (journalPath)
+import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
+import Storyteller.Writer.Lore (isLoreEligible)
+import Storyteller.Writer.Agent.JournalSummarizer (journalKindFor, journalSummarize, journalChunkAgent, currentSheet)
+import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryAgent)
+import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryAgent)
+import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
+import Storyteller.Core.LLM.Role (LLMs)
+import Storyteller.Core.Prompt (PromptStorage)
+import Storyteller.Core.Storage (StoryStorage)
+import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
+import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal, charSummaryFull)
 import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
@@ -68,7 +87,7 @@ import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, toDraft, tickParent)
-import Storyteller.Core.Git (BranchTag, runBranchAndFS, runBranchOpGit, runStorage, atGeneric)
+import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runBranchOpGit, runStorage, atGeneric)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -143,14 +162,6 @@ journalLookback, journalMaxOut, journalPadding :: Int
 journalLookback = 30
 journalMaxOut   = 10
 journalPadding  = 2
-
--- | A character branch's own account, in fiction-time order (see
---   WRITER.md's "Character structure" section) -- excluded from
---   generation's ambient context (see 'activeCharacterContext'), included
---   in full for an explicit 'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent'
---   query.
-journalPath :: FilePath
-journalPath = "journal.md"
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
@@ -504,3 +515,117 @@ askCharacter path character@(Character branch) question = do
   answer <- runBranchAndFS @ActiveChar branch (askCharacterAgent @(BranchTag ActiveChar) question)
   _ <- runStorage @Main (Tick.storeAs (CharacterAnswer character question answer (Just path)))
   return answer
+
+-- | Which summary kinds, if any, apply to @path@ -- a static,
+--   server-authoritative fact of this app's own file conventions,
+--   independently mirrored client-side for the UI toggle (see
+--   WS-PROTOCOL.md's "Backend-authoritative vs. frontend-advisory
+--   duplication": something server-side acts on this, namely this very
+--   function deciding what to push, so the server's copy has to be
+--   authoritative regardless of what the client assumes). Same three-way
+--   split 'Server.Writer.Branch.summarize's kind dispatch already uses.
+--   The journal case lists tiers generously (@journalKindFor 0..11@,
+--   group size 10 -- see 'Storyteller.Writer.Agent.JournalSummarizer') --
+--   'Storyteller.Writer.Agent.SummaryAccess.zoomLevels' stops at the
+--   first tier that doesn't actually exist yet, so this only has to be
+--   "more than could ever realistically accumulate" (10^11 raw entries),
+--   not the real current depth of the tree.
+summaryKindsFor :: FilePath -> [T.Text]
+summaryKindsFor path
+  | Library.classifyPath path == Library.Unit = ["prose/chapter"]
+  | path == journalPath                       = map journalKindFor [0 .. 11]
+  | isLoreEligible path                        = ["lore/article"]
+  | otherwise                                  = []
+
+-- | Summarize exactly @path@ -- unlike 'Server.Writer.Branch.summarize'
+--   (which runs a whole @kind@ across the branch, regenerating every
+--   file of it that happens to be stale), this touches only @path@
+--   itself. There is no guarantee every other stale file of the same
+--   kind gets updated by this call, only @path@ -- summarizing one
+--   chapter by hand must never force every other chapter through a pass
+--   it was never asked for (see
+--   'Storyteller.Writer.Agent.Summarizer.runSummarizerForPath's own
+--   Haddock for the full argument, including why the new 'Summary' tick
+--   has to be positioned at @path@'s own last atom rather than wherever
+--   the branch's head currently sits).
+--
+--   Journal is the one kind this doesn't need a file-scoped path for at
+--   all: @journal.md@ is already the only file 'journalSummarize' ever
+--   touches, so it's dispatched unchanged. @"prose/chapter"@ and
+--   @"lore/article"@ route through 'runSummarizerForPath' with their
+--   existing single-file agents ('chapterSummaryAgent'\/'loreSummaryAgent')
+--   directly as the generation hook -- both already take "one file's
+--   current content in, its compression out", exactly the shape
+--   'runSummarizerForPath' wants.
+summarizePath
+  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail] r)
+  => FilePath -> Sem r (Maybe TickId)
+summarizePath path = case summaryKindsFor path of
+  [] -> return Nothing
+  (kind : _)
+    | path == journalPath      -> do
+        sheet <- currentSheet @Main
+        Nothing <$ journalSummarize @Main (journalChunkAgent sheet) 0
+    | kind == "prose/chapter"  -> runSummarizerForPath @Main kind path chapterSummaryAgent
+    | kind == "lore/article"   -> runSummarizerForPath @Main kind path loreSummaryAgent
+    | otherwise                 -> return Nothing
+
+-- | @path@'s currently-available summary tiers, as synthetic 'WireTick's
+--   riding along in the ordinary push -- not a request/response command.
+--   A 'Storyteller.Common.Summary.Summary' carries no @file@ field (one
+--   alternate-chain commit can cover many files in a single pass), so it
+--   never appears in this file's own 'Server.Core.File.fileState' the way
+--   a real atom does; this is what makes it visible there instead, using
+--   each level's own real 'Storyteller.Writer.Agent.SummaryAccess.zlTickId'
+--   (not 'Storyteller.Common.Summary.summaryAltHead', a different object)
+--   as the synthetic tick's id, so the client's ordinary upsert-by-id
+--   model dedupes/updates it exactly like any other tick. Content is
+--   'Storyteller.Writer.Agent.SummaryAccess.completeContents' -- current as
+--   of this call, not just as of whenever the summarizer last ran -- same
+--   completeness guarantee every other 'SummaryAccess' reader gets.
+--
+--   'fileStateWithSummaries' folds the returned ticks' own ids into a
+--   signature 'Server.Writer.File.Connection.pushIncremental' compares
+--   alongside the raw atom head, so a summarize pass -- which advances
+--   the *branch's* head without ever touching this file's own atom head
+--   -- still triggers a fresh push to an already-open connection; seeing
+--   this only on reconnect would be exactly the "not implementing the WS
+--   interface correctly" gap WS-PROTOCOL.md's push-everything model rules
+--   out.
+--   Carries no content at all any more -- a summary tier is a real,
+--   independently-opened file connection now (@branch\@kind@, see
+--   'Server.Writer.File.Connection'), not a read-only projection folded
+--   into this file's own push. This only ever needs to say which tiers
+--   *exist*, for the client's tab UI (see 'summaryKindsFor's own
+--   frontend mirror in @lib\/library.ts@) -- 'wtTickId' still identifies
+--   which one so a client's ordinary upsert-by-id model dedupes it, but
+--   nothing here reads it back to render anything.
+summaryTicksFor :: FileOpen r => FilePath -> Sem r [WireTick]
+summaryTicksFor path = do
+  levels <- SummaryAccess.zoomLevels @Main (summaryKindsFor path) path
+  let summarized = [ lvl | lvl <- levels, isJust (SummaryAccess.zlSummary lvl) ]
+  return (map toWireTick summarized)
+  where
+    toWireTick lvl = WireTick
+      { wtTickId  = maybe "" unTickId (SummaryAccess.zlTickId lvl)
+      , wtKind    = "summary"
+      , wtRefs    = []
+      , wtFields  = [ ("kind", kind) | Just s <- [SummaryAccess.zlSummary lvl], let kind = Summary.summaryKind s ]
+      , wtMessage = ""
+      , wtContent = Nothing
+      , wtParent  = Nothing
+      }
+
+-- | 'Server.Core.File.fileStateSince' plus @path@'s current summary tiers
+--   folded in (see 'summaryTicksFor'), paired with a signature of exactly
+--   which summary ticks are present right now -- a plain, order-independent
+--   join of their ids. 'Server.Writer.File.Connection.pushIncremental'
+--   threads this signature alongside 'updateHead' in its own "since"
+--   cursor so a summarize pass is never invisible to an already-open
+--   connection (see 'summaryTicksFor's own Haddock for why that matters).
+fileStateWithSummaries :: FileOpen r => FilePath -> Maybe T.Text -> Sem r (Update, T.Text)
+fileStateWithSummaries path since = do
+  upd   <- Core.fileStateSince path since
+  extra <- summaryTicksFor path
+  let sig = T.intercalate "," (List.sort (map wtTickId extra))
+  return (upd { updateTicks = updateTicks upd ++ extra }, sig)

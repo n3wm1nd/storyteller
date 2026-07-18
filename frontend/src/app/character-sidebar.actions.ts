@@ -9,7 +9,7 @@
 import { characterConn, fileConn } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyUpdate, isChatPreviewEvent, remapSet, atRebase } from "@/lib/wsHelpers";
+import { applyFileUpdate, isChatPreviewEvent, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, handleChatPreview } from "@/lib/chatPreview";
 
 const JOURNAL_PATH = "journal.md";
@@ -107,7 +107,7 @@ export async function openJournal(branch: string): Promise<void> {
       mirrorServerEvent((s) => {
         const prev = s.openJournals[branch];
         if (!prev) return {};
-        return { openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false }, preview: null } };
+        return { openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyFileUpdate(prev.ticks, evt), head: evt.head, absent: false }, preview: null } };
       });
     } else if (evt.type === "tick.remap") {
       handleContextRemap(evt.mapping);
