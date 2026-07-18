@@ -196,7 +196,11 @@ export default function Home() {
   const openCharacters    = useServerCache((s) => s.openCharacters);
   const openJournals      = useServerCache((s) => s.openJournals);
   const openSummaries     = useServerCache((s) => s.openSummaries);
-  const preview           = useServerCache((s) => s.preview);
+  // 'preview' (the in-flight streamed draft) is deliberately not read here —
+  // it can update several times a second, and this component owns the whole
+  // page tree, so subscribing here would reconcile all of it on every token.
+  // 'ChatPreviewStrip'/'InputBar'/'ChatView' each subscribe to it directly
+  // instead, confining that reconciliation to just themselves.
 
   const conns               = useUI((s) => s.conns);
   const error               = useUI((s) => s.error);
@@ -778,11 +782,10 @@ export default function Home() {
             )}
 
             {viewMode === "blocks" && <>
-              <ChatPreviewStrip preview={preview} />
+              <ChatPreviewStrip />
               <AgentLogStrip logs={agentLogs} onClear={clearAgentLogs} />
               <InputBar
                 enabled={selectedFile !== null}
-                generating={preview !== null}
                 activeBranch={activeBranch}
                 contextAtomCount={contextAtoms.size} contextAnnotationCount={contextAnnotations.size}
                 rebasing={rebaseMarker !== null}
@@ -813,7 +816,7 @@ export default function Home() {
           {centerTab === "chat" && selectedFile && (
             <ChatView
               ticks={fileChainTicks} head={fileChainHead}
-              preview={preview} agentLogs={agentLogs} onClearAgentLogs={clearAgentLogs}
+              agentLogs={agentLogs} onClearAgentLogs={clearAgentLogs}
               onSend={(text) => chatConverse(selectedFile, text)}
               onNote={(text) => chatNote(selectedFile, text)}
               onRegen={(promptTickId, atomTickId, text) => chatConverseRegen(selectedFile, promptTickId, atomTickId, text)}

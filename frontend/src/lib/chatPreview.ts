@@ -32,23 +32,49 @@ export function schedulePreviewPlaceholder() {
   }, PREVIEW_DELAY_MS);
 }
 
+// The server can flush one WS frame per token, and every "chat.preview"/
+// "chat.preview.thinking" event only ever appends to what's already there —
+// so instead of one store write (and downstream re-render) per token, buffer
+// the deltas here and merge them into 'preview' at most once per animation
+// frame. Nothing is lost by delaying the merge a few ms; only how often
+// subscribers get to re-render drops, capped at the display's own refresh
+// rate instead of the network's.
+let pendingText = "";
+let pendingThinking = "";
+let flushScheduled = false;
+
+function scheduleFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  requestAnimationFrame(() => {
+    flushScheduled = false;
+    if (pendingText === "" && pendingThinking === "") return;
+    const p = getServerCache().preview;
+    if (p) mirrorServerEvent({ preview: { text: p.text + pendingText, thinking: p.thinking + pendingThinking } });
+    pendingText = "";
+    pendingThinking = "";
+  });
+}
+
 export function handleChatPreview(evt: ChatPreviewEvent) {
   clearPreviewDelayTimer();
   switch (evt.type) {
     case "chat.preview.start":
+      pendingText = "";
+      pendingThinking = "";
       mirrorServerEvent({ preview: { text: "", thinking: "" } });
       break;
-    case "chat.preview": {
-      const p = getServerCache().preview;
-      if (p) mirrorServerEvent({ preview: { ...p, text: p.text + evt.text } });
+    case "chat.preview":
+      pendingText += evt.text;
+      scheduleFlush();
       break;
-    }
-    case "chat.preview.thinking": {
-      const p = getServerCache().preview;
-      if (p) mirrorServerEvent({ preview: { ...p, thinking: p.thinking + evt.text } });
+    case "chat.preview.thinking":
+      pendingThinking += evt.text;
+      scheduleFlush();
       break;
-    }
     case "chat.preview.end":
+      pendingText = "";
+      pendingThinking = "";
       mirrorServerEvent({ preview: null, previewCommandId: null });
       break;
   }

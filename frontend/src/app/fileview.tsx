@@ -9,7 +9,7 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
-import { type WireTick } from "@/lib/serverCacheStore";
+import { type WireTick, useServerCache } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand, COMMANDS } from "@/lib/commands";
@@ -1595,9 +1595,13 @@ export function AgentLogStrip({ logs, onClear }: {
 // see WS-PROTOCOL.md "Chat preview (streaming)". Purely a live look at
 // tokens as they arrive; it disappears the moment the store clears
 // `preview` (on chat.preview.end, or the real update/error superseding it).
-export function ChatPreviewStrip({ preview }: {
-  preview: { text: string; thinking: string } | null;
-}) {
+//
+// Subscribes to 'preview' itself rather than taking it as a prop: the
+// stream can push several updates a second, so a parent (page.tsx) that
+// merely forwarded the value would re-render its entire tree on every one.
+// Reading it here confines that reconciliation to just this strip.
+export function ChatPreviewStrip() {
+  const preview = useServerCache((s) => s.preview);
   const containerRef = useAutoScroll<HTMLDivElement>(
     (preview?.text.length ?? 0) + (preview?.thinking.length ?? 0), preview === null, "end"
   );
@@ -1668,13 +1672,8 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   roleplay: { label: "Roleplay", title: "Interrogate every character present, then write the scene", icon: Users },
 };
 
-export function InputBar({ enabled, generating, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform, onSummarize }: {
+export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform, onSummarize }: {
   enabled: boolean;
-  // Whether a chat.writer/fixer/regen/etc call is currently streaming on
-  // this file's connection — see lib/serverCacheStore.ts's 'preview'.
-  // Swaps the mode-pill/send cluster below for a Stop button (see
-  // fileview.actions.ts's 'cancelGeneration') while true.
-  generating: boolean;
   // The active branch's own /lore data feeds '@mention' completion (see
   // lib/mentions.ts) — current-branch-only for now, no cross-branch search.
   activeBranch: string | null;
@@ -1699,6 +1698,13 @@ export function InputBar({ enabled, generating, activeBranch, contextAtomCount, 
   // (lib/library.ts's summaryKindsFor), same as the toolbar button.
   onSummarize: () => void;
 }) {
+  // Whether a chat.writer/fixer/regen/etc call is currently streaming on
+  // this file's connection. Read directly (not passed as a prop) for the
+  // same reason 'ChatPreviewStrip' does — a value that changes several
+  // times a second shouldn't force whatever parent forwards it to
+  // re-render. Swaps the mode-pill/send cluster below for a Stop button
+  // (see fileview.actions.ts's 'cancelGeneration') while true.
+  const generating = useServerCache((s) => s.preview !== null);
   const [text, setText] = useState("");
   const [height, setHeight] = useState(90);
   const [menuOpen, setMenuOpen] = useState(false);

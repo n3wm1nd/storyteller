@@ -12,6 +12,7 @@ import type { WireTick } from "@/lib/ws";
 import { tickChain } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { AgentLogStrip, ChatPreviewStrip } from "./fileview";
+import { useServerCache } from "@/lib/serverCacheStore";
 import { CHAT_COMMANDS, parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
 import { cancelGeneration } from "./fileview.actions";
@@ -221,11 +222,10 @@ function swipeCount(chain: WireTick[], atomTickId: string): number {
 }
 
 export function ChatView({
-  ticks, head, preview, agentLogs, onClearAgentLogs, onSend, onNote, onRegen, onCycleSwipe, onEditAtom, onEditPrompt,
+  ticks, head, agentLogs, onClearAgentLogs, onSend, onNote, onRegen, onCycleSwipe, onEditAtom, onEditPrompt,
 }: {
   ticks: Record<string, WireTick>;
   head: string | null;
-  preview: { text: string; thinking: string } | null;
   agentLogs: { level: string; message: string }[];
   onClearAgentLogs: () => void;
   onSend: (text: string) => void;
@@ -235,6 +235,12 @@ export function ChatView({
   onEditAtom: (tickId: string, content: string) => void;
   onEditPrompt: (tickId: string, content: string) => void;
 }) {
+  // Read directly rather than taking a prop — see 'ChatPreviewStrip's own
+  // Haddock in fileview.tsx for why: this can update several times a
+  // second, so only mounts here (i.e. only while this tab is actually
+  // shown) if it's a self-subscription rather than something the parent
+  // has to hold and forward.
+  const preview = useServerCache((s) => s.preview);
   const [draft, setDraft] = useState("");
   const auto = useCommandAutocomplete(draft, setDraft, CHAT_COMMANDS);
   const chain = tickChain(ticks, head);
@@ -328,7 +334,7 @@ export function ChatView({
         ))}
       </div>
 
-      <ChatPreviewStrip preview={preview} />
+      <ChatPreviewStrip />
       <AgentLogStrip logs={agentLogs} onClear={onClearAgentLogs} />
 
       <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-subtle)", padding: "10px 14px", display: "flex", gap: 8 }}>
