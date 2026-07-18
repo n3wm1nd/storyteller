@@ -7,20 +7,34 @@
 
 -- | /branch/{id}/{path} connection lifecycle.
 --
--- @{id}@ is either a plain branch name, or @name\@kind@ -- a summary
--- tier's own alternate chain (see "Storyteller.Common.Summary"'s module
--- Haddock: a real commit chain, just with no ref of its own). 'openTarget'
--- is the *only* place the two are told apart: a plain name opens the
--- branch's own real head the ordinary way, moving it via 'setRef' on
--- write; @name\@kind@ opens @kind@'s current 'Summary' tick's own altHead
--- instead, and records an advanced head as a fresh 'Summary' tick on
--- @name@ (see 'Storyteller.Writer.Agent.Summarizer.runSummarizer's own
--- Haddock -- a hand-edit and a regenerated pass are indistinguishable to
--- every reader once this returns, both are just "a new 'Summary' tick").
--- Every read ('Server.Writer.File.fileStateWithSummaries'), every command
+-- @{id}@ is one of:
+--
+--   * a plain branch name -- opens the branch's own real head the
+--     ordinary way, moving it via 'setRef' on write;
+--   * @name\@kind@ -- a summary family's own top-level alternate chain
+--     (see "Storyteller.Common.Summary"'s module Haddock: a real commit
+--     chain, just with no ref of its own). Opens @kind@'s current
+--     'Summary' tick's own altHead instead, and records an advanced head
+--     as a fresh 'Summary' tick on @name@ (see
+--     'Storyteller.Writer.Agent.Summarizer.runSummarizer's own Haddock --
+--     a hand-edit and a regenerated pass are indistinguishable to every
+--     reader once this returns, both are just "a new 'Summary' tick");
+--   * @name\@kind#tid1#tid2...@ -- a *nested* summary node: @tid1@ is a
+--     'Summary' tick somewhere in @kind@'s own history (its id came from
+--     one of the per-occurrence WireTicks already sent to the client --
+--     see 'Server.Writer.File.summaryTicksFor'), opened as if it were
+--     @kind@'s own top-level tick; each further @#tidN@ repeats
+--     the same one-hop rule, arbitrarily deep. Every hop past the first
+--     re-mints *that hop's own tick* (via 'atGeneric', not @kind@'s
+--     top-level one) when its nested scope advances -- see 'openTarget's
+--     own @descend@.
+--
+-- 'openTarget' is the only place any of this is told apart. Every read
+-- ('Server.Writer.File.fileStateWithSummaries'), every command
 -- ('Server.Writer.File.Dispatch.runCommand'), and every event type
--- ('Server.Writer.File.Protocol') downstream is identical either way --
--- summary content is a *file*, not a special read-only projection of one.
+-- ('Server.Writer.File.Protocol') downstream is identical regardless --
+-- summary content (at any depth) is a *file*, not a special read-only
+-- projection of one.
 --
 -- On connect: enter the target's storage/filesystem scope once to push the
 -- initial FilePresent/FileAbsent + FileUpdate, then loop receiving commands
@@ -89,10 +103,10 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Common.Splitter (Splitter, splitMarkdownAware)
-import Storyteller.Core.Git (BranchOp, BranchTag, atGeneric, runBranchAndFSFrom, runStorage, withStorage)
+import Storyteller.Core.Git (BranchOp, BranchTag, atGeneric, runBranchAndFSFrom, runBranchOpGitFrom, runStorage, withStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Core.Types (BranchName(..), TickId(..))
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick)
 
 runFile :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runFile env target path conn = do
@@ -122,27 +136,62 @@ openTarget
 openTarget target action = case T.breakOn "@" target of
   (branch, "") -> withBranch @Main branch action
   (branch, kindWithAt) -> do
-    let kind = T.drop 1 kindWithAt
+    let (kind, hopsPart) = T.breakOn "#" (T.drop 1 kindWithAt)
+        hopTexts          = filter (not . T.null) (T.splitOn "#" hopsPart)
     mLast <- withBranch @Main branch (runStorage @Main (lastSummaryOf kind))
-    -- No 'Summary' tick yet for this kind on this branch -- rather than
-    -- refuse the connection, seed from the same fixed, parentless,
-    -- empty-tree commit 'Storyteller.Writer.Agent.Summarizer.runSummarizer'\/
-    -- 'Storyteller.Writer.Agent.JournalSummarizer.journalSummarize' fall
-    -- back to on *their* own first pass ('bootstrapAltHead'). This tier
-    -- simply doesn't exist yet until the first write actually lands
-    -- ('onNotify' below then mints its first real 'Summary' tick, the
-    -- same way any later edit does) -- a manually-created summary and an
-    -- LLM-generated one are indistinguishable from that point on, exactly
-    -- like a hand-edit of an existing one already is.
-    seed <- case mLast of
-      Just (_, s) -> return (Core.ObjectHash (unTickId (summaryAltHead s)))
-      Nothing     -> bootstrapAltHead
-    runBranchAndFSFrom @Main
-      (BranchName target)
-      seed
-      (\newHead -> void (withBranch @Main branch (mintSummaryTick kind mLast newHead)))
-      action
+    case hopTexts of
+      -- No further hops: exactly today's single-hop behaviour, wiring the
+      -- ambient filesystem 'action' needs directly against @kind@'s own
+      -- top-level scope.
+      [] -> do
+        -- No 'Summary' tick yet for this kind on this branch -- rather
+        -- than refuse the connection, seed from the same fixed,
+        -- parentless, empty-tree commit
+        -- 'Storyteller.Writer.Agent.Summarizer.runSummarizer'\/
+        -- 'Storyteller.Writer.Agent.JournalSummarizer.journalSummarize'
+        -- fall back to on *their* own first pass ('bootstrapAltHead').
+        -- This tier simply doesn't exist yet until the first write
+        -- actually lands ('onNotify' below then mints its first real
+        -- 'Summary' tick, the same way any later edit does) -- a
+        -- manually-created summary and an LLM-generated one are
+        -- indistinguishable from that point on, exactly like a hand-edit
+        -- of an existing one already is.
+        seed <- case mLast of
+          Just (_, s) -> return (Core.ObjectHash (unTickId (summaryAltHead s)))
+          Nothing     -> bootstrapAltHead
+        runBranchAndFSFrom @Main
+          (BranchName target)
+          seed
+          (\newHead -> void (withBranch @Main branch (mintSummaryTick kind mLast newHead)))
+          action
+      -- One or more further hops: each @tidN@ names a 'Summary' tick
+      -- somewhere in @kind@'s own history (its id came from one of the
+      -- per-occurrence WireTicks already sent to the client -- see
+      -- 'Server.Writer.File.summaryTicksFor'). Resolve every hop's own
+      -- 'Summary' up front -- a plain content-addressed
+      -- read ('Storage.Tick.readTypesTick' doesn't care which scope is
+      -- "current"), so this needs nothing but the already-open branch
+      -- scope, regardless of how deep the chain goes. The very last hop's
+      -- own alt-chain is what 'action' actually gets wired against; every
+      -- ancestor only ever matters for the cascading re-mint below.
+      _  -> do
+        hopChain <- withBranch @Main branch (mapM resolveHop hopTexts)
+        let finalSeed = Core.ObjectHash (unTickId (summaryAltHead (snd (last hopChain))))
+        runBranchAndFSFrom @Main
+          (BranchName target)
+          finalSeed
+          (remintHop branch kind mLast hopChain (length hopChain - 1))
+          action
   where
+    resolveHop
+      :: Members '[BranchOp Main, StoryStorage, Git, Fail] r'
+      => T.Text -> Sem r' (TickId, Summary)
+    resolveHop tidTxt = do
+      t <- runStorage @Main (Tick.readTypesTick (Core.ObjectHash tidTxt))
+      case fromTick @Summary t of
+        Just s  -> return (TickId tidTxt, s)
+        Nothing -> fail ("openTarget: " <> T.unpack tidTxt <> " is not a Summary tick")
+
     -- | Record @newHead@ as @kind@'s new 'Summary' tick. Never simply
     --   appended at wherever the branch's own head happens to sit *now*
     --   -- an edit made through this tier only ever accounted for content
@@ -170,6 +219,35 @@ openTarget target action = case T.breakOn "@" target of
     mintSummaryTick kind mLast newHead = void $ case mLast of
       Nothing            -> runStorage @Main (Tick.storeAs (Summary kind newHead))
       Just (oldTickId, _) -> atGeneric @Main oldTickId (runStorage @Main (Tick.storeAs (Summary kind newHead)))
+
+    -- | Re-mint hop @i@ of @chain@ (0-indexed, oldest/shallowest first) to
+    --   @newHead@ -- within a *freshly, independently opened* scope seeded
+    --   at wherever hop @i@ itself actually lives (hop @i-1@'s own
+    --   altHead, or @kind@'s own top-level tick's altHead if @i == 0@),
+    --   never inside whatever scope 'action' itself is running in. That
+    --   scope's own 'runBranchOpGitFrom' interpreter already calls its own
+    --   @onAdvance@ automatically the instant this re-mint's own
+    --   'atGeneric' write lands (see that function's own Haddock), so
+    --   cascading the change one level further out -- all the way to
+    --   re-minting @kind@'s own top-level tick directly on the real
+    --   branch at @i == 0@ -- is just this same call with @i - 1@, passed
+    --   in as *that* scope's own @onAdvance@.
+    remintHop
+      :: Members '[StoryStorage, Git, Fail] r
+      => T.Text -> T.Text -> Maybe (TickId, Summary) -> [(TickId, Summary)] -> Int -> TickId -> Sem r ()
+    remintHop branch kind mLast chain i newHead
+      | i == 0 = do
+          parentSeed <- case mLast of
+            Just (_, s) -> return (Core.ObjectHash (unTickId (summaryAltHead s)))
+            Nothing     -> bootstrapAltHead
+          void $ runBranchOpGitFrom @Main parentSeed
+            (\grandNewHead -> void (withBranch @Main branch (mintSummaryTick kind mLast grandNewHead)))
+            (atGeneric @Main (fst (chain !! i)) (runStorage @Main (Tick.storeAs (Summary kind newHead))))
+      | otherwise = do
+          let parentSeed = Core.ObjectHash (unTickId (summaryAltHead (snd (chain !! (i - 1)))))
+          void $ runBranchOpGitFrom @Main parentSeed
+            (remintHop branch kind mLast chain (i - 1))
+            (atGeneric @Main (fst (chain !! i)) (runStorage @Main (Tick.storeAs (Summary kind newHead))))
 
 -- | The command-loop thread's persistent stack: enter the target's scope
 --   once, push the initial file state, then dispatch commands until the

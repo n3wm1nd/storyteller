@@ -278,3 +278,25 @@ export function statusColor(status: string): string {
     default:           return "var(--text-dim)";
   }
 }
+
+// Every real tick strictly between the previous same-kind summary
+// occurrence's own anchor (exclusive) and targetTickId's own anchor
+// (inclusive) — the read-only "what this summary covers" slice, computed
+// client-side from ticks the connection already has loaded. Requires
+// summaryTicksOfKind sorted oldest-first (each entry's own anchor is its
+// refs[0] — see Server.Writer.File.summaryTicksFor).
+export function summaryCoverageFor(
+  fileTicks: WireTick[], summaryTicksOfKind: WireTick[], targetTickId: string,
+): WireTick[] {
+  const targetIdx = summaryTicksOfKind.findIndex((t) => t.tickId === targetTickId);
+  if (targetIdx === -1) return [];
+  const anchor = summaryTicksOfKind[targetIdx].refs[0];
+  const lowerAnchor = targetIdx > 0 ? summaryTicksOfKind[targetIdx - 1].refs[0] : undefined;
+  if (!anchor) return [];
+
+  const upperIdx = fileTicks.findIndex((t) => t.tickId === anchor);
+  if (upperIdx === -1) return [];
+  const lowerIdx = lowerAnchor ? fileTicks.findIndex((t) => t.tickId === lowerAnchor) : -1;
+
+  return fileTicks.slice(lowerIdx + 1, upperIdx + 1);
+}

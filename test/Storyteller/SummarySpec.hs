@@ -17,12 +17,13 @@ import Polysemy.State (evalState)
 import Git.Mock
 
 import qualified Storage.Core as Core
+import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Summary
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types
-import Storyteller.Writer.Agent.Summarizer (runSummarizer)
+import Storyteller.Writer.Agent.Summarizer (runSummarizer, runSummarizerForPath)
 
 -- ---------------------------------------------------------------------------
 -- Phantom + single-branch runner. There's no alt branch to open -- an
@@ -166,3 +167,63 @@ spec = do
             _ <- runSummarizer @Source "prose/chapter" (generateFixed "s1")
             runStorage @Source (summaryTickFor (Core.ObjectHash "not-a-real-alt-commit"))
       result `shouldBe` Right Nothing
+
+  describe "summariesTouching" $ do
+    it "finds one occurrence after a single real runSummarizerForPath pass" $ do
+      let result = runOne $ do
+            _ <- runStorage @Source (Ops.addAtom "a.md" "para one. ")
+            _ <- runStorage @Source (Ops.addAtom "a.md" "para two.")
+            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            runStorage @Source (summariesTouching "prose/chapter" "a.md")
+      case result of
+        Left err -> expectationFailure err
+        Right occs -> case occs of
+          [(_, s, _anchor)] -> summaryKind s `shouldBe` "prose/chapter"
+          _                 -> expectationFailure ("expected exactly one occurrence, got " <> show (length occs))
+
+    it "shared kind across two files: each file's own call returns only its own occurrence" $ do
+      let result = runOne $ do
+            _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
+            _ <- runStorage @Source (Ops.addAtom "b.md" "b content")
+            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            _ <- runSummarizerForPath @Source "prose/chapter" "b.md" (\_ -> pure "summary of b")
+            occsA <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
+            occsB <- runStorage @Source (summariesTouching "prose/chapter" "b.md")
+            return (occsA, occsB)
+      case result of
+        Left err -> expectationFailure err
+        Right (occsA, occsB) -> do
+          length occsA `shouldBe` 1
+          length occsB `shouldBe` 1
+
+    it "two sequential passes of the same kind on the same file both appear, oldest-first, each anchored to the atom present at that pass" $ do
+      let result = runOne $ do
+            h1  <- runStorage @Source (Ops.addAtom "a.md" "para one.")
+            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v1")
+            h2  <- runStorage @Source (Ops.addAtom "a.md" "para two.")
+            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v2")
+            occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
+            return (TickId (Core.unObjectHash h1), TickId (Core.unObjectHash h2), occs)
+      case result of
+        Left err -> expectationFailure err
+        Right (tid1, tid2, occs) -> case occs of
+          [(_, s1, anchor1), (_, s2, anchor2)] -> do
+            summaryKind s1 `shouldBe` "prose/chapter"
+            summaryKind s2 `shouldBe` "prose/chapter"
+            anchor1 `shouldBe` tid1
+            anchor2 `shouldBe` tid2
+          _ -> expectationFailure ("expected exactly two occurrences, got " <> show (length occs))
+
+    it "excludes a pure carry-forward pass that never actually touched path" $ do
+      let result = runOne $ do
+            _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
+            _ <- runStorage @Source (Ops.addAtom "b.md" "b content")
+            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            -- A second same-kind pass touching only b.md -- a.md's own
+            -- compression is carried forward unchanged, so this must not
+            -- show up as a second occurrence for a.md.
+            _ <- runSummarizerForPath @Source "prose/chapter" "b.md" (\_ -> pure "summary of b")
+            runStorage @Source (summariesTouching "prose/chapter" "a.md")
+      case result of
+        Left err -> expectationFailure err
+        Right occs -> length occs `shouldBe` 1

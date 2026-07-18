@@ -58,7 +58,7 @@ import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, h
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
 import Storyteller.Writer.Lore (isLoreEligible)
-import Storyteller.Writer.Agent.JournalSummarizer (journalKindFor, journalSummarize, journalChunkAgent, currentSheet)
+import Storyteller.Writer.Agent.JournalSummarizer (journalKind, journalSummarize, journalChunkAgent, currentSheet)
 import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryAgent)
 import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryAgent)
 import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
@@ -524,16 +524,16 @@ askCharacter path character@(Character branch) question = do
 --   function deciding what to push, so the server's copy has to be
 --   authoritative regardless of what the client assumes). Same three-way
 --   split 'Server.Writer.Branch.summarize's kind dispatch already uses.
---   The journal case lists tiers generously (@journalKindFor 0..11@,
---   group size 10 -- see 'Storyteller.Writer.Agent.JournalSummarizer') --
---   'Storyteller.Writer.Agent.SummaryAccess.zoomLevels' stops at the
---   first tier that doesn't actually exist yet, so this only has to be
---   "more than could ever realistically accumulate" (10^11 raw entries),
---   not the real current depth of the tree.
+--   Each entry is one independent family's own plain kind label -- not a
+--   pre-enumerated tier list: a recursive family like @journal@ shares one
+--   label across however many tiers it actually has, depth being a
+--   structural fact discovered by walking (see
+--   'Storyteller.Common.Summary.summariesTouching', called again from a
+--   nested connection for a deeper tier), never declared here.
 summaryKindsFor :: FilePath -> [T.Text]
 summaryKindsFor path
   | Library.classifyPath path == Library.Unit = ["prose/chapter"]
-  | path == journalPath                       = map journalKindFor [0 .. 11]
+  | path == journalPath                       = [journalKind]
   | isLoreEligible path                        = ["lore/article"]
   | otherwise                                  = []
 
@@ -565,7 +565,7 @@ summarizePath path = case summaryKindsFor path of
   (kind : _)
     | path == journalPath      -> do
         sheet <- currentSheet @Main
-        Nothing <$ journalSummarize @Main (journalChunkAgent sheet) 0
+        Nothing <$ journalSummarize @Main (journalChunkAgent sheet)
     | kind == "prose/chapter"  -> runSummarizerForPath @Main kind path chapterSummaryAgent
     | kind == "lore/article"   -> runSummarizerForPath @Main kind path loreSummaryAgent
     | otherwise                 -> return Nothing
@@ -592,29 +592,35 @@ summarizePath path = case summaryKindsFor path of
 --   this only on reconnect would be exactly the "not implementing the WS
 --   interface correctly" gap WS-PROTOCOL.md's push-everything model rules
 --   out.
---   Carries no content at all any more -- a summary tier is a real,
---   independently-opened file connection now (@branch\@kind@, see
---   'Server.Writer.File.Connection'), not a read-only projection folded
---   into this file's own push. This only ever needs to say which tiers
---   *exist*, for the client's tab UI (see 'summaryKindsFor's own
---   frontend mirror in @lib\/library.ts@) -- 'wtTickId' still identifies
---   which one so a client's ordinary upsert-by-id model dedupes it, but
---   nothing here reads it back to render anything.
+--   One real 'WireTick' per historical occurrence now, not one synthetic
+--   tick per family: each occurrence is independently anchored via
+--   'wtRefs' (the last real atom on @path@ that occurrence covers), so a
+--   client can render every pass as its own inline annotation positioned
+--   at the right spot, rather than a single materialized tree. 'wtTickId'
+--   is that occurrence's own real 'Summary' tick id, so the client's
+--   ordinary upsert-by-id model dedupes/updates each one independently --
+--   and a later pass re-minting an ancestor tick (see
+--   'Storyteller.Writer.Agent.Summarizer.extendNestedAltChain') still
+--   surfaces as a genuinely new tick id, keeping 'fileStateWithSummaries'
+--   own id-based signature a correct staleness check with no changes.
 summaryTicksFor :: FileOpen r => FilePath -> Sem r [WireTick]
-summaryTicksFor path = do
-  levels <- SummaryAccess.zoomLevels @Main (summaryKindsFor path) path
-  let summarized = [ lvl | lvl <- levels, isJust (SummaryAccess.zlSummary lvl) ]
-  return (map toWireTick summarized)
+summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
   where
-    toWireTick lvl = WireTick
-      { wtTickId  = maybe "" unTickId (SummaryAccess.zlTickId lvl)
-      , wtKind    = "summary"
-      , wtRefs    = []
-      , wtFields  = [ ("kind", kind) | Just s <- [SummaryAccess.zlSummary lvl], let kind = Summary.summaryKind s ]
-      , wtMessage = ""
-      , wtContent = Nothing
-      , wtParent  = Nothing
-      }
+    oneKind kind = do
+      occurrences <- SummaryAccess.summariesTouchingFor @Main kind path
+      mapM (toWireTick kind) occurrences
+
+    toWireTick kind (tid, s, anchorTid) = do
+      mContent <- runStorage @Main (Summary.summaryContent s path)
+      return WireTick
+        { wtTickId  = unTickId tid
+        , wtKind    = "summary"
+        , wtRefs    = [unTickId anchorTid]
+        , wtFields  = [("kind", kind)]
+        , wtMessage = fromMaybe "" mContent
+        , wtContent = mContent
+        , wtParent  = Nothing
+        }
 
 -- | 'Server.Core.File.fileStateSince' plus @path@'s current summary tiers
 --   folded in (see 'summaryTicksFor'), paired with a signature of exactly

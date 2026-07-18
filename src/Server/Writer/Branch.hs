@@ -341,7 +341,7 @@ summarize kind
   | kind == "lore/article"  = runSummarizer @Main kind (loreSummaryGenerate @Main kind)
   | kind == "journal"        = do
       sheet <- currentSheet @Main
-      Nothing <$ journalSummarize @Main (journalChunkAgent sheet) 0
+      Nothing <$ journalSummarize @Main (journalChunkAgent sheet)
   | otherwise                = runSummarizer @Main kind passthroughGenerate
 
 passthroughGenerate :: [Tick] -> Sem r (Map.Map FilePath T.Text)

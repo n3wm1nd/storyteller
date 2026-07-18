@@ -10,14 +10,14 @@ import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
 import { type WireTick, useServerCache } from "@/lib/serverCacheStore";
-import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks, summaryCoverageFor } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand, COMMANDS } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
 import { useMentionAutocomplete } from "./mention-autocomplete";
 import { useLoreTree, flattenLore } from "./lore-selector";
 import { branchFileUrl, saveRawFile, saveRawFileAsNew } from "@/lib/ws";
-import { IMAGE_DRAG_MIME } from "@/lib/library";
+import { IMAGE_DRAG_MIME, summaryKindLabel } from "@/lib/library";
 
 // tiptap-markdown's Markdown extension adds `storage.markdown` at runtime
 // (see TextEditPanel below) but ships no type augmentation for it, so
@@ -302,19 +302,44 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
 
 // ── Annotation card ───────────────────────────────────────────────────────────
 
-const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleContext, activeBranch }: {
+const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleContext, activeBranch, onOpenSummary }: {
   tick: WireTick;
   inContext: boolean;
   onToggleContext: (tickId: string) => void;
   // Only an "image" tick needs this, to build its thumbnail's GET URL.
   activeBranch?: string | null;
+  onOpenSummary?: (kind: string, tickId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  const isNote  = tick.kind === "note";
-  const isAsk   = tick.kind === "character-answer";
-  const isImage = tick.kind === "image";
-  if (!isNote && !isAsk && !isImage) return null;
+  const isNote    = tick.kind === "note";
+  const isAsk     = tick.kind === "character-answer";
+  const isImage   = tick.kind === "image";
+  const isSummary = tick.kind === "summary";
+  if (!isNote && !isAsk && !isImage && !isSummary) return null;
+
+  if (isSummary) {
+    const kind = tick.fields?.kind ?? "";
+    return (
+      <div
+        onClick={(e) => {
+          if (e.ctrlKey || e.metaKey) { onToggleContext(tick.tickId); return; }
+          onOpenSummary?.(kind, tick.tickId);
+        }}
+        style={{
+          margin: "4px 0 10px 12px", borderRadius: 5, padding: "5px 10px",
+          background: "oklch(0.24 0.05 80 / 0.4)", border: "1px solid oklch(0.6 0.15 80 / 0.35)",
+          outline: inContext ? "2px solid var(--amber)" : "none", outlineOffset: 1,
+          display: "flex", alignItems: "center", gap: 7, cursor: "pointer",
+        }}
+      >
+        <History style={{ width: 11, height: 11, color: "oklch(0.7 0.15 80)", flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: "oklch(0.75 0.13 80)", fontStyle: "italic", lineHeight: 1.5 }}>
+          {summaryKindLabel(kind)}
+        </span>
+      </div>
+    );
+  }
 
   if (isImage) {
     const asset   = tick.fields?.asset;
@@ -535,11 +560,12 @@ const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }:
 
 // ── Annotation dots ───────────────────────────────────────────────────────────
 
-const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnotations, onToggleContext, activeBranch }: {
+const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnotations, onToggleContext, activeBranch, onOpenSummary }: {
   annotations: WireTick[];
   contextAnnotations: Set<string>;
   onToggleContext: (tickId: string) => void;
   activeBranch?: string | null;
+  onOpenSummary?: (kind: string, tickId: string) => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -551,6 +577,7 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
     if (ann.kind === "note")             return "oklch(0.55 0.15 240)";
     if (ann.kind === "character-answer") return characterColor(ann.fields?.character ?? "");
     if (ann.kind === "image")            return "oklch(0.65 0.15 300)";
+    if (ann.kind === "summary")           return "oklch(0.7 0.15 80)";
     return "var(--text-dim)";
   }
 
@@ -561,7 +588,9 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
           const inCtx  = contextAnnotations.has(ann.tickId);
           const isOpen = expandedId === ann.tickId;
           const color  = dotColor(ann);
+          const isSummary = ann.kind === "summary";
           const title  = (() => {
+            if (isSummary) return summaryKindLabel(ann.fields?.kind ?? "");
             if (ann.kind !== "character-answer") return ann.message.slice(0, 80);
             const [question, answer] = splitQuestionAnswer(ann.message);
             return `Asked ${characterDisplayName(ann.fields?.character ?? "")}: ${question}\n${answer.slice(0, 80)}`;
@@ -572,6 +601,10 @@ const AnnotationDots = memo(function AnnotationDots({ annotations, contextAnnota
               title={title}
               onClick={(e) => {
                 if (e.ctrlKey || e.metaKey) { onToggleContext(ann.tickId); return; }
+                // A summary dot always navigates straight to the split view
+                // (see .summarization-ui.md) rather than expanding an inline
+                // peek card the way every other annotation kind does.
+                if (isSummary) { onOpenSummary?.(ann.fields?.kind ?? "", ann.tickId); return; }
                 setExpandedId((id) => id === ann.tickId ? null : ann.tickId);
               }}
               style={{
@@ -693,7 +726,7 @@ export function WireTickList({
   rebaseMarker, onSetRebaseMarker, presenceBars,
   onEdit, onToggleContextAtom, onToggleContextAnnotation, onCycleSwipe,
   onHoverAtom, onHoverEnd, compact, onCorrect, onEditPrompt,
-  activeBranch, targetFile, onUploadImages,
+  activeBranch, targetFile, onUploadImages, onOpenSummary,
 }: {
   ticks: WireTick[];
   annotationMode: AnnotationMode;
@@ -728,6 +761,11 @@ export function WireTickList({
   activeBranch?: string | null;
   targetFile?: string | null;
   onUploadImages?: (path: string, files: FileList | File[]) => void;
+  // Clicking an inline "summary"-kind annotation always navigates to that
+  // occurrence's split view (see .summarization-ui.md) rather than
+  // expanding in place — omitted entirely by call sites with no summary
+  // concept of their own (e.g. the journal panel).
+  onOpenSummary?: (kind: string, tickId: string) => void;
 }) {
   const contentKey = ticks.length > 0 ? `${ticks.length}:${ticks[ticks.length - 1].tickId}` : 0;
   const scrollRef = useAutoScroll<HTMLDivElement>(contentKey, resetKey, "end");
@@ -963,7 +1001,7 @@ export function WireTickList({
           ))}
           {leading.length > 0 && annotationMode !== "hidden" && (
             annotationMode === "dots" ? (
-              <AnnotationDots annotations={leading} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} activeBranch={activeBranch} />
+              <AnnotationDots annotations={leading} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} activeBranch={activeBranch} onOpenSummary={onOpenSummary} />
             ) : (
               leading.map((ann) => (
                 <AnnotationCard
@@ -971,6 +1009,7 @@ export function WireTickList({
                   inContext={contextAnnotations.has(ann.tickId)}
                   onToggleContext={onToggleContextAnnotation}
                   activeBranch={activeBranch}
+                  onOpenSummary={onOpenSummary}
                 />
               ))
             )
@@ -1013,7 +1052,7 @@ export function WireTickList({
                     onCorrect={onCorrect}
                   />
                   {annotationMode === "dots" && anns.length > 0 && (
-                    <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} activeBranch={activeBranch} />
+                    <AnnotationDots annotations={anns} contextAnnotations={contextAnnotations} onToggleContext={onToggleContextAnnotation} activeBranch={activeBranch} onOpenSummary={onOpenSummary} />
                   )}
                   {annotationMode === "expanded" && anns.map((ann) => (
                     <AnnotationCard
@@ -1021,6 +1060,7 @@ export function WireTickList({
                       inContext={contextAnnotations.has(ann.tickId)}
                       onToggleContext={onToggleContextAnnotation}
                       activeBranch={activeBranch}
+                      onOpenSummary={onOpenSummary}
                     />
                   ))}
                 </div>
@@ -1183,25 +1223,33 @@ export function RawEditPanel({ branch, path }: {
 
 const EMPTY_TICK_SET: Set<string> = new Set();
 
-// A summary tier's own view — not a read-only projection of the real
-// file, but the exact same kind of file connection, just opened against
-// "{branch}@{kind}" (see fileview.actions.ts's openSummaryTier and
-// Server.Writer.File.Connection's own Haddock). Real per-atom history,
-// directly editable with the same double-click/swipe affordances
-// WireTickList already gives any other file — a hand-edit here mints a
-// fresh Summary tick server-side exactly the way a summarize pass does,
-// so there's nothing "generated-only" about it once it exists.
-export function SummaryTierPanel({
-  branch, kind, ticks, absent, onEdit, onAppend, onCycleSwipe,
+// A summary family's split view (see .summarization-ui.md): a read-only
+// top pane showing exactly what one specific occurrence covers (computed
+// client-side via 'summaryCoverageFor', from ticks the main file connection
+// already has loaded — no separate materialized tree needed), and a live,
+// editable bottom pane showing that family's own current chain (this
+// tier's own connection, same shape as an ordinary file). Nesting is just
+// "open one more hop" — the bottom pane's own WireTickList threads
+// 'onOpenSummary' one level deeper, so clicking a nested annotation there
+// recurses through this exact same component.
+export function SummarySplitView({
+  kind, nodePath, mainFileTicks, summaryTicksOfKind, targetTickId,
+  summaryTicksChain, absent, onEdit, onAppend, onCycleSwipe, onOpenSummary, onBack,
 }: {
-  branch: string;
   kind: string;
-  ticks: WireTick[];
+  nodePath: string[];
+  mainFileTicks: WireTick[];
+  summaryTicksOfKind: WireTick[];   // oldest-first
+  targetTickId: string;             // which occurrence's coverage to show
+  summaryTicksChain: WireTick[];    // bottom pane's own tickChain
   absent: boolean;
   onEdit: (tickId: string, content: string) => void;
   onAppend: (text: string) => void;
   onCycleSwipe: (tickId: string) => void;
+  onOpenSummary: (kind: string, clickedTickId: string) => void;
+  onBack: () => void;
 }) {
+  const coveredTicks = summaryCoverageFor(mainFileTicks, summaryTicksOfKind, targetTickId);
   const [draft, setDraft] = useState("");
   function submitAppend() {
     const text = draft.trim();
@@ -1214,35 +1262,50 @@ export function SummaryTierPanel({
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{
         flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
-        fontSize: 10, color: "var(--text-ghost)",
+        fontSize: 10, color: "var(--text-ghost)", display: "flex", justifyContent: "space-between",
       }}>
-        {kind} — editable summary tier, directly edited or regenerated by the next summarize pass
+        <span>{summaryKindLabel(kind)}{nodePath.length > 0 ? ` — tier ${nodePath.length}` : ""}</span>
+        <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-ghost)", cursor: "pointer", fontSize: 10 }}>close</button>
       </div>
-      {ticks.length === 0 ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-          {absent ? "Nothing here yet — write below to create it" : "Loading…"}
-        </div>
-      ) : (
-        <div style={{ flex: 1, overflow: "auto" }}>
-          <div style={{ maxWidth: 900, margin: "0 auto", padding: "14px 18px" }}>
-            <WireTickList
-              ticks={ticks}
-              annotationMode="hidden"
-              contextAtoms={EMPTY_TICK_SET}
-              contextAnnotations={EMPTY_TICK_SET}
-              resetKey={`${branch}@${kind}`}
-              rebaseMarker={null}
-              onSetRebaseMarker={() => {}}
-              presenceBars={[]}
-              onEdit={onEdit}
-              onToggleContextAtom={() => {}}
-              onToggleContextAnnotation={() => {}}
-              onCycleSwipe={onCycleSwipe}
-              compact
-            />
-          </div>
-        </div>
-      )}
+      <div style={{ flex: "0 0 40%", overflow: "auto", borderBottom: "2px solid var(--border-subtle)" }}>
+        <WireTickList
+          ticks={coveredTicks}
+          annotationMode="dots"
+          contextAtoms={EMPTY_TICK_SET}
+          contextAnnotations={EMPTY_TICK_SET}
+          resetKey={targetTickId}
+          rebaseMarker={null}
+          onSetRebaseMarker={() => {}}
+          presenceBars={[]}
+          onEdit={() => {}}
+          onToggleContextAtom={() => {}}
+          onToggleContextAnnotation={() => {}}
+          onCycleSwipe={() => {}}
+          compact
+        />
+      </div>
+      <div style={{ flex: 1, overflow: "auto" }}>
+        {absent ? (
+          <div style={{ padding: 14, color: "var(--text-ghost)", fontSize: 12 }}>Nothing here yet — write below to create it</div>
+        ) : (
+          <WireTickList
+            ticks={summaryTicksChain}
+            annotationMode="dots"
+            contextAtoms={EMPTY_TICK_SET}
+            contextAnnotations={EMPTY_TICK_SET}
+            resetKey={nodePath.join("/")}
+            rebaseMarker={null}
+            onSetRebaseMarker={() => {}}
+            presenceBars={[]}
+            onEdit={onEdit}
+            onToggleContextAtom={() => {}}
+            onToggleContextAnnotation={() => {}}
+            onCycleSwipe={onCycleSwipe}
+            onOpenSummary={onOpenSummary}
+            compact
+          />
+        )}
+      </div>
       <div style={{ flexShrink: 0, display: "flex", gap: 6, padding: "8px 14px", borderTop: "1px solid var(--border-subtle)" }}>
         <input
           value={draft} onChange={(e) => setDraft(e.target.value)}

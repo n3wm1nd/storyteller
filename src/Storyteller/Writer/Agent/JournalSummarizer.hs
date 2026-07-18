@@ -15,26 +15,37 @@
 -- way again, recursively, for as many tiers as the content warrants (a
 -- @log_N@-depth tree of summaries, not two hardcoded levels).
 --
--- Every tier writes to the exact same path (@journal.md@) inside its own
--- kind's alternate chain, exactly like
--- 'Storyteller.Writer.Agent.ChapterSummarizer' -- a @Summary@ tick points
--- at an alt-tree; the alt-tree's data is the latest summarized version of
--- the file, at that point; that's the entire read-side contract, and nothing
--- here adds to it -- 'Storyteller.Writer.Agent.SummaryAccess' reads any
--- tier back with zero tier-specific code. What's different from chapter\/
--- lore is only how a tier's *write* side decides what "current content"
--- covers, since @journal.md@ (or a lower tier's own alt-content) is too
--- large to ever resend in full:
+-- Depth is never named. Every tier shares the exact same plain
+-- 'journalKind' -- there is no per-tier kind suffix, and no @level@
+-- parameter threading through this module at all. Instead:
 --
---   * A tier's own alt-content is *cumulative* -- each pass appends a
---     freshly-compressed chunk onto whatever was already there, verbatim
---     (no LLM refold of the existing text -- seeMhis is what keeps the
---     result idempotent: run twice with nothing new in between and
---     nothing changes; delete every @Summary@ tick and rerun and you get
---     the same tree back, chunk boundaries and all, because a boundary is
---     never a function of *when* @summarize@ ran, only of how many raw
---     (or child-tier) items exist between the previous same-kind tick and
---     HEAD.
+--   * Tier 0's own @Summary@ ticks live on the real @source@ branch, right
+--     where 'foldAscend' inserts them, exactly like any other summarizer.
+--
+--   * Once a tier writes a full group, it gives *its own alternate chain*
+--     one further attempt at the identical algorithm --
+--     'Storyteller.Writer.Agent.Summarizer.extendNestedAltChain' opens
+--     that chain as a nested 'Storyteller.Core.Git.BranchOp' scope
+--     (reusing the same phantom @source@ tag) and 'journalSummarize' calls
+--     *itself*, unchanged, against it. A coarser tier's own @Summary@
+--     tick therefore lives one alternate chain deeper than the tier it
+--     summarizes, not on the same chain under a different name -- "how
+--     many tiers up" a tick is is purely a question of how many alternate
+--     chains you'd have to open to reach it, discovered by walking
+--     ('Storyteller.Common.Summary.expandSummary'), never declared.
+--
+--   * Because every tier is now the same algorithm applied to a plain
+--     'journalPath' atom history (raw journal atoms at the very bottom,
+--     each nested tier's own per-group @addAtom@ writes at every level
+--     above), "one item" is uniformly just an @Atom@ tick on @journalPath@
+--     at *any* depth -- there is no more tier-crossing content diff to
+--     compute (the old @journalGrowth@ prefix-strip, needed only because a
+--     shallower tier's cumulative content used to have to be read back and
+--     diffed): a nested tier's own chain only ever contains its own
+--     group-atoms and its own further-nested @Summary@ ticks, so
+--     'foldAscend' walking it back to its own previous same-kind tick (or
+--     its own root) already finds exactly the right items with no
+--     diffing at all.
 --
 --   * A tier's own @Summary@ tick lands exactly where it was generated --
 --     right after the last item it actually consumed -- never pinned to
@@ -47,24 +58,18 @@
 --     later in history, and shows up as this kind's own candidates again
 --     next time with no bookkeeping of any kind.
 --
---   * Recursion is the same algorithm applied one tier up, not a special
---     case: tier @k@'s own "one item" is either a raw journal atom
---     (@k == 0@) or exactly the *new* text tier @k-1@'s own cumulative
---     alt-content grew by at its own most recent tick (a plain prefix
---     strip, since that growth is always an append) -- once tier @k@
---     writes anything, tier @k+1@ gets one attempt at its own threshold,
---     and so on until a tier's own pass produces nothing, which is exactly
---     "not enough material yet," the natural place for the recursion to
---     stop.
+--   * Recursion stops the instant a tier's own pass produces nothing
+--     (not enough material yet at that tier, which by construction means
+--     nothing higher could have new material either).
 --
 -- One real caveat, not a bug: if the tick chain itself is later edited
--- (an atom deleted or inserted retroactively), this idempotency guarantee
--- no longer holds exactly -- but at that point the existing summaries are
--- either already wrong (the edit changed something a summary depended on)
--- or the edit was minor enough that the boundary drift doesn't matter.
+-- (an atom deleted or inserted retroactively), the idempotency guarantee
+-- ("run twice with nothing new in between and nothing changes") no longer
+-- holds exactly -- but at that point the existing summaries are either
+-- already wrong (the edit changed something a summary depended on) or the
+-- edit was minor enough that the boundary drift doesn't matter.
 module Storyteller.Writer.Agent.JournalSummarizer
-  ( journalKindFor
-  , journalGrowth
+  ( journalKind
   , journalSummarize
   , journalChunkAgent
   , currentSheet
@@ -74,26 +79,26 @@ module Storyteller.Writer.Agent.JournalSummarizer
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
-import Data.Maybe (fromMaybe)
 import Control.Monad (void)
-import Polysemy (Members, Sem)
+import Polysemy (Members, Sem, raise)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
+import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
-import Storyteller.Common.Summary (Summary(..), lastSummaryOf, summaryContent)
+import Storyteller.Common.Summary (Summary(..), lastSummaryOf)
 import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp, runStorage, foldAscend)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Core.Types (Tick, TickId, fromTick)
-import Storyteller.Writer.Agent.Summarizer (extendAltChain, withTrailingNewline)
+import Storyteller.Core.Types (Tick, TickId(..), fromTick)
+import Storyteller.Writer.Agent.Summarizer (extendAltChain, extendNestedAltChain, withTrailingNewline)
 import Storyteller.Writer.Library (journalPath)
 
 -- | Every tier groups in batches of 10 -- "10 atoms" for tier 0, "10
@@ -102,52 +107,50 @@ import Storyteller.Writer.Library (journalPath)
 defaultJournalGroupSize :: Int
 defaultJournalGroupSize = 10
 
--- | Tier @n@'s own 'Storyteller.Common.Summary.summaryKind' tag. Purely
---   internal bookkeeping -- nothing outside this module (and
---   'Storyteller.Writer.Agent.SummaryAccess', which only ever takes a
---   plain @kind@ list to read from) needs to construct or parse these.
-journalKindFor :: Int -> Text
-journalKindFor level = "journal/L" <> T.pack (show level)
+-- | The one plain kind every tier of this recursive family shares -- see
+--   the module Haddock for why there's no per-tier suffix.
+journalKind :: Text
+journalKind = "journal"
 
 -- | The per-tier fold state 'journalSummarize' threads through
 --   'foldAscend': @caBuffer@ is items collected since this tier's last
---   write (raw atom text at tier 0, tier-@(n-1)@'s own newly-grown text at
---   tier @n@), @caAltHead@ is this tier's own alt-chain head as of its
---   last write (seeded from whatever this tier's most recent @Summary@
---   tick already held, if any -- this tier's own *cumulative content* is
---   never carried here as a value, only ever read back on demand via
---   'summaryContent', since every write is now a real 'Storage.Ops.addAtom'
---   append and the alt chain itself already accumulates it), @caChildSeen@
---   is only meaningful at tier @n > 0@ -- the child tier's cumulative
---   content as of the last child tick this fold has already consumed, so
---   the next one's *growth* (not its whole, ever-larger blob) is what gets
---   buffered -- and @caWrote@ records whether this pass wrote anything at
---   all, the signal 'journalSummarize' uses to decide whether the next
---   tier up gets its own attempt.
+--   write, @caAltHead@ is this tier's own alt-chain head as of its last
+--   write (seeded from whatever this tier's most recent @Summary@ tick
+--   already held, if any -- this tier's own *cumulative content* is never
+--   carried here as a value, only ever read back on demand, since every
+--   write is a real 'Storage.Ops.addAtom' append and the alt chain itself
+--   already accumulates it), @caLastTick@ is the most recently (re)minted
+--   @Summary@ tick's own id -- what a further, nested attempt needs to
+--   know *which* tick to re-mint as its own alternate chain grows deeper
+--   (see 'Storyteller.Writer.Agent.Summarizer.extendNestedAltChain') --
+--   and @caWrote@ records whether this pass wrote anything at all, the
+--   signal 'journalSummarize' uses to decide whether a nested attempt one
+--   tier up is worth making.
 data ChunkAcc = ChunkAcc
-  { caBuffer    :: [Text]
-  , caAltHead   :: Maybe TickId
-  , caChildSeen :: Text
-  , caWrote     :: Bool
+  { caBuffer   :: [Text]
+  , caAltHead  :: Maybe TickId
+  , caLastTick :: Maybe TickId
+  , caWrote    :: Bool
   }
 
--- | Run tier @level@'s summarization pass, then -- if it wrote anything --
---   give tier @level + 1@ its own attempt, recursively, until a tier's own
---   pass produces nothing (not enough material yet at that tier, which by
---   construction means nothing higher could have new material either).
---   Returns whether *this* tier wrote anything, so a caller triggering a
---   single tier directly (mostly for tests) can tell.
+-- | Run this chain's own summarization pass, then -- if it wrote anything
+--   -- give its own alternate chain one further, nested attempt at the
+--   identical algorithm, recursively, until a pass produces nothing (not
+--   enough material yet, which by construction means nothing deeper could
+--   have new material either). Returns whether *this* chain's own pass
+--   wrote anything, so a caller triggering one level directly (mostly for
+--   tests) can tell.
 --
---   'Storyteller.Core.Git.foldAscend' does the actual work: descend to
---   tier @level@'s own previous @Summary@ tick (or root, on a first pass),
---   then replay the tail back up, handing every tick to this module's own
---   step function, which buffers raw items and, on crossing
+--   'Storyteller.Core.Git.foldAscend' does the actual per-level work:
+--   descend to this chain's own previous @Summary@ tick (or root, on a
+--   first pass), then replay the tail back up, handing every tick to this
+--   module's own step function, which buffers raw items and, on crossing
 --   'defaultJournalGroupSize', compresses them with one LLM call, extends
---   this tier's alternate chain by one commit (previous cumulative content
---   plus the newly compressed chunk, appended -- never an LLM refold of
---   what was already there), and writes a new @Summary@ tick right where
---   the fold currently stands -- exactly after the last item it consumed,
---   never pinned to real HEAD.
+--   this chain's alternate chain by one commit (previous cumulative
+--   content plus the newly compressed chunk, appended -- never an LLM
+--   refold of what was already there), and writes a new @Summary@ tick
+--   right where the fold currently stands -- exactly after the last item
+--   it consumed, never pinned to real HEAD.
 --
 --   Takes the compression step as a parameter, same "no agent's real
 --   'queryLLM' call is unit tested" convention as
@@ -160,84 +163,62 @@ journalSummarize
   :: forall source r
   .  Members '[BranchOp source, StoryStorage, Git, Fail, Logging] r
   => ([Text] -> Sem r Text)  -- ^ compress one full group, oldest first
-  -> Int -> Sem r Bool
-journalSummarize compress level = do
-  let kind = journalKindFor level
-  info $ "journalSummarize: scanning tier " <> kind <> " for unconsumed "
-      <> (if level == 0 then "journal.md atoms" else "tier " <> journalKindFor (level - 1) <> " growth")
-      <> " since its own last summary"
-  mSelf <- runStorage @source (lastSummaryOf kind)
-  selfCumulative <- case mSelf of
-    Nothing     -> return ""
-    Just (_, s) -> runStorage @source (fromMaybe "" <$> summaryContent s journalPath)
+  -> Sem r Bool
+journalSummarize compress = do
+  info "journalSummarize: scanning this chain for unconsumed journal atoms since its own last summary"
+  mSelf <- runStorage @source (lastSummaryOf journalKind)
   let target  = fst <$> mSelf
       initAcc = ChunkAcc
-        { caBuffer    = []
-        , caAltHead   = summaryAltHead . snd <$> mSelf
-        , caChildSeen = selfCumulative
-        , caWrote     = False
+        { caBuffer   = []
+        , caAltHead  = summaryAltHead . snd <$> mSelf
+        , caLastTick = fst <$> mSelf
+        , caWrote    = False
         }
-  final <- foldAscend @source target initAcc (step kind)
+  final <- foldAscend @source target initAcc step
   if caWrote final
-    then do
-      info $ "journalSummarize: tier " <> kind <> " wrote at least one new group -- giving tier "
-          <> journalKindFor (level + 1) <> " its own attempt"
-      void (journalSummarize @source compress (level + 1))
-    else info $ "journalSummarize: tier " <> kind <> " had nothing new (or not enough to fill a group yet) -- stopping here"
+    then case (caLastTick final, caAltHead final) of
+      (Just tid, Just altHead) -> do
+        info "journalSummarize: this chain wrote at least one new group -- giving its own alternate chain a nested attempt"
+        void $ extendNestedAltChain @source journalKind tid (Core.ObjectHash (unTickId altHead))
+          (journalSummarize @source (raise . compress))
+      _ -> return ()  -- unreachable: caWrote is only ever set alongside both fields
+    else info "journalSummarize: nothing new (or not enough to fill a group yet) here -- stopping"
   return (caWrote final)
   where
-    -- | One tick, as 'foldAscend' replays it: at tier 0, only raw atoms on
-    --   @journal.md@ itself count as an item; at tier @n > 0@, only
-    --   @Summary@ ticks of tier @n - 1@'s own kind do, contributing
-    --   whatever text that tick's own alt-content grew by since the last
-    --   tier-@(n-1)@ tick this fold has already seen (see 'journalGrowth').
-    --   Everything else (notes, other files' atoms, unrelated ticks
-    --   interleaved on the same branch) passes through untouched.
-    step :: Text -> ChunkAcc -> Tick -> Sem r ChunkAcc
-    step kind acc t
-      | level == 0 = case fromTick @Atom t of
-          Just (Atom f _) | f == journalPath -> considerItem kind acc (contentFor journalPath t)
-          _ -> return acc
-      | otherwise = case fromTick @Summary t of
-          Just s | summaryKind s == journalKindFor (level - 1) -> do
-            childContent <- runStorage @source (fromMaybe "" <$> summaryContent s journalPath)
-            considerItem kind (acc { caChildSeen = childContent }) (journalGrowth (caChildSeen acc) childContent)
-          _ -> return acc
+    -- | One tick, as 'foldAscend' replays it: only atoms on @journalPath@
+    --   count as an item, at any depth -- everything else (notes, other
+    --   files' atoms, an unrelated tick interleaved on the same chain)
+    --   passes through untouched.
+    step :: ChunkAcc -> Tick -> Sem r ChunkAcc
+    step acc t = case fromTick @Atom t of
+      Just (Atom f _) | f == journalPath -> considerItem acc (contentFor journalPath t)
+      _ -> return acc
 
     -- | Once a full group accumulates, commit it as a real 'Storage.Ops.addAtom'
-    --   append onto this tier's own alt-chain lifetime for @journalPath@ --
-    --   not a whole-file blob replace -- so the alt chain gains genuine
+    --   append onto this chain's own alt-chain lifetime for @journalPath@
+    --   -- not a whole-file blob replace -- so the alt chain gains genuine
     --   per-group Atom\/Tick history of its own, the same vocabulary a
     --   normal branch's own file history is written in. Safe against
     --   'Storyteller.Writer.Agent.Summarizer.runSummarizer's own "never
     --   split one pass across more than one alt-chain commit" invariant
-    --   (see that module's Haddock): unlike a chapter/lore pass, which can
-    --   touch several files in one call, a journal tier only ever writes
+    --   (see that module's Haddock): a journal chain only ever writes
     --   @journalPath@, so one group is still always exactly one commit.
-    considerItem :: Text -> ChunkAcc -> Text -> Sem r ChunkAcc
-    considerItem kind acc item = do
+    considerItem :: ChunkAcc -> Text -> Sem r ChunkAcc
+    considerItem acc item = do
       let buffer' = caBuffer acc ++ [item]
       if length buffer' < defaultJournalGroupSize
         then return acc { caBuffer = buffer' }
         else do
-          info $ "journalSummarize: tier " <> kind <> " compressing a full group of "
-              <> T.pack (show (length buffer')) <> " items"
+          info $ "journalSummarize: compressing a full group of " <> T.pack (show (length buffer')) <> " items"
           compressed <- compress buffer'
           (_, newAltHead) <- extendAltChain (caAltHead acc) (Ops.addAtom journalPath compressed)
-          _ <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
-          return acc { caBuffer = [], caAltHead = Just newAltHead, caWrote = True }
-
--- | The text a tier's own cumulative alt-content grew by, given what it
---   held at the last child tick this fold has already consumed
---   (@seen@) and what it holds now (@now@) -- always exactly the
---   trailing append, since a tier's alt-content is only ever grown by
---   appending, never rewritten (see the module Haddock's idempotency
---   argument). Falls back to the whole of @now@ if @seen@ somehow isn't a
---   prefix of it -- shouldn't happen given that invariant, but a
---   nonsensical mismatch is still better read as "everything is new" than
---   silently losing content.
-journalGrowth :: Text -> Text -> Text
-journalGrowth seen now = fromMaybe now (T.stripPrefix seen now)
+          newTick <- runStorage @source (Tick.storeAs (Summary journalKind newAltHead))
+          return acc
+            { caBuffer   = []
+            , caAltHead  = Just newAltHead
+            , caLastTick = Just (TickId (Core.unObjectHash newTick))
+            , caWrote    = True
+            }
 
 -- | Compress one full group of raw items (raw journal entries at tier 0,
 --   a lower tier's own newly-grown text at tier @n > 0@) into one dense

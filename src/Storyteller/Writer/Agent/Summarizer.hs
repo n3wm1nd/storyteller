@@ -5,6 +5,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Generic summarizer machinery: given a @source@ branch scope,
 --   'runSummarizer' finds whatever's new since the last summary of a
@@ -28,12 +29,13 @@ module Storyteller.Writer.Agent.Summarizer
   ( runSummarizer
   , runSummarizerForPath
   , extendAltChain
+  , extendNestedAltChain
   , withTrailingNewline
   ) where
 
 import Prelude hiding (writeFile)
 
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -48,7 +50,7 @@ import qualified Storage.Ops as Ops
 import Storage.Query (lifetimeAtoms)
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Summary (Summary(..), bootstrapAltHead, lastSummaryOf, ticksSinceLastSummary)
-import Storyteller.Core.Git (BranchOp, atGeneric, runStorage)
+import Storyteller.Core.Git (BranchOp, atGeneric, runBranchOpGitFrom, runStorage)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (Tick(..), TickId(..))
 import Storyteller.Writer.Agent.SummaryAccess (rawContent, unsummarizedTailSince)
@@ -71,6 +73,53 @@ extendAltChain mPrev action = do
     Nothing         -> bootstrapAltHead
   (result, (newHead, _)) <- Core.runStoreT seed action
   return (result, TickId (Core.unObjectHash newHead))
+
+-- | Give @tid@'s own alternate chain (currently at @seed@) one further,
+--   nested attempt at whatever @inner@ does with it -- the write-side half
+--   of a hierarchical summarizer (see
+--   "Storyteller.Writer.Agent.JournalSummarizer"): @inner@ runs against a
+--   *freshly opened* 'BranchOp' @chain@ scope seeded at @seed@, reusing
+--   the very same phantom tag @chain@ its caller is already inside
+--   (Polysemy's 'interpret'-based dispatch means this nested interpreter
+--   shadows the outer one correctly within @inner@ -- the same shadowing
+--   'Storyteller.Core.Git.atGeneric'\/'Storyteller.Core.Git.foldAscend'
+--   already rely on for scopes nested within a replay).
+--
+--   Deliberately does *not* re-mint on 'Storyteller.Core.Git.runBranchOpGitFrom's
+--   own per-write @onAdvance@ -- that fires on *every* internal head
+--   movement, including ones that are pure bookkeeping, not new content:
+--   @inner@ is typically itself a 'Storyteller.Core.Git.foldAscend'-driven
+--   call (see 'Storyteller.Writer.Agent.JournalSummarizer.journalSummarize'),
+--   which descends by repeatedly moving this very scope's head *backward*
+--   (via 'Storage.Core.drop') before replaying forward again -- reacting to
+--   each of those intermediate moves would re-mint @tid@ mid-descent,
+--   against a head that isn't even the settled result yet, and can cascade
+--   without ever converging. Instead, @onAdvance@ is a no-op, and once
+--   @inner@ has fully run, this reads the scope's own final head exactly
+--   once: only if it actually differs from @seed@ (i.e. @inner@ really did
+--   write something) does @tid@ get re-minted (via 'atGeneric', exactly
+--   'Server.Writer.File.Connection.openTarget's own @mintSummaryTick@) to
+--   point at it -- otherwise whatever @inner@ wrote, however faithfully,
+--   would just be an unreachable git object the instant this call returns:
+--   an alternate chain has no ref of its own, so the *only* thing that
+--   keeps any of its commits reachable is some 'Summary' tick still naming
+--   the tip (see "Storyteller.Common.Summary"'s module Haddock).
+extendNestedAltChain
+  :: forall chain r a
+  .  Members '[BranchOp chain, Git, StoryStorage, Fail] r
+  => Text                                 -- ^ kind to re-mint @tid@ under -- unchanged across nesting depth
+  -> TickId                               -- ^ tid: the Summary tick whose own alternate chain is being extended
+  -> Core.ObjectHash                      -- ^ seed: tid's own summaryAltHead, i.e. that chain's current tip
+  -> Sem (BranchOp chain : r) a
+  -> Sem r a
+extendNestedAltChain kind tid seed inner = do
+  (result, finalHead) <- runBranchOpGitFrom @chain seed (\_ -> return ()) $ do
+    a <- inner
+    h <- runStorage @chain Core.headHash
+    return (a, h)
+  when (finalHead /= seed) $
+    void (atGeneric @chain tid (runStorage @chain (Tick.storeAs (Summary kind (TickId (Core.unObjectHash finalHead))))))
+  return result
 
 -- | Every per-domain summarizer's own LLM call should route its raw
 --   output through this before returning: a summary is never the last

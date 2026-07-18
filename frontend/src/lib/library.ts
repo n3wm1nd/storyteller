@@ -94,21 +94,31 @@ function isLoreEligiblePath(path: string): boolean {
   return classifyPath(path) === "other" && !isRootFile("sheet.md") && !isRootFile("journal.md");
 }
 
-// Mirrors Storyteller.Writer.Agent.JournalSummarizer.journalKindFor --
-// journal.md's summary tree is a recursive, open-ended tower of tiers
-// (tier 0 = raw entries, tier n = tier (n-1)'s own chunks), not two fixed
-// kinds -- listed generously (12 tiers covers 10^11 raw entries at the
-// default group size of 10) since SummaryAccess.zoomLevels stops at the
-// first tier that doesn't actually exist yet.
-function journalKindFor(level: number): string {
-  return `journal/L${level}`;
-}
-
+// Each entry is one independent family's own plain kind label -- not a
+// pre-enumerated tier list: journal.md's summary chain is a recursive,
+// open-ended tower of tiers (tier 0 = raw entries, tier n = tier (n-1)'s
+// own chunks), all sharing one plain "journal" kind -- depth is a
+// structural fact discovered by opening a nested connection one hop at a
+// time (see Server/Writer/File/Connection.hs's openTarget), never a naming
+// convention or something this list needs to enumerate.
 export function summaryKindsFor(path: string): string[] {
   if (classifyPath(path) === "unit") return ["prose/chapter"];
-  if (path === JOURNAL_PATH) return Array.from({ length: 12 }, (_, i) => journalKindFor(i));
+  if (path === JOURNAL_PATH) return ["journal"];
   if (isLoreEligiblePath(path)) return ["lore/article"];
   return [];
+}
+
+// Display label for a summarizer kind. Each family is one plain kind label
+// -- no per-tier kind suffixes -- a recursive family like "journal" shows
+// its own depth purely by how many hops deep the split view's own nesting
+// currently is, never in the label.
+export function summaryKindLabel(kind: string): string {
+  switch (kind) {
+    case "prose/chapter": return "Chapter summary";
+    case "lore/article":  return "Article summary";
+    case "journal":       return "Journal summary";
+    default:              return kind;
+  }
 }
 
 // Natural-sort comparator, mirroring Storyteller.Writer.Library.naturalKey

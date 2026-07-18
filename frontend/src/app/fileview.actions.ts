@@ -149,27 +149,40 @@ export function closeFile(path: string) {
   removeConn(`file:${path}`);
 }
 
-function summaryKey(path: string, kind: string): string {
-  return `${path}::${kind}`;
+// nodePath, when non-empty, is a chain of tickIds from a summary family's
+// top-level tick down to one specific nested node the client has already
+// rendered (its ids came from one of that node's own per-occurrence
+// WireTicks — see fileview.tsx's SummarySplitView) -- opening it is the one
+// place the split view still needs a fresh connection, since a nested
+// node's own alternate chain is a genuinely different underlying chain
+// from whatever's already open (see Server.Writer.File.Connection's own
+// module Haddock on the "#tid1#tid2..." target grammar).
+function summaryKey(path: string, kind: string, nodePath: string[] = []): string {
+  return nodePath.length === 0 ? `${path}::${kind}` : `${path}::${kind}::${nodePath.join("/")}`;
+}
+
+function summaryTarget(activeBranch: string, kind: string, nodePath: string[]): string {
+  return nodePath.length === 0 ? `${activeBranch}@${kind}` : `${activeBranch}@${kind}#${nodePath.join("#")}`;
 }
 
 // A summary tier is the exact same /branch/{name}/file/{path} connection
 // as any other file (see Server.Writer.File.Connection's own Haddock) --
 // this differs from openFile only in what it passes for the branch
-// segment ("{activeBranch}@{kind}" instead of "{activeBranch}") and where
-// it stores the result. No separate protocol, no read-only mode: the
-// server resolves that string to the alternate chain's current head and
-// mints a fresh Summary tick on write, same as a hand-run summarize pass.
-export async function openSummaryTier(path: string, kind: string): Promise<void> {
+// segment ("{activeBranch}@{kind}", optionally with "#tid..." hops for a
+// nested node, instead of "{activeBranch}") and where it stores the
+// result. No separate protocol, no read-only mode: the server resolves
+// that string to the alternate chain's current head and mints a fresh
+// Summary tick on write, same as a hand-run summarize pass.
+export async function openSummaryTier(path: string, kind: string, nodePath: string[] = []): Promise<void> {
   const { activeBranch, openSummaries } = getServerCache();
   if (!activeBranch) return;
-  const key = summaryKey(path, kind);
+  const key = summaryKey(path, kind, nodePath);
   if (openSummaries[key]) return;
 
   const label = `summary:${key}`;
   setConnStatus(label, "connecting");
 
-  const sc = fileConn(`${activeBranch}@${kind}`, path);
+  const sc = fileConn(summaryTarget(activeBranch, kind, nodePath), path);
 
   sc.onStatus((s) => {
     if (s !== "connected") setConnStatus(label, "connecting");
@@ -201,7 +214,7 @@ export async function openSummaryTier(path: string, kind: string): Promise<void>
     } else if (evt.type === "tick.remap") {
       // Summary-tier atom ids never enter contextAtoms/contextAnnotations
       // or a rebase marker (this panel has no selection/rebase concept of
-      // its own — see fileview.tsx's SummaryTierPanel) -- nothing to remap.
+      // its own — see fileview.tsx's SummarySplitView) -- nothing to remap.
     } else if (evt.type === "error") {
       setError(evt.message);
     }
@@ -218,8 +231,8 @@ export async function openSummaryTier(path: string, kind: string): Promise<void>
   }
 }
 
-export function closeSummaryTier(path: string, kind: string) {
-  const key = summaryKey(path, kind);
+export function closeSummaryTier(path: string, kind: string, nodePath: string[] = []) {
+  const key = summaryKey(path, kind, nodePath);
   getServerCache().openSummaries[key]?.conn.close();
   mirrorServerEvent((s) => {
     const next = { ...s.openSummaries };
@@ -229,16 +242,16 @@ export function closeSummaryTier(path: string, kind: string) {
   removeConn(`summary:${key}`);
 }
 
-export function editSummaryAtom(path: string, kind: string, tickId: string, content: string) {
-  getServerCache().openSummaries[summaryKey(path, kind)]?.conn.send({ type: "edit.atom", tickId, content });
+export function editSummaryAtom(path: string, kind: string, tickId: string, content: string, nodePath: string[] = []) {
+  getServerCache().openSummaries[summaryKey(path, kind, nodePath)]?.conn.send({ type: "edit.atom", tickId, content });
 }
 
-export function appendSummary(path: string, kind: string, text: string) {
-  getServerCache().openSummaries[summaryKey(path, kind)]?.conn.send({ type: "chat.append", content: text });
+export function appendSummary(path: string, kind: string, text: string, nodePath: string[] = []) {
+  getServerCache().openSummaries[summaryKey(path, kind, nodePath)]?.conn.send({ type: "chat.append", content: text });
 }
 
-export function cycleSummarySwipe(path: string, kind: string, tickId: string) {
-  getServerCache().openSummaries[summaryKey(path, kind)]?.conn.send({ type: "atom.swipe.cycle", tickId });
+export function cycleSummarySwipe(path: string, kind: string, tickId: string, nodePath: string[] = []) {
+  getServerCache().openSummaries[summaryKey(path, kind, nodePath)]?.conn.send({ type: "atom.swipe.cycle", tickId });
 }
 
 // rebaseMarker (see lib/utils.tailLeadTicks / wsHelpers.atRebase) is the
@@ -421,9 +434,12 @@ export function summarizeFile(branch: string, kind: string, onDone?: () => void)
 // never touching any other file even if it also happens to be stale. No
 // temporary connection dance needed the way the branch-wide command
 // requires — this file's own connection already pushes the resulting
-// update the normal way.
+// update the normal way. Routed through 'sendFileCommand' like any other
+// mutating command, so a rebase marker (if set) becomes the new summary
+// occurrence's own coverage endpoint instead of always recompressing to
+// the live file end (see wsHelpers.atRebase).
 export function summarizeThisFile(path: string) {
-  getServerCache().openFiles[path]?.conn.send({ type: "summarize.file" });
+  sendFileCommand(path, { type: "summarize.file" });
 }
 
 export function appendToFile(path: string, content: string) {

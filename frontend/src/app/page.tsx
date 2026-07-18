@@ -22,7 +22,7 @@ import { syncTasks, suggestTasks } from "./tasks-panel.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, TextEditPanel, SummaryTierPanel, type PresenceBar } from "./fileview";
+import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, TextEditPanel, SummarySplitView, type PresenceBar } from "./fileview";
 import { summaryKindsFor } from "@/lib/library";
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
@@ -31,25 +31,6 @@ import { CodexTab } from "./codex";
 import { AgentsTab } from "./agentstab";
 import { isOutlineFile, isChatFile } from "@/lib/agents";
 import { UndoTimeline } from "./undo-timeline";
-
-// Display label for a summarizer kind — see lib/library.ts's
-// summaryKindsFor for which kinds a given file can offer. journal.md's own
-// kinds are "journal/L0", "journal/L1", ... (see
-// Storyteller.Writer.Agent.JournalSummarizer.journalKindFor) — tier 0 reads
-// as "Chunks", every tier above it as "Level N" (rarely reached in
-// practice; the tree only grows a level once the one below it has produced
-// a full group's worth of its own output).
-function summaryKindLabel(kind: string): string {
-  switch (kind) {
-    case "prose/chapter": return "Chapter summary";
-    case "lore/article":  return "Article summary";
-    case "journal/L0":    return "Chunks";
-    default: {
-      const m = /^journal\/L(\d+)$/.exec(kind);
-      return m ? `Level ${m[1]}` : kind;
-    }
-  }
-}
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
 
@@ -238,10 +219,22 @@ export default function Home() {
   const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"blocks" | "text" | "source">("blocks");
-  // null = raw (whatever viewMode shows); otherwise the summarizer kind
-  // currently displayed instead, via SummaryTierPanel — its own connection
-  // (openSummaries) is opened/closed by the effect below as this changes.
-  const [summaryKind, setSummaryKind] = useState<string | null>(null);
+  // null = raw (whatever viewMode shows); otherwise the summary family
+  // currently displayed instead, via SummarySplitView — one alt-chain
+  // connection per family (openSummaries), opened/closed by the effect
+  // below as this changes. nodePath is a chain of tickIds hopping into
+  // successively deeper *nested* tiers (see Server/Writer/File/Connection.hs's
+  // openTarget) — not "which historical occurrence," since a family is one
+  // continuous chain, not a set of independently-targetable occurrences
+  // (resummarizing just appends more ticks to it, like ordinary file edits).
+  const [viewingSummary, setViewingSummary] = useState<{ kind: string; nodePath: string[] } | null>(null);
+  // Which occurrence's own anchor the split view's top (read-only coverage)
+  // pane should slice against — set from whichever inline annotation was
+  // actually clicked; 'null' (toolbar button, post-summarize auto-open)
+  // defers to the latest occurrence. Purely a rendering detail for that one
+  // pane — it has no bearing on which connection is open or what the
+  // bottom (editable) pane shows.
+  const [coverageAnchor, setCoverageAnchor] = useState<string | null>(null);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
@@ -294,18 +287,21 @@ export default function Home() {
   // The Text/Source view mode is per-file, ephemeral UI state — never carry
   // it over to whatever gets selected next (a stale unsaved buffer for a
   // different path would be actively misleading). Same for which summary
-  // tier (if any) is being shown.
-  useEffect(() => { setViewMode("blocks"); setSummaryKind(null); }, [selectedFile]);
+  // family (if any) is being shown.
+  useEffect(() => { setViewMode("blocks"); setViewingSummary(null); setCoverageAnchor(null); }, [selectedFile]);
 
-  // A summary tier's own connection — opened only while its tab is
-  // actually selected, closed the moment it isn't (a different tab, a
-  // different file, or navigating away entirely) rather than kept alive
-  // speculatively. See fileview.actions.ts's openSummaryTier.
+  // A summary family's own connection (its top-level chain, or one nested
+  // 'nodePath' hops deep) — opened only while its tab is actually selected,
+  // closed the moment it isn't (a different tab, a different file, or
+  // navigating away entirely) rather than kept alive speculatively. See
+  // fileview.actions.ts's openSummaryTier. 'viewingSummary' changes
+  // atomically (kind + nodePath together), so this one effect covers both
+  // switching families and hopping deeper/shallower within one.
   useEffect(() => {
-    if (!selectedFile || !summaryKind) return;
-    openSummaryTier(selectedFile, summaryKind);
-    return () => closeSummaryTier(selectedFile, summaryKind);
-  }, [selectedFile, summaryKind]);
+    if (!selectedFile || !viewingSummary) return;
+    openSummaryTier(selectedFile, viewingSummary.kind, viewingSummary.nodePath);
+    return () => closeSummaryTier(selectedFile, viewingSummary.kind, viewingSummary.nodePath);
+  }, [selectedFile, viewingSummary]);
 
   const handleEditAtom = useCallback((tickId: string, content: string) => {
     if (selectedFile) editAtom(selectedFile, tickId, content);
@@ -324,7 +320,6 @@ export default function Home() {
     [fileChainTicks, fileChainHead],
   );
   const atomCount       = useMemo(() => fileTicks.filter((t) => t.kind === "atom").length, [fileTicks]);
-  const annotationCount = useMemo(() => fileTicks.filter((t) => t.kind !== "atom").length, [fileTicks]);
   // Synthetic "summary" ticks (see Server.Writer.File.summaryTicksFor)
   // never sit on the chain 'tickChain' walks from head — they carry no
   // parent — so they're read straight off the raw per-connection map
@@ -333,28 +328,52 @@ export default function Home() {
     () => Object.values(fileChainTicks).filter((t) => t.kind === "summary"),
     [fileChainTicks],
   );
-  // Every tier that already has a tick, plus exactly one more -- the next
-  // kind in line that doesn't yet ("stop at the first gap", the same rule
-  // Storyteller.Writer.Agent.SummaryAccess.zoomLevels itself uses) -- so a
-  // never-summarized file still offers one tab to manually create its
-  // first tier, without listing all twelve of journal.md's generous
-  // L0..L11 candidates up front.
-  const availableSummaryKinds = useMemo(() => {
-    if (!selectedFile) return [];
-    const allKinds = summaryKindsFor(selectedFile);
-    const existing = allKinds.filter((k) => summaryTicks.some((t) => t.fields?.kind === k));
-    const nextNew = allKinds.find((k) => !existing.includes(k));
-    return nextNew ? [...existing, nextNew] : existing;
-  }, [selectedFile, summaryTicks]);
-  // The currently-selected tier's own connection (see the effect above
+  const annotationCount = useMemo(
+    () => fileTicks.filter((t) => t.kind !== "atom").length + summaryTicks.length,
+    [fileTicks, summaryTicks],
+  );
+  // The main view's own WireTickList needs summary ticks folded in
+  // alongside the real chain so its annotation-anchoring logic (which
+  // operates on whatever 'ticks' it's given, matching each non-atom
+  // tick's own refs against the atoms present) picks them up as inline
+  // annotations — 'fileTicks' alone never contains them (see above).
+  // 'fileTicks' itself stays the pure real-atom chain for
+  // 'summaryCoverageFor'/'SummarySplitView', which slices strictly by
+  // atom position and has no use for summary ticks mixed in.
+  const mainViewTicks = useMemo(() => [...fileTicks, ...summaryTicks], [fileTicks, summaryTicks]);
+  // The currently-viewed family's own connection (see the effect above
   // that opens/closes it) — a plain second FileConn, not a special case;
   // 'summaryTicksChain' walks it exactly the way 'fileTicks' walks the
-  // real file's own.
-  const summaryConn = selectedFile && summaryKind ? openSummaries[`${selectedFile}::${summaryKind}`] : undefined;
+  // real file's own. This is genuinely the *whole* current state of that
+  // one alt-chain (its own live edit history), same as any other file —
+  // not one occurrence among several (see 'viewingSummary's own doc).
+  const summaryKey = selectedFile && viewingSummary
+    ? `${selectedFile}::${viewingSummary.kind}${viewingSummary.nodePath.length ? `::${viewingSummary.nodePath.join("/")}` : ""}`
+    : null;
+  const summaryConn = summaryKey ? openSummaries[summaryKey] : undefined;
   const summaryTicksChain = useMemo(
     () => tickChain(summaryConn?.ticks ?? {}, summaryConn?.head ?? null),
     [summaryConn],
   );
+  // Every per-occurrence "summary" WireTick of the currently-viewed kind
+  // (see Server.Writer.File.summaryTicksFor), sorted oldest-first by each
+  // occurrence's own anchor's position in 'fileTicks' — 'summaryTicks'
+  // itself comes from an unordered Object.values(...) dump, so wire-push
+  // order isn't preserved through that collapse; this sort is what
+  // 'summaryCoverageFor' needs to find "the previous occurrence" correctly.
+  const summaryTicksOfKind = useMemo(() => {
+    if (!viewingSummary) return [];
+    const anchorIdx = new Map(fileTicks.map((t, i) => [t.tickId, i]));
+    return summaryTicks
+      .filter((t) => t.fields?.kind === viewingSummary.kind)
+      .slice()
+      .sort((a, b) => (anchorIdx.get(a.refs[0]) ?? -1) - (anchorIdx.get(b.refs[0]) ?? -1));
+  }, [summaryTicks, viewingSummary, fileTicks]);
+  // Which occurrence's own anchor the split view's top pane slices
+  // against — whichever annotation was actually clicked (coverageAnchor),
+  // or the latest occurrence when opened without a specific click (a
+  // toolbar button, or landing here right after a fresh summarize pass).
+  const targetTickId = coverageAnchor ?? summaryTicksOfKind[summaryTicksOfKind.length - 1]?.tickId ?? "";
   // Shared by the toolbar's "Summarize" button and the "/summarize" input
   // command (see lib/commands.ts). Scoped to exactly this file (see
   // Server.Writer.File.summarizePath's own Haddock: never regenerates
@@ -364,8 +383,14 @@ export default function Home() {
   // just dispatched per-file now like everything else.
   const summarizeCurrentFile = useCallback(() => {
     if (!selectedFile || !activeBranch) return;
-    if (summaryKindsFor(selectedFile).length === 0) return;
+    const kinds = summaryKindsFor(selectedFile);
+    if (kinds.length === 0) return;
     summarizeThisFile(selectedFile);
+    // Land directly in the freshly-generated content — no specific
+    // occurrence was clicked, so the split view's top pane defers to the
+    // latest one (coverageAnchor stays null).
+    setCoverageAnchor(null);
+    setViewingSummary({ kind: kinds[0], nodePath: [] });
   }, [selectedFile, activeBranch]);
   // Presence is scoped to the open file (a scene), not the whole branch —
   // see WRITER.md — so this folds the file's own chain, not the branch-wide
@@ -661,29 +686,15 @@ export default function Home() {
                     Generate beat sheets
                   </button>
                 )}
-                {selectedFile && activeBranch && summaryKindsFor(selectedFile).length > 0 && <>
-                  {availableSummaryKinds.map((kind, i) => (
-                    <button
-                      key={kind}
-                      onClick={() => setSummaryKind(summaryKind === kind ? null : kind)}
-                      title={
-                        summaryKind === kind
-                          ? "Back to raw — the live, editable content"
-                          : `${summaryKindLabel(kind)} — editable, from the last summarize pass (or manually written)`
-                      }
-                      style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: i === 0 ? 8 : 4, background: summaryKind === kind ? "var(--amber-tint)" : "transparent", border: "1px solid " + (summaryKind === kind ? "var(--amber-border)" : "var(--border-subtle)"), color: summaryKind === kind ? "var(--amber)" : "var(--text-dim)" }}
-                    >
-                      {summaryKindLabel(kind)}
-                    </button>
-                  ))}
+                {selectedFile && activeBranch && summaryKindsFor(selectedFile).length > 0 && (
                   <button
                     onClick={summarizeCurrentFile}
-                    title="Run a summarize pass — free to call, only does LLM work once there's actually something new to compress (also available as /summarize)"
-                    style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 4, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
+                    title="Run a summarize pass — free to call, only does LLM work once there's actually something new to compress (also available as /summarize). The result appears as an inline annotation in the file below — click it to view/edit."
+                    style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 8, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
                   >
                     Summarize
                   </button>
-                </>}
+                )}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 9, color: "var(--text-ghost)", marginRight: 8 }}>
                   {atomCount} atom{atomCount !== 1 ? "s" : ""}
@@ -739,14 +750,23 @@ export default function Home() {
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 File does not exist yet — append to create it
               </div>
-            ) : summaryKind !== null ? (
+            ) : viewingSummary !== null ? (
               summaryConn ? (
-                <SummaryTierPanel
-                  branch={activeBranch} kind={summaryKind}
-                  ticks={summaryTicksChain} absent={summaryConn.absent}
-                  onEdit={(tickId, content) => editSummaryAtom(selectedFile, summaryKind, tickId, content)}
-                  onAppend={(text) => appendSummary(selectedFile, summaryKind, text)}
-                  onCycleSwipe={(tickId) => cycleSummarySwipe(selectedFile, summaryKind, tickId)}
+                <SummarySplitView
+                  kind={viewingSummary.kind}
+                  nodePath={viewingSummary.nodePath}
+                  mainFileTicks={fileTicks}
+                  summaryTicksOfKind={summaryTicksOfKind}
+                  targetTickId={targetTickId}
+                  summaryTicksChain={summaryTicksChain}
+                  absent={summaryConn.absent}
+                  onEdit={(tickId, content) => editSummaryAtom(selectedFile, viewingSummary.kind, tickId, content, viewingSummary.nodePath)}
+                  onAppend={(text) => appendSummary(selectedFile, viewingSummary.kind, text, viewingSummary.nodePath)}
+                  onCycleSwipe={(tickId) => cycleSummarySwipe(selectedFile, viewingSummary.kind, tickId, viewingSummary.nodePath)}
+                  onOpenSummary={(kind, clickedTickId) => {
+                    setViewingSummary((v) => v && { kind: v.kind, nodePath: [...v.nodePath, clickedTickId] });
+                  }}
+                  onBack={() => setViewingSummary(null)}
                 />
               ) : (
                 <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
@@ -763,7 +783,7 @@ export default function Home() {
               </div>
             ) : (
               <WireTickList
-                ticks={fileTicks} annotationMode={annotationMode}
+                ticks={mainViewTicks} annotationMode={annotationMode}
                 contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
                 resetKey={selectedFile}
                 rebaseMarker={rebaseMarker}
@@ -778,6 +798,10 @@ export default function Home() {
                 activeBranch={activeBranch}
                 targetFile={selectedFile}
                 onUploadImages={uploadImageToTimeline}
+                onOpenSummary={(kind, tickId) => {
+                  setCoverageAnchor(tickId);
+                  setViewingSummary({ kind, nodePath: [] });
+                }}
               />
             )}
 

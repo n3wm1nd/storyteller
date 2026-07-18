@@ -16,13 +16,22 @@
 --   taking its place), and the alternate chain becomes an ordinary
 --   unreachable git object -- reclaimed by GC exactly the way the temporal
 --   ledger and snapshot branch already rely on elsewhere in this codebase,
---   with no explicit deletion anywhere. This is also why hierarchical
---   summarization (a book summarizer building on a chapter summarizer's
---   output) still attaches *every* 'Summary' tick, whatever its tier, to
---   the one real source branch: an alternate chain with no ref of its own
---   can never itself be "opened" to extend, so nothing can ever be
---   layered on top of it directly -- only ever read from it, to build the
---   next real tick.
+--   with no explicit deletion anywhere.
+--
+--   Hierarchical summarization (a coarser tier built from a finer tier's
+--   own output, e.g. "Storyteller.Writer.Agent.JournalSummarizer") is
+--   *not* a naming convention layered on top of this -- an alternate chain
+--   is a real, ref-less chain of ticks in exactly the same sense a real
+--   branch is, so a coarser tier's own 'Summary' tick can be posted
+--   directly *onto* a finer tier's alternate chain, extending it, rather
+--   than living back on the one real source branch under some
+--   tier-distinguishing kind label. Depth is then a purely structural fact
+--   -- *which chain* a given 'Summary' tick's own commit actually lives on
+--   -- discovered by walking (see 'summariesTouching', called again from
+--   a storage scope opened at a finer tier's own 'summaryAltHead'), never
+--   declared: every tier of a recursive family shares one plain
+--   'summaryKind', and a nested chain's own tip happening to decode as a
+--   further 'Summary' is what makes it a next tier, full stop.
 --
 --   Everything here is storage-agnostic (works over any 'StoreM'); the
 --   Polysemy/'BranchOp' boundary -- generating content, extending the
@@ -34,12 +43,15 @@ module Storyteller.Common.Summary
   , previewPath
   , bootstrapAltHead
   , lastSummaryOf
+  , lastSummaryOfFrom
   , ticksSince
+  , ticksSinceFrom
   , ticksSinceLastSummary
   , availableSummaries
   , summaryTickFor
   , lastTouchedIn
   , summaryContent
+  , summariesTouching
   ) where
 
 import Control.Monad.State.Strict (lift)
@@ -48,9 +60,10 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 
 import Storage.Core
-  ( CommitData(..), MonadStore(..), ObjectHash(..), StoreM, StoreObject(..), StoreT, readPathAt
+  ( CommitData(..), MonadStore(..), ObjectHash(..), StoreM, StoreObject(..), StoreT, headHash, readAt, readPathAt
   )
 import qualified Storage.Tick as Tick
+import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Types
   ( Tick(..), TickId(..), TickType(..), TickData(..)
   , encodeDraft, decodePayload, fromTick, tickId, tickParent
@@ -118,6 +131,96 @@ lastSummaryOf kind = Tick.findTick $ \_ t -> do
   s <- fromTick @Summary t
   if summaryKind s == kind then Just (tickId t, s) else Nothing
 
+-- | 'lastSummaryOf', starting the walk from an arbitrary tick instead of
+--   head -- the one thing 'expandSummary' needs that 'lastSummaryOf' can't
+--   give it: the previous same-kind tick *before some already-known tick*,
+--   which may sit well behind wherever this chain's head currently is.
+lastSummaryOfFrom :: StoreM m => ObjectHash -> Text -> StoreT m (Maybe (TickId, Summary))
+lastSummaryOfFrom start kind = Tick.findTickFrom start $ \_ t -> do
+  s <- fromTick @Summary t
+  if summaryKind s == kind then Just (tickId t, s) else Nothing
+
+-- | 'lastSummaryOfFrom', additionally requiring the match to be the tick
+--   whose *own* pass actually contributed something for @path@, not
+--   merely one that carries it forward unchanged -- skipping further back
+--   past any same-kind tick that's really just carrying @path@ along
+--   untouched, or belongs to a different file entirely. A shared kind
+--   summarizing several files (e.g. @"prose\/chapter"@ across every
+--   chapter) produces one interleaved series of ticks on the real branch,
+--   only some of which ever genuinely wrote a given @path@; plain
+--   'lastSummaryOfFrom'\/'lastSummaryOf' would happily return the most
+--   recent tick of that kind regardless -- exactly wrong both as an entry
+--   point into @path@'s own tree ('summaryTree') and as the stop boundary
+--   for what a later same-kind tick covers ('expandSummary').
+--
+--   "Contributed something" is two genuinely different things, checked
+--   together as one signature compared against the *previous* same-kind
+--   tick:
+--
+--   1. @path@'s own shallow content differs -- the ordinary case (a real
+--      per-file rewrite, e.g. 'Storyteller.Writer.Agent.ChapterSummarizer').
+--
+--   2. The alternate chain's own tip, one hop into whatever it currently
+--      resolves to, is a *different* nested 'Summary' tick (or gained\/lost
+--      one entirely) -- this is the one 'summaryContent' alone can never
+--      see: 'Storyteller.Writer.Agent.Summarizer.extendNestedAltChain's own
+--      re-mint, once a deeper tier's pass writes something, mints its new
+--      top-level tick *as a child of the tick already sitting at head*
+--      (see 'Storyteller.Core.Git.atGeneric's own "already at target"
+--      case) rather than replacing it -- so both the pre- and post-remint
+--      ticks are real, permanent, same-kind ticks on the branch, and the
+--      *only* difference between them is which alternate-chain tip the
+--      later one's own 'summaryAltHead' now reaches, since the deeper
+--      tier's own write never touches @path@'s shallow content at *this*
+--      level at all.
+--
+--   Not 'summaryTickFor' (which resolves an alt-commit to the *earliest*
+--   Summary tick that already reaches it via ancestry -- exactly wrong
+--   here, since every pass of one @kind@ extends the same one continuous
+--   alt-chain lineage, so an *earlier* pass's own altHead is trivially an
+--   ancestor of everything any *later* pass ever writes, including a
+--   genuine second pass over @path@ itself; 'summaryTickFor' would keep
+--   resolving back to the very first pass ever, never the second one).
+lastSummaryTouchingFrom :: StoreM m => ObjectHash -> Text -> FilePath -> StoreT m (Maybe (TickId, Summary))
+lastSummaryTouchingFrom start kind path = do
+  mCand <- lastSummaryOfFrom start kind
+  case mCand of
+    Nothing -> return Nothing
+    Just cand@(_, s) -> do
+      mSig <- signatureFor s
+      case mSig of
+        Nothing  -> return Nothing
+        Just sig -> settle sig cand
+  where
+    -- path's own shallow content, plus (if this kind ever nests) the id
+    -- of whatever further same-kind Summary tick currently sits at this
+    -- alt-chain's own tip -- see this function's own Haddock, point 2.
+    signatureFor s = do
+      mContent <- summaryContent s path
+      case mContent of
+        Nothing      -> return Nothing
+        Just content -> do
+          mNestedTip <- readAt (ObjectHash (unTickId (summaryAltHead s))) $ do
+            tipTick <- Tick.getTypesTick
+            return $ case fromTick @Summary tipTick of
+              Just s' | summaryKind s' == kind -> Just (tickId tipTick)
+              _                                -> Nothing
+          return (Just (content, mNestedTip))
+
+    settle sig (tid, s) = do
+      candTick <- Tick.readTypesTick (ObjectHash (unTickId tid))
+      case tickParent candTick of
+        Nothing -> return (Just (tid, s))
+        Just (TickId p) -> do
+          mPrevCand <- lastSummaryOfFrom (ObjectHash p) kind
+          case mPrevCand of
+            Nothing -> return (Just (tid, s))
+            Just prevCand@(_, prevS) -> do
+              mPrevSig <- signatureFor prevS
+              if mPrevSig == Just sig
+                then settle sig prevCand
+                else return (Just (tid, s))
+
 -- | Every tick strictly after @stopAt@ (exclusive), oldest-first, walking
 --   back from HEAD all the way to root if @stopAt@ is 'Nothing' (or isn't
 --   found in this chain's history at all). The one general "since this
@@ -127,7 +230,16 @@ lastSummaryOf kind = Tick.findTick $ \_ t -> do
 --   tick a particular file's compression is as fresh as -- see
 --   'lastTouchedIn') uses this directly instead.
 ticksSince :: StoreM m => Maybe TickId -> StoreT m [Tick]
-ticksSince stopAt = collect Nothing []
+ticksSince = ticksSinceFrom Nothing
+
+-- | 'ticksSince', starting the walk from an arbitrary tick instead of head
+--   -- 'ticksSince' is just this with @start = Nothing@. Needed by
+--   'expandSummary', which asks "what did *this already-known tick* cover"
+--   rather than "what's new since @kind@'s last summary right now" --
+--   the two only coincide when the tick in question happens to be the
+--   most recent one of its kind on the currently-open chain.
+ticksSinceFrom :: StoreM m => Maybe TickId -> Maybe TickId -> StoreT m [Tick]
+ticksSinceFrom start stopAt = collect start []
   where
     collect cursor acc = do
       t <- currentTick cursor
@@ -283,3 +395,50 @@ summaryContent s path = do
   return (TE.decodeUtf8With TE.lenientDecode <$> mbs)
   where
     altHash = ObjectHash (unTickId (summaryAltHead s))
+
+-- ---------------------------------------------------------------------------
+-- Every historical occurrence, each independently anchored
+-- ---------------------------------------------------------------------------
+
+-- | Every 'Summary' tick of @kind@ that genuinely contributed something for
+--   @path@ (the same "contributed something" signature
+--   'lastSummaryTouchingFrom' already tests), oldest-first, each paired
+--   with the last real atom on @path@'s own history that occurrence
+--   covers -- its "anchor," where a client should position an inline
+--   annotation for it. An occurrence whose own covered span contains no
+--   real atom on @path@ at all is dropped entirely (nothing to anchor it
+--   to).
+--
+--   Walks the currently-open chain from HEAD back to root, calling
+--   'lastSummaryTouchingFrom' once per occurrence found (each call scoped
+--   to start just behind the previous occurrence), so nesting (a coarser
+--   tier's own tick living on a finer tier's own alternate chain -- see
+--   this module's own Haddock) needs no special handling here at all: a
+--   caller that wants a *nested* tier's own occurrences just calls this
+--   again from within a storage scope opened at the finer tier's own
+--   'summaryAltHead'.
+summariesTouching :: StoreM m => Text -> FilePath -> StoreT m [(TickId, Summary, TickId)]
+summariesTouching kind path = do
+  h <- headHash
+  mFirst <- lastSummaryTouchingFrom h kind path
+  reverse <$> go mFirst
+  where
+    go Nothing = return []
+    go (Just (tid, s)) = do
+      t <- Tick.readTypesTick (ObjectHash (unTickId tid))
+      mPrev <- case tickParent t of
+        Nothing         -> return Nothing
+        Just (TickId p) -> lastSummaryTouchingFrom (ObjectHash p) kind path
+      items <- ticksSinceFrom (tickParent t) (fst <$> mPrev)
+      rest  <- go mPrev
+      case lastAtomId items of
+        Nothing     -> return rest
+        Just anchor -> return ((tid, s, anchor) : rest)
+
+    lastAtomId items = case [ tickId tk | tk <- items, isOwnAtom tk ] of
+      [] -> Nothing
+      xs -> Just (last xs)
+
+    isOwnAtom tk = case fromTick @Atom tk of
+      Just (Atom f _) -> f == path
+      Nothing         -> False

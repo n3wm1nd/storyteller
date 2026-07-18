@@ -38,6 +38,7 @@ module Storyteller.Writer.Agent.SummaryAccess
   , densestWithin
   , densest
   , withinBudget
+  , summariesTouchingFor
   ) where
 
 import Prelude hiding (readFile)
@@ -52,10 +53,12 @@ import Polysemy (Member, Sem)
 import qualified Storage.Ops as Ops
 import qualified Storage.FS as FS
 import Storyteller.Common.Summary
-  (Summary(..), lastSummaryOf, lastTouchedIn, previewPath, summaryContent, summaryTickFor, ticksSince)
+  ( Summary(..), lastSummaryOf, lastTouchedIn, previewPath
+  , summaryContent, summaryTickFor, summariesTouching, ticksSince
+  )
 import Storyteller.Core.Atom (contentFor)
 import Storyteller.Core.Git (BranchOp, runStorage)
-import Storyteller.Core.Types (TickId)
+import Storyteller.Core.Types (TickId(..))
 
 -- | One rung on the "how compressed can this get" ladder for a given
 --   file: either the raw branch itself ('zlSummary' = 'Nothing'), or one
@@ -230,3 +233,14 @@ unsummarizedTailSince s path = runStorage @source $ do
     Just h  -> fmap fst <$> summaryTickFor h
   ticks <- ticksSince mStopTick
   return (T.concat (map (contentFor path) ticks))
+
+-- | Every historical occurrence of @kind@\/@path@ on the caller's
+--   currently-open @source@ scope -- the 'BranchOp'-layer wrapper around
+--   'Storyteller.Common.Summary.summariesTouching', for a server push that
+--   wants one real WireTick per occurrence, each independently anchored
+--   (see 'Server.Writer.File.summaryTicksFor'). Nesting needs no special
+--   case here: a caller wanting a deeper tier's own occurrences calls this
+--   again from within a storage scope opened at the finer tier's own
+--   'Storyteller.Common.Summary.summaryAltHead'.
+summariesTouchingFor :: forall source r. Member (BranchOp source) r => Text -> FilePath -> Sem r [(TickId, Summary, TickId)]
+summariesTouchingFor kind path = runStorage @source (summariesTouching kind path)

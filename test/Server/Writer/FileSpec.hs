@@ -10,6 +10,7 @@ module Server.Writer.FileSpec (spec) where
 
 import Test.Hspec
 
+import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as Map
@@ -98,40 +99,68 @@ spec runner = do
           filter ((== "summary") . wtKind) (updateTicks upd) `shouldBe` []
           sig `shouldBe` ""
 
-    -- A journal Summary tick (any tier) is a real tick on this same
-    -- branch -- 'Storyteller.Common.Summary's own module Haddock is
-    -- explicit that it has to be, since an alternate chain has no ref of
-    -- its own to attach anything to directly. That real tick belongs on
-    -- the branch; what it must *not* do is leak into journal.md's own
-    -- file-relevant chain the ordinary (non-summary) ticks come from --
+    -- A journal Summary tick is a real tick on this same branch --
+    -- 'Storyteller.Common.Summary's own module Haddock is explicit that it
+    -- has to be, since an alternate chain has no ref of its own to attach
+    -- anything to directly. That real tick belongs on the branch; what it
+    -- must *not* do is leak into journal.md's own file-relevant chain the
+    -- ordinary (non-summary) ticks come from --
     -- 'Storage.Tick.fileTicksOf'/'relatedTicksOf' are supposed to filter
     -- every non-file tick out and relink survivors' parents around the
     -- gap (see their own Haddocks). This pins that guarantee once a real
     -- multi-tier journal summarization has actually run, rather than
     -- just trusting the filter reads correctly.
-    it "keeps journal Summary ticks (every tier) out of journal.md's own real chain, relinking around them" $ do
+    it "keeps the journal Summary tick out of journal.md's own real chain, relinking around it" $ do
       let n = defaultJournalGroupSize
           stubCompress :: [Text] -> Sem r Text
           stubCompress items = pure ("C[" <> T.intercalate "," items <> "]")
           result = withFile_ runner (BranchName "b") $ do
             mapM_ (\i -> runStorage @Main (Ops.addAtom journalPath (T.pack (show i)))) [1 .. n * n :: Int]
-            _ <- journalSummarize @Main stubCompress 0
+            _ <- journalSummarize @Main stubCompress
             fileStateWithSummaries journalPath Nothing
       case result of
         Left err -> expectationFailure err
         Right (upd, _sig) -> do
           let (summaryTicks, realTicks) = span' ((== "summary") . wtKind) (updateTicks upd)
               span' p xs = (filter p xs, filter (not . p) xs)
-          -- Both tiers actually formed (n*n raw entries is exactly enough
-          -- for one full tier-1 group) -- otherwise this test would pass
-          -- vacuously by never having a summary tick to leak in the
-          -- first place.
-          map (lookup "kind" . wtFields) summaryTicks `shouldMatchList` [Just "journal/L0", Just "journal/L1"]
+          -- One real WireTick per historical occurrence now, not one
+          -- synthetic tick per family -- n*n raw entries forms a fresh
+          -- tier-0 chunk every group of n entries, so n separate top-level
+          -- "journal" occurrences, each its own inline annotation (tier 1
+          -- lives one alt-chain deeper, on tier 0's own alternate chain,
+          -- so it never shows up as a *further* top-level occurrence here).
+          length summaryTicks `shouldBe` n
+          all ((== Just "journal") . lookup "kind" . wtFields) summaryTicks `shouldBe` True
+          -- Each occurrence is independently anchored via wtRefs (the last
+          -- real atom it covers) -- never left empty the way the old
+          -- family-wide synthetic tick was -- and every occurrence's own
+          -- anchor is distinct, since each covers a later stretch of atoms.
+          all (not . null . wtRefs) summaryTicks `shouldBe` True
+          length (nub (concatMap wtRefs summaryTicks)) `shouldBe` n
           -- Every real (non-summary) tick's own id is one that could only
           -- have come from an actual journal.md atom -- never a Summary
           -- tick's id riding along under the wrong kind.
           all ((== "atom") . wtKind) realTicks `shouldBe` True
           length realTicks `shouldBe` n * n
+
+    it "two sequential chapter-summary passes produce two summary WireTicks with distinct, real anchor ids" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one.")
+            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1"))
+            _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para two.")
+            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v2"))
+            fileStateWithSummaries "chapters/ch1.md" Nothing
+      case result of
+        Left err -> expectationFailure err
+        Right (upd, _sig) -> do
+          let summaryTicks = filter ((== "summary") . wtKind) (updateTicks upd)
+          length summaryTicks `shouldBe` 2
+          let anchors = map (\wt -> case wtRefs wt of [r] -> Just r; _ -> Nothing) summaryTicks
+              ids     = map wtTickId summaryTicks
+          all (/= Nothing) anchors `shouldBe` True
+          -- distinct anchors, distinct tick ids
+          (case anchors of [Just a1, Just a2] -> a1 /= a2; _ -> False) `shouldBe` True
+          (case ids of [i1, i2] -> i1 /= i2; _ -> False) `shouldBe` True
 
   describe "editChatPrompt" $ do
 
