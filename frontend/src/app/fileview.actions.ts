@@ -9,7 +9,7 @@ import { fileConn, branchConn, saveRawFileAsNew } from "@/lib/ws";
 import type { FileCommand, ContextItem, PickerRule } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyUpdate, applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
+import { applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain, promptGroupForAtom, activeCharacterBranches } from "@/lib/utils";
 import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
@@ -18,16 +18,36 @@ import { resolveMentions } from "@/lib/mentions";
 import { triggeredLorePaths } from "@/lib/loreTrigger";
 import { composeContextLayout } from "@/lib/contextAssembly";
 
-export async function openFile(path: string): Promise<void> {
+// A summary tier (see .summarization-ui.md) is genuinely just another file
+// connection — Server.Writer.File.Connection's own openTarget resolves
+// "{branch}@{kind}#tid..." exactly the way it resolves a plain branch name,
+// and every downstream command/read is identical either way (see that
+// module's own Haddock). So it lives in this exact same 'openFiles' map,
+// under a synthetic key distinct from its own real path — every other
+// action below (editAtom, chatWrite, chatFix, ...) already takes a bare
+// string used only as that map's key, so passing a summary's own key
+// through them needs no changes anywhere else at all.
+//
+// 'opts.branch' overrides the WS "branch" URL segment (default:
+// activeBranch) — this is the only thing that actually differs for a
+// summary connection ("{activeBranch}@{kind}#hops" instead of plain
+// activeBranch). 'opts.key' overrides which key this connection is stored
+// under in 'openFiles' (default: 'path' itself) — needed so a summary
+// tier's own entry never collides with the real file's, which stays open
+// alongside it (the split view's top coverage pane reads the real file's
+// own connection throughout).
+export async function openFile(path: string, opts?: { branch?: string; key?: string }): Promise<void> {
   const { activeBranch, openFiles } = getServerCache();
   if (!activeBranch) return;
+  const key = opts?.key ?? path;
+  const branch = opts?.branch ?? activeBranch;
   useUI.setState({ rebaseMarker: null, pendingSubmit: null });
-  if (openFiles[path]) return;
+  if (openFiles[key]) return;
 
-  const label = `file:${path}`;
+  const label = `file:${key}`;
   setConnStatus(label, "connecting");
 
-  const fc = fileConn(activeBranch, path);
+  const fc = fileConn(branch, path);
 
   fc.onStatus((s) => {
     if (s !== "connected") setConnStatus(label, "connecting");
@@ -37,23 +57,23 @@ export async function openFile(path: string): Promise<void> {
     bumpActivity(label);
     if (evt.type === "file.present") {
       mirrorServerEvent((s) => ({
-        openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: false, conn: fc } },
+        openFiles: { ...s.openFiles, [key]: { path, ticks: {}, head: null, absent: false, conn: fc } },
       }));
       setConnStatus(label, "connected");
     } else if (evt.type === "file.absent") {
       mirrorServerEvent((s) => ({
-        openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: true, conn: fc } },
+        openFiles: { ...s.openFiles, [key]: { path, ticks: {}, head: null, absent: true, conn: fc } },
       }));
       setConnStatus(label, "connected");
     } else if (evt.type === "update") {
       clearPreviewDelayTimer();
       mirrorServerEvent((s) => {
-        const prev = s.openFiles[path];
+        const prev = s.openFiles[key];
         if (!prev) return {};
         return {
           openFiles: {
             ...s.openFiles,
-            [path]: { ...prev, ticks: applyFileUpdate(prev.ticks, evt), head: evt.head, absent: false },
+            [key]: { ...prev, ticks: applyFileUpdate(prev.ticks, evt), head: evt.head, absent: false },
           },
           preview: null,
           previewCommandId: null,
@@ -77,12 +97,29 @@ export async function openFile(path: string): Promise<void> {
   try {
     await fc.connect();
     mirrorServerEvent((s) => ({
-      openFiles: { ...s.openFiles, [path]: { path, ticks: {}, head: null, absent: false, conn: fc } },
+      openFiles: { ...s.openFiles, [key]: { path, ticks: {}, head: null, absent: false, conn: fc } },
     }));
   } catch (err) {
     setConnStatus(label, "error");
     setError(String(err));
   }
+}
+
+// A summary family's own connection target, mirroring
+// Server/Writer/File/Connection.hs's "{branch}@{kind}#tid1#tid2..." target
+// grammar — 'nodePath' is a chain of tickIds hopping into successively
+// deeper nested tiers (see that module's own Haddock), not "which
+// historical occurrence" (a summary kind is one continuous alt-chain, not
+// a set of independently-targetable occurrences).
+export function summaryConnBranch(activeBranch: string, kind: string, nodePath: string[]): string {
+  return nodePath.length === 0 ? `${activeBranch}@${kind}` : `${activeBranch}@${kind}#${nodePath.join("#")}`;
+}
+
+// The 'openFiles' key a summary tier's own connection is stored under —
+// distinct from 'path' itself so it never collides with the real file's
+// own entry, which stays open alongside it.
+export function summaryConnKey(path: string, kind: string, nodePath: string[]): string {
+  return nodePath.length === 0 ? `${path}@${kind}` : `${path}@${kind}#${nodePath.join("#")}`;
 }
 
 // Explicit "new file" creation: opens the connection (same as selecting
@@ -139,119 +176,15 @@ export async function saveFileAsNew(path: string, content: string, newPath?: str
   await saveRawFileAsNew(activeBranch, path, content, newPath);
 }
 
-export function closeFile(path: string) {
-  getServerCache().openFiles[path]?.conn.close();
+export function closeFile(path: string, opts?: { key?: string }) {
+  const key = opts?.key ?? path;
+  getServerCache().openFiles[key]?.conn.close();
   mirrorServerEvent((s) => {
     const next = { ...s.openFiles };
-    delete next[path];
+    delete next[key];
     return { openFiles: next };
   });
-  removeConn(`file:${path}`);
-}
-
-// nodePath, when non-empty, is a chain of tickIds from a summary family's
-// top-level tick down to one specific nested node the client has already
-// rendered (its ids came from one of that node's own per-occurrence
-// WireTicks — see fileview.tsx's SummarySplitView) -- opening it is the one
-// place the split view still needs a fresh connection, since a nested
-// node's own alternate chain is a genuinely different underlying chain
-// from whatever's already open (see Server.Writer.File.Connection's own
-// module Haddock on the "#tid1#tid2..." target grammar).
-function summaryKey(path: string, kind: string, nodePath: string[] = []): string {
-  return nodePath.length === 0 ? `${path}::${kind}` : `${path}::${kind}::${nodePath.join("/")}`;
-}
-
-function summaryTarget(activeBranch: string, kind: string, nodePath: string[]): string {
-  return nodePath.length === 0 ? `${activeBranch}@${kind}` : `${activeBranch}@${kind}#${nodePath.join("#")}`;
-}
-
-// A summary tier is the exact same /branch/{name}/file/{path} connection
-// as any other file (see Server.Writer.File.Connection's own Haddock) --
-// this differs from openFile only in what it passes for the branch
-// segment ("{activeBranch}@{kind}", optionally with "#tid..." hops for a
-// nested node, instead of "{activeBranch}") and where it stores the
-// result. No separate protocol, no read-only mode: the server resolves
-// that string to the alternate chain's current head and mints a fresh
-// Summary tick on write, same as a hand-run summarize pass.
-export async function openSummaryTier(path: string, kind: string, nodePath: string[] = []): Promise<void> {
-  const { activeBranch, openSummaries } = getServerCache();
-  if (!activeBranch) return;
-  const key = summaryKey(path, kind, nodePath);
-  if (openSummaries[key]) return;
-
-  const label = `summary:${key}`;
-  setConnStatus(label, "connecting");
-
-  const sc = fileConn(summaryTarget(activeBranch, kind, nodePath), path);
-
-  sc.onStatus((s) => {
-    if (s !== "connected") setConnStatus(label, "connecting");
-  });
-
-  sc.subscribe((evt) => {
-    bumpActivity(label);
-    if (evt.type === "file.present") {
-      mirrorServerEvent((s) => ({
-        openSummaries: { ...s.openSummaries, [key]: { path, ticks: {}, head: null, absent: false, conn: sc } },
-      }));
-      setConnStatus(label, "connected");
-    } else if (evt.type === "file.absent") {
-      mirrorServerEvent((s) => ({
-        openSummaries: { ...s.openSummaries, [key]: { path, ticks: {}, head: null, absent: true, conn: sc } },
-      }));
-      setConnStatus(label, "connected");
-    } else if (evt.type === "update") {
-      mirrorServerEvent((s) => {
-        const prev = s.openSummaries[key];
-        if (!prev) return {};
-        return {
-          openSummaries: {
-            ...s.openSummaries,
-            [key]: { ...prev, ticks: applyUpdate(prev.ticks, evt), head: evt.head, absent: false },
-          },
-        };
-      });
-    } else if (evt.type === "tick.remap") {
-      // Summary-tier atom ids never enter contextAtoms/contextAnnotations
-      // or a rebase marker (this panel has no selection/rebase concept of
-      // its own — see fileview.tsx's SummarySplitView) -- nothing to remap.
-    } else if (evt.type === "error") {
-      setError(evt.message);
-    }
-  });
-
-  try {
-    await sc.connect();
-    mirrorServerEvent((s) => ({
-      openSummaries: { ...s.openSummaries, [key]: { path, ticks: {}, head: null, absent: false, conn: sc } },
-    }));
-  } catch (err) {
-    setConnStatus(label, "error");
-    setError(String(err));
-  }
-}
-
-export function closeSummaryTier(path: string, kind: string, nodePath: string[] = []) {
-  const key = summaryKey(path, kind, nodePath);
-  getServerCache().openSummaries[key]?.conn.close();
-  mirrorServerEvent((s) => {
-    const next = { ...s.openSummaries };
-    delete next[key];
-    return { openSummaries: next };
-  });
-  removeConn(`summary:${key}`);
-}
-
-export function editSummaryAtom(path: string, kind: string, tickId: string, content: string, nodePath: string[] = []) {
-  getServerCache().openSummaries[summaryKey(path, kind, nodePath)]?.conn.send({ type: "edit.atom", tickId, content });
-}
-
-export function appendSummary(path: string, kind: string, text: string, nodePath: string[] = []) {
-  getServerCache().openSummaries[summaryKey(path, kind, nodePath)]?.conn.send({ type: "chat.append", content: text });
-}
-
-export function cycleSummarySwipe(path: string, kind: string, tickId: string, nodePath: string[] = []) {
-  getServerCache().openSummaries[summaryKey(path, kind, nodePath)]?.conn.send({ type: "atom.swipe.cycle", tickId });
+  removeConn(`file:${key}`);
 }
 
 // rebaseMarker (see lib/utils.tailLeadTicks / wsHelpers.atRebase) is the

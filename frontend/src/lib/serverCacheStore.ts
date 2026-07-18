@@ -98,7 +98,14 @@ export interface ServerCacheState {
   // Writer command is sent.
   loreTree: LoreNode[];
 
-  // Open file connections keyed by path
+  // Open file connections, keyed by path — this is also where a summary
+  // tier's own connection lives (see fileview.actions.ts's openFile
+  // 'opts.key'/'opts.branch'), under a synthetic key distinct from its own
+  // real path (see summaryConnKey) rather than a separate map: a summary
+  // tier is genuinely just another file connection (same ticks, same edit
+  // commands, same events — see Server.Writer.File.Connection's own
+  // Haddock), just opened against "{branch}@{kind}#hops" instead of a
+  // plain branch name.
   openFiles: Record<string, FileConn>;
 
   // Open character connections keyed by branch name — membership is driven
@@ -113,17 +120,6 @@ export interface ServerCacheState {
   // accordion row happens to be expanded: the marker below needs to track
   // continuously even while collapsed.
   openJournals: Record<string, FileConn>;
-
-  // Summary-tier file connections, keyed by "path::kind" — a summary tier
-  // is not a special read-only projection, it's the exact same
-  // /branch/{name}/file/{path} connection as any other file, just opened
-  // against "{branch}@{kind}" instead of "{branch}" (see
-  // Server.Writer.File.Connection's own Haddock: that string resolves to
-  // the alternate chain's current head instead of a named branch's, and
-  // is otherwise indistinguishable — same ticks, same edit commands, same
-  // events). Opened lazily by fileview.tsx when a summary tab is
-  // selected, closed when it's deselected or the file changes.
-  openSummaries: Record<string, FileConn>;
 
   // Streamed LLM draft for the in-flight chat.prompt/chargen command, if
   // any — a best-effort preview only. Cleared on chat.preview.end, and
@@ -159,7 +155,6 @@ const _store = create<ServerCacheState>(() => ({
   openFiles: {},
   openCharacters: {},
   openJournals: {},
-  openSummaries: {},
   preview: null,
   previewCommandId: null,
   _session: null,

@@ -11,7 +11,7 @@ import {
   hideSelected, unhideSelected,
   chatWrite, roleplayWrite, chatFix, chatNote, chatRegen, chatOutline,
   chatConverse, chatConverseRegen, cycleSwipe, correctAtom, summarizeThisFile,
-  openSummaryTier, closeSummaryTier, editSummaryAtom, appendSummary, cycleSummarySwipe,
+  summaryConnBranch, summaryConnKey,
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal,
@@ -20,10 +20,10 @@ import {
 import { trackJournal, trackAllJournals } from "./tracker.actions";
 import { syncTasks, suggestTasks } from "./tasks-panel.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
-import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, type AnnotationMode } from "@/lib/utils";
+import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, summaryCoverageFor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, TextEditPanel, SummarySplitView, type PresenceBar } from "./fileview";
-import { summaryKindsFor } from "@/lib/library";
+import { WireTickList, AgentLogStrip, ChatPreviewStrip, InputBar, RawEditPanel, TextEditPanel, EMPTY_TICK_SET, type PresenceBar } from "./fileview";
+import { summaryKindsFor, summaryKindLabel } from "@/lib/library";
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
@@ -176,7 +176,6 @@ export default function Home() {
   const openFiles         = useServerCache((s) => s.openFiles);
   const openCharacters    = useServerCache((s) => s.openCharacters);
   const openJournals      = useServerCache((s) => s.openJournals);
-  const openSummaries     = useServerCache((s) => s.openSummaries);
   // 'preview' (the in-flight streamed draft) is deliberately not read here —
   // it can update several times a second, and this component owns the whole
   // page tree, so subscribing here would reconcile all of it on every token.
@@ -220,8 +219,9 @@ export default function Home() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"blocks" | "text" | "source">("blocks");
   // null = raw (whatever viewMode shows); otherwise the summary family
-  // currently displayed instead, via SummarySplitView — one alt-chain
-  // connection per family (openSummaries), opened/closed by the effect
+  // currently displayed instead — one alt-chain connection per family,
+  // living in this same 'openFiles' map under its own synthetic key (see
+  // fileview.actions.ts's summaryConnKey), opened/closed by the effect
   // below as this changes. nodePath is a chain of tickIds hopping into
   // successively deeper *nested* tiers (see Server/Writer/File/Connection.hs's
   // openTarget) — not "which historical occurrence," since a family is one
@@ -293,19 +293,38 @@ export default function Home() {
   // A summary family's own connection (its top-level chain, or one nested
   // 'nodePath' hops deep) — opened only while its tab is actually selected,
   // closed the moment it isn't (a different tab, a different file, or
-  // navigating away entirely) rather than kept alive speculatively. See
-  // fileview.actions.ts's openSummaryTier. 'viewingSummary' changes
+  // navigating away entirely) rather than kept alive speculatively. Just
+  // 'openFile'/'closeFile' pointed at "{activeBranch}@{kind}#hops" instead
+  // of the plain branch, stored under its own key (see fileview.actions.ts's
+  // summaryConnBranch/summaryConnKey) so it never collides with the real
+  // file's own entry, which stays open throughout (the split view's top
+  // coverage pane reads it the whole time). 'viewingSummary' changes
   // atomically (kind + nodePath together), so this one effect covers both
   // switching families and hopping deeper/shallower within one.
   useEffect(() => {
-    if (!selectedFile || !viewingSummary) return;
-    openSummaryTier(selectedFile, viewingSummary.kind, viewingSummary.nodePath);
-    return () => closeSummaryTier(selectedFile, viewingSummary.kind, viewingSummary.nodePath);
-  }, [selectedFile, viewingSummary]);
+    if (!selectedFile || !viewingSummary || !activeBranch) return;
+    const key = summaryConnKey(selectedFile, viewingSummary.kind, viewingSummary.nodePath);
+    const branch = summaryConnBranch(activeBranch, viewingSummary.kind, viewingSummary.nodePath);
+    openFile(selectedFile, { branch, key });
+    return () => closeFile(selectedFile, { key });
+  }, [selectedFile, viewingSummary, activeBranch]);
+
+  // 'activeKey' is whichever 'openFiles' entry the main content pane is
+  // currently editing — the real file itself, or (while viewing a summary)
+  // its own tier connection. Every action below that edits "whatever's
+  // currently on screen" (atom edits, correct/swipe/prompt edits, and
+  // every InputBar action) is keyed off this, not 'selectedFile' directly
+  // — since a summary tier is genuinely just another 'openFiles' entry
+  // (see fileview.actions.ts's openFile), no separate code path is needed
+  // for it anywhere below.
+  const summaryKey = selectedFile && viewingSummary
+    ? summaryConnKey(selectedFile, viewingSummary.kind, viewingSummary.nodePath)
+    : null;
+  const activeKey = viewingSummary ? summaryKey : selectedFile;
 
   const handleEditAtom = useCallback((tickId: string, content: string) => {
-    if (selectedFile) editAtom(selectedFile, tickId, content);
-  }, [selectedFile, editAtom]);
+    if (activeKey) editAtom(activeKey, tickId, content);
+  }, [activeKey]);
 
   const fileConn = selectedFile ? openFiles[selectedFile] : null;
   const fileChainTicks = fileConn?.ticks ?? {};
@@ -338,22 +357,20 @@ export default function Home() {
   // tick's own refs against the atoms present) picks them up as inline
   // annotations — 'fileTicks' alone never contains them (see above).
   // 'fileTicks' itself stays the pure real-atom chain for
-  // 'summaryCoverageFor'/'SummarySplitView', which slices strictly by
-  // atom position and has no use for summary ticks mixed in.
+  // 'summaryCoverageFor', which slices strictly by atom position and has
+  // no use for summary ticks mixed in.
   const mainViewTicks = useMemo(() => [...fileTicks, ...summaryTicks], [fileTicks, summaryTicks]);
   // The currently-viewed family's own connection (see the effect above
-  // that opens/closes it) — a plain second FileConn, not a special case;
-  // 'summaryTicksChain' walks it exactly the way 'fileTicks' walks the
-  // real file's own. This is genuinely the *whole* current state of that
-  // one alt-chain (its own live edit history), same as any other file —
-  // not one occurrence among several (see 'viewingSummary's own doc).
-  const summaryKey = selectedFile && viewingSummary
-    ? `${selectedFile}::${viewingSummary.kind}${viewingSummary.nodePath.length ? `::${viewingSummary.nodePath.join("/")}` : ""}`
-    : null;
-  const summaryConn = summaryKey ? openSummaries[summaryKey] : undefined;
-  const summaryTicksChain = useMemo(
-    () => tickChain(summaryConn?.ticks ?? {}, summaryConn?.head ?? null),
-    [summaryConn],
+  // that opens/closes it) — a plain second entry in the same 'openFiles'
+  // map, not a special case; 'activeTicksChain' walks it exactly the way
+  // 'fileTicks' walks the real file's own. This is genuinely the *whole*
+  // current state of that one alt-chain (its own live edit history), same
+  // as any other file — not one occurrence among several (see
+  // 'viewingSummary's own doc).
+  const activeConn = activeKey ? openFiles[activeKey] : null;
+  const activeTicksChain = useMemo(
+    () => (viewingSummary ? tickChain(activeConn?.ticks ?? {}, activeConn?.head ?? null) : fileTicks),
+    [viewingSummary, activeConn, fileTicks],
   );
   // Every per-occurrence "summary" WireTick of the currently-viewed kind
   // (see Server.Writer.File.summaryTicksFor), sorted oldest-first by each
@@ -526,9 +543,9 @@ export default function Home() {
   }
 
   function handleFix(text: string) {
-    if (selectedFile) {
-      const hasSelection = fileTicks.some((t) => t.kind === "atom" && contextAtoms.has(t.tickId));
-      if (hasSelection) chatFix(selectedFile, text);
+    if (activeKey) {
+      const hasSelection = activeTicksChain.some((t) => t.kind === "atom" && contextAtoms.has(t.tickId));
+      if (hasSelection) chatFix(activeKey, text);
     }
     for (const [branch, jc] of Object.entries(openJournals)) {
       if (!jc) continue;
@@ -540,16 +557,16 @@ export default function Home() {
   }
 
   const handleCorrect = useCallback((tickId: string) => {
-    if (selectedFile) correctAtom(selectedFile, tickId);
-  }, [selectedFile]);
+    if (activeKey) correctAtom(activeKey, tickId);
+  }, [activeKey]);
 
   const handleCycleSwipe = useCallback((tickId: string) => {
-    if (selectedFile) cycleSwipe(selectedFile, tickId);
-  }, [selectedFile]);
+    if (activeKey) cycleSwipe(activeKey, tickId);
+  }, [activeKey]);
 
   const handleEditPrompt = useCallback((tickId: string, content: string) => {
-    if (selectedFile) editPrompt(selectedFile, tickId, content);
-  }, [selectedFile]);
+    if (activeKey) editPrompt(activeKey, tickId, content);
+  }, [activeKey]);
 
   function onSidebarResizeMouseDown(e: React.MouseEvent) {
     e.preventDefault();
@@ -714,27 +731,29 @@ export default function Home() {
                 >
                   <Users style={{ width: 11, height: 11 }} />
                 </button>
-                <button
-                  onClick={() => setViewMode("blocks")}
-                  title="Blocks — atom/outliner view"
-                  style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "blocks" ? "var(--amber-tint)" : "transparent", color: viewMode === "blocks" ? "var(--amber)" : "var(--text-dim)" }}
-                >
-                  <ListTree style={{ width: 11, height: 11 }} />
-                </button>
-                <button
-                  onClick={() => setViewMode("text")}
-                  title="Text — WYSIWYG markdown editor for the whole file"
-                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "text" ? "var(--amber-tint)" : "transparent", color: viewMode === "text" ? "var(--amber)" : "var(--text-dim)" }}
-                >
-                  <Pilcrow style={{ width: 11, height: 11 }} />
-                </button>
-                <button
-                  onClick={() => setViewMode("source")}
-                  title="Source — edit the whole file as raw markdown"
-                  style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "source" ? "var(--amber-tint)" : "transparent", color: viewMode === "source" ? "var(--amber)" : "var(--text-dim)" }}
-                >
-                  <FileCode style={{ width: 11, height: 11 }} />
-                </button>
+                {viewingSummary === null && <>
+                  <button
+                    onClick={() => setViewMode("blocks")}
+                    title="Blocks — atom/outliner view"
+                    style={{ width: 22, height: 22, marginLeft: 2, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "blocks" ? "var(--amber-tint)" : "transparent", color: viewMode === "blocks" ? "var(--amber)" : "var(--text-dim)" }}
+                  >
+                    <ListTree style={{ width: 11, height: 11 }} />
+                  </button>
+                  <button
+                    onClick={() => setViewMode("text")}
+                    title="Text — WYSIWYG markdown editor for the whole file"
+                    style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "text" ? "var(--amber-tint)" : "transparent", color: viewMode === "text" ? "var(--amber)" : "var(--text-dim)" }}
+                  >
+                    <Pilcrow style={{ width: 11, height: 11 }} />
+                  </button>
+                  <button
+                    onClick={() => setViewMode("source")}
+                    title="Source — edit the whole file as raw markdown"
+                    style={{ width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, cursor: "pointer", border: "none", background: viewMode === "source" ? "var(--amber-tint)" : "transparent", color: viewMode === "source" ? "var(--amber)" : "var(--text-dim)" }}
+                  >
+                    <FileCode style={{ width: 11, height: 11 }} />
+                  </button>
+                </>}
               </div>
             )}
 
@@ -751,26 +770,63 @@ export default function Home() {
                 File does not exist yet — append to create it
               </div>
             ) : viewingSummary !== null ? (
-              summaryConn ? (
-                <SummarySplitView
-                  kind={viewingSummary.kind}
-                  nodePath={viewingSummary.nodePath}
-                  mainFileTicks={fileTicks}
-                  summaryTicksOfKind={summaryTicksOfKind}
-                  targetTickId={targetTickId}
-                  summaryTicksChain={summaryTicksChain}
-                  absent={summaryConn.absent}
-                  onEdit={(tickId, content) => editSummaryAtom(selectedFile, viewingSummary.kind, tickId, content, viewingSummary.nodePath)}
-                  onAppend={(text) => appendSummary(selectedFile, viewingSummary.kind, text, viewingSummary.nodePath)}
-                  onCycleSwipe={(tickId) => cycleSummarySwipe(selectedFile, viewingSummary.kind, tickId, viewingSummary.nodePath)}
-                  onOpenSummary={(kind, clickedTickId) => {
-                    setViewingSummary((v) => v && { kind: v.kind, nodePath: [...v.nodePath, clickedTickId] });
-                  }}
-                  onBack={() => setViewingSummary(null)}
-                />
-              ) : (
+              !activeConn ? (
                 <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                   Loading…
+                </div>
+              ) : (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                  <div style={{
+                    flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
+                    fontSize: 10, color: "var(--text-ghost)", display: "flex", justifyContent: "space-between",
+                  }}>
+                    <span>{summaryKindLabel(viewingSummary.kind)}{viewingSummary.nodePath.length > 0 ? ` — tier ${viewingSummary.nodePath.length}` : ""}</span>
+                    <button onClick={() => setViewingSummary(null)} style={{ background: "transparent", border: "none", color: "var(--text-ghost)", cursor: "pointer", fontSize: 10 }}>close</button>
+                  </div>
+                  {/* Read-only: exactly what this occurrence covers, computed
+                      client-side from the real file's own already-loaded
+                      chain — no separate materialized tree needed. */}
+                  <div style={{ flex: "0 0 40%", overflow: "auto", borderBottom: "2px solid var(--border-subtle)" }}>
+                    <WireTickList
+                      ticks={summaryCoverageFor(fileTicks, summaryTicksOfKind, targetTickId)}
+                      annotationMode="dots"
+                      contextAtoms={EMPTY_TICK_SET} contextAnnotations={EMPTY_TICK_SET}
+                      resetKey={targetTickId}
+                      rebaseMarker={null} onSetRebaseMarker={() => {}}
+                      presenceBars={[]}
+                      onEdit={() => {}}
+                      onToggleContextAtom={() => {}} onToggleContextAnnotation={() => {}}
+                      onCycleSwipe={() => {}}
+                      compact
+                    />
+                  </div>
+                  {/* The tier's own current chain — a summary connection is
+                      genuinely just another file (see fileview.actions.ts's
+                      openFile), so this is the *exact same* WireTickList
+                      wiring the plain file view uses below, just pointed at
+                      'activeKey'/'activeTicksChain' instead. */}
+                  <div style={{ flex: 1, overflow: "auto" }}>
+                    {activeConn.absent ? (
+                      <div style={{ padding: 14, color: "var(--text-ghost)", fontSize: 12 }}>Nothing here yet — write below to create it</div>
+                    ) : (
+                      <WireTickList
+                        ticks={activeTicksChain} annotationMode={annotationMode}
+                        contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
+                        resetKey={activeKey}
+                        rebaseMarker={rebaseMarker}
+                        onSetRebaseMarker={setRebaseMarker}
+                        presenceBars={[]}
+                        onEdit={handleEditAtom}
+                        onToggleContextAtom={toggleContextAtom}
+                        onToggleContextAnnotation={toggleContextAnnotation}
+                        onCycleSwipe={handleCycleSwipe}
+                        onCorrect={handleCorrect}
+                        onEditPrompt={handleEditPrompt}
+                        onOpenSummary={(kind, tickId) => setViewingSummary((v) => v && { kind: v.kind, nodePath: [...v.nodePath, tickId] })}
+                        compact
+                      />
+                    )}
+                  </div>
                 </div>
               )
             ) : viewMode === "source" ? (
@@ -805,23 +861,23 @@ export default function Home() {
               />
             )}
 
-            {viewMode === "blocks" && <>
+            {(viewMode === "blocks" || viewingSummary !== null) && <>
               <ChatPreviewStrip />
               <AgentLogStrip logs={agentLogs} onClear={clearAgentLogs} />
               <InputBar
-                enabled={selectedFile !== null}
+                enabled={activeKey !== null}
                 activeBranch={activeBranch}
                 contextAtomCount={contextAtoms.size} contextAnnotationCount={contextAnnotations.size}
                 rebasing={rebaseMarker !== null}
                 onClearRebase={() => setRebaseMarker(null)}
                 onClearContext={clearContext}
-                onAppend={(text) => selectedFile && appendToFile(selectedFile, text)}
-                onWrite={(text)  => selectedFile && chatWrite(selectedFile, text)}
+                onAppend={(text) => activeKey && appendToFile(activeKey, text)}
+                onWrite={(text)  => activeKey && chatWrite(activeKey, text)}
                 onFix={handleFix}
-                onNote={(text)   => selectedFile && chatNote(selectedFile, text)}
-                onRegen={(text, byBeat) => selectedFile && chatRegen(selectedFile, text, byBeat)}
-                onRoleplay={(text) => selectedFile && roleplayWrite(selectedFile, text)}
-                onAsk={(character, question) => selectedFile && askCharacter(selectedFile, character, question)}
+                onNote={(text)   => activeKey && chatNote(activeKey, text)}
+                onRegen={(text, byBeat) => activeKey && chatRegen(activeKey, text, byBeat)}
+                onRoleplay={(text) => activeKey && roleplayWrite(activeKey, text)}
+                onAsk={(character, question) => activeKey && askCharacter(activeKey, character, question)}
                 onInform={(character, fact) => appendJournal(character, fact, journalMarkers[character] ?? null)}
                 onSummarize={summarizeCurrentFile}
               />

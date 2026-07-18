@@ -10,7 +10,7 @@ import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
 import { type WireTick, useServerCache } from "@/lib/serverCacheStore";
-import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks, summaryCoverageFor } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand, COMMANDS } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
@@ -1243,109 +1243,11 @@ export function RawEditPanel({ branch, path }: {
   );
 }
 
-const EMPTY_TICK_SET: Set<string> = new Set();
-
-// A summary family's split view (see .summarization-ui.md): a read-only
-// top pane showing exactly what one specific occurrence covers (computed
-// client-side via 'summaryCoverageFor', from ticks the main file connection
-// already has loaded — no separate materialized tree needed), and a live,
-// editable bottom pane showing that family's own current chain (this
-// tier's own connection, same shape as an ordinary file). Nesting is just
-// "open one more hop" — the bottom pane's own WireTickList threads
-// 'onOpenSummary' one level deeper, so clicking a nested annotation there
-// recurses through this exact same component.
-export function SummarySplitView({
-  kind, nodePath, mainFileTicks, summaryTicksOfKind, targetTickId,
-  summaryTicksChain, absent, onEdit, onAppend, onCycleSwipe, onOpenSummary, onBack,
-}: {
-  kind: string;
-  nodePath: string[];
-  mainFileTicks: WireTick[];
-  summaryTicksOfKind: WireTick[];   // oldest-first
-  targetTickId: string;             // which occurrence's coverage to show
-  summaryTicksChain: WireTick[];    // bottom pane's own tickChain
-  absent: boolean;
-  onEdit: (tickId: string, content: string) => void;
-  onAppend: (text: string) => void;
-  onCycleSwipe: (tickId: string) => void;
-  onOpenSummary: (kind: string, clickedTickId: string) => void;
-  onBack: () => void;
-}) {
-  const coveredTicks = summaryCoverageFor(mainFileTicks, summaryTicksOfKind, targetTickId);
-  const [draft, setDraft] = useState("");
-  function submitAppend() {
-    const text = draft.trim();
-    if (!text) return;
-    onAppend(text);
-    setDraft("");
-  }
-
-  return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div style={{
-        flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
-        fontSize: 10, color: "var(--text-ghost)", display: "flex", justifyContent: "space-between",
-      }}>
-        <span>{summaryKindLabel(kind)}{nodePath.length > 0 ? ` — tier ${nodePath.length}` : ""}</span>
-        <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-ghost)", cursor: "pointer", fontSize: 10 }}>close</button>
-      </div>
-      <div style={{ flex: "0 0 40%", overflow: "auto", borderBottom: "2px solid var(--border-subtle)" }}>
-        <WireTickList
-          ticks={coveredTicks}
-          annotationMode="dots"
-          contextAtoms={EMPTY_TICK_SET}
-          contextAnnotations={EMPTY_TICK_SET}
-          resetKey={targetTickId}
-          rebaseMarker={null}
-          onSetRebaseMarker={() => {}}
-          presenceBars={[]}
-          onEdit={() => {}}
-          onToggleContextAtom={() => {}}
-          onToggleContextAnnotation={() => {}}
-          onCycleSwipe={() => {}}
-          compact
-        />
-      </div>
-      <div style={{ flex: 1, overflow: "auto" }}>
-        {absent ? (
-          <div style={{ padding: 14, color: "var(--text-ghost)", fontSize: 12 }}>Nothing here yet — write below to create it</div>
-        ) : (
-          <WireTickList
-            ticks={summaryTicksChain}
-            annotationMode="dots"
-            contextAtoms={EMPTY_TICK_SET}
-            contextAnnotations={EMPTY_TICK_SET}
-            resetKey={nodePath.join("/")}
-            rebaseMarker={null}
-            onSetRebaseMarker={() => {}}
-            presenceBars={[]}
-            onEdit={onEdit}
-            onToggleContextAtom={() => {}}
-            onToggleContextAnnotation={() => {}}
-            onCycleSwipe={onCycleSwipe}
-            onOpenSummary={onOpenSummary}
-            compact
-          />
-        )}
-      </div>
-      <div style={{ flexShrink: 0, display: "flex", gap: 6, padding: "8px 14px", borderTop: "1px solid var(--border-subtle)" }}>
-        <input
-          value={draft} onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAppend(); } }}
-          placeholder="Append to this summary…"
-          style={{ flex: 1, fontSize: 12, padding: "6px 10px", background: "var(--card)", border: "1px solid var(--border-subtle)", borderRadius: 4, color: "var(--foreground)", outline: "none" }}
-        />
-        <button
-          onClick={submitAppend}
-          disabled={!draft.trim()}
-          style={{ fontSize: 11, padding: "6px 12px", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", borderRadius: 4, color: "var(--amber)", cursor: draft.trim() ? "pointer" : "default", opacity: draft.trim() ? 1 : 0.5 }}
-        >
-          Add
-        </button>
-      </div>
-    </div>
-  );
-}
+// A shared no-op tick-id set for a read-only 'WireTickList' instance (the
+// summary split view's top coverage pane, in page.tsx) — selection/rebase
+// concepts don't apply there, so this is just a stable empty identity
+// rather than allocating a fresh Set on every render.
+export const EMPTY_TICK_SET: Set<string> = new Set();
 
 // A save-time snapshot of the document's top-level blocks, kept in step
 // with whatever's actually on the branch (loaded once, then refreshed after
