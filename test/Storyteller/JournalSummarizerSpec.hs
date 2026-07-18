@@ -30,6 +30,7 @@ import Polysemy.Fail
 
 import Git.Mock (emptyGitState, runGitMock)
 import Polysemy.State (evalState)
+import Runix.Logging (loggingNull)
 
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Git
@@ -43,6 +44,7 @@ data TestBranch
 runOne action =
   run
   . runFail
+  . loggingNull
   . evalState emptyGitState
   . runGitMock
   . runStoryStorageGit

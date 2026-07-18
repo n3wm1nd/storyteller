@@ -100,11 +100,16 @@ chapterSummaryGenerate
   :: forall source r
   .  (LLMs r, Members '[BranchOp source, StoryStorage, Git, PromptStorage, Fail, Logging] r)
   => Text -> [Tick] -> Sem r (Map FilePath Text)
-chapterSummaryGenerate _kind candidates =
-  Map.fromList <$> mapM summarizeOne (Map.keys (unitSummaryCandidates candidates))
+chapterSummaryGenerate kind candidates = do
+  let paths = Map.keys (unitSummaryCandidates candidates)
+  info $ "chapterSummaryGenerate: " <> T.pack (show (length candidates)) <> " tick(s) new since last '"
+      <> kind <> "' summary touched " <> T.pack (show (length paths)) <> " chapter(s): "
+      <> T.intercalate ", " (map T.pack paths)
+  Map.fromList <$> mapM summarizeOne paths
   where
     summarizeOne path = do
       content <- rawContent @source path
+      info $ "chapterSummaryGenerate: recompressing " <> T.pack path <> " from its current full content"
       compressed <- chapterSummaryAgent (fromMaybe "" content)
       return (path, compressed)
 

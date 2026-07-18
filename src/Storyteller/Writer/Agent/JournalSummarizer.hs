@@ -75,7 +75,7 @@ import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Data.Maybe (fromMaybe)
-import Control.Monad (void, when)
+import Control.Monad (void)
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
@@ -158,11 +158,14 @@ data ChunkAcc = ChunkAcc
 --   owns is exercised without needing any real LLM effect at all.
 journalSummarize
   :: forall source r
-  .  Members '[BranchOp source, StoryStorage, Git, Fail] r
+  .  Members '[BranchOp source, StoryStorage, Git, Fail, Logging] r
   => ([Text] -> Sem r Text)  -- ^ compress one full group, oldest first
   -> Int -> Sem r Bool
 journalSummarize compress level = do
   let kind = journalKindFor level
+  info $ "journalSummarize: scanning tier " <> kind <> " for unconsumed "
+      <> (if level == 0 then "journal.md atoms" else "tier " <> journalKindFor (level - 1) <> " growth")
+      <> " since its own last summary"
   mSelf <- runStorage @source (lastSummaryOf kind)
   selfCumulative <- case mSelf of
     Nothing     -> return ""
@@ -175,7 +178,12 @@ journalSummarize compress level = do
         , caWrote     = False
         }
   final <- foldAscend @source target initAcc (step kind)
-  when (caWrote final) (void (journalSummarize @source compress (level + 1)))
+  if caWrote final
+    then do
+      info $ "journalSummarize: tier " <> kind <> " wrote at least one new group -- giving tier "
+          <> journalKindFor (level + 1) <> " its own attempt"
+      void (journalSummarize @source compress (level + 1))
+    else info $ "journalSummarize: tier " <> kind <> " had nothing new (or not enough to fill a group yet) -- stopping here"
   return (caWrote final)
   where
     -- | One tick, as 'foldAscend' replays it: at tier 0, only raw atoms on
@@ -212,6 +220,8 @@ journalSummarize compress level = do
       if length buffer' < defaultJournalGroupSize
         then return acc { caBuffer = buffer' }
         else do
+          info $ "journalSummarize: tier " <> kind <> " compressing a full group of "
+              <> T.pack (show (length buffer')) <> " items"
           compressed <- compress buffer'
           (_, newAltHead) <- extendAltChain (caAltHead acc) (Ops.addAtom journalPath compressed)
           _ <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
