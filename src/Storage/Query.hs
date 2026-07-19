@@ -33,6 +33,7 @@ module Storage.Query
 
     -- * Batch processing order
   , descendantsFirst
+  , descendantsFirstGrouped
   ) where
 
 import Prelude hiding (drop, readFile, writeFile)
@@ -218,13 +219,29 @@ chainPositions oids = do
 -- | Order @candidates@ descendant-first: no candidate ever precedes one of
 --   its own descendants -- the correct processing order for a batch of
 --   chain-rebasing edits (delete\/split\/hide) that each rewrite
---   everything *after* their own target. Processing an ancestor before
---   its own not-yet-handled descendant would rebase (and so remap) that
---   descendant's id out from under it before its own turn arrives; two
---   candidates neither of which descends from the other (unrelated ticks,
---   possibly on entirely separate branches) get no ordering constraint
---   between them at all -- there's nothing for one to invalidate in the
---   other regardless of order.
+--   everything *after* their own target. 'descendantsFirstGrouped' flat,
+--   for a caller that only cares about overall order and processes one
+--   candidate at a time via its own independent op -- see that function's
+--   own Haddock for how this is actually computed.
+descendantsFirst :: StoreM m => [ObjectHash] -> StoreT m [ObjectHash]
+descendantsFirst = fmap concat . descendantsFirstGrouped
+
+-- | 'descendantsFirst', kept split into one list per connected component
+--   (mutual-ancestry cluster) instead of flattened into one -- what a
+--   caller wanting to *nest* several edits into one continuous dive (see
+--   'Storage.Ops.deleteTicks') needs to know exactly where that's safe to
+--   do (within a component, every member really is an ancestor of the one
+--   before it) and where it isn't (across two components, which share no
+--   ancestry at all -- there is nothing for one to descend through to
+--   reach the other).
+--
+--   Processing an ancestor before its own not-yet-handled descendant
+--   would rebase (and so remap) that descendant's id out from under it
+--   before its own turn arrives; two candidates neither of which
+--   descends from the other (unrelated ticks, possibly on entirely
+--   separate branches) get no ordering constraint between them at all --
+--   there's nothing for one to invalidate in the other regardless of
+--   order, which is exactly what makes them separate components.
 --
 --   Deliberately not built from 'contentChain'\/'chainPositions': those
 --   need a head to walk from and fail outright on any id not currently
@@ -254,22 +271,26 @@ chainPositions oids = do
 --     the moment every candidate has been checked off in order, and
 --     rejected (falling through to the general search below) the moment
 --     a *different* candidate is reached first, or history runs out
---     before reaching the next one at all.
+--     before reaching the next one at all. Only ever succeeds when every
+--     candidate is mutually related (the walk has to reach all of them
+--     in one unbroken descent), so a successful guess is always exactly
+--     one component -- @[guess]@.
 --
---   For each candidate: walk backward through 'commitParents' until
---   hitting either another candidate (its nearest candidate ancestor) or
---   running out of history. That builds a forest -- each candidate points
---   at (at most) one ancestor-candidate -- which a child-before-parent
---   traversal from every root (a candidate with no candidate ancestor)
---   then reads a valid order straight off of.
-descendantsFirst :: StoreM m => [ObjectHash] -> StoreT m [ObjectHash]
-descendantsFirst []           = return []
-descendantsFirst cs@[_]       = return cs
-descendantsFirst candidates = do
+--   Otherwise, the general search: for each candidate, walk backward
+--   through 'commitParents' until hitting either another candidate (its
+--   nearest candidate ancestor) or running out of history. That builds a
+--   forest -- each candidate points at (at most) one ancestor-candidate
+--   -- which a child-before-parent traversal from every root (a candidate
+--   with no candidate ancestor) reads a valid order straight off of, one
+--   traversal per root, one component apiece.
+descendantsFirstGrouped :: StoreM m => [ObjectHash] -> StoreT m [[ObjectHash]]
+descendantsFirstGrouped []           = return []
+descendantsFirstGrouped cs@[_]       = return [cs]
+descendantsFirstGrouped candidates = do
   let candSet = Set.fromList candidates
       guess   = reverse candidates
   alreadySorted <- verifyDescent candSet guess
-  if alreadySorted then return guess else generalSort candSet candidates
+  if alreadySorted then return [guess] else generalSort candSet candidates
   where
     verifyDescent _     []            = return True
     verifyDescent _     [_]           = return True
@@ -290,7 +311,7 @@ descendantsFirst candidates = do
           childrenOf = Map.fromListWith (++) [ (anc, [c]) | (c, Just anc) <- edges ]
           roots      = [ c | (c, Nothing) <- edges ]
           emit c     = concatMap emit (Map.findWithDefault [] c childrenOf) ++ [c]
-      return (concatMap emit roots)
+      return (map emit roots)
 
     nearestCandidateAncestor cands oid = do
       cd <- lift (readCommit oid)

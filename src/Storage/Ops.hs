@@ -36,6 +36,8 @@ module Storage.Ops
     -- * Chain-editing operations -- position-aware moves\/merges\/splits
     -- over the whole chain, not just one file's own atom history
   , deleteTick
+  , deleteTicks
+  , deleteTicksSorted
   , moveTick
   , mergeAtoms
   , splitTick
@@ -221,6 +223,46 @@ append path content = addAtom path (ensureTrailingNewline content)
 --   whatever comes before it.
 deleteTick :: StoreM m => ObjectHash -> StoreT m ()
 deleteTick tid = () <$ at tid drop
+
+-- | Remove every tick in @targets@ -- any combination, in any order, on
+--   any number of unrelated chains -- in one transaction. Sorts and
+--   groups by connected component first ('Storage.Query.
+--   descendantsFirstGrouped'), then applies 'deleteTicksSorted' to each
+--   component: still one continuous dive per *component* (there's no way
+--   around needing at least one per genuinely unrelated chain -- nothing
+--   for one to descend through to reach another), but never one per
+--   target the way looping plain 'deleteTick' would.
+deleteTicks :: StoreM m => [ObjectHash] -> StoreT m ()
+deleteTicks targets = do
+  groups <- descendantsFirstGrouped targets
+  mapM_ deleteTicksSorted groups
+
+-- | Remove every tick in @targets@ in exactly one wind-back-and-replay,
+--   rather than one independent 'at' round trip per target -- looping
+--   'deleteTick' over a list, even in the right order, still means each
+--   later call re-winds from the *new* head and re-walks (and
+--   re-replays) everything the previous call just finished replaying.
+--
+--   @targets@ must already be in descendants-first order (nearest head
+--   first) *and* all mutually related, each an ancestor of the one
+--   before it: a candidate not reachable as an ancestor of wherever this
+--   is currently descending fails loudly, same as a single misdirected
+--   'at'\/'deleteTick' already does. 'deleteTicks' (above) is the general
+--   entry point that establishes both preconditions first, via
+--   'Storage.Query.descendantsFirstGrouped'; call this directly only when
+--   a caller already knows its own targets satisfy them (e.g. one
+--   already-computed group).
+--
+--   Works by nesting 'at' rather than by any new capability: 'at's own
+--   descent, when its own action is itself another 'at' call, simply
+--   keeps descending from wherever it already is instead of re-winding
+--   from head -- so @at t1 (at t2 (... 'drop'))@ is one unbroken dive
+--   from the original head down to the deepest target, and each layer's
+--   own trailing 'drop' (once its own nested computation returns) removes
+--   that layer's own target as the single ascent passes back through it.
+deleteTicksSorted :: StoreM m => [ObjectHash] -> StoreT m ()
+deleteTicksSorted []       = return ()
+deleteTicksSorted (t : ts) = () <$ at t (deleteTicksSorted ts >> drop)
 
 -- | Move @tid@ to immediately after @mAfter@ (@Nothing@ = move to front).
 --   Returns @tid@'s new id.

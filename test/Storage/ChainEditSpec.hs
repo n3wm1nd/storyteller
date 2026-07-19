@@ -10,11 +10,13 @@ module Storage.ChainEditSpec (spec) where
 import Prelude hiding (drop, readFile, writeFile)
 
 import Control.Monad.State.Strict (lift)
+import qualified Data.Text as T
 import Test.Hspec
 
 import Storage.Core
 import Storage.Ops
 import Storage.MockStore
+import Storage.OpCounting
 
 -- | Three atoms on the same path, oldest first -- @content = "abc"@.
 threeAtoms :: StoreM m => StoreT m (ObjectHash, ObjectHash, ObjectHash)
@@ -123,6 +125,74 @@ spec = do
       case result of
         Left _  -> return ()
         Right _ -> expectationFailure "expected chainPositions to fail on a deleted id"
+
+  describe "deleteTicks (general entry point: any order, any combination of chains)" $ do
+    it "removes every target regardless of input order, same as looping deleteTick would" $ do
+      let result = fst <$> runChain (do
+            (a, b, c) <- threeAtoms
+            deleteTicks [a, c]  -- given ancestor-first (the wrong order for a naive loop) -- must still work
+            committedContent "f.md")
+      result `shouldBe` Right "b"
+
+    -- Every real caller (Server.Core.File.deleteFileAtoms and friends)
+    -- only ever passes candidates already filtered from *one* connection's
+    -- own tick map, so in practice every candidate in a single call is
+    -- always reachable from that same scope's current head -- the "several
+    -- components" case 'descendantsFirstGrouped' supports is a defensive
+    -- correctness property against genuinely foreign input, not something
+    -- real usage exercises. 'at'-based deletion is inherently scope-relative
+    -- (it can only ever reach what's reachable from *this* scope's own
+    -- head), so a target on a truly separate, unrelated chain (a
+    -- parentless second commit tree with no ref of its own, same shape
+    -- 'descendantsFirst's own "two unrelated chains" test uses) can never
+    -- legitimately be deleted this way, grouping or not -- this pins that
+    -- 'deleteTicks' fails the *whole* batch loudly rather than silently
+    -- applying only the valid part, the same all-or-nothing behavior
+    -- every other multi-target batch op in this codebase already has.
+    it "fails the whole batch, not just the invalid part, when a target is on a genuinely unreachable chain" $ do
+      let result = runChain (do
+            (a1, _b1, c1) <- threeAtoms
+            treeH <- lift (writeObject (TreeObject []))
+            foreignRoot <- lift (writeCommit CommitData { commitParents = [], commitTree = treeH, commitMessage = "x" })
+            deleteTicks [foreignRoot, a1, c1])
+      case result of
+        Left _  -> return ()
+        Right _ -> expectationFailure "expected deleteTicks to fail on an unreachable target"
+
+    -- The actual point: nesting 'at' instead of looping it means one
+    -- continuous dive-and-replay instead of one independent round trip
+    -- per target, each of which would otherwise re-walk (and re-replay)
+    -- whatever the previous one just finished replaying. A chain with
+    -- real filler between each target (so there's real replay work to
+    -- redo, not just adjacent no-op hops) makes the difference concrete
+    -- rather than asserted.
+    it "costs strictly fewer store operations than looping deleteTick over the same targets" $ do
+      let gap = 5 :: Int
+          k   = 4 :: Int
+          scenario = mapM_
+            (\i -> mapM_ (\j -> () <$ addAtom "f.md" (T.pack (show i <> "-" <> show j))) [1 .. gap]
+                     >> () <$ addAtom "f.md" "TARGET")
+            [1 .. k]
+          -- Discovered fresh within the *measured* phase itself, walking
+          -- from head, never smuggled out of the uninstrumented setup --
+          -- same discipline "Storage.StoreOpCountSpec" already follows.
+          -- Identical in both variants below, so this walk's own cost
+          -- cancels out of the comparison either way.
+          findTargets = headHash >>= go
+            where
+              go h = do
+                (cd, t) <- lift (readCommitTick h)
+                let isTarget = case t of Atom _ _ _ c -> c == "TARGET"; _ -> False
+                rest <- case commitParents cd of
+                  []      -> return []
+                  (p : _) -> go p
+                return (if isTarget then h : rest else rest)
+          naive = snd <$> runMeasuring scenario (findTargets >>= mapM_ deleteTick)
+          fast  = snd <$> runMeasuring scenario (findTargets >>= deleteTicks)
+      case (naive, fast) of
+        (Right nc, Right fc) ->
+          (ocReads fc + ocWrites fc) `shouldSatisfy` (< ocReads nc + ocWrites nc)
+        _ -> expectationFailure ("measurement failed: naive=" <> show naive <> " fast=" <> show fast)
 
   describe "moveTick" $ do
     it "moves the last tick to the front" $ do

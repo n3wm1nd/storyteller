@@ -205,19 +205,14 @@ deleteFileAtom tid = deleteFileAtoms [tid]
 -- | Delete a batch of ticks in one transaction (one open scope, one
 --   resulting ref-move notification, instead of one per target -- pass
 --   every known target together, never loop 'deleteFileAtom' over them).
---   Same descendants-first discipline as 'splitFileAtoms'\/
---   'setFileAtomsHidden', via 'Storage.Ops.descendantsFirst' -- not for
---   correctness within *this* call (an ancestor target's own hash is
---   never touched by deleting a descendant target first -- only
---   descendants are ever rewritten), but for cost:
---   'Storage.Ops.deleteTick' winds back to its target and replays
---   everything after it, so deleting an ancestor target first would
---   replay a tail that includes *other* targets in this same batch --
---   work immediately thrown away the moment their own turn comes.
+--   'Storage.Ops.deleteTicks' does the real work: sorts and groups by
+--   connected component, then removes each component in exactly one
+--   wind-back-and-replay (nesting 'at', not one independent round trip
+--   per target -- each independent round trip would otherwise replay a
+--   tail that includes *other* targets in this same batch, work
+--   immediately thrown away the moment their own turn comes).
 deleteFileAtoms :: FileOpen r => [TickId] -> Sem r ()
-deleteFileAtoms tids = do
-  ordered <- runStorage @Main (Ops.descendantsFirst (map toHash tids))
-  mapM_ (\h -> void $ runStorage @Main (Ops.deleteTick h)) ordered
+deleteFileAtoms tids = runStorage @Main (Ops.deleteTicks (map toHash tids))
 
 -- | Move an atom to a new position in the file's chain.
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
