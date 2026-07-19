@@ -94,6 +94,49 @@ spec = do
             return (tickFields (tickData t), tickMessage (tickData t)))
       result `shouldBe` Right ([("type", "root")], "main")
 
+  describe "editTickAs" $ do
+    -- The type-safe replacement for hand-rolling 'Storage.Core.NonAtom'
+    -- with an already-encoded message -- 'Server.Writer.File.
+    -- editChatPrompt' used to do exactly that; this is what it goes
+    -- through now.
+    it "replaces the tick's content with the new value's own encoding, still decodable as the same TickType" $ do
+      let result = fst <$> runChain (do
+            h <- storeAs (Note [] "old text")
+            _ <- editTickAs h (Note [] "new text")
+            t <- getTypesTick
+            return (fromTick t :: Maybe Note))
+      result `shouldBe` Right (Just (Note [] "new text"))
+
+    -- An edit changes *content*, not which other ticks this one points
+    -- to -- the replacement value's own 'toDraft' refs are for a fresh
+    -- 'storeAs', never consulted here; whatever refs the tick already
+    -- carried survive untouched.
+    it "keeps the tick's existing refs, ignoring the replacement value's own" $ do
+      -- 'other' is stored *after* 'h', so editing 'h' replays 'other' back
+      -- on top -- head afterward is 'other', not the edit. Resolve 'h''s
+      -- own new id (the edit's remap, same as 'editTick' always logs) and
+      -- read that specifically, rather than assuming the edit landed at
+      -- head.
+      let result = fst <$> runChain (do
+            anchorTick <- storeAs (Root (BranchName "anchor"))
+            h          <- storeAs (Note [TickId (unObjectHash anchorTick)] "old text")
+            otherTick  <- storeAs (Root (BranchName "other"))
+            _          <- editTickAs h (Note [TickId (unObjectHash otherTick)] "new text")
+            newH       <- resolveId h
+            t          <- readTypesTick newH
+            return (fromTick t :: Maybe Note))
+      case result of
+        Right (Just (Note refs msg)) -> do
+          msg `shouldBe` "new text"
+          length refs `shouldBe` 1  -- still just "anchor", not "other"
+        other -> expectationFailure ("expected a decoded Note, got " <> show other)
+
+    it "fails outright on an atom -- go through Storage.Ops.editAtomAt instead" $ do
+      let result = fst <$> runChain (do
+            h <- addAtom "scene.md" "p1\n"
+            editTickAs h (Root (BranchName "main")))
+      result `shouldSatisfy` \case { Left _ -> True; Right _ -> False }
+
   describe "readTypesTick for an atom" $ do
     it "reconstructs the \"file\" field and folds in a \"type\":\"atom\" field, message as pure content" $ do
       let result = fst <$> runChain (do

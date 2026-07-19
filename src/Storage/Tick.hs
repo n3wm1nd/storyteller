@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -13,6 +14,7 @@
 --   'Storyteller.Core.StorageMonad.ObjectHash'\/'MonadGit'.
 module Storage.Tick
   ( storeAs
+  , editTickAs
   , getTypesTick
   , readTypesTick
   , newTypesTicksSince
@@ -125,6 +127,26 @@ storeAs :: (StoreM m, TickType a) => a -> StoreT m ObjectHash
 storeAs a = do
   msg <- encodeTickData td
   store (NonAtom (map coerceRef (ST.tickRefs td)) msg)
+  where td = toDraft a
+
+-- | Replace @h@'s own 'NonAtom' tick's content with @a@'s own 'toDraft'
+--   encoding, in place -- the type-safe way to edit a typed tick, so a
+--   caller never has to hand-construct a raw 'Storage.Core.NonAtom' with
+--   its own already-encoded text the way
+--   'Server.Writer.File.editChatPrompt' used to. The tick's existing refs
+--   are kept untouched (an edit changes *content*, not which other ticks
+--   this one points to -- @a@'s own 'toDraft' refs are for a fresh
+--   'storeAs', not this). Fails if @h@'s current tick isn't a 'NonAtom' at
+--   all (an 'Storyteller.Core.Atom.Atom' goes through
+--   "Storage.Ops"'s 'Storage.Ops.editAtomAt' instead); does *not*
+--   independently re-verify @h@ decodes as the *same* 'TickType' @a@
+--   is -- same trust boundary 'storeAs' already has, since the caller is
+--   expected to have already checked (e.g. via 'fromTick') before
+--   deciding what to replace it with.
+editTickAs :: forall m a. (StoreM m, TickType a) => ObjectHash -> a -> StoreT m ObjectHash
+editTickAs h a = at h $ editTick $ \case
+  NonAtom refs _ -> NonAtom refs <$> encodeTickData td
+  _              -> fail ("editTickAs: not a NonAtom tick: " <> T.unpack (unObjectHash h))
   where td = toDraft a
 
 -- ---------------------------------------------------------------------------

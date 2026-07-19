@@ -87,7 +87,7 @@ import Storyteller.Core.Runtime (Main)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
-import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, toDraft, tickParent)
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runBranchOpGit, runStorage, atGeneric)
 
 import Prelude hiding (readFile, writeFile)
@@ -382,28 +382,28 @@ chatConverseSwipe path promptTid atomTid newPromptText = do
 --
 --   Goes through 'Prompt's own 'TickType' instance to rebuild the message —
 --   decode the current one back into a 'Prompt' (recovering its "file"
---   field), substitute the new text, then 'toDraft'\/'Tick.encodeTickData'
---   it fresh — rather than hand-editing the raw tagged string in place.
---   That used to seem like the smaller change (find the tag, keep it,
---   splice in new text) but "the tag" isn't reliably at a fixed offset:
---   whether it's on the first line at all depends on whether the tick
---   carries fields (a 'Prompt' always does, via its own "file" field), so a
---   fixed-offset splice silently corrupted the header the moment that
---   assumption didn't hold — dropping the "type:prompt" tag entirely and
---   leaving the tick undecodable as anything but "unknown" kind ever after.
---   Round-tripping through the same encode\/decode the tick kind's own
---   'TickType' instance already defines doesn't have that failure mode:
---   whatever it puts in the header is exactly what it'll expect back out.
+--   field), substitute the new text, then re-encode it fresh via
+--   'Tick.editTickAs' — rather than hand-editing the raw tagged string in
+--   place. That used to seem like the smaller change (find the tag, keep
+--   it, splice in new text) but "the tag" isn't reliably at a fixed
+--   offset: whether it's on the first line at all depends on whether the
+--   tick carries fields (a 'Prompt' always does, via its own "file"
+--   field), so a fixed-offset splice silently corrupted the header the
+--   moment that assumption didn't hold — dropping the "type:prompt" tag
+--   entirely and leaving the tick undecodable as anything but "unknown"
+--   kind ever after. Round-tripping through the same encode\/decode the
+--   tick kind's own 'TickType' instance already defines doesn't have that
+--   failure mode: whatever it puts in the header is exactly what it'll
+--   expect back out -- and 'Tick.editTickAs' is what makes that the only
+--   way to write it, never a hand-rolled 'Storage.Core.NonAtom' with
+--   already-encoded text spliced in by the caller.
 editChatPrompt :: FileOpen r => TickId -> T.Text -> Sem r ()
 editChatPrompt (TickId tid) content = do
   typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash tid))
   case fromTick @Prompt typed of
     Nothing -> fail "editChatPrompt: not a chat prompt"
-    Just (Prompt file _) -> do
-      newMsg <- Tick.encodeTickData (toDraft (Prompt file content))
-      void $ runStorage @Main $ Ops.at (Ops.ObjectHash tid) $ Ops.editTick $ \case
-        Ops.NonAtom refs _ -> return (Ops.NonAtom refs newMsg)
-        _                    -> fail "editChatPrompt: not a chat prompt (it's an atom)"
+    Just (Prompt file _) ->
+      void $ runStorage @Main (Tick.editTickAs (Ops.ObjectHash tid) (Prompt file content))
 
 -- | Which reconciliation driver 'chatChapterRegen' runs — the whole-chapter
 --   single call or the beat-by-beat loop (see
