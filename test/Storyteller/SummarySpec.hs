@@ -178,8 +178,11 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right occs -> case occs of
-          [(_, s, _anchor)] -> summaryKind s `shouldBe` "prose/chapter"
-          _                 -> expectationFailure ("expected exactly one occurrence, got " <> show (length occs))
+          [occ] -> do
+            summaryKind (occSummary occ) `shouldBe` "prose/chapter"
+            occLowerBound occ `shouldBe` Nothing
+            occPrevAltHead occ `shouldBe` Nothing
+          _ -> expectationFailure ("expected exactly one occurrence, got " <> show (length occs))
 
     it "shared kind across two files: each file's own call returns only its own occurrence" $ do
       let result = runOne $ do
@@ -207,11 +210,21 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right (tid1, tid2, occs) -> case occs of
-          [(_, s1, anchor1), (_, s2, anchor2)] -> do
-            summaryKind s1 `shouldBe` "prose/chapter"
-            summaryKind s2 `shouldBe` "prose/chapter"
-            anchor1 `shouldBe` tid1
-            anchor2 `shouldBe` tid2
+          [occ1, occ2] -> do
+            summaryKind (occSummary occ1) `shouldBe` "prose/chapter"
+            summaryKind (occSummary occ2) `shouldBe` "prose/chapter"
+            occAnchor occ1 `shouldBe` tid1
+            occAnchor occ2 `shouldBe` tid2
+            -- The first occurrence has no older occurrence to bound it;
+            -- the second's own lower bound is exactly the first's anchor
+            -- -- handed back directly, not something a client re-derives.
+            -- Same for the alt-chain's own boundary (occPrevAltHead): the
+            -- second pass's own delta starts right where the first pass's
+            -- own alt-chain commit left off.
+            occLowerBound occ1 `shouldBe` Nothing
+            occLowerBound occ2 `shouldBe` Just tid1
+            occPrevAltHead occ1 `shouldBe` Nothing
+            occPrevAltHead occ2 `shouldBe` Just (summaryAltHead (occSummary occ1))
           _ -> expectationFailure ("expected exactly two occurrences, got " <> show (length occs))
 
     it "excludes a pure carry-forward pass that never actually touched path" $ do

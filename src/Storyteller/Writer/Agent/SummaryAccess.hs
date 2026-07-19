@@ -53,7 +53,7 @@ import Polysemy (Member, Sem)
 import qualified Storage.Ops as Ops
 import qualified Storage.FS as FS
 import Storyteller.Common.Summary
-  ( Summary(..), lastSummaryOf, lastTouchedIn, previewPath
+  ( Summary(..), Occurrence(..), lastSummaryOf, lastTouchedIn, previewPath
   , summaryContent, summaryTickFor, summariesTouching, ticksSince
   )
 import Storyteller.Core.Atom (contentFor)
@@ -242,5 +242,5 @@ unsummarizedTailSince s path = runStorage @source $ do
 --   case here: a caller wanting a deeper tier's own occurrences calls this
 --   again from within a storage scope opened at the finer tier's own
 --   'Storyteller.Common.Summary.summaryAltHead'.
-summariesTouchingFor :: forall source r. Member (BranchOp source) r => Text -> FilePath -> Sem r [(TickId, Summary, TickId)]
+summariesTouchingFor :: forall source r. Member (BranchOp source) r => Text -> FilePath -> Sem r [Occurrence]
 summariesTouchingFor kind path = runStorage @source (summariesTouching kind path)

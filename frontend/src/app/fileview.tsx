@@ -1106,6 +1106,167 @@ export function WireTickList({
   );
 }
 
+// ── Ordinary file content: ticks + chat/agent strip + input bar ─────────────
+//
+// "Viewing a file" is exactly this cluster (WireTickList, then
+// ChatPreviewStrip/AgentLogStrip/InputBar below it) — the one place it's
+// assembled, so anything that's genuinely "just another file" (a summary
+// tier's own connection — see .summarization-ui.md) renders through this
+// exact same component instead of a hand-rolled re-implementation that can
+// drift from it. 'absent'/'absentMessage' swap the tick list for a plain
+// message (still with InputBar below, so appending can create it) — same
+// shape the plain file view and a summary tier both need, just worded
+// differently.
+export function FileContentView({
+  ticks, emptyMessage, annotationMode, contextAtoms, contextAnnotations, resetKey,
+  rebaseMarker, onSetRebaseMarker, presenceBars,
+  onEdit, onToggleContextAtom, onToggleContextAnnotation, onCycleSwipe, onCorrect, onEditPrompt,
+  activeBranch, targetFile, onUploadImages, onOpenSummary,
+  agentLogs, onClearAgentLogs,
+  enabled, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext,
+  onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform, onSummarize,
+}: {
+  ticks: WireTick[];
+  // Non-null replaces the tick list with this plain message — covers both
+  // "doesn't exist yet" and "still loading" — the input bar cluster below
+  // still renders either way, so appending can create/populate it.
+  emptyMessage: string | null;
+  annotationMode: AnnotationMode;
+  contextAtoms: Set<string>;
+  contextAnnotations: Set<string>;
+  resetKey: unknown;
+  rebaseMarker: string | null;
+  onSetRebaseMarker: (tickId: string | null) => void;
+  presenceBars: PresenceBar[];
+  onEdit: (tickId: string, content: string) => void;
+  onToggleContextAtom: (tickId: string) => void;
+  onToggleContextAnnotation: (tickId: string) => void;
+  onCycleSwipe: (tickId: string) => void;
+  onCorrect?: (tickId: string) => void;
+  onEditPrompt?: (tickId: string, content: string) => void;
+  activeBranch: string | null;
+  targetFile?: string | null;
+  onUploadImages?: (path: string, files: FileList | File[]) => void;
+  onOpenSummary?: (kind: string, tickId: string) => void;
+  agentLogs: { level: string; message: string }[];
+  onClearAgentLogs: () => void;
+  enabled: boolean;
+  contextAtomCount: number;
+  contextAnnotationCount: number;
+  rebasing: boolean;
+  onClearRebase: () => void;
+  onClearContext: () => void;
+  onAppend: (text: string) => void;
+  onWrite: (text: string) => void;
+  onFix: (text: string) => void;
+  onNote: (text: string) => void;
+  onRegen: (text: string, byBeat: boolean) => void;
+  onRoleplay: (text: string) => void;
+  onAsk: (character: string, question: string) => void;
+  onInform: (character: string, fact: string) => void;
+  onSummarize: () => void;
+}) {
+  return (
+    <>
+      {emptyMessage !== null ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
+          {emptyMessage}
+        </div>
+      ) : (
+        <WireTickList
+          ticks={ticks} annotationMode={annotationMode}
+          contextAtoms={contextAtoms} contextAnnotations={contextAnnotations}
+          resetKey={resetKey}
+          rebaseMarker={rebaseMarker}
+          onSetRebaseMarker={onSetRebaseMarker}
+          presenceBars={presenceBars}
+          onEdit={onEdit}
+          onToggleContextAtom={onToggleContextAtom}
+          onToggleContextAnnotation={onToggleContextAnnotation}
+          onCycleSwipe={onCycleSwipe}
+          onCorrect={onCorrect}
+          onEditPrompt={onEditPrompt}
+          activeBranch={activeBranch}
+          targetFile={targetFile}
+          onUploadImages={onUploadImages}
+          onOpenSummary={onOpenSummary}
+        />
+      )}
+      <ChatPreviewStrip />
+      <AgentLogStrip logs={agentLogs} onClear={onClearAgentLogs} />
+      <InputBar
+        enabled={enabled}
+        activeBranch={activeBranch}
+        contextAtomCount={contextAtomCount} contextAnnotationCount={contextAnnotationCount}
+        rebasing={rebasing}
+        onClearRebase={onClearRebase}
+        onClearContext={onClearContext}
+        onAppend={onAppend}
+        onWrite={onWrite}
+        onFix={onFix}
+        onNote={onNote}
+        onRegen={onRegen}
+        onRoleplay={onRoleplay}
+        onAsk={onAsk}
+        onInform={onInform}
+        onSummarize={onSummarize}
+      />
+    </>
+  );
+}
+
+// A summary family's split view: a read-only top pane showing exactly what
+// one specific occurrence covers (computed client-side via
+// 'summaryCoverageFor', from ticks the main file connection already has
+// loaded — no separate materialized tree needed), and a genuinely ordinary
+// file view below it (see FileContentView just above) pointed at this
+// tier's own connection instead of the real file. Nesting is just "open
+// one more hop" — the bottom's own 'onOpenSummary' recurses through this
+// exact same component one level deeper.
+export function SummarySplitView({
+  kind, nodePath, coveredTicks, onBack, ...contentProps
+}: {
+  kind: string;
+  nodePath: string[];
+  coveredTicks: WireTick[];
+  onBack: () => void;
+} & Parameters<typeof FileContentView>[0]) {
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{
+        flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
+        fontSize: 10, color: "var(--text-ghost)", display: "flex", justifyContent: "space-between",
+      }}>
+        {/* nodePath is the full hop chain (see page.tsx's viewTarget doc) --
+            one hop is just "a specific occurrence of this file's own kind",
+            not nesting; only a *second* hop is genuinely one tier deeper. */}
+        <span>{summaryKindLabel(kind)}{nodePath.length > 1 ? ` — tier ${nodePath.length - 1}` : ""}</span>
+        <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-ghost)", cursor: "pointer", fontSize: 10 }}>close</button>
+      </div>
+      <div style={{ flex: "0 0 40%", overflow: "auto", borderBottom: "2px solid var(--border-subtle)" }}>
+        <WireTickList
+          ticks={coveredTicks}
+          annotationMode="dots"
+          contextAtoms={EMPTY_TICK_SET}
+          contextAnnotations={EMPTY_TICK_SET}
+          resetKey={contentProps.resetKey}
+          rebaseMarker={null}
+          onSetRebaseMarker={() => {}}
+          presenceBars={[]}
+          onEdit={() => {}}
+          onToggleContextAtom={() => {}}
+          onToggleContextAnnotation={() => {}}
+          onCycleSwipe={() => {}}
+          compact
+        />
+      </div>
+      <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
+        <FileContentView {...contentProps} />
+      </div>
+    </div>
+  );
+}
+
 // ── Text/Source edit modes ────────────────────────────────────────────────────
 
 // Whole-file text editing, bypassing atoms/positions entirely — for bulk

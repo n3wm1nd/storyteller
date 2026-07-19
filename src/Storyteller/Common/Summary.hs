@@ -51,11 +51,14 @@ module Storyteller.Common.Summary
   , summaryTickFor
   , lastTouchedIn
   , summaryContent
+  , Occurrence(..)
   , summariesTouching
+  , occurrenceDelta
   ) where
 
 import Control.Monad.State.Strict (lift)
 import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 
@@ -63,7 +66,7 @@ import Storage.Core
   ( CommitData(..), MonadStore(..), ObjectHash(..), StoreM, StoreObject(..), StoreT, headHash, readAt, readPathAt
   )
 import qualified Storage.Tick as Tick
-import Storyteller.Core.Atom (Atom(..))
+import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Types
   ( Tick(..), TickId(..), TickType(..), TickData(..)
   , encodeDraft, decodePayload, fromTick, tickId, tickParent
@@ -396,18 +399,72 @@ summaryContent s path = do
   where
     altHash = ObjectHash (unTickId (summaryAltHead s))
 
+-- | This 'Occurrence's own delta: the concatenated content of every real
+--   atom on @path@ added to the alt-chain strictly after
+--   'occPrevAltHead' (exclusive) through this occurrence's own
+--   'summaryAltHead' (inclusive) -- oldest first, same reconstruction
+--   'Storyteller.Writer.Agent.SummaryAccess.unsummarizedTailSince' already
+--   uses. This is a summary tick's own "data," in the same sense an
+--   ordinary 'Storyteller.Core.Atom.Atom' tick's own data is just what it
+--   appended, not the whole (ever-growing) file it's attached to --
+--   'summaryContent' answers a different question ("what does this
+--   alt-chain currently hold," useful for a plain preview of the current
+--   state) and is the wrong thing to show as *this occurrence's* own
+--   editable content.
+occurrenceDelta :: StoreM m => Occurrence -> FilePath -> StoreT m Text
+occurrenceDelta occ path =
+  readAt (ObjectHash (unTickId (summaryAltHead (occSummary occ)))) $ do
+    items <- ticksSinceFrom Nothing (occPrevAltHead occ)
+    return (T.concat (map (contentFor path) items))
+
 -- ---------------------------------------------------------------------------
 -- Every historical occurrence, each independently anchored
 -- ---------------------------------------------------------------------------
 
+-- | One historical occurrence of a summary @kind@, as found by
+--   'summariesTouching' -- everything a client needs to render it as its
+--   own inline annotation *and* open its own "what's new since last time"
+--   view, without picking/re-deriving any of this from the rest of the
+--   list.
+data Occurrence = Occurrence
+  { occTickId  :: TickId
+    -- ^ this occurrence's own real 'Summary' tick id.
+  , occSummary :: Summary
+  , occAnchor  :: TickId
+    -- ^ the last real atom on @path@'s own history this occurrence
+    --   covers -- where a client positions its inline annotation.
+  , occLowerBound :: Maybe TickId
+    -- ^ the *previous* (older) occurrence's own 'occAnchor', if any --
+    --   the exclusive lower bound of what this occurrence covers on
+    --   @path@'s own real history.
+  , occPrevAltHead :: Maybe TickId
+    -- ^ the *previous* occurrence's own 'summaryAltHead', if any -- the
+    --   exclusive lower bound of what's *new in the alt-chain itself*
+    --   for this occurrence (its own delta: exactly the tick(s) this
+    --   pass added -- typically one atom, but a hand-edited note or
+    --   swipe in between passes counts too), as distinct from
+    --   'occLowerBound'/'occAnchor', which bound @path@'s own *real*
+    --   history, not the alt-chain's. A summary tick's own "data," in
+    --   the same sense an ordinary 'Storyteller.Core.Atom.Atom' tick's
+    --   own data is just what it appended -- not the whole (ever-growing)
+    --   file it's attached to -- is this delta, not the alt-chain's full
+    --   accumulated content ('summaryContent' reads the latter, useful
+    --   for a plain preview, but the wrong thing to edit against).
+  } deriving (Show, Eq)
+
 -- | Every 'Summary' tick of @kind@ that genuinely contributed something for
 --   @path@ (the same "contributed something" signature
---   'lastSummaryTouchingFrom' already tests), oldest-first, each paired
---   with the last real atom on @path@'s own history that occurrence
---   covers -- its "anchor," where a client should position an inline
---   annotation for it. An occurrence whose own covered span contains no
---   real atom on @path@ at all is dropped entirely (nothing to anchor it
---   to).
+--   'lastSummaryTouchingFrom' already tests), oldest-first, each an
+--   'Occurrence' carrying its own two independent boundaries (see that
+--   type's own Haddock) -- handed back directly, not left for a client to
+--   re-derive by sorting/searching this same list back apart, precisely so
+--   opening a specific occurrence's own view is a direct lookup by the
+--   clicked tick's own id, never a search over "all occurrences of this
+--   kind": there is exactly one right answer for a specific tick, and
+--   nothing to pick between.
+--
+--   An occurrence whose own covered span contains no real atom on @path@
+--   at all is dropped entirely (nothing to anchor it to).
 --
 --   Walks the currently-open chain from HEAD back to root, calling
 --   'lastSummaryTouchingFrom' once per occurrence found (each call scoped
@@ -417,7 +474,7 @@ summaryContent s path = do
 --   caller that wants a *nested* tier's own occurrences just calls this
 --   again from within a storage scope opened at the finer tier's own
 --   'summaryAltHead'.
-summariesTouching :: StoreM m => Text -> FilePath -> StoreT m [(TickId, Summary, TickId)]
+summariesTouching :: StoreM m => Text -> FilePath -> StoreT m [Occurrence]
 summariesTouching kind path = do
   h <- headHash
   mFirst <- lastSummaryTouchingFrom h kind path
@@ -431,9 +488,12 @@ summariesTouching kind path = do
         Just (TickId p) -> lastSummaryTouchingFrom (ObjectHash p) kind path
       items <- ticksSinceFrom (tickParent t) (fst <$> mPrev)
       rest  <- go mPrev
+      let lowerBound = case rest of
+            (occ : _) -> Just (occAnchor occ)
+            []        -> Nothing
       case lastAtomId items of
         Nothing     -> return rest
-        Just anchor -> return ((tid, s, anchor) : rest)
+        Just anchor -> return (Occurrence tid s anchor lowerBound (summaryAltHead . snd <$> mPrev) : rest)
 
     lastAtomId items = case [ tickId tk | tk <- items, isOwnAtom tk ] of
       [] -> Nothing

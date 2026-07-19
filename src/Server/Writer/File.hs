@@ -594,15 +594,28 @@ summarizePath path = case summaryKindsFor path of
 --   out.
 --   One real 'WireTick' per historical occurrence now, not one synthetic
 --   tick per family: each occurrence is independently anchored via
---   'wtRefs' (the last real atom on @path@ that occurrence covers), so a
---   client can render every pass as its own inline annotation positioned
---   at the right spot, rather than a single materialized tree. 'wtTickId'
---   is that occurrence's own real 'Summary' tick id, so the client's
---   ordinary upsert-by-id model dedupes/updates each one independently --
---   and a later pass re-minting an ancestor tick (see
+--   'wtRefs' (always @[anchor, lowerBound, prevAltHead]@, the latter two
+--   empty-string when there's no older occurrence), so a client can render
+--   every pass as its own inline annotation positioned at the right spot,
+--   and open its own view (both "what real content led to this" and "what
+--   did this pass itself add") by a direct lookup against this one tick's
+--   own 'wtRefs' -- never by searching/sorting across every occurrence of
+--   the kind to guess which is "previous." 'wtTickId' is that occurrence's
+--   own real 'Summary' tick id, so the client's ordinary upsert-by-id
+--   model dedupes/updates each one independently -- and a later pass
+--   re-minting an ancestor tick (see
 --   'Storyteller.Writer.Agent.Summarizer.extendNestedAltChain') still
 --   surfaces as a genuinely new tick id, keeping 'fileStateWithSummaries'
 --   own id-based signature a correct staleness check with no changes.
+--
+--   'wtContent'/'wtMessage' are this occurrence's own delta (see
+--   'Storyteller.Common.Summary.occurrenceDelta') -- what this specific
+--   pass actually added, the same sense an ordinary atom's own content is
+--   just what it appended, not the whole file it's attached to. Not
+--   'Storyteller.Common.Summary.summaryContent' (the alt-chain's current
+--   full accumulated text) -- that answers a different question, and
+--   would make every occurrence's own annotation/preview repeat every
+--   earlier pass's text verbatim.
 summaryTicksFor :: FileOpen r => FilePath -> Sem r [WireTick]
 summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
   where
@@ -610,15 +623,19 @@ summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
       occurrences <- SummaryAccess.summariesTouchingFor @Main kind path
       mapM (toWireTick kind) occurrences
 
-    toWireTick kind (tid, s, anchorTid) = do
-      mContent <- runStorage @Main (Summary.summaryContent s path)
+    toWireTick kind occ = do
+      delta <- runStorage @Main (Summary.occurrenceDelta occ path)
       return WireTick
-        { wtTickId  = unTickId tid
+        { wtTickId  = unTickId (Summary.occTickId occ)
         , wtKind    = "summary"
-        , wtRefs    = [unTickId anchorTid]
+        , wtRefs    =
+            [ unTickId (Summary.occAnchor occ)
+            , maybe "" unTickId (Summary.occLowerBound occ)
+            , maybe "" unTickId (Summary.occPrevAltHead occ)
+            ]
         , wtFields  = [("kind", kind)]
-        , wtMessage = fromMaybe "" mContent
-        , wtContent = mContent
+        , wtMessage = delta
+        , wtContent = Just delta
         , wtParent  = Nothing
         }
 
