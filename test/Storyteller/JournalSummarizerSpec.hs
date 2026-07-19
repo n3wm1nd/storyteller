@@ -185,6 +185,45 @@ spec = do
           mZero `shouldSatisfy` maybe False (T.isPrefixOf "C[1,2,3,4,5,6,7,8,9,10]C[11")
           mOne  `shouldSatisfy` maybe False (T.isPrefixOf "C[C[1,2,3,4,5,6,7,8,9,10],")
 
+  describe "journalCreateManual" $ do
+    it "flushes whatever's pending right now, even under a full group -- the manual-creation entry point" $ do
+      let result = runOne $ do
+            addEntries (map (T.pack . show) [1 .. defaultJournalGroupSize - 3 :: Int])
+            wrote <- journalCreateManual @TestBranch
+            content <- tierZeroContent
+            return (wrote, content)
+      result `shouldBe` Right (True, Just "")
+
+    it "a second manual call with nothing new since is a genuine no-op, same contract as an automatic pass" $ do
+      let result = runOne $ do
+            addEntries (map (T.pack . show) [1 .. 3 :: Int])
+            _      <- journalCreateManual @TestBranch
+            wrote2 <- journalCreateManual @TestBranch
+            content <- tierZeroContent
+            return (wrote2, content)
+      result `shouldBe` Right (False, Just "")
+
+    it "an automatic pass afterward only re-covers what's genuinely new since the manual flush" $ do
+      let result = runOne $ do
+            addEntries (map (T.pack . show) [1 .. 3 :: Int])
+            _ <- journalCreateManual @TestBranch
+            addEntries (map (T.pack . show) [4 .. defaultJournalGroupSize + 3 :: Int])
+            _ <- journalSummarize @TestBranch stubCompress
+            tierZeroContent
+      result `shouldBe` Right (Just ("" <> "C[4,5,6,7,8,9,10,11,12,13]"))
+
+    it "does nothing when there's nothing pending at all (never summarized, no entries yet)" $ do
+      let result = runOne (journalCreateManual @TestBranch)
+      result `shouldBe` Right False
+
+    it "still only recurses into tier 1 when a full group of tier-0 chunks has actually accumulated -- manual creation doesn't force nesting" $ do
+      let n = defaultJournalGroupSize
+          result = runOne $ do
+            addEntries (map (T.pack . show) [1 .. n - 1 :: Int]) -- one short of tier 0's own first group
+            _ <- journalCreateManual @TestBranch
+            tierOneContent
+      result `shouldBe` Right Nothing
+
     it "summariesTouching finds a nested tier-1 occurrence once tier 1 has formed, by walking the currently-open chain -- no materialization needed" $ do
       let n = defaultJournalGroupSize
           result = runOne $ do

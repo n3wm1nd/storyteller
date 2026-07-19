@@ -71,6 +71,7 @@
 module Storyteller.Writer.Agent.JournalSummarizer
   ( journalKind
   , journalSummarize
+  , journalCreateManual
   , journalChunkAgent
   , currentSheet
   , defaultJournalGroupSize
@@ -164,7 +165,39 @@ journalSummarize
   .  Members '[BranchOp source, StoryStorage, Git, Fail, Logging] r
   => ([Text] -> Sem r Text)  -- ^ compress one full group, oldest first
   -> Sem r Bool
-journalSummarize compress = do
+journalSummarize = journalSummarizeWith @source False
+
+-- | The manual-creation entry point: force this tier's own current pass to
+--   close out right now, compressing whatever's pending -- however many
+--   raw items, possibly fewer than 'defaultJournalGroupSize' -- into one
+--   new chunk with empty content, for the user to write into directly.
+--   Same coverage-finding machinery as 'journalSummarize' itself
+--   (@source@'s own unconsumed items since its last 'journalKind' tick,
+--   found by the identical 'foldAscend' walk, so it lands exactly where
+--   an automatic pass would have) -- the only difference is *when* a
+--   chunk boundary closes: immediately, instead of waiting for a full
+--   group. A genuine no-op (returns 'False', writes nothing) when nothing
+--   is pending at all, same contract as 'journalSummarize'.
+--
+--   Deliberately does not force tier 1 (or deeper) to also flush a
+--   partial group -- only the tier this call is made on. The recursive
+--   nested attempt below is always the ordinary, unforced
+--   'journalSummarize', so a manual tier-0 entry contributes one more
+--   ordinary item to tier 1's own count, nothing more; nesting still only
+--   ever happens once a *real* full group has accumulated at any level.
+journalCreateManual
+  :: forall source r
+  .  Members '[BranchOp source, StoryStorage, Git, Fail, Logging] r
+  => Sem r Bool
+journalCreateManual = journalSummarizeWith @source True (const (pure ""))
+
+journalSummarizeWith
+  :: forall source r
+  .  Members '[BranchOp source, StoryStorage, Git, Fail, Logging] r
+  => Bool                    -- ^ force this tier's own pending buffer to close out even under a full group
+  -> ([Text] -> Sem r Text)  -- ^ compress one group, oldest first
+  -> Sem r Bool
+journalSummarizeWith forceFlush compress = do
   info "journalSummarize: scanning this chain for unconsumed journal atoms since its own last summary"
   mSelf <- runStorage @source (lastSummaryOf journalKind)
   let target  = fst <$> mSelf
@@ -174,7 +207,10 @@ journalSummarize compress = do
         , caLastTick = fst <$> mSelf
         , caWrote    = False
         }
-  final <- foldAscend @source target initAcc step
+  walked <- foldAscend @source target initAcc step
+  final <- if forceFlush && not (null (caBuffer walked))
+             then commitGroup walked (caBuffer walked)
+             else return walked
   if caWrote final
     then case (caLastTick final, caAltHead final) of
       (Just tid, Just altHead) -> do
@@ -194,31 +230,38 @@ journalSummarize compress = do
       Just (Atom f _) | f == journalPath -> considerItem acc (contentFor journalPath t)
       _ -> return acc
 
-    -- | Once a full group accumulates, commit it as a real 'Storage.Ops.addAtom'
-    --   append onto this chain's own alt-chain lifetime for @journalPath@
-    --   -- not a whole-file blob replace -- so the alt chain gains genuine
+    -- | Buffer @item@; once a full group accumulates, close it out
+    --   ('commitGroup'). The forced-flush path above closes out whatever's
+    --   left the same way once the walk itself has finished, so both
+    --   routes to a chunk boundary always go through the identical commit.
+    considerItem :: ChunkAcc -> Text -> Sem r ChunkAcc
+    considerItem acc item = do
+      let buffer' = caBuffer acc ++ [item]
+      if length buffer' < defaultJournalGroupSize
+        then return acc { caBuffer = buffer' }
+        else commitGroup acc buffer'
+
+    -- | Commit @items@ as a real 'Storage.Ops.addAtom' append onto this
+    --   chain's own alt-chain lifetime for @journalPath@ -- not a
+    --   whole-file blob replace -- so the alt chain gains genuine
     --   per-group Atom\/Tick history of its own, the same vocabulary a
     --   normal branch's own file history is written in. Safe against
     --   'Storyteller.Writer.Agent.Summarizer.runSummarizer's own "never
     --   split one pass across more than one alt-chain commit" invariant
     --   (see that module's Haddock): a journal chain only ever writes
     --   @journalPath@, so one group is still always exactly one commit.
-    considerItem :: ChunkAcc -> Text -> Sem r ChunkAcc
-    considerItem acc item = do
-      let buffer' = caBuffer acc ++ [item]
-      if length buffer' < defaultJournalGroupSize
-        then return acc { caBuffer = buffer' }
-        else do
-          info $ "journalSummarize: compressing a full group of " <> T.pack (show (length buffer')) <> " items"
-          compressed <- compress buffer'
-          (_, newAltHead) <- extendAltChain (caAltHead acc) (Ops.addAtom journalPath compressed)
-          newTick <- runStorage @source (Tick.storeAs (Summary journalKind newAltHead))
-          return acc
-            { caBuffer   = []
-            , caAltHead  = Just newAltHead
-            , caLastTick = Just (TickId (Core.unObjectHash newTick))
-            , caWrote    = True
-            }
+    commitGroup :: ChunkAcc -> [Text] -> Sem r ChunkAcc
+    commitGroup acc items = do
+      info $ "journalSummarize: compressing a group of " <> T.pack (show (length items)) <> " items"
+      compressed <- compress items
+      (_, newAltHead) <- extendAltChain (caAltHead acc) (Ops.addAtom journalPath compressed)
+      newTick <- runStorage @source (Tick.storeAs (Summary journalKind newAltHead))
+      return acc
+        { caBuffer   = []
+        , caAltHead  = Just newAltHead
+        , caLastTick = Just (TickId (Core.unObjectHash newTick))
+        , caWrote    = True
+        }
 
 -- | Compress one full group of raw items (raw journal entries at tier 0,
 --   a lower tier's own newly-grown text at tier @n > 0@) into one dense

@@ -363,6 +363,12 @@ export type FileCommand =
   // qualifies), this never touches any other file, even one that's also
   // stale. See Server.Writer.File.summarizePath's own Haddock.
   | { type: "summarize.file"; id?: string }
+  // Create an empty summary occurrence to write into directly — a
+  // distinct intent from summarize.file (no LLM call at all), the same
+  // way file.create is distinct from an LLM-populated write. Reuses
+  // summarize.file's own coverage-finding and cursor-positioning
+  // machinery underneath (Server.Writer.File.summarizePathManual).
+  | { type: "summarize.create"; id?: string }
   // Note: instant, non-LLM, like chat.append — attaches `text` as an
   // annotation on each of `targets`, or (when empty) on the file's current
   // HEAD tick.

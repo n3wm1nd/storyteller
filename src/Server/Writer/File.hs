@@ -28,6 +28,7 @@ module Server.Writer.File
   , correctGroup
   , fileStateWithSummaries
   , summarizePath
+  , summarizePathManual
   ) where
 
 import Control.Monad (void)
@@ -58,7 +59,7 @@ import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, h
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
 import Storyteller.Writer.Lore (isLoreEligible)
-import Storyteller.Writer.Agent.JournalSummarizer (journalKind, journalSummarize, journalChunkAgent, currentSheet)
+import Storyteller.Writer.Agent.JournalSummarizer (journalKind, journalSummarize, journalCreateManual, journalChunkAgent, currentSheet)
 import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryAgent)
 import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryAgent)
 import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
@@ -569,6 +570,32 @@ summarizePath path = case summaryKindsFor path of
     | kind == "prose/chapter"  -> runSummarizerForPath @Main kind path chapterSummaryAgent
     | kind == "lore/article"   -> runSummarizerForPath @Main kind path loreSummaryAgent
     | otherwise                 -> return Nothing
+
+-- | Manual creation: an empty occurrence, positioned exactly where an
+--   automatic 'summarizePath' pass would have landed one (its own
+--   coverage-finding machinery, unchanged -- 'runSummarizerForPath's
+--   per-path freshness check for a whole-file kind,
+--   'journalCreateManual's own forced flush for the incremental one), but
+--   with no LLM call: the generated content is always @""@, for the user
+--   to write into directly via the split view. Routed through the
+--   identical 'Server.Writer.File.Protocol.At' wrapping every mutating
+--   command already gets, so "at the current cursor" needs nothing of its
+--   own here -- see WS-PROTOCOL.md and 'Server.Writer.File.Dispatch.
+--   runCommand's own @At@ case.
+--
+--   Collapses 'summarizePath's own three-way kind dispatch to two: which
+--   per-domain LLM agent to call is the only thing that ever
+--   distinguished @"prose/chapter"@ from @"lore/article"@, and manual
+--   creation calls none of them -- both go through the identical
+--   const-empty generation hook.
+summarizePathManual
+  :: Members '[BranchOp Main, Git, StoryStorage, Logging, Fail] r
+  => FilePath -> Sem r (Maybe TickId)
+summarizePathManual path = case summaryKindsFor path of
+  [] -> return Nothing
+  (kind : _)
+    | path == journalPath -> Nothing <$ journalCreateManual @Main
+    | otherwise            -> runSummarizerForPath @Main kind path (const (pure ""))
 
 -- | @path@'s summary history, as synthetic 'WireTick's riding along in
 --   the ordinary push -- not a request/response command. A

@@ -181,6 +181,15 @@ data FileCommand
   --   'Server.Writer.File.summarizePath's own Haddock for why that's a
   --   real capability, not just a narrower version of the same thing.
   | SummarizeFile { fcId :: Maybe T.Text }
+  -- | Create an empty summary occurrence to write into directly -- a
+  --   distinct intent from 'SummarizeFile' (no LLM call at all), the same
+  --   way 'CreateFile' is a distinct intent from an LLM-populated write,
+  --   not a flag on it. Reuses 'SummarizeFile's own coverage-finding and
+  --   cursor-positioning machinery underneath (see
+  --   'Server.Writer.File.summarizePathManual') -- that sharing lives in
+  --   the Haskell functions those two commands call, not in the wire
+  --   shape.
+  | CreateSummary { fcId :: Maybe T.Text }
   -- | Instant, non-LLM: attach a note to each of 'fcTargets', or (when
   --   empty) to the file's current HEAD tick.
   | ChatNote   { fcId :: Maybe T.Text, fcNoteText :: T.Text, fcTargets :: [T.Text] }
@@ -268,6 +277,7 @@ instance FromJSON FileCommand where
       "atom.swipe.cycle" -> CycleSwipe i <$> o .: "tickId"
       "chat.outline" -> pure (ChatOutline i)
       "summarize.file" -> pure (SummarizeFile i)
+      "summarize.create" -> pure (CreateSummary i)
       "chat.note"   -> do
         targets <- fromMaybe [] <$> o .:? "targets"
         ChatNote i <$> o .: "text" <*> pure targets
@@ -310,6 +320,7 @@ commandKind = \case
   CycleSwipe {}   -> "atom.swipe.cycle"
   ChatOutline {}  -> "chat.outline"
   SummarizeFile {} -> "summarize.file"
+  CreateSummary {} -> "summarize.create"
   ChatNote {}     -> "chat.note"
   ReferenceImage {} -> "reference.image"
   EnterScene {}   -> "enter.scene"

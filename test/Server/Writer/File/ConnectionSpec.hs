@@ -36,7 +36,7 @@ import Test.Hspec
 
 import Polysemy (Sem, run)
 
-import Storyteller.Core.Git (runStorage, withStorage)
+import Storyteller.Core.Git (atGeneric, runStorage, withStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Common.Summary (Summary(..), lastSummaryOf)
@@ -44,11 +44,12 @@ import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, journalKind, defaultJournalGroupSize)
 import Storyteller.Writer.Library (journalPath)
 import Storyteller.Core.Runtime (Main)
+import Storage.Core (unObjectHash)
 import qualified Storage.Ops as Ops
 
 import Server.Core.File (fileStateSince, editFileAtom)
 import Server.Core.Protocol (Update(..), WireTick(..))
-import Server.Writer.File (fileStateWithSummaries)
+import Server.Writer.File (fileStateWithSummaries, summarizePathManual)
 import Server.Writer.File.Connection (openTarget)
 import Storyteller.Writer.Agent.SummaryAccess (densest)
 import Server.TestStack (TestRunner)
@@ -224,3 +225,58 @@ spec runner = describe "openTarget" $ do
     case result of
       Left err    -> expectationFailure err
       Right kinds -> filter (== "summary") kinds `shouldSatisfy` (not . null)
+
+  -- 'Server.Writer.File.summarizePathManual' -- create an empty occurrence
+  -- for the user to write into directly, reusing the exact same
+  -- coverage-finding machinery an automatic pass uses (no separate
+  -- positioning logic of its own): 'runSummarizerForPath' for a whole-file
+  -- kind, 'journalCreateManual' for the incremental one. "At the current
+  -- cursor" is free -- the client wraps this command in 'At' like any
+  -- other mutating command (see WS-PROTOCOL.md), so 'atGeneric' is what a
+  -- rebase marker actually becomes server-side; exercised directly here,
+  -- the same way 'Server.Writer.File.Dispatch.runCommand's own 'At' case
+  -- wraps any inner command.
+  describe "summarizePathManual" $ do
+    it "creates one empty occurrence covering the file's current content, at the live end when no cursor is given" $ do
+      let result = run_ $ do
+            _   <- createBranch (BranchName "b")
+            _   <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
+            tid <- openCmd "b" (summarizePathManual "chapters/ch1.md")
+            upd <- openCmd "b@prose/chapter" (fileStateSince "chapters/ch1.md" Nothing)
+            return (tid /= Nothing, map wtContent (updateTicks upd))
+      result `shouldBe` Right (True, [Just ""])
+
+    it "wrapped in At (what a client's rebase marker becomes server-side) -- later real content stays unsummarized" $ do
+      let result = run_ $ do
+            _        <- createBranch (BranchName "b")
+            cursor   <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one."))
+            -- Content written *after* the cursor -- the manual creation
+            -- below, rebased to that earlier point exactly the way
+            -- 'Server.Writer.File.Dispatch.runCommand's own 'At' case
+            -- rebases any inner command, must never see this.
+            _        <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "\n\npara two, after the cursor."))
+            _        <- openCmd "b" (atGeneric @Main (TickId (unObjectHash cursor)) (summarizePathManual "chapters/ch1.md"))
+            openCmd "b" (densest @Main ["prose/chapter"] "chapters/ch1.md")
+      -- The empty occurrence covers only "para one." (everything up to the
+      -- cursor); "para two" -- written after it -- surfaces as densest's
+      -- own unsummarized tail, exactly like the hand-edit test above pins
+      -- for 'openTarget' generally, now confirmed for manual creation too.
+      result `shouldBe` Right "\n\npara two, after the cursor."
+
+    it "a second manual call with nothing new since is a genuine no-op, same contract as an automatic pass" $ do
+      let result = run_ $ do
+            _    <- createBranch (BranchName "b")
+            _    <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
+            tid1 <- openCmd "b" (summarizePathManual "chapters/ch1.md")
+            tid2 <- openCmd "b" (summarizePathManual "chapters/ch1.md")
+            return (tid1 /= Nothing, tid2)
+      result `shouldBe` Right (True, Nothing)
+
+    it "on journal.md, flushes whatever's pending right now even under a full group, and drops the user into a readable empty occurrence" $ do
+      let result = run_ $ do
+            _   <- createBranch (BranchName "b")
+            mapM_ (\i -> openCmd "b" (runStorage @Main (Ops.addAtom journalPath (T.pack (show i))))) [1 .. 3 :: Int]
+            tid <- openCmd "b" (summarizePathManual journalPath)
+            upd <- openCmd ("b@" <> journalKind) (fileStateSince journalPath Nothing)
+            return (tid, map wtContent (updateTicks upd))
+      result `shouldBe` Right (Nothing, [Just ""])

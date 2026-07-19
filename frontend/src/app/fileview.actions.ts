@@ -375,6 +375,14 @@ export function summarizeThisFile(path: string) {
   sendFileCommand(path, { type: "summarize.file" });
 }
 
+// The manual-creation sibling: an empty occurrence to write into directly,
+// no LLM call — a distinct intent from 'summarizeThisFile', not a flag on
+// it (see ws.ts's own "summarize.create" doc). Same sendFileCommand/
+// atRebase plumbing, so "at the current cursor" is free the same way.
+export function createSummaryManual(path: string) {
+  sendFileCommand(path, { type: "summarize.create" });
+}
+
 export function appendToFile(path: string, content: string) {
   const text = content.replace(/^\/+/, "");
   sendChatCommand(path, () => ({ type: "chat.append", content: text }));

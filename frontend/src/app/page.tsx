@@ -10,7 +10,7 @@ import {
   appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, roleplayWrite, chatFix, chatNote, chatRegen, chatOutline,
-  chatConverse, chatConverseRegen, cycleSwipe, correctAtom, summarizeThisFile,
+  chatConverse, chatConverseRegen, cycleSwipe, correctAtom, summarizeThisFile, createSummaryManual,
   summaryConnBranch, summaryConnKey,
 } from "./fileview.actions";
 import {
@@ -542,6 +542,20 @@ export default function Home() {
     // only" slice light up on their own once the pass's push arrives.
     navigateToSummary(kinds[0], []);
   }, [selectedFile, activeBranch]);
+  // "New" — the manual-creation sibling of 'summarizeCurrentFile': same
+  // command, same coverage-finding and rebase-marker positioning
+  // server-side (Server.Writer.File.summarizePathManual), just no LLM call
+  // and empty content, for writing into directly. Same landing logic too
+  // (empty hops resolves to the newest occurrence once it lands) — "drop
+  // the user in" needs nothing beyond what 'summarizeCurrentFile' already
+  // relies on.
+  const createManualSummary = useCallback(() => {
+    if (!selectedFile || !activeBranch) return;
+    const kinds = summaryKindsFor(selectedFile);
+    if (kinds.length === 0) return;
+    createSummaryManual(selectedFile);
+    navigateToSummary(kinds[0], []);
+  }, [selectedFile, activeBranch]);
   // Presence is scoped to the open file (a scene), not the whole branch —
   // see WRITER.md — so this folds the file's own chain, not the branch-wide
   // one. "Show all" (persistent, toolbar toggle) wins over hover —
@@ -847,6 +861,15 @@ export default function Home() {
                     style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 8, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
                   >
                     Summarize
+                  </button>
+                )}
+                {selectedFile && activeBranch && summaryKindsFor(selectedFile).length > 0 && (
+                  <button
+                    onClick={createManualSummary}
+                    title="Create an empty occurrence at the current cursor (rebase marker, or the live end) to write into directly — no LLM call."
+                    style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 6, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
+                  >
+                    New
                   </button>
                 )}
                 <span style={{ flex: 1 }} />
