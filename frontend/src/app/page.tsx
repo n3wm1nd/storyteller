@@ -249,6 +249,13 @@ export default function Home() {
   const selectedFile = viewTarget?.file ?? null;
   const viewingSummary = viewTarget?.summary ?? null;
   const [viewMode, setViewMode] = useState<"blocks" | "text" | "source">("blocks");
+  // The split view's bottom pane defaults to just this occurrence's own
+  // delta (see 'activeTicksChain'); flipping this shows the family's
+  // whole current chain instead — every tick it's ever accumulated, same
+  // as any ordinary file view. Purely a display preference, not part of
+  // 'viewTarget' — it doesn't change which connection is open or what's
+  // actually editable, just how much of it is shown at once.
+  const [showFullSummaryChain, setShowFullSummaryChain] = useState(false);
 
   const sessionStatus = conns.find((c) => c.label === "session")?.status ?? "disconnected";
 
@@ -329,6 +336,10 @@ export default function Home() {
   // unlike 'viewTarget' above: nothing needs to read this back out of the
   // URL, so there's no restore case to worry about.
   useEffect(() => { setViewMode("blocks"); }, [selectedFile]);
+  // Same reasoning — a fresh occurrence/kind/hop starts back at the
+  // default "just this pass's own delta" view, not whatever the last one
+  // happened to be left on.
+  useEffect(() => { setShowFullSummaryChain(false); }, [viewingSummary]);
 
   // Every place that changes which summary (if any) is being viewed goes
   // through one of these two — updating 'viewTarget' and pushing the
@@ -362,10 +373,17 @@ export default function Home() {
     [fileChainTicks, fileChainHead],
   );
   const atomCount       = useMemo(() => fileTicks.filter((t) => t.kind === "atom").length, [fileTicks]);
-  // Synthetic "summary" ticks (see Server.Writer.File.summaryTicksFor)
-  // never sit on the chain 'tickChain' walks from head — they carry no
-  // parent — so they're read straight off the raw per-connection map
-  // instead of out of fileTicks.
+  // "summary" ticks (see Server.Writer.File.summaryTicksFor) are always
+  // 'wtParent: null' on the wire, at any depth — 'Storage.Tick.fileTicksOf'/
+  // 'relatedTicksOf' (which every connection's own chain goes through,
+  // real branch or alt-chain alike, both via the same
+  // 'Server.Core.File.fileState') already relinks *around* any tick with
+  // no real file footprint, so a summary tick's own actual git parent is
+  // never a valid position in that relinked view — 'tickChain' correctly
+  // never finds it via '.parent', so it's read straight off the raw
+  // per-connection map instead of out of 'fileTicks', and positioned by
+  // its own 'wtRefs' anchor against the atoms already present, exactly
+  // like 'annotationsFor' (fileview.tsx) already positions a note.
   const summaryTicks = useMemo(
     () => Object.values(fileChainTicks).filter((t) => t.kind === "summary"),
     [fileChainTicks],
@@ -442,17 +460,18 @@ export default function Home() {
   // tier's own further Summary tick (see Server.Writer.File.Connection's
   // openTarget — every connection, at any depth, runs the same
   // fileStateWithSummaries) rides along on *this* connection's own push
-  // with no parent, so a plain tickChain walk drops it just as it would
-  // for the real file — this is what makes a deeper nested annotation
-  // actually show up inline in the bottom pane.
+  // with 'wtParent: null', so a plain tickChain walk drops it just as it
+  // would for the real file — this is what makes a deeper nested
+  // annotation actually show up inline in the bottom pane.
   //
   // Sliced down to just this occurrence's own delta when a specific one is
   // being viewed (see 'viewingOccurrence') — the same "an atom's own data
   // is just what it appended, not the whole growing file" principle
   // Storyteller.Common.Summary.occurrenceDelta already applies server-side
   // for the annotation preview text, applied here to the tick *list* the
-  // bottom pane renders/edits: refs[2], when present, is the previous
-  // occurrence's own alt-chain tip (see Server.Writer.File.summaryTicksFor)
+  // bottom pane renders/edits: refs[1], when present, is the previous
+  // occurrence's own alt-chain tip (see Server.Writer.File.summaryTicksFor
+  // -- refs is [lowerBound, prevAltHead, anchor], anchor deliberately last)
   // — everything strictly after it in this connection's own chain is what
   // this pass actually added.
   //
@@ -460,24 +479,24 @@ export default function Home() {
   // parent — see above) gets exactly the same "is this in the new part"
   // test as an atom, not a blanket exemption: 'summariesTouching', called
   // again from a scope opened at *this* connection's own head, anchors a
-  // nested occurrence's own refs[0] to a position within this same
-  // 'chain' — so whether a nested tick belongs to this delta is just
+  // nested occurrence's own refs[2] (its anchor) to a position within this
+  // same 'chain' — so whether a nested tick belongs to this delta is just
   // "does its own anchor fall after 'lowerIdx'," the identical rule an
   // atom is filtered by, not a separately-reasoned case.
   const activeTicksChain = useMemo(() => {
     if (!viewingSummary) return fileTicks;
     const chain = tickChain(activeConn?.ticks ?? {}, activeConn?.head ?? null);
     const nested = Object.values(activeConn?.ticks ?? {}).filter((t) => t.kind === "summary");
-    if (!viewingOccurrence) return [...chain, ...nested];
+    if (!viewingOccurrence || showFullSummaryChain) return [...chain, ...nested];
 
-    const prevAltHead = viewingOccurrence.refs[2];
+    const prevAltHead = viewingOccurrence.refs[1];
     const chainIdx = new Map(chain.map((t, i) => [t.tickId, i]));
     const lowerIdx = prevAltHead ? chainIdx.get(prevAltHead) ?? -1 : -1;
 
     const newChain  = chain.slice(lowerIdx + 1);
-    const newNested = nested.filter((t) => (chainIdx.get(t.refs[0]) ?? -1) > lowerIdx);
+    const newNested = nested.filter((t) => (chainIdx.get(t.refs[2]) ?? -1) > lowerIdx);
     return [...newChain, ...newNested];
-  }, [viewingSummary, viewingOccurrence, activeConn, fileTicks]);
+  }, [viewingSummary, viewingOccurrence, activeConn, fileTicks, showFullSummaryChain]);
   // Shared by the toolbar's "Summarize" button and the "/summarize" input
   // command (see lib/commands.ts). Scoped to exactly this file (see
   // Server.Writer.File.summarizePath's own Haddock: never regenerates
@@ -721,7 +740,11 @@ export default function Home() {
             onCloseFile={handleCloseFile}
             centerTab={centerTab} onCenterTab={(tab) => {
               setCenterTab(tab);
-              pushPath(activeBranch, tab === "file" ? selectedFile : null);
+              // This only ever switches which top-level tab is showing —
+              // 'viewTarget' itself doesn't change, so the URL it pushes
+              // must still reflect whatever it already was (including a
+              // currently-open summary view), not silently drop it.
+              pushPath(activeBranch, tab === "file" ? selectedFile : null, tab === "file" ? viewingSummary : null);
             }}
           />
 
@@ -861,6 +884,8 @@ export default function Home() {
                   nodePath={viewingSummary.hops}
                   coveredTicks={viewingOccurrence ? summaryCoverageFor(fileTicks, viewingOccurrence) : []}
                   onBack={closeSummaryView}
+                  showFullChain={showFullSummaryChain}
+                  onToggleFullChain={() => setShowFullSummaryChain((v) => !v)}
                   ticks={activeTicksChain}
                   emptyMessage={activeConn.absent ? "Nothing here yet — write below to create it" : null}
                   annotationMode={annotationMode}

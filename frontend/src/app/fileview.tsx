@@ -1224,24 +1224,46 @@ export function FileContentView({
 // one more hop" — the bottom's own 'onOpenSummary' recurses through this
 // exact same component one level deeper.
 export function SummarySplitView({
-  kind, nodePath, coveredTicks, onBack, ...contentProps
+  kind, nodePath, coveredTicks, onBack, showFullChain, onToggleFullChain, ...contentProps
 }: {
   kind: string;
   nodePath: string[];
   coveredTicks: WireTick[];
   onBack: () => void;
+  // The bottom pane defaults to just this occurrence's own delta (see
+  // page.tsx's activeTicksChain) -- flipping this shows the family's
+  // whole current chain instead, so a nested tier's own annotation
+  // (which might sit outside this one occurrence's own delta) is never
+  // more than one click away, instead of having to hunt down whichever
+  // specific occurrence happens to cover it.
+  showFullChain: boolean;
+  onToggleFullChain: () => void;
 } & Parameters<typeof FileContentView>[0]) {
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{
         flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)",
-        fontSize: 10, color: "var(--text-ghost)", display: "flex", justifyContent: "space-between",
+        fontSize: 10, color: "var(--text-ghost)", display: "flex", justifyContent: "space-between", alignItems: "center",
       }}>
         {/* nodePath is the full hop chain (see page.tsx's viewTarget doc) --
             one hop is just "a specific occurrence of this file's own kind",
             not nesting; only a *second* hop is genuinely one tier deeper. */}
         <span>{summaryKindLabel(kind)}{nodePath.length > 1 ? ` — tier ${nodePath.length - 1}` : ""}</span>
-        <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-ghost)", cursor: "pointer", fontSize: 10 }}>close</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={onToggleFullChain}
+            title={showFullChain ? "Showing the whole chain — click to show just this occurrence's own new ticks" : "Showing just this occurrence's own new ticks — click to show the whole chain"}
+            style={{
+              background: showFullChain ? "var(--amber-tint)" : "transparent",
+              border: `1px solid ${showFullChain ? "var(--amber-border)" : "var(--border-subtle)"}`,
+              color: showFullChain ? "var(--amber)" : "var(--text-ghost)",
+              cursor: "pointer", fontSize: 10, borderRadius: 4, padding: "2px 7px",
+            }}
+          >
+            {showFullChain ? "Whole chain" : "This pass only"}
+          </button>
+          <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-ghost)", cursor: "pointer", fontSize: 10 }}>close</button>
+        </div>
       </div>
       <div style={{ flex: "0 0 40%", overflow: "auto", borderBottom: "2px solid var(--border-subtle)" }}>
         <WireTickList

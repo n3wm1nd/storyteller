@@ -594,7 +594,8 @@ summarizePath path = case summaryKindsFor path of
 --   out.
 --   One real 'WireTick' per historical occurrence now, not one synthetic
 --   tick per family: each occurrence is independently anchored via
---   'wtRefs' (always @[anchor, lowerBound, prevAltHead]@, the latter two
+--   'wtRefs' (always @[lowerBound, prevAltHead, anchor]@ -- anchor
+--   deliberately *last*, see 'toWireTick's own comment -- the first two
 --   empty-string when there's no older occurrence), so a client can render
 --   every pass as its own inline annotation positioned at the right spot,
 --   and open its own view (both "what real content led to this" and "what
@@ -616,6 +617,18 @@ summarizePath path = case summaryKindsFor path of
 --   full accumulated text) -- that answers a different question, and
 --   would make every occurrence's own annotation/preview repeat every
 --   earlier pass's text verbatim.
+--
+--   'wtParent' is always 'Nothing', regardless of depth -- 'Storage.Tick.
+--   fileTicksOf'/'relatedTicksOf' (which built whatever chain this tick
+--   rides alongside, at *any* scope -- a plain branch or an alt-chain
+--   connection alike, both go through the same 'Server.Core.File.fileState')
+--   already "relinks around" any tick with no real file footprint, so a
+--   Summary tick's own *actual* git parent is never a valid position within
+--   that relinked view -- exposing it doesn't let a client's tick-chain
+--   walk find this tick at all (nothing in the relinked chain ever has it
+--   as *their* parent), it just breaks the walk. A client positions this
+--   tick by its own 'wtRefs' anchor against the atoms already present in
+--   that relinked chain, same as it already does for a top-level occurrence.
 summaryTicksFor :: FileOpen r => FilePath -> Sem r [WireTick]
 summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
   where
@@ -628,10 +641,19 @@ summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
       return WireTick
         { wtTickId  = unTickId (Summary.occTickId occ)
         , wtKind    = "summary"
+        -- The anchor goes *last*, not first: fileview.tsx's own
+        -- annotationsFor (shared with every other annotation kind) finds
+        -- an anchor via '[...tick.refs].reverse().find(atomIds.has)' --
+        -- i.e. it takes the *last* ref that's a real atom id. Since
+        -- 'occLowerBound' (an older, but still real, atom id) sorts
+        -- ahead of 'occAnchor' when both are present, putting the anchor
+        -- anywhere but last would let that generic scan pick the wrong
+        -- one for every occurrence after the first (anchoring it one
+        -- occurrence too early).
         , wtRefs    =
-            [ unTickId (Summary.occAnchor occ)
-            , maybe "" unTickId (Summary.occLowerBound occ)
+            [ maybe "" unTickId (Summary.occLowerBound occ)
             , maybe "" unTickId (Summary.occPrevAltHead occ)
+            , unTickId (Summary.occAnchor occ)
             ]
         , wtFields  = [("kind", kind)]
         , wtMessage = delta

@@ -31,20 +31,24 @@
 module Server.Writer.File.ConnectionSpec (spec) where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.Text as T
 import Test.Hspec
 
-import Polysemy (run)
+import Polysemy (Sem, run)
 
 import Storyteller.Core.Git (runStorage, withStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Common.Summary (Summary(..), lastSummaryOf)
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
+import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, journalKind, defaultJournalGroupSize)
+import Storyteller.Writer.Library (journalPath)
 import Storyteller.Core.Runtime (Main)
 import qualified Storage.Ops as Ops
 
 import Server.Core.File (fileStateSince, editFileAtom)
 import Server.Core.Protocol (Update(..), WireTick(..))
+import Server.Writer.File (fileStateWithSummaries)
 import Server.Writer.File.Connection (openTarget)
 import Storyteller.Writer.Agent.SummaryAccess (densest)
 import Server.TestStack (TestRunner)
@@ -142,3 +146,28 @@ spec runner = describe "openTarget" $ do
             , oldTickId == newTickId
             )
     result `shouldBe` Right ([Just "hand-edited condensation"], [Just "raw v1."], False)
+
+  -- Pins the exact thing the client's own split-view connection does: open
+  -- one specific top-level occurrence's own hop ("b@journal#<tid>", not the
+  -- bare "b@journal" a fresh/live view would use) and confirm
+  -- 'fileStateWithSummaries' -- the same call 'pushInitial'/'pushIncremental'
+  -- make for *any* connection, at any depth -- still surfaces a nested
+  -- tier's own occurrence riding along, exactly as it would from the bare
+  -- top-level connection (Storyteller.JournalSummarizerSpec already pins
+  -- this at the 'summariesTouching' level directly; this pins it at the
+  -- full connection-opening layer the client actually goes through).
+  it "opening a specific top-level occurrence's own hop still surfaces a nested tier's own occurrence" $ do
+    let n = defaultJournalGroupSize
+        stubCompress :: [T.Text] -> Sem r T.Text
+        stubCompress items = pure ("C[" <> T.intercalate "," items <> "]")
+        result = run_ $ do
+          _ <- createBranch (BranchName "b")
+          mapM_ (\i -> openCmd "b" (runStorage @Main (Ops.addAtom journalPath (T.pack (show i))))) [1 .. n * n :: Int]
+          _ <- openCmd "b" (journalSummarize @Main stubCompress)
+          Just (latestTid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf journalKind))
+          let target = "b@" <> journalKind <> "#" <> unTickId latestTid
+          (upd, _sig) <- openCmd target (fileStateWithSummaries journalPath Nothing)
+          return (map wtKind (updateTicks upd))
+    case result of
+      Left err    -> expectationFailure err
+      Right kinds -> filter (== "summary") kinds `shouldSatisfy` (not . null)

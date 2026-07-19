@@ -227,6 +227,34 @@ spec = do
             occPrevAltHead occ2 `shouldBe` Just (summaryAltHead (occSummary occ1))
           _ -> expectationFailure ("expected exactly two occurrences, got " <> show (length occs))
 
+    it "three sequential passes each anchor to their own atom, not shifted back by one" $ do
+      let result = runOne $ do
+            h1  <- runStorage @Source (Ops.addAtom "a.md" "para one.")
+            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v1")
+            h2  <- runStorage @Source (Ops.addAtom "a.md" "para two.")
+            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v2")
+            h3  <- runStorage @Source (Ops.addAtom "a.md" "para three.")
+            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v3")
+            occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
+            return
+              ( TickId (Core.unObjectHash h1), TickId (Core.unObjectHash h2), TickId (Core.unObjectHash h3)
+              , occs
+              )
+      case result of
+        Left err -> expectationFailure err
+        Right (tid1, tid2, tid3, occs) -> case occs of
+          [occ1, occ2, occ3] -> do
+            occAnchor occ1 `shouldBe` tid1
+            occAnchor occ2 `shouldBe` tid2
+            occAnchor occ3 `shouldBe` tid3
+            occLowerBound occ1 `shouldBe` Nothing
+            occLowerBound occ2 `shouldBe` Just tid1
+            occLowerBound occ3 `shouldBe` Just tid2
+            occPrevAltHead occ1 `shouldBe` Nothing
+            occPrevAltHead occ2 `shouldBe` Just (summaryAltHead (occSummary occ1))
+            occPrevAltHead occ3 `shouldBe` Just (summaryAltHead (occSummary occ2))
+          _ -> expectationFailure ("expected exactly three occurrences, got " <> show (length occs))
+
     it "excludes a pure carry-forward pass that never actually touched path" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
