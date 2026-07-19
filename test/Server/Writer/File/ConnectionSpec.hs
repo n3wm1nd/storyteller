@@ -147,6 +147,59 @@ spec runner = describe "openTarget" $ do
             )
     result `shouldBe` Right ([Just "hand-edited condensation"], [Just "raw v1."], False)
 
+  -- The exact client flow the split view produces: click an occurrence's
+  -- annotation (hops = its own real tick id), then append through the
+  -- bottom pane. The write must supersede that occurrence *on the real
+  -- branch* (the same insert-directly-after shape 'mintSummaryTick' uses,
+  -- and exactly the superseding-occurrence pattern
+  -- 'Storyteller.Common.Summary.summariesTouching' models first-class) --
+  -- and the *same* hop target must then read the edit back: a hop names
+  -- "this occurrence, in its current state" (resolution follows the
+  -- superseding run's tip), not a frozen snapshot that would silently
+  -- swallow the caller's own edit on the very next push.
+  it "appending through a specific occurrence's own hop supersedes it on the real branch, and the same hop reads the edit back" $ do
+    let result = run_ $ do
+          _ <- createBranch (BranchName "b")
+          _ <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
+          _ <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
+          Just (tid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf "prose/chapter"))
+          let target = "b@prose/chapter#" <> unTickId tid
+          _       <- openCmd target (runStorage @Main (Ops.append "chapters/ch1.md" "hand note"))
+          upd     <- openCmd target (fileStateSince "chapters/ch1.md" Nothing)
+          realUpd <- openCmd "b" (fileStateSince "chapters/ch1.md" Nothing)
+          Just (newTid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf "prose/chapter"))
+          return (map wtContent (updateTicks upd), map wtContent (updateTicks realUpd), newTid /= tid)
+    result `shouldBe` Right ([Just "condensed v1", Just "hand note\n"], [Just "raw v1."], True)
+
+  -- Same flow one tier deeper: append through a *nested* hop
+  -- ("b@journal#top#nested") and confirm the re-mint cascades all the way
+  -- back out -- the nested tick superseded within its parent's own
+  -- alt-chain, and a fresh top-level Summary tick minted on the real
+  -- branch -- with the same nested hop target then reading the edit back.
+  it "appending through a nested hop cascades the re-mint out to a fresh top-level Summary tick" $ do
+    let n = defaultJournalGroupSize
+        stubCompress :: [T.Text] -> Sem r T.Text
+        stubCompress items = pure ("C[" <> T.intercalate "," items <> "]")
+        result = run_ $ do
+          _ <- createBranch (BranchName "b")
+          mapM_ (\i -> openCmd "b" (runStorage @Main (Ops.addAtom journalPath (T.pack (show i))))) [1 .. n * n :: Int]
+          _ <- openCmd "b" (journalSummarize @Main stubCompress)
+          Just (topTid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf journalKind))
+          let target1 = "b@" <> journalKind <> "#" <> unTickId topTid
+          (upd1, _) <- openCmd target1 (fileStateWithSummaries journalPath Nothing)
+          case [wtTickId wt | wt <- updateTicks upd1, wtKind wt == "summary"] of
+            [] -> fail "no nested occurrence surfaced on the tier-0 connection"
+            (nestedTid : _) -> do
+              let target2 = target1 <> "#" <> nestedTid
+              _ <- openCmd target2 (runStorage @Main (Ops.append journalPath "tier-1 hand note"))
+              (upd2, _) <- openCmd target2 (fileStateWithSummaries journalPath Nothing)
+              Just (newTop, _) <- openCmd "b" (runStorage @Main (lastSummaryOf journalKind))
+              return
+                ( Just "tier-1 hand note\n" `elem` map wtContent (updateTicks upd2)
+                , newTop /= topTid
+                )
+    result `shouldBe` Right (True, True)
+
   -- Pins the exact thing the client's own split-view connection does: open
   -- one specific top-level occurrence's own hop ("b@journal#<tid>", not the
   -- bare "b@journal" a fresh/live view would use) and confirm

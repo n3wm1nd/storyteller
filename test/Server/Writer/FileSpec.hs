@@ -123,12 +123,16 @@ spec runner = do
         Right (upd, _sig) -> do
           let (summaryTicks, realTicks) = span' ((== "summary") . wtKind) (updateTicks upd)
               span' p xs = (filter p xs, filter (not . p) xs)
-          -- One real WireTick per historical occurrence now, not one
-          -- synthetic tick per family -- n*n raw entries forms a fresh
-          -- tier-0 chunk every group of n entries, so n separate top-level
-          -- "journal" occurrences, each its own inline annotation (tier 1
-          -- lives one alt-chain deeper, on tier 0's own alternate chain,
-          -- so it never shows up as a *further* top-level occurrence here).
+          -- One real WireTick per historical occurrence, not one synthetic
+          -- tick per family -- n*n raw entries forms a fresh tier-0 chunk
+          -- every group of n entries, so n chunk occurrences. Tier 1's own
+          -- formation (extendNestedAltChain re-minting the top-level tick
+          -- directly after its predecessor, empty real-file span) is a
+          -- *superseding* tick: it merges into the final chunk's own
+          -- occurrence rather than appearing as an extra one (see
+          -- Storyteller.Common.Summary.summariesTouching's Haddock) --
+          -- opening that occurrence resolves to the re-minted tip, whose
+          -- own connection surfaces the nested tier-1 occurrence inline.
           length summaryTicks `shouldBe` n
           all ((== Just "journal") . lookup "kind" . wtFields) summaryTicks `shouldBe` True
           -- Each occurrence is independently anchored via its single ref

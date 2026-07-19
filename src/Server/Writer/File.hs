@@ -653,9 +653,13 @@ summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
         }
 
 -- | 'Server.Core.File.fileStateSince' plus @path@'s current summary tiers
---   folded in (see 'summaryTicksFor'), paired with a signature of exactly
---   which summary ticks are present right now -- a plain, order-independent
---   join of their ids. 'Server.Writer.File.Connection.pushIncremental'
+--   folded in (see 'summaryTicksFor'), paired with a signature of the
+--   summary state right now -- an order-independent join of each
+--   occurrence's id *and current delta text*, not ids alone: an edit
+--   through a summary connection changes an occurrence's content without
+--   changing its (stable, base-tick) id -- see
+--   'Storyteller.Common.Summary.summariesTouching' on superseding runs --
+--   and must still push. 'Server.Writer.File.Connection.pushIncremental'
 --   threads this signature alongside 'updateHead' in its own "since"
 --   cursor so a summarize pass is never invisible to an already-open
 --   connection (see 'summaryTicksFor's own Haddock for why that matters).
@@ -663,5 +667,5 @@ fileStateWithSummaries :: FileOpen r => FilePath -> Maybe T.Text -> Sem r (Updat
 fileStateWithSummaries path since = do
   upd   <- Core.fileStateSince path since
   extra <- summaryTicksFor path
-  let sig = T.intercalate "," (List.sort (map wtTickId extra))
+  let sig = T.intercalate "," (List.sort (map (\wt -> wtTickId wt <> "=" <> wtMessage wt) extra))
   return (upd { updateTicks = updateTicks upd ++ extra }, sig)

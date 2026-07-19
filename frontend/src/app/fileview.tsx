@@ -1217,12 +1217,14 @@ export function FileContentView({
 
 // A summary family's split view: a read-only top pane showing exactly what
 // one specific occurrence covers (computed client-side via
-// 'summaryCoverageFor', from ticks the main file connection already has
-// loaded — no separate materialized tree needed), and a genuinely ordinary
-// file view below it (see FileContentView just above) pointed at this
-// tier's own connection instead of the real file. Nesting is just "open
-// one more hop" — the bottom's own 'onOpenSummary' recurses through this
-// exact same component one level deeper.
+// 'summaryCoverageFor', from the occurrence's own *parent* scope's
+// already-open connection — the real file for a top-level occurrence, the
+// tier one hop up once nested; see page.tsx's 'parentKey' — no separate
+// materialized tree needed), and a genuinely ordinary file view below it
+// (see FileContentView just above) pointed at this tier's own connection
+// instead of the real file. Nesting is just "open one more hop" — the
+// bottom's own 'onOpenSummary' recurses through this exact same component
+// one level deeper, coverage pane included.
 export function SummarySplitView({
   kind, nodePath, coveredTicks, onBack, showFullChain, onToggleFullChain, ...contentProps
 }: {

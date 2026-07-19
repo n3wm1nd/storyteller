@@ -392,19 +392,41 @@ export default function Home() {
     () => fileTicks.filter((t) => t.kind !== "atom").length + summaryTicks.length,
     [fileTicks, summaryTicks],
   );
+  // The viewed occurrence's *parent* scope — the chain its own boundaries
+  // (anchor/lowerBound/prevAltHead) index into. An occurrence's boundaries
+  // are always positions in the chain it was pushed on, which is the scope
+  // one hop above it, at any depth: for a single hop that's the real file
+  // itself (open throughout anyway); deeper, it's the summary connection
+  // one hop shorter, kept open alongside by the connection effect below.
+  // One uniform rule — no depth special case anywhere downstream.
+  const parentKey = selectedFile && viewingSummary && viewingSummary.hops.length >= 2
+    ? summaryConnKey(selectedFile, viewingSummary.kind, viewingSummary.hops.slice(0, -1))
+    : selectedFile;
+  const parentConn = parentKey ? openFiles[parentKey] : null;
+  const parentTicks = useMemo(
+    () => (parentKey === selectedFile ? fileTicks : tickChain(parentConn?.ticks ?? {}, parentConn?.head ?? null)),
+    [parentKey, selectedFile, fileTicks, parentConn],
+  );
   // The exact summary occurrence the split view's top (read-only coverage)
-  // pane slices its "what informed this" excerpt against — only meaningful
-  // for a single top-level hop (hops.length === 1: a plain occurrence of
-  // this file's own kind, clicked directly from the main view); a nested
-  // hop's own coverage would need slicing against its *parent* tier's
-  // chain, not this file's — out of scope here, so no coverage excerpt is
-  // shown once nested. A direct lookup by id, never a search/sort over
-  // "every occurrence of this kind" — that tick already carries its own
-  // coverage boundary (see 'summaryCoverageFor'/
-  // Server.Writer.File.summaryTicksFor), so there's nothing to pick between.
-  const viewingOccurrence = viewingSummary && viewingSummary.hops.length === 1
-    ? summaryTicks.find((t) => t.tickId === viewingSummary.hops[0]) ?? null
-    : null;
+  // pane slices its "what informed this" excerpt against — the last hop,
+  // looked up directly in its parent scope's own tick map (occurrence
+  // ticks ride along on every connection's push, at any depth — see
+  // Server.Writer.File.summaryTicksFor). With no hop at all (the family
+  // live view — where the Summarize button lands, since the pass it fires
+  // hasn't produced its occurrence yet), the kind's newest occurrence
+  // stands in: occurrences arrive oldest-first per kind and
+  // applyFileUpdate re-adds them in push order, so the last matching entry
+  // is the newest. Resolved at display time, so the view upgrades itself
+  // the moment the freshly-fired pass's push lands — no navigation event
+  // needed. The kind check only guards a hand-typed/stale URL hop that
+  // names some non-summary tick.
+  const lastHop = viewingSummary?.hops.at(-1);
+  const occurrenceTick = !viewingSummary ? undefined
+    : lastHop ? parentConn?.ticks[lastHop]
+    : Object.values(parentConn?.ticks ?? {})
+        .filter((t) => t.kind === "summary" && t.fields?.kind === viewingSummary.kind)
+        .at(-1);
+  const viewingOccurrence = occurrenceTick?.kind === "summary" ? occurrenceTick : null;
 
   // A summary family's own connection — genuinely just another file
   // connection (see fileview.actions.ts's openFile), opened at
@@ -420,10 +442,15 @@ export default function Home() {
   // of any other historical point already does elsewhere in this app).
   useEffect(() => {
     if (!selectedFile || !viewingSummary || !activeBranch) return;
-    const key = summaryConnKey(selectedFile, viewingSummary.kind, viewingSummary.hops);
-    const branch = summaryConnBranch(activeBranch, viewingSummary.kind, viewingSummary.hops);
-    openFile(selectedFile, { branch, key });
-    return () => closeFile(selectedFile, { key });
+    const { kind, hops } = viewingSummary;
+    // The viewed scope itself, plus — once nested — its parent scope, which
+    // the coverage pane and the "this pass only" slice both read (see
+    // 'parentKey' above). At one hop the parent is the real file's own
+    // connection, open throughout anyway, so nothing extra is opened.
+    const chains = hops.length >= 2 ? [hops, hops.slice(0, -1)] : [hops];
+    const keys = chains.map((h) => summaryConnKey(selectedFile, kind, h));
+    chains.forEach((h, i) => openFile(selectedFile, { branch: summaryConnBranch(activeBranch, kind, h), key: keys[i] }));
+    return () => keys.forEach((key) => closeFile(selectedFile, { key }));
   }, [selectedFile, viewingSummary, activeBranch]);
 
   // 'activeKey' is whichever 'openFiles' entry the main content pane is
@@ -510,6 +537,9 @@ export default function Home() {
     summarizeThisFile(selectedFile);
     // Land in this family's current live state (empty hops) — no specific
     // occurrence to point at yet, just fired the pass that creates one.
+    // 'viewingOccurrence' resolves empty hops to the kind's newest
+    // occurrence at display time, so the coverage pane and the "this pass
+    // only" slice light up on their own once the pass's push arrives.
     navigateToSummary(kinds[0], []);
   }, [selectedFile, activeBranch]);
   // Presence is scoped to the open file (a scene), not the whole branch —
@@ -881,7 +911,7 @@ export default function Home() {
                 <SummarySplitView
                   kind={viewingSummary.kind}
                   nodePath={viewingSummary.hops}
-                  coveredTicks={viewingOccurrence ? summaryCoverageFor(fileTicks, viewingOccurrence) : []}
+                  coveredTicks={viewingOccurrence ? summaryCoverageFor(parentTicks, viewingOccurrence) : []}
                   onBack={closeSummaryView}
                   showFullChain={showFullSummaryChain}
                   onToggleFullChain={() => setShowFullSummaryChain((v) => !v)}

@@ -23,7 +23,7 @@ import Storyteller.Common.Summary
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types
-import Storyteller.Writer.Agent.Summarizer (runSummarizer, runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer (extendAltChain, runSummarizer, runSummarizerForPath)
 
 -- ---------------------------------------------------------------------------
 -- Phantom + single-branch runner. There's no alt branch to open -- an
@@ -254,6 +254,42 @@ spec = do
             occPrevAltHead occ2 `shouldBe` Just (summaryAltHead (occSummary occ1))
             occPrevAltHead occ3 `shouldBe` Just (summaryAltHead (occSummary occ2))
           _ -> expectationFailure ("expected exactly three occurrences, got " <> show (length occs))
+
+    it "a superseding tick (hand-edit: new alt content, empty real-file span) merges into its predecessor -- one occurrence, read at the edited tip" $ do
+      let result = runOne $ do
+            h1    <- runStorage @Source (Ops.addAtom "a.md" "para one.")
+            mtid1 <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v1")
+            case mtid1 of
+              Nothing   -> fail "first pass unexpectedly wrote nothing"
+              Just tid1 -> do
+                -- The hand-edit path ('Server.Writer.File.Connection's own
+                -- mintSummaryTick'/'remintHop'): extend the alt chain with
+                -- edited content, then mint the new Summary tick directly
+                -- *after* the pass it supersedes -- so its own real-file
+                -- span is empty by construction.
+                tick1 <- runStorage @Source (Tick.readTypesTick (Core.ObjectHash (unTickId tid1)))
+                s1 <- maybe (fail "not a Summary tick") return (fromTick @Summary tick1)
+                (_, editedHead) <- extendAltChain (Just (summaryAltHead s1))
+                  (Ops.saveFileAsNew "a.md" "a.md" "summary v1, hand-edited")
+                _ <- atGeneric @Source tid1
+                  (runStorage @Source (Tick.storeAs (Summary "prose/chapter" editedHead)))
+                occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
+                return (TickId (Core.unObjectHash h1), tid1, editedHead, occs)
+      case result of
+        Left err -> expectationFailure err
+        Right (aid, tid1, editedHead, occs) -> case occs of
+          [occ] -> do
+            -- One occurrence, not two: the edit happened *to* the pass,
+            -- not after it. Identified by the original pass's own (stable)
+            -- tick id -- a client-held reference survives the edit -- but
+            -- read at the edited tip's own Summary, so its content and
+            -- delta include the edit.
+            occTickId occ `shouldBe` tid1
+            summaryAltHead (occSummary occ) `shouldBe` editedHead
+            occAnchor occ `shouldBe` aid
+            occLowerBound occ `shouldBe` Nothing
+            occPrevAltHead occ `shouldBe` Nothing
+          _ -> expectationFailure ("expected one merged occurrence, got " <> show (length occs))
 
     it "still finds a file's occurrence when a newer same-kind tick doesn't cover that file at all" $ do
       -- Summarize b first, then a: a's own last atom sits *earlier* on the

@@ -44,6 +44,7 @@ module Storyteller.Common.Summary
   , bootstrapAltHead
   , lastSummaryOf
   , lastSummaryTouching
+  , supersedingTipFrom
   , ticksSince
   , ticksSinceLastSummary
   , availableSummaries
@@ -56,6 +57,7 @@ module Storyteller.Common.Summary
   ) where
 
 import Control.Monad.State.Strict (lift)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -253,6 +255,39 @@ lastSummaryTouching :: StoreM m => Text -> FilePath -> StoreT m (Maybe (TickId, 
 lastSummaryTouching kind path = do
   h <- headHash
   lastSummaryTouchingFrom h kind path
+
+-- | The tip of @tid@'s own *superseding run* within the chain whose tip is
+--   @top@: @tid@ itself, or -- if edits have superseded it -- the youngest
+--   of the immediately-adjacent same-@kind@ 'Summary' ticks stacked
+--   directly on top of it. Adjacency is exactly what makes a tick a
+--   superseding occurrence rather than an independent later pass (a real
+--   pass always has its own span of source ticks in between -- see
+--   'summariesTouching'), so this answers "this occurrence, in its current
+--   (possibly hand-edited) state" -- what a client-held occurrence
+--   reference ('Server.Writer.File.Connection.openTarget's hop targets)
+--   should resolve to, or an edit made through such a reference would
+--   vanish from its own holder's very next read. 'Nothing' if @tid@ isn't
+--   a same-@kind@ 'Summary' reachable from @top@ at all (e.g. a reference
+--   from before a remap replayed it away).
+supersedingTipFrom :: StoreM m => ObjectHash -> Text -> TickId -> StoreT m (Maybe (TickId, Summary))
+supersedingTipFrom top kind tid = go Nothing top
+  where
+    -- runTip: the youngest tick of the same-kind run the walk is currently
+    -- inside, if any -- reset by every non-matching tick in between.
+    go runTip h = do
+      t <- Tick.readTypesTick h
+      let self = case fromTick @Summary t of
+            Just s | summaryKind s == kind -> Just (tickId t, s)
+            _                              -> Nothing
+          runTip' = case (self, runTip) of
+            (Nothing, _)      -> Nothing
+            (Just p, Nothing) -> Just p
+            (Just _, Just _)  -> runTip
+      if tickId t == tid
+        then return runTip'
+        else case tickParent t of
+          Nothing         -> return Nothing
+          Just (TickId p) -> go runTip' (ObjectHash p)
 
 -- | Every tick strictly after @stopAt@ (exclusive), oldest-first, walking
 --   back from HEAD all the way to root if @stopAt@ is 'Nothing' (or isn't
@@ -489,8 +524,21 @@ data Occurrence = Occurrence
 --   kind": there is exactly one right answer for a specific tick, and
 --   nothing to pick between.
 --
---   An occurrence whose own covered span contains no real atom on @path@
---   at all is dropped entirely (nothing to anchor it to).
+--   A tick whose own span adds no real atom on @path@ *supersedes* its
+--   predecessor -- the hand-edit case ('Server.Writer.File.Connection's
+--   own @mintSummaryTick@\/@remintHop@ mint the new 'Summary' tick
+--   directly after the pass being edited, so the span between them is
+--   empty by construction), and the nested-tier re-mint
+--   ('Storyteller.Writer.Agent.Summarizer.extendNestedAltChain') likewise.
+--   A superseding run is *one* occurrence, not several: the edit happened
+--   /to/ the pass, not after it. The merged occurrence keeps the base
+--   tick's identity ('occTickId' -- stable, so a client-held reference
+--   survives any number of edits; opening it resolves to the run's tip
+--   anyway, see 'supersedingTipFrom') and the base's anchor\/bounds, but
+--   carries the *tip's* own 'Summary' -- so its content and delta always
+--   reflect the current, edited state. Only a tick with no predecessor
+--   *and* no atom at all is dropped -- a path that never had a real atom
+--   has nowhere to anchor anything.
 --
 --   Walks the currently-open chain from HEAD back to root, calling
 --   'lastSummaryTouchingFrom' once per occurrence found (each call scoped
@@ -513,12 +561,16 @@ summariesTouching kind path = do
         Just (TickId p) -> lastSummaryTouchingFrom (ObjectHash p) kind path
       items <- ticksSinceFrom (tickParent t) (fst <$> mPrev)
       rest  <- go mPrev
-      let lowerBound = case rest of
-            (occ : _) -> Just (occAnchor occ)
-            []        -> Nothing
-      case lastAtomId items of
-        Nothing     -> return rest
-        Just anchor -> return (Occurrence tid s anchor lowerBound (summaryAltHead . snd <$> mPrev) : rest)
+      let prevAlt = summaryAltHead . snd <$> mPrev
+      return $ case (lastAtomId items, rest) of
+        -- the ordinary case: this pass's own span contains real atoms.
+        (Just anchor, _)        -> Occurrence tid s anchor (occAnchor <$> listToMaybe rest) prevAlt : rest
+        -- no new span of its own: supersedes its predecessor (see the
+        -- Haddock above) -- one occurrence, the predecessor's identity
+        -- and bounds read at this, newer, tip.
+        (Nothing, older : more) -> older { occSummary = s } : more
+        -- no predecessor and no atom ever: nothing to anchor to.
+        (Nothing, [])           -> rest
 
     lastAtomId items = case [ tickId tk | tk <- items, isOwnAtom tk ] of
       [] -> Nothing
