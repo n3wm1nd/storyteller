@@ -128,6 +128,28 @@ spec runner = do
         Left err  -> expectationFailure err
         Right upd -> updateTicks upd `shouldBe` []
 
+    -- A single 'deleteFileAtom' still delegates to 'deleteFileAtoms' with
+    -- one target, so this doubles as the one-tick-batch case of the tests
+    -- below.
+    it "deleting a mixed atom-and-note batch, given earliest-in-chain first, still removes every target" $ do
+      -- 'Server.Core.File.deleteFileAtoms' sorts internally (see its own
+      -- Haddock: furthest-in-chain first, for replay cost, not
+      -- correctness) -- a caller passing ids in *any* order, like this
+      -- earliest-first list, still gets every target removed. Also mixes
+      -- in a non-atom tick (a note): 'deleteFileAtom'/'deleteFileAtoms'
+      -- are generic over any tick kind, not just atoms -- see
+      -- 'Storage.Ops.deleteTick'.
+      let result = withFile_ runner (BranchName "b") $ do
+            tidA <- appendAtom "f.md" "atom A"
+            chatNote "a remark" [tidA]
+            noteTid <- TickId . Core.unObjectHash <$> runStorage @Main Core.headHash
+            tidB <- appendAtom "f.md" "atom B"
+            deleteFileAtoms [tidA, noteTid, tidB]
+            fileState "f.md"
+      case result of
+        Left err  -> expectationFailure err
+        Right upd -> updateTicks upd `shouldBe` []
+
   describe "deleteFile" $ do
 
     -- Deletion is a forward event (see 'Storyteller.Core.Create's module

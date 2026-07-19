@@ -98,7 +98,16 @@ data FileCommand
   --   'Server.Writer.File.editChatPrompt' \/ 'Storyteller.Core.StorageMonad.editTick'
   --   rather than 'Server.Core.File.editFileAtom'.
   | EditPrompt { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
-  | DeleteAtom { fcId :: Maybe T.Text, fcTickId :: T.Text }
+  -- | Drop every tick in @fcTargets@ from the chain, in one transaction --
+  --   'Server.Core.File.deleteFileAtoms' is generic over *any* tick kind,
+  --   not just atoms: an annotation (note, prompt, summary occurrence,
+  --   ask, image) is a real chain-position tick exactly like an atom is,
+  --   and 'correctGroup' already relies on this to drop a stale prompt
+  --   tick alongside the atoms it produced. Same @fcTargets@\/@"targets"@
+  --   shape as 'MergeAtoms'\/'SplitAtoms'\/'HideAtoms' -- a batch-capable
+  --   command always takes a list here, even for one target, rather than
+  --   a separate singular command.
+  | DeleteTick { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
   -- | Merge a contiguous run of one file's atoms (@fcTargets@) into one. See
   --   'Storyteller.Core.Edit.mergeAtoms'.
@@ -162,7 +171,7 @@ data FileCommand
   --   'fcTargets' (an instruction group's own prompt + generated output),
   --   then regenerate from 'fcPromptText' via 'chatWriter', rebased at
   --   'fcPromptTickId' -- all within this one command's own transaction.
-  --   Replaces composing the same effect client-side from a 'DeleteAtom'
+  --   Replaces composing the same effect client-side from a 'DeleteTick'
   --   per tick followed by a separate 'ChatWriter': that took N+1 round
   --   trips (N distinct undo points, the group visibly vanishing atom by
   --   atom before generation even started) for what's actually one atomic
@@ -244,7 +253,7 @@ instance FromJSON FileCommand where
       "checkpoint"  -> pure (Checkpoint i)
       "edit.atom"   -> EditAtom   i <$> o .: "tickId" <*> o .: "content"
       "edit.prompt" -> EditPrompt i <$> o .: "tickId" <*> o .: "content"
-      "delete.atom" -> DeleteAtom i <$> o .: "tickId"
+      "delete.ticks" -> DeleteTick i . fromMaybe [] <$> o .:? "targets"
       "move.atom"   -> MoveAtom   i <$> o .: "tickId" <*> o .:? "afterTickId"
       "merge.atoms" -> MergeAtoms i . fromMaybe [] <$> o .:? "targets"
       "split.atoms" -> SplitAtoms i . fromMaybe [] <$> o .:? "targets"
@@ -304,7 +313,7 @@ commandKind = \case
   Checkpoint {}   -> "checkpoint"
   EditAtom {}     -> "edit.atom"
   EditPrompt {}   -> "edit.prompt"
-  DeleteAtom {}   -> "delete.atom"
+  DeleteTick {}   -> "delete.ticks"
   MoveAtom {}     -> "move.atom"
   MergeAtoms {}   -> "merge.atoms"
   SplitAtoms {}   -> "split.atoms"

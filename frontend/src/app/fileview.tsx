@@ -1291,6 +1291,85 @@ export function SummarySplitView({
   );
 }
 
+// A chevron-menu toolbar control for starting a new summary occurrence —
+// two distinct intents (Server.Writer.File.Protocol's "summarize.file" vs.
+// "summarize.create", kept as separate wire commands, not a flag on one --
+// see WS-PROTOCOL.md's client-intent split) collapsed into one control so
+// the toolbar doesn't grow a same-looking, hard-to-tell-apart button per
+// intent. Same floating-ui-positioned, click-outside-to-close mode-menu
+// shape as InputBar's own below, for visual consistency.
+export function SummarizeMenu({ onAuto, onManual }: {
+  // "Auto" — Server.Writer.File.summarizePath: an LLM call, free to call
+  // repeatedly (a no-op once nothing's new).
+  onAuto: () => void;
+  // "Manual" — Server.Writer.File.summarizePathManual: an empty occurrence
+  // at the same cursor an auto pass would use, no LLM call, for writing
+  // into directly.
+  onManual: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menu = useFloating({
+    open,
+    placement: "bottom-end",
+    middleware: [offset(4), flip(), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const itemStyle: React.CSSProperties = {
+    display: "block", width: "100%", textAlign: "left", padding: "6px 10px",
+    background: "transparent", border: "none", color: "var(--text-dim)", fontSize: 11, cursor: "pointer",
+  };
+
+  return (
+    <div ref={menuRef} style={{ position: "relative", display: "inline-flex", marginLeft: 8 }}>
+      <button
+        ref={menu.refs.setReference}
+        onClick={() => setOpen((o) => !o)}
+        title="Start a new summary occurrence — auto (LLM) or manual (empty, write it yourself)"
+        style={{
+          display: "flex", alignItems: "center", gap: 3, fontSize: 10, padding: "2px 7px", borderRadius: 4,
+          cursor: "pointer", background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)",
+        }}
+      >
+        Summarize
+        <ChevronDown style={{ width: 10, height: 10 }} />
+      </button>
+      {open && (
+        <div ref={menu.refs.setFloating} style={{
+          ...menu.floatingStyles, zIndex: 10,
+          background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
+          boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", overflow: "hidden", minWidth: 170,
+        }}>
+          <button
+            onClick={() => { onAuto(); setOpen(false); }}
+            title="Run a summarize pass — free to call, only does LLM work once there's actually something new to compress. The result appears as an inline annotation below — click it to view/edit."
+            style={itemStyle}
+          >
+            Auto (LLM)
+          </button>
+          <button
+            onClick={() => { onManual(); setOpen(false); }}
+            title="Create an empty occurrence at the current cursor to write into directly — no LLM call."
+            style={itemStyle}
+          >
+            Manual (empty)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Text/Source edit modes ────────────────────────────────────────────────────
 
 // Whole-file text editing, bypassing atoms/positions entirely — for bulk

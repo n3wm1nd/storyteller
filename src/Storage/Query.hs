@@ -30,6 +30,9 @@ module Storage.Query
   , contentChain
   , findPos
   , chainPositions
+
+    -- * Batch processing order
+  , descendantsFirst
   ) where
 
 import Prelude hiding (drop, readFile, writeFile)
@@ -211,3 +214,46 @@ chainPositions oids = do
           Just i  -> return (oid, i)
           Nothing -> fail ("chainPositions: not found: " <> T.unpack (unObjectHash oid)))
        oids
+
+-- | Order @candidates@ descendant-first: no candidate ever precedes one of
+--   its own descendants -- the correct processing order for a batch of
+--   chain-rebasing edits (delete\/split\/hide) that each rewrite
+--   everything *after* their own target. Processing an ancestor before
+--   its own not-yet-handled descendant would rebase (and so remap) that
+--   descendant's id out from under it before its own turn arrives; two
+--   candidates neither of which descends from the other (unrelated ticks,
+--   possibly on entirely separate branches) get no ordering constraint
+--   between them at all -- there's nothing for one to invalidate in the
+--   other regardless of order.
+--
+--   Deliberately not built from 'contentChain'\/'chainPositions': those
+--   need a head to walk from and fail outright on any id not currently
+--   reachable from it (including, awkwardly, a candidate this exact
+--   batch's own earlier processing has already remapped away). This walks
+--   only each candidate's own ancestry, one parent hop at a time, so it
+--   needs no head, costs nothing proportional to the whole chain's
+--   length, and is well-defined for candidates spanning separate chains.
+--
+--   For each candidate: walk backward through 'commitParents' until
+--   hitting either another candidate (its nearest candidate ancestor) or
+--   running out of history. That builds a forest -- each candidate points
+--   at (at most) one ancestor-candidate -- which a child-before-parent
+--   traversal from every root (a candidate with no candidate ancestor)
+--   then reads a valid order straight off of.
+descendantsFirst :: StoreM m => [ObjectHash] -> StoreT m [ObjectHash]
+descendantsFirst candidates = do
+  let candSet = Set.fromList candidates
+  parents <- mapM (nearestCandidateAncestor candSet) candidates
+  let edges     = zip candidates parents
+      childrenOf = Map.fromListWith (++) [ (anc, [c]) | (c, Just anc) <- edges ]
+      roots      = [ c | (c, Nothing) <- edges ]
+      emit c     = concatMap emit (Map.findWithDefault [] c childrenOf) ++ [c]
+  return (concatMap emit roots)
+  where
+    nearestCandidateAncestor cands oid = do
+      cd <- lift (readCommit oid)
+      case commitParents cd of
+        []      -> return Nothing
+        (p : _)
+          | Set.member p cands -> return (Just p)
+          | otherwise          -> nearestCandidateAncestor cands p

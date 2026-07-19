@@ -9,8 +9,8 @@
 -- ambient, already-open branch scope ('FileOpen') — see
 -- 'Server.Writer.File.Connection' for where that scope is entered.
 --
--- 'ChatAppend'/'EditAtom'/'DeleteAtom'/'MoveAtom'/'ChatNote' are generic
--- atom-chain operations, so they call straight into 'Server.Core.File'.
+-- 'ChatAppend'/'EditAtom'/'DeleteTick'/'MoveAtom'/'ChatNote' are generic
+-- tick-chain operations, so they call straight into 'Server.Core.File'.
 -- 'ChatWriter'/'ChatFixer'/'EnterScene'/'LeaveScene' are Writer-specific, so
 -- they call 'Server.Writer.File' instead — this module is where the two
 -- layers actually get assembled into one protocol. 'At' is generic either
@@ -30,7 +30,7 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
-import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtom, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
+import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtoms, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
 import Server.Writer.File (chatWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup, summarizePath, summarizePathManual)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
@@ -71,8 +71,8 @@ runCommand path cmd = case cmd of
   EditPrompt _mid tid content ->
     [] <$ editChatPrompt (TickId tid) content
 
-  DeleteAtom _mid tid ->
-    [] <$ deleteFileAtom (TickId tid)
+  DeleteTick _mid targets ->
+    [] <$ deleteFileAtoms (map TickId targets)
 
   MoveAtom _mid tid mAfter ->
     [] <$ moveFileAtom (TickId tid) (TickId <$> mAfter)

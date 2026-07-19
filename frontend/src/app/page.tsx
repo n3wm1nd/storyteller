@@ -22,7 +22,7 @@ import { syncTasks, suggestTasks } from "./tasks-panel.actions";
 import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, summaryCoverageFor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
-import { FileContentView, SummarySplitView, RawEditPanel, TextEditPanel, type PresenceBar } from "./fileview";
+import { FileContentView, SummarySplitView, RawEditPanel, TextEditPanel, SummarizeMenu, type PresenceBar } from "./fileview";
 import { summaryKindsFor } from "@/lib/library";
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
@@ -855,22 +855,7 @@ export default function Home() {
                   </button>
                 )}
                 {selectedFile && activeBranch && summaryKindsFor(selectedFile).length > 0 && (
-                  <button
-                    onClick={summarizeCurrentFile}
-                    title="Run a summarize pass — free to call, only does LLM work once there's actually something new to compress (also available as /summarize). The result appears as an inline annotation in the file below — click it to view/edit."
-                    style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 8, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
-                  >
-                    Summarize
-                  </button>
-                )}
-                {selectedFile && activeBranch && summaryKindsFor(selectedFile).length > 0 && (
-                  <button
-                    onClick={createManualSummary}
-                    title="Create an empty occurrence at the current cursor (rebase marker, or the live end) to write into directly — no LLM call."
-                    style={{ fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", marginLeft: 6, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-dim)" }}
-                  >
-                    New
-                  </button>
+                  <SummarizeMenu onAuto={summarizeCurrentFile} onManual={createManualSummary} />
                 )}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 9, color: "var(--text-ghost)", marginRight: 8 }}>

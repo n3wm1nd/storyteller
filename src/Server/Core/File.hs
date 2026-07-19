@@ -31,6 +31,7 @@ module Server.Core.File
   , appendToFile
   , editFileAtom
   , deleteFileAtom
+  , deleteFileAtoms
   , moveFileAtom
   , mergeFileAtoms
   , splitFileAtoms
@@ -43,8 +44,6 @@ module Server.Core.File
   ) where
 
 import Control.Monad (void)
-import Data.List (sortOn)
-import Data.Ord (Down(..))
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import Polysemy (Member, Members, Sem)
@@ -189,10 +188,36 @@ editFileAtom :: FileOpen r => FilePath -> TickId -> T.Text -> Sem r ()
 editFileAtom _path tid content =
   void $ runStorage @Main (Ops.editAtomAt (toHash tid) content)
 
--- | Delete an atom from the file's chain.
+-- | Delete a tick from the branch's chain -- generic over any kind, not
+--   just atoms (the name is historical: this predates notes/prompts/
+--   summary occurrences being independently selectable and deletable from
+--   the client). 'deleteFileAtoms' with one target -- safe to define this
+--   way (unlike an earlier version of this function built on
+--   'Storage.Ops.chainPositions', which required every target to still be
+--   reachable from the *current* head, so a caller looping this over
+--   several ids could pass one a previous iteration's own delete had
+--   already remapped away): 'Storage.Ops.descendantsFirst' needs no head
+--   and walks only a candidate's own ancestry, so it stays well-defined
+--   regardless of what else has happened to the live chain since.
 deleteFileAtom :: FileOpen r => TickId -> Sem r ()
-deleteFileAtom tid =
-  void $ runStorage @Main (Ops.deleteTick (toHash tid))
+deleteFileAtom tid = deleteFileAtoms [tid]
+
+-- | Delete a batch of ticks in one transaction (one open scope, one
+--   resulting ref-move notification, instead of one per target -- pass
+--   every known target together, never loop 'deleteFileAtom' over them).
+--   Same descendants-first discipline as 'splitFileAtoms'\/
+--   'setFileAtomsHidden', via 'Storage.Ops.descendantsFirst' -- not for
+--   correctness within *this* call (an ancestor target's own hash is
+--   never touched by deleting a descendant target first -- only
+--   descendants are ever rewritten), but for cost:
+--   'Storage.Ops.deleteTick' winds back to its target and replays
+--   everything after it, so deleting an ancestor target first would
+--   replay a tail that includes *other* targets in this same batch --
+--   work immediately thrown away the moment their own turn comes.
+deleteFileAtoms :: FileOpen r => [TickId] -> Sem r ()
+deleteFileAtoms tids = do
+  ordered <- runStorage @Main (Ops.descendantsFirst (map toHash tids))
+  mapM_ (\h -> void $ runStorage @Main (Ops.deleteTick h)) ordered
 
 -- | Move an atom to a new position in the file's chain.
 moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
@@ -204,15 +229,16 @@ mergeFileAtoms :: FileOpen r => [TickId] -> Sem r ()
 mergeFileAtoms tids =
   void $ runStorage @Main (Ops.mergeAtoms (map toHash tids))
 
--- | Re-run the splitter over each of the given atoms' own content, in place.
---   Processed latest-in-chain-first: splitting an earlier atom rebases (and
---   so renumbers) everything after it, including any other target still
---   pending in this same batch, so working backward guarantees every
---   not-yet-processed id is still valid when its turn comes.
+-- | Re-run the splitter over each of the given atoms' own content, in
+--   place. Processed descendants-first ('Storage.Ops.descendantsFirst'):
+--   splitting an earlier atom rebases (and so remaps) everything after
+--   it, including any other target still pending in this same batch, so
+--   working from the descendants inward guarantees every not-yet-processed
+--   id is still valid when its turn comes.
 splitFileAtoms :: (FileOpen r, Member Splitter r) => [TickId] -> Sem r ()
 splitFileAtoms tids = do
-  positioned <- runStorage @Main (Ops.chainPositions (map toHash tids))
-  mapM_ splitOne (map (fromHash . fst) (sortOn (Down . snd) positioned))
+  ordered <- runStorage @Main (Ops.descendantsFirst (map toHash tids))
+  mapM_ (splitOne . fromHash) ordered
   where
     splitOne tid = do
       tick <- runStorage @Main (Ops.readAt (toHash tid) Tick.getTypesTick)
@@ -224,15 +250,14 @@ splitFileAtoms tids = do
             (_ : _ : _) -> void $ runStorage @Main (Ops.splitTick (toHash tid) pieces)
             _           -> return ()
 
--- | Hide (or unhide) a batch of atoms in place -- same "furthest-in-chain
---   first" discipline as 'splitFileAtoms': each rebase renumbers everything
---   after it, so processing back-to-front keeps every not-yet-processed
+-- | Hide (or unhide) a batch of atoms in place -- same descendants-first
+--   discipline as 'splitFileAtoms': each rebase remaps everything after
+--   it, so processing descendants first keeps every not-yet-processed
 --   target's id valid when its own turn comes.
 setFileAtomsHidden :: FileOpen r => [TickId] -> Bool -> Sem r ()
 setFileAtomsHidden tids hidden = do
-  positioned <- runStorage @Main (Ops.chainPositions (map toHash tids))
-  mapM_ (\tid -> void $ runStorage @Main (Ops.setAtomHidden (toHash tid) hidden))
-        (map (fromHash . fst) (sortOn (Down . snd) positioned))
+  ordered <- runStorage @Main (Ops.descendantsFirst (map toHash tids))
+  mapM_ (\h -> void $ runStorage @Main (Ops.setAtomHidden h hidden)) ordered
 
 -- | Hide a batch of atoms from an agent's ambient context without
 --   deleting them -- see 'Storage.Ops.setAtomHidden'.

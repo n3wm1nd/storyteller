@@ -44,7 +44,7 @@ import Runix.Git (Git)
 import Runix.Logging (info, Logging)
 import Runix.FileSystem (fileExists, readFile, writeFile)
 
-import Server.Core.File (FileOpen, deleteFileAtom)
+import Server.Core.File (FileOpen, deleteFileAtoms)
 import qualified Server.Core.File as Core (fileStateSince)
 import Server.Core.Run (SessionEffects)
 import Server.Core.Protocol (WireTick(..), Update(..))
@@ -294,7 +294,7 @@ correctGroup path promptTid targets prompt context layout charLayouts = do
   case tickParent typed of
     Nothing -> fail "correctGroup: prompt tick has no parent to rebase onto"
     Just parentTid -> do
-      mapM_ deleteFileAtom (promptTid : targets)
+      deleteFileAtoms (promptTid : targets)
       atGeneric @Main parentTid (chatWriter path prompt context layout Nothing charLayouts)
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
