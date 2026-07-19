@@ -36,6 +36,37 @@ spec = do
         Right (positions, _finalState) -> map snd positions `shouldBe` [0, 1, 2]
 
   describe "descendantsFirst" $ do
+    it "an empty batch needs no lookup at all" $ do
+      let result = fst <$> runChain (descendantsFirst [])
+      result `shouldBe` Right []
+
+    -- A single candidate is trivially "sorted" -- nothing to compare it
+    -- against -- so this must skip the ancestry search entirely, not just
+    -- happen to return quickly: a hash that was never actually written
+    -- (so 'readCommit' on it would fail with 'Left') still comes back
+    -- cleanly as 'Right', which only holds if no lookup was ever
+    -- attempted on it at all.
+    it "a single candidate comes back untouched, without even one lookup" $ do
+      let bogus = ObjectHash "not-a-real-object"
+          result = fst <$> runChain (descendantsFirst [bogus])
+      result `shouldBe` Right [bogus]
+
+    -- The fast path: candidates given oldest-first (the ordinary shape
+    -- for a caller built from 'contentChain'-derived data, e.g. a
+    -- client's own selection) are recognized as already-sorted, once
+    -- reversed, via one combined descent -- not the general search's one
+    -- independent walk per candidate. This doesn't observe the cheaper
+    -- cost directly, only that the answer is still correct when the fast
+    -- path's own hypothesis holds on the first try.
+    it "recognizes an oldest-first input as already sorted once reversed" $ do
+      let result = runChain $ do
+            (a, b, c) <- threeAtoms
+            ordered <- descendantsFirst [a, b, c]
+            return (ordered, [c, b, a])
+      case result of
+        Left err -> expectationFailure err
+        Right ((ordered, expected), _) -> ordered `shouldBe` expected
+
     it "orders three related ticks descendant-first, regardless of input order" $ do
       let result = runChain $ do
             (a, b, c) <- threeAtoms

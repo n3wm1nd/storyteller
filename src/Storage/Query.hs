@@ -234,6 +234,28 @@ chainPositions oids = do
 --   needs no head, costs nothing proportional to the whole chain's
 --   length, and is well-defined for candidates spanning separate chains.
 --
+--   Two special cases skip the general search below entirely, since it's
+--   worth naming exactly what's cheap rather than relying on the general
+--   path happening to be fast:
+--
+--   * zero or one candidate -- there's nothing to compare against, so
+--     "sorted" is true by definition. No lookup at all, not even a
+--     single 'readCommit' -- notably, this makes a one-tick batch
+--     (an ordinary single delete, the overwhelmingly common case) free,
+--     the same as it was before this function existed.
+--   * @candidates@ already came in oldest-first, which is the ordinary
+--     case for a caller built from 'contentChain'-derived data (e.g. a
+--     client's own selection, read off an already oldest-first tick
+--     list) -- @reverse candidates@ is then already exactly the answer.
+--     Checked with one combined descent (not the general search's one
+--     independent walk per candidate): starting from the presumed
+--     newest, keep descending through 'commitParents' until the next
+--     presumed candidate is reached, and repeat: 'guess' is confirmed
+--     the moment every candidate has been checked off in order, and
+--     rejected (falling through to the general search below) the moment
+--     a *different* candidate is reached first, or history runs out
+--     before reaching the next one at all.
+--
 --   For each candidate: walk backward through 'commitParents' until
 --   hitting either another candidate (its nearest candidate ancestor) or
 --   running out of history. That builds a forest -- each candidate points
@@ -241,15 +263,35 @@ chainPositions oids = do
 --   traversal from every root (a candidate with no candidate ancestor)
 --   then reads a valid order straight off of.
 descendantsFirst :: StoreM m => [ObjectHash] -> StoreT m [ObjectHash]
+descendantsFirst []           = return []
+descendantsFirst cs@[_]       = return cs
 descendantsFirst candidates = do
   let candSet = Set.fromList candidates
-  parents <- mapM (nearestCandidateAncestor candSet) candidates
-  let edges     = zip candidates parents
-      childrenOf = Map.fromListWith (++) [ (anc, [c]) | (c, Just anc) <- edges ]
-      roots      = [ c | (c, Nothing) <- edges ]
-      emit c     = concatMap emit (Map.findWithDefault [] c childrenOf) ++ [c]
-  return (concatMap emit roots)
+      guess   = reverse candidates
+  alreadySorted <- verifyDescent candSet guess
+  if alreadySorted then return guess else generalSort candSet candidates
   where
+    verifyDescent _     []            = return True
+    verifyDescent _     [_]           = return True
+    verifyDescent cands (a : rest@(b : _)) = walkTo a
+      where
+        walkTo cur = do
+          cd <- lift (readCommit cur)
+          case commitParents cd of
+            []      -> return False
+            (p : _)
+              | p == b              -> verifyDescent cands rest
+              | Set.member p cands  -> return False
+              | otherwise           -> walkTo p
+
+    generalSort cands cs = do
+      parents <- mapM (nearestCandidateAncestor cands) cs
+      let edges      = zip cs parents
+          childrenOf = Map.fromListWith (++) [ (anc, [c]) | (c, Just anc) <- edges ]
+          roots      = [ c | (c, Nothing) <- edges ]
+          emit c     = concatMap emit (Map.findWithDefault [] c childrenOf) ++ [c]
+      return (concatMap emit roots)
+
     nearestCandidateAncestor cands oid = do
       cd <- lift (readCommit oid)
       case commitParents cd of
