@@ -297,7 +297,13 @@ export type FileCommand =
   // Edit a chat prompt tick's text in place — distinct from edit.atom: a
   // prompt isn't file content, so this doesn't restage anything.
   | { type: "edit.prompt"; id?: string; tickId: string; content: string }
-  | { type: "delete.atom"; id?: string; tickId: string }
+  // Delete: drop every tick in `targets` from the chain, in one
+  // transaction — generic over any tick kind, not just atoms (an
+  // annotation — note, prompt, summary occurrence, ask, image — is a real
+  // chain-position tick exactly like an atom is). The server sorts
+  // descendants-first internally (Storage.Ops.descendantsFirst) — targets
+  // can be given in any order.
+  | { type: "delete.ticks"; id?: string; targets: string[] }
   | { type: "move.atom";   id?: string; tickId: string; afterTickId?: string }
   // Merge: combine a contiguous run of one file's atoms (`targets`) into one.
   | { type: "merge.atoms"; id?: string; targets: string[] }

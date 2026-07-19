@@ -400,8 +400,16 @@ export function editPrompt(path: string, tickId: string, content: string) {
 }
 
 export function deleteAtom(path: string, tickId: string) {
-  sendFileCommand(path, { type: "delete.atom", tickId });
-  dropFromSelection([tickId]);
+  deleteTicks(path, [tickId]);
+}
+
+// Delete any tick(s) in one batch — atoms, notes, prompts, summary
+// occurrences, asks, images alike (see ws.ts's "delete.ticks"). No client
+// ordering needed: the server sorts descendants-first internally.
+export function deleteTicks(path: string, tickIds: string[]) {
+  if (tickIds.length === 0) return;
+  sendFileCommand(path, { type: "delete.ticks", targets: tickIds });
+  dropFromSelection(tickIds);
 }
 
 // Both reuse the existing atom context selection ('contextAtoms') rather

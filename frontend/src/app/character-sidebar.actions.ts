@@ -169,10 +169,14 @@ export function editJournalAtom(branch: string, tickId: string, content: string,
   dropFromSelection([tickId]);
 }
 
-export function deleteJournalAtom(branch: string, tickId: string, marker: string | null) {
+// Batched — one transaction for the whole selection, not one round trip
+// per tick (see ws.ts's "delete.ticks": server sorts descendants-first,
+// no client ordering needed).
+export function deleteJournalTicks(branch: string, tickIds: string[], marker: string | null) {
+  if (tickIds.length === 0) return;
   const jc = getServerCache().openJournals[branch];
-  jc?.conn.send(atRebase(marker, jc.ticks, { type: "delete.atom", tickId }, {}));
-  dropFromSelection([tickId]);
+  jc?.conn.send(atRebase(marker, jc.ticks, { type: "delete.ticks", targets: tickIds }, {}));
+  dropFromSelection(tickIds);
 }
 
 // Cycle a journal atom forward through its own alternates — same generic

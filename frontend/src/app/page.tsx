@@ -7,7 +7,7 @@ import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, uploadImageToTimeline, createChapter, importCharacterCard } from "./sidebar.actions";
 import {
   openFile, createFile, deleteFile, renameFile, checkpointFile, closeFile, enterScene, leaveScene, askCharacter,
-  appendToFile, editAtom, editPrompt, deleteAtom, mergeSelected, splitSelected,
+  appendToFile, editAtom, editPrompt, deleteTicks, mergeSelected, splitSelected,
   hideSelected, unhideSelected,
   chatWrite, roleplayWrite, chatFix, chatNote, chatRegen, chatOutline,
   chatConverse, chatConverseRegen, cycleSwipe, correctAtom, summarizeThisFile, createSummaryManual,
@@ -15,7 +15,7 @@ import {
 } from "./fileview.actions";
 import {
   openCharacter, closeCharacter, openJournal, closeJournal,
-  editJournalAtom, deleteJournalAtom, journalFix, appendJournal, cycleJournalSwipe,
+  editJournalAtom, deleteJournalTicks, journalFix, appendJournal, cycleJournalSwipe,
 } from "./character-sidebar.actions";
 import { trackJournal, trackAllJournals } from "./tracker.actions";
 import { syncTasks, suggestTasks } from "./tasks-panel.actions";
@@ -668,23 +668,39 @@ export default function Home() {
     }
   }
 
-  // Selection (contextAtoms) is shared across the main scene and every open
-  // journal (see character-sidebar.tsx) — deleting/fixing "the selection"
-  // therefore has to sweep every chain that might contain a selected id, not
-  // just the currently open scene file. A given tickId only ever appears in
-  // the one chain it actually belongs to, so this is just "check each open
-  // chain for members of the shared set," not a routing decision.
+  // Selection (contextAtoms/contextAnnotations) is shared across the main
+  // scene and every open journal (see character-sidebar.tsx) — deleting/
+  // fixing "the selection" therefore has to sweep every chain that might
+  // contain a selected id, not just the currently open scene file. A given
+  // tickId only ever appears in the one chain it actually belongs to, so
+  // this is just "check each open chain for members of the shared set,"
+  // not a routing decision.
+  //
+  // Delete is the one bulk action universal across every tick kind, not
+  // just atoms (unlike Merge/Split/Hide, which only ever make sense for
+  // atoms/prose) — an annotation (note, prompt, summary occurrence) is a
+  // real, deletable chain tick exactly like an atom is, and the ctrl-click
+  // selection mechanism already lets one land in contextAnnotations (see
+  // AnnotationCard/AnnotationDots). Both sets, and (for the main file)
+  // 'summaryTicks' (summary occurrences ride alongside 'fileTicks', never
+  // inside it — see its own definition above), feed one batched
+  // 'deleteTicks' call per chain — the server sorts descendants-first
+  // internally (Storage.Ops.descendantsFirst), so nothing here needs to
+  // pre-order or reverse anything.
   function handleDeleteSelected() {
+    const selected = new Set([...contextAtoms, ...contextAnnotations]);
     if (selectedFile) {
-      fileTicks.filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
-        .map((t) => t.tickId).reverse()
-        .forEach((tickId) => deleteAtom(selectedFile, tickId));
+      const targets = [...fileTicks, ...summaryTicks]
+        .filter((t) => selected.has(t.tickId))
+        .map((t) => t.tickId);
+      deleteTicks(selectedFile, targets);
     }
     for (const [branch, jc] of Object.entries(openJournals)) {
       if (!jc) continue;
-      tickChain(jc.ticks, jc.head).filter((t) => t.kind === "atom" && contextAtoms.has(t.tickId))
-        .map((t) => t.tickId).reverse()
-        .forEach((tickId) => deleteJournalAtom(branch, tickId, journalMarkers[branch] ?? null));
+      const targets = tickChain(jc.ticks, jc.head)
+        .filter((t) => selected.has(t.tickId))
+        .map((t) => t.tickId);
+      deleteJournalTicks(branch, targets, journalMarkers[branch] ?? null);
     }
     clearContext();
   }
@@ -794,14 +810,14 @@ export default function Home() {
           {centerTab === "file" && <>
             {selectedFile && !isAbsent && fileTicks.length > 0 && (
               <div style={{ flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center" }}>
-                {contextAtoms.size > 0 && (
+                {(contextAtoms.size + contextAnnotations.size) > 0 && (
                   <button
                     onClick={handleDeleteSelected}
-                    title={`Delete ${contextAtoms.size} selected atom${contextAtoms.size !== 1 ? "s" : ""}`}
+                    title={`Delete ${contextAtoms.size + contextAnnotations.size} selected tick${(contextAtoms.size + contextAnnotations.size) !== 1 ? "s" : ""} — any kind: atoms, notes, prompts, summary occurrences`}
                     style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: "var(--rose-tint)", border: "1px solid var(--rose-border)", color: "var(--rose)" }}
                   >
                     <Trash2 style={{ width: 10, height: 10 }} />
-                    Delete {contextAtoms.size}
+                    Delete {contextAtoms.size + contextAnnotations.size}
                   </button>
                 )}
                 {contextAtoms.size >= 2 && (
