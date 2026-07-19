@@ -176,7 +176,7 @@ spec = describe "createFile" $ do
     -- A fun consequence of deletion being an ordinary tick rather than a
     -- bespoke mechanism: the *existing* single-tick rebase this codebase
     -- already offers for correcting any misplaced tick (see
-    -- 'Server.Core.File.deleteFileAtom'/'Storage.Ops.deleteTick') works on
+    -- 'Server.Core.File.deleteFileTick'/'Storage.Ops.deleteTick') works on
     -- a removal tick for free -- removing it from history restores the
     -- file, with no dedicated "undo delete" feature needed anywhere.
     it "removing the deletion tick itself (via the ordinary single-tick rebase) restores the file" $ do

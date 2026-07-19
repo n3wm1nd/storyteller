@@ -30,9 +30,9 @@ module Server.Core.File
   , checkpointFile
   , appendToFile
   , editFileAtom
-  , deleteFileAtom
-  , deleteFileAtoms
-  , moveFileAtom
+  , deleteFileTick
+  , deleteFileTicks
+  , moveFileTick
   , mergeFileAtoms
   , splitFileAtoms
   , hideFileAtoms
@@ -189,9 +189,7 @@ editFileAtom _path tid content =
   void $ runStorage @Main (Ops.editAtomAt (toHash tid) content)
 
 -- | Delete a tick from the branch's chain -- generic over any kind, not
---   just atoms (the name is historical: this predates notes/prompts/
---   summary occurrences being independently selectable and deletable from
---   the client). 'deleteFileAtoms' with one target -- safe to define this
+--   just atoms: 'deleteFileTicks' with one target -- safe to define this
 --   way (unlike an earlier version of this function built on
 --   'Storage.Ops.chainPositions', which required every target to still be
 --   reachable from the *current* head, so a caller looping this over
@@ -199,24 +197,34 @@ editFileAtom _path tid content =
 --   already remapped away): 'Storage.Ops.descendantsFirst' needs no head
 --   and walks only a candidate's own ancestry, so it stays well-defined
 --   regardless of what else has happened to the live chain since.
-deleteFileAtom :: FileOpen r => TickId -> Sem r ()
-deleteFileAtom tid = deleteFileAtoms [tid]
+deleteFileTick :: FileOpen r => TickId -> Sem r ()
+deleteFileTick tid = deleteFileTicks [tid]
 
 -- | Delete a batch of ticks in one transaction (one open scope, one
 --   resulting ref-move notification, instead of one per target -- pass
---   every known target together, never loop 'deleteFileAtom' over them).
+--   every known target together, never loop 'deleteFileTick' over them).
 --   'Storage.Ops.deleteTicks' does the real work: sorts and groups by
 --   connected component, then removes each component in exactly one
 --   wind-back-and-replay (nesting 'at', not one independent round trip
 --   per target -- each independent round trip would otherwise replay a
 --   tail that includes *other* targets in this same batch, work
---   immediately thrown away the moment their own turn comes).
-deleteFileAtoms :: FileOpen r => [TickId] -> Sem r ()
-deleteFileAtoms tids = runStorage @Main (Ops.deleteTicks (map toHash tids))
+--   immediately thrown away the moment their own turn comes). Genuinely
+--   generic over tick kind -- an annotation (note, prompt, summary
+--   occurrence, ask, image) is a real chain-position tick exactly like an
+--   atom is, and 'Server.Writer.File.correctGroup' already relies on this
+--   to drop a stale prompt tick alongside the atoms it produced.
+deleteFileTicks :: FileOpen r => [TickId] -> Sem r ()
+deleteFileTicks tids = runStorage @Main (Ops.deleteTicks (map toHash tids))
 
--- | Move an atom to a new position in the file's chain.
-moveFileAtom :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
-moveFileAtom tid mAfter =
+-- | Move a tick to a new position in the branch's chain -- generic over
+--   any kind, not just atoms: 'Storage.Ops.moveTick'\/'checkMoveOrder'
+--   work purely off 'Storyteller.Core.Types.tickRefs' and chain position,
+--   no kind-specific logic anywhere, so a note or prompt moves under
+--   exactly the same rule an atom does -- it may only land somewhere that
+--   keeps every reference it makes behind it, and doesn't jump past
+--   anything that references it.
+moveFileTick :: FileOpen r => TickId -> Maybe TickId -> Sem r ()
+moveFileTick tid mAfter =
   void $ runStorage @Main (Ops.moveTick (toHash tid) (toHash <$> mAfter))
 
 -- | Merge a contiguous run of one file's atoms into a single atom.

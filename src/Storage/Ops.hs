@@ -128,7 +128,7 @@ addAtomWithRefs refs path content = do
 --   read as the signal on its own.
 --
 --   Named to match the chain-level "delete" vocabulary
---   ('deleteTick'\/'deleteFileAtom'\/'Server.Core.File.deleteFile'), not
+--   ('deleteTick'\/'Server.Core.File.deleteFileTick'\/'Server.Core.File.deleteFile'), not
 --   "Storage.FS"'s 'Storage.FS.remove' -- despite calling that internally
 --   (to keep the ambient tree in sync, same convention 'addAtom' already
 --   follows), the two are separate things: 'Storage.FS.remove' just drops

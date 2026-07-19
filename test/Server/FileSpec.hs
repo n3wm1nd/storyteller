@@ -117,26 +117,26 @@ spec runner = do
           -- client's '.parent' walk from HEAD never falls out of it.
           all (\t -> maybe True (`elem` ids) (wtParent t)) (updateTicks upd) `shouldBe` True
 
-  describe "deleteFileAtom" $ do
+  describe "deleteFileTick" $ do
 
     it "deleted atom no longer appears in fileState" $ do
       let result = withFile_ runner (BranchName "b") $ do
             tid <- appendAtom "f.md" "hello"
-            deleteFileAtom tid
+            deleteFileTick tid
             fileState "f.md"
       case result of
         Left err  -> expectationFailure err
         Right upd -> updateTicks upd `shouldBe` []
 
-    -- A single 'deleteFileAtom' still delegates to 'deleteFileAtoms' with
+    -- A single 'deleteFileTick' still delegates to 'deleteFileTicks' with
     -- one target, so this doubles as the one-tick-batch case of the tests
     -- below.
     it "deleting a mixed atom-and-note batch, given earliest-in-chain first, still removes every target" $ do
-      -- 'Server.Core.File.deleteFileAtoms' sorts internally (see its own
+      -- 'Server.Core.File.deleteFileTicks' sorts internally (see its own
       -- Haddock: furthest-in-chain first, for replay cost, not
       -- correctness) -- a caller passing ids in *any* order, like this
       -- earliest-first list, still gets every target removed. Also mixes
-      -- in a non-atom tick (a note): 'deleteFileAtom'/'deleteFileAtoms'
+      -- in a non-atom tick (a note): 'deleteFileTick'/'deleteFileTicks'
       -- are generic over any tick kind, not just atoms -- see
       -- 'Storage.Ops.deleteTick'.
       let result = withFile_ runner (BranchName "b") $ do
@@ -144,7 +144,7 @@ spec runner = do
             chatNote "a remark" [tidA]
             noteTid <- TickId . Core.unObjectHash <$> runStorage @Main Core.headHash
             tidB <- appendAtom "f.md" "atom B"
-            deleteFileAtoms [tidA, noteTid, tidB]
+            deleteFileTicks [tidA, noteTid, tidB]
             fileState "f.md"
       case result of
         Left err  -> expectationFailure err
@@ -271,13 +271,13 @@ spec runner = do
           Left _  -> True
           Right _ -> False
 
-  describe "moveFileAtom" $ do
+  describe "moveFileTick" $ do
 
     it "moving a single atom to front is a no-op on chain length" $ do
       let result = withFile_ runner (BranchName "b") $ do
             t1 <- appendAtom "f.md" "atom1"
             before <- length . updateTicks <$> fileState "f.md"
-            moveFileAtom t1 Nothing
+            moveFileTick t1 Nothing
             after <- length . updateTicks <$> fileState "f.md"
             return (before, after)
       case result of

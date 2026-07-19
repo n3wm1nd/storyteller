@@ -30,7 +30,7 @@ module Server.Writer.File.Dispatch
 import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
-import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileAtoms, moveFileAtom, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
+import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileTicks, moveFileTick, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
 import Server.Writer.File (chatWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup, summarizePath, summarizePathManual)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
@@ -72,10 +72,10 @@ runCommand path cmd = case cmd of
     [] <$ editChatPrompt (TickId tid) content
 
   DeleteTick _mid targets ->
-    [] <$ deleteFileAtoms (map TickId targets)
+    [] <$ deleteFileTicks (map TickId targets)
 
   MoveAtom _mid tid mAfter ->
-    [] <$ moveFileAtom (TickId tid) (TickId <$> mAfter)
+    [] <$ moveFileTick (TickId tid) (TickId <$> mAfter)
 
   MergeAtoms _mid targets ->
     [] <$ mergeFileAtoms (map TickId targets)

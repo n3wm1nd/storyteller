@@ -99,7 +99,7 @@ data FileCommand
   --   rather than 'Server.Core.File.editFileAtom'.
   | EditPrompt { fcId :: Maybe T.Text, fcTickId :: T.Text, fcContent :: T.Text }
   -- | Drop every tick in @fcTargets@ from the chain, in one transaction --
-  --   'Server.Core.File.deleteFileAtoms' is generic over *any* tick kind,
+  --   'Server.Core.File.deleteFileTicks' is generic over *any* tick kind,
   --   not just atoms: an annotation (note, prompt, summary occurrence,
   --   ask, image) is a real chain-position tick exactly like an atom is,
   --   and 'correctGroup' already relies on this to drop a stale prompt
@@ -108,6 +108,15 @@ data FileCommand
   --   command always takes a list here, even for one target, rather than
   --   a separate singular command.
   | DeleteTick { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
+  -- | Move @fcTickId@ to immediately after @fcAfterTickId@ (@Nothing@ =
+  --   front) -- generic over any tick kind, not just atoms: see
+  --   'Server.Core.File.moveFileTick's own Haddock. Named @move.atom@,
+  --   not @move.tick@, purely to stay distinct from the *different*
+  --   @move.tick@ command the branch connection already exposes
+  --   ('Server.Writer.Branch.Protocol.MoveTick') -- no runtime collision
+  --   either way (separate connections, separate decoders), but reusing
+  --   the exact same string for two different commands would read as one
+  --   shared operation when it isn't.
   | MoveAtom   { fcId :: Maybe T.Text, fcTickId :: T.Text, fcAfterTickId :: Maybe T.Text }
   -- | Merge a contiguous run of one file's atoms (@fcTargets@) into one. See
   --   'Storyteller.Core.Edit.mergeAtoms'.

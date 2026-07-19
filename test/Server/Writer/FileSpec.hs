@@ -29,7 +29,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 
-import Server.Core.File (deleteFileAtom)
+import Server.Core.File (deleteFileTick)
 import Server.Core.Protocol (Update(..), WireTick(..))
 import Server.Writer.File (editChatPrompt, fileStateWithSummaries)
 import Server.TestStack
@@ -234,7 +234,7 @@ spec runner = do
     -- Pins the assumption 'Server.Writer.File.correctGroup' depends on:
     -- the pivot for the rebased regeneration has to be the group's own
     -- prompt tick's *parent*, captured before any deletes run -- not the
-    -- prompt tick itself. 'deleteFileAtom' (like every plain delete) drops
+    -- prompt tick itself. 'deleteFileTick' (like every plain delete) drops
     -- a tick rather than replacing it, so it never gains a remap entry;
     -- once the prompt tick is gone, nothing could resolve it as an
     -- 'atGeneric' target anymore. Deleting the whole group *before*
@@ -254,7 +254,7 @@ spec runner = do
             case tickParent typed of
               Nothing -> fail "correctGroup: prompt tick has no parent"
               Just parentTid -> do
-                mapM_ deleteFileAtom [promptTid, TickId (Core.unObjectHash atomHA), TickId (Core.unObjectHash atomHB)]
+                mapM_ deleteFileTick [promptTid, TickId (Core.unObjectHash atomHA), TickId (Core.unObjectHash atomHB)]
                 _ <- atGeneric @Main parentTid (runStorage @Main (Ops.append "f.md" "regenerated content"))
                 readFile @(BranchTag Main) "f.md"
       case result of

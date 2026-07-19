@@ -134,7 +134,7 @@ spec = do
             committedContent "f.md")
       result `shouldBe` Right "b"
 
-    -- Every real caller (Server.Core.File.deleteFileAtoms and friends)
+    -- Every real caller (Server.Core.File.deleteFileTicks and friends)
     -- only ever passes candidates already filtered from *one* connection's
     -- own tick map, so in practice every candidate in a single call is
     -- always reachable from that same scope's current head -- the "several
@@ -240,6 +240,24 @@ spec = do
       case result of
         Left err -> err `shouldContain` "cannot move tick after tick that references it"
         Right _  -> expectationFailure "expected moveTick to reject this order"
+
+    -- The positive case alongside the two rejections above: moving a
+    -- non-atom tick to a genuinely valid new position (still after its own
+    -- reference, still before anything that references it) succeeds --
+    -- 'moveTick'/'checkMoveOrder' work purely off 'tickRefs' and chain
+    -- position, no 'fromTick @Atom' anywhere, so a note moves exactly like
+    -- an atom does as long as the same ordering rule holds.
+    it "moves a non-atom tick (a note) to a valid new position, same as an atom would" $ do
+      let result = fst <$> runChain (do
+            (a, b, _c) <- threeAtoms
+            note <- store (NonAtom [a] "type:note\nabout a")  -- note references a, currently last
+            _    <- moveTick note (Just b)  -- still after a (its own reference), just earlier than head
+            committedContent "f.md")
+      -- The note carries no file content of its own, so 'committedContent'
+      -- is unaffected either way; a failed move would instead surface as a
+      -- 'Left' here (the reference-order check firing), which this proves
+      -- doesn't happen for a legitimately valid target position.
+      result `shouldBe` Right "abc"
 
   describe "mergeAtoms" $ do
     it "merges a contiguous run into one atom with concatenated content" $ do
