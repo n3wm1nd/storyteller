@@ -686,7 +686,11 @@ export default function Home() {
   // inside it — see its own definition above), feed one batched
   // 'deleteTicks' call per chain — the server sorts descendants-first
   // internally (Storage.Ops.descendantsFirst), so nothing here needs to
-  // pre-order or reverse anything.
+  // pre-order or reverse anything. When viewing a summary tier, its own
+  // connection ('activeKey'/'activeTicksChain') is a separate 'openFiles'
+  // entry from 'selectedFile' (see summaryConnKey) and needs its own sweep
+  // — a selected tick living only in that tier's chain would otherwise
+  // never be found and silently not get deleted.
   function handleDeleteSelected() {
     const selected = new Set([...contextAtoms, ...contextAnnotations]);
     if (selectedFile) {
@@ -694,6 +698,12 @@ export default function Home() {
         .filter((t) => selected.has(t.tickId))
         .map((t) => t.tickId);
       deleteTicks(selectedFile, targets);
+    }
+    if (viewingSummary && activeKey && activeKey !== selectedFile) {
+      const targets = activeTicksChain
+        .filter((t) => selected.has(t.tickId))
+        .map((t) => t.tickId);
+      deleteTicks(activeKey, targets);
     }
     for (const [branch, jc] of Object.entries(openJournals)) {
       if (!jc) continue;
