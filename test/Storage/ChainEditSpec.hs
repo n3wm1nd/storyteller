@@ -9,6 +9,7 @@ module Storage.ChainEditSpec (spec) where
 
 import Prelude hiding (drop, readFile, writeFile)
 
+import Control.Monad.State.Strict (lift)
 import Test.Hspec
 
 import Storage.Core
@@ -33,6 +34,47 @@ spec = do
       case result of
         Left err -> expectationFailure err
         Right (positions, _finalState) -> map snd positions `shouldBe` [0, 1, 2]
+
+  describe "descendantsFirst" $ do
+    it "orders three related ticks descendant-first, regardless of input order" $ do
+      let result = runChain $ do
+            (a, b, c) <- threeAtoms
+            ordered <- descendantsFirst [a, c, b]
+            return (ordered, [c, b, a])
+      case result of
+        Left err -> expectationFailure err
+        Right ((ordered, expected), _) -> ordered `shouldBe` expected
+
+    -- The actual reason this ordering matters: deleting in the order
+    -- 'descendantsFirst' returns must never hit a 'deleteTick' failure
+    -- from an id an earlier delete in the same batch already remapped
+    -- away -- deleting in the *opposite* (ancestor-first) order would.
+    it "deleting in the returned order never trips over a batch member's own remapped id" $ do
+      let result = fst <$> runChain (do
+            (a, b, _c) <- threeAtoms
+            -- a and b together: a is b's own ancestor, so deleting a
+            -- first (the wrong order) would remap b's id out from under
+            -- the very next 'deleteTick' call in an unsorted 'mapM_'.
+            ordered <- descendantsFirst [a, b]
+            mapM_ deleteTick ordered
+            committedContent "f.md")
+      result `shouldBe` Right "c"
+
+    -- Two ticks on entirely separate, unrelated chains (neither reachable
+    -- from the other, no shared head) -- deleting one can never remap the
+    -- other, so there's nothing for their relative order to protect
+    -- against; this just pins that 'descendantsFirst' doesn't require (or
+    -- fail without) a common chain to compare them against at all.
+    it "two ticks on unrelated chains both come back, with no ordering imposed between them" $ do
+      let result = runChain $ do
+            treeH <- lift (writeObject (TreeObject []))
+            chain1Root <- lift (writeCommit CommitData { commitParents = [], commitTree = treeH, commitMessage = "chain 1" })
+            chain2Root <- lift (writeCommit CommitData { commitParents = [], commitTree = treeH, commitMessage = "chain 2" })
+            ordered <- descendantsFirst [chain1Root, chain2Root]
+            return (ordered, [chain1Root, chain2Root])
+      case result of
+        Left err -> expectationFailure err
+        Right ((ordered, both), _) -> ordered `shouldMatchList` both
 
   describe "deleteTick" $ do
     it "removes the tick and its content, tail replayed on top" $ do
