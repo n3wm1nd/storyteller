@@ -469,32 +469,31 @@ export default function Home() {
   // is just what it appended, not the whole growing file" principle
   // Storyteller.Common.Summary.occurrenceDelta already applies server-side
   // for the annotation preview text, applied here to the tick *list* the
-  // bottom pane renders/edits: refs[1], when present, is the previous
-  // occurrence's own alt-chain tip (see Server.Writer.File.summaryTicksFor
-  // -- refs is [lowerBound, prevAltHead, anchor], anchor deliberately last)
-  // — everything strictly after it in this connection's own chain is what
-  // this pass actually added.
+  // bottom pane renders/edits: fields.prevAltHead, when present, is the
+  // previous occurrence's own alt-chain tip (see
+  // Server.Writer.File.summaryTicksFor) — everything strictly after it in
+  // this connection's own chain is what this pass actually added.
   //
   // 'nested' (a further tier's own occurrence, riding along with no
   // parent — see above) gets exactly the same "is this in the new part"
   // test as an atom, not a blanket exemption: 'summariesTouching', called
   // again from a scope opened at *this* connection's own head, anchors a
-  // nested occurrence's own refs[2] (its anchor) to a position within this
-  // same 'chain' — so whether a nested tick belongs to this delta is just
-  // "does its own anchor fall after 'lowerIdx'," the identical rule an
-  // atom is filtered by, not a separately-reasoned case.
+  // nested occurrence's own single ref (its anchor) to a position within
+  // this same 'chain' — so whether a nested tick belongs to this delta is
+  // just "does its own anchor fall after 'lowerIdx'," the identical rule
+  // an atom is filtered by, not a separately-reasoned case.
   const activeTicksChain = useMemo(() => {
     if (!viewingSummary) return fileTicks;
     const chain = tickChain(activeConn?.ticks ?? {}, activeConn?.head ?? null);
     const nested = Object.values(activeConn?.ticks ?? {}).filter((t) => t.kind === "summary");
     if (!viewingOccurrence || showFullSummaryChain) return [...chain, ...nested];
 
-    const prevAltHead = viewingOccurrence.refs[1];
+    const prevAltHead = viewingOccurrence.fields?.prevAltHead;
     const chainIdx = new Map(chain.map((t, i) => [t.tickId, i]));
     const lowerIdx = prevAltHead ? chainIdx.get(prevAltHead) ?? -1 : -1;
 
     const newChain  = chain.slice(lowerIdx + 1);
-    const newNested = nested.filter((t) => (chainIdx.get(t.refs[2]) ?? -1) > lowerIdx);
+    const newNested = nested.filter((t) => (chainIdx.get(t.refs[0]) ?? -1) > lowerIdx);
     return [...newChain, ...newNested];
   }, [viewingSummary, viewingOccurrence, activeConn, fileTicks, showFullSummaryChain]);
   // Shared by the toolbar's "Summarize" button and the "/summarize" input

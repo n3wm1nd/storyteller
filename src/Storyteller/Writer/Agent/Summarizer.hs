@@ -49,7 +49,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storage.Query (lifetimeAtoms)
 import qualified Storage.Tick as Tick
-import Storyteller.Common.Summary (Summary(..), bootstrapAltHead, lastSummaryOf, ticksSinceLastSummary)
+import Storyteller.Common.Summary (Summary(..), bootstrapAltHead, lastSummaryOf, lastSummaryTouching, ticksSinceLastSummary)
 import Storyteller.Core.Git (BranchOp, atGeneric, runBranchOpGitFrom, runStorage)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (Tick(..), TickId(..))
@@ -228,7 +228,13 @@ runSummarizerForPath
   -> (Text -> Sem r Text)      -- ^ generation hook: this path's current full content -> its summary
   -> Sem r (Maybe TickId)
 runSummarizerForPath kind path generate = do
-  mLast <- runStorage @source (lastSummaryOf kind)
+  -- Freshness is judged against the newest tick that actually *covers*
+  -- path ('lastSummaryTouching'), never the kind's newest tick, full stop
+  -- ('lastSummaryOf') -- the two diverge exactly when this function's own
+  -- insert-at-path's-last-atom positioning (below) has put an earlier
+  -- file's summary behind a later file's, and judging against the wrong
+  -- one would re-mint a fresh pass on every call forever.
+  mLast <- runStorage @source (lastSummaryTouching kind path)
   upToDate <- case mLast of
     Nothing     -> return False
     Just (_, s) -> T.null <$> unsummarizedTailSince @source s path

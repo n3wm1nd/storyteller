@@ -255,6 +255,27 @@ spec = do
             occPrevAltHead occ3 `shouldBe` Just (summaryAltHead (occSummary occ2))
           _ -> expectationFailure ("expected exactly three occurrences, got " <> show (length occs))
 
+    it "still finds a file's occurrence when a newer same-kind tick doesn't cover that file at all" $ do
+      -- Summarize b first, then a: a's own last atom sits *earlier* on the
+      -- chain than b's pass, so 'runSummarizerForPath' inserts a's Summary
+      -- tick behind it (see its Haddock) -- leaving the *newest*
+      -- "prose/chapter" tick pointing at an alt-chain that has no a.md in
+      -- it. The walk must skip past that tick and keep looking, not give
+      -- up the moment the head-most tick of the kind fails to cover path.
+      let result = runOne $ do
+            _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
+            _ <- runStorage @Source (Ops.addAtom "b.md" "b content")
+            _ <- runSummarizerForPath @Source "prose/chapter" "b.md" (\_ -> pure "summary of b")
+            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            occsA <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
+            occsB <- runStorage @Source (summariesTouching "prose/chapter" "b.md")
+            return (occsA, occsB)
+      case result of
+        Left err -> expectationFailure err
+        Right (occsA, occsB) -> do
+          length occsA `shouldBe` 1
+          length occsB `shouldBe` 1
+
     it "excludes a pure carry-forward pass that never actually touched path" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Ops.addAtom "a.md" "a content")

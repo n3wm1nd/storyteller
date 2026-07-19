@@ -1,5 +1,6 @@
 import type { WireTick, LoreNode } from "./ws";
 import { branchDisplayName } from "./branches";
+import { summaryKindIsIncremental } from "./library";
 
 export type AnnotationMode = "hidden" | "dots" | "expanded";
 
@@ -279,21 +280,26 @@ export function statusColor(status: string): string {
   }
 }
 
-// Every real tick strictly between the previous same-kind summary
-// occurrence's own anchor (exclusive) and targetTickId's own anchor
+// Every real tick this summary occurrence covers, up to its own anchor
 // (inclusive) — the read-only "what this summary covers" slice, computed
-// client-side from ticks the connection already has loaded. Requires
-// summaryTicksOfKind sorted oldest-first (each entry's own anchor is its
-// refs[2] — see Server.Writer.File.summaryTicksFor).
+// client-side from ticks the connection already has loaded. Where the
+// slice *starts* depends on the kind's behavior (library.ts's
+// summaryKindIsIncremental): an incremental kind (journal) covers only
+// what's new since the previous occurrence's anchor; a whole-file kind
+// (chapter/lore) recompresses the entire file every pass, so every
+// occurrence covers from the file's start.
 export function summaryCoverageFor(fileTicks: WireTick[], summaryTick: WireTick): WireTick[] {
-  // Server.Writer.File.summaryTicksFor hands each occurrence its own two
-  // boundaries directly: refs[2] is this occurrence's own anchor (last, not
-  // first -- see that function's own comment on why), refs[0] (if present)
-  // is the previous occurrence's own anchor -- the exclusive lower bound.
-  // No searching/sorting across every occurrence of the kind to guess which
-  // one came before: there's exactly one right answer for a specific tick,
-  // already on the tick itself.
-  const [lowerAnchor, , anchor] = summaryTick.refs;
+  // Server.Writer.File.summaryTicksFor hands each occurrence its own
+  // boundaries directly: its single ref is its own anchor, and
+  // fields.lowerBound (if present) is the previous occurrence's own anchor
+  // -- the exclusive lower bound, meaningful only for an incremental kind.
+  // No searching/sorting across every occurrence of the kind to guess
+  // which one came before: there's exactly one right answer for a specific
+  // tick, already on the tick itself.
+  const [anchor] = summaryTick.refs;
+  const lowerAnchor = summaryKindIsIncremental(summaryTick.fields?.kind ?? "")
+    ? summaryTick.fields?.lowerBound
+    : undefined;
   if (!anchor) return [];
   const upperIdx = fileTicks.findIndex((t) => t.tickId === anchor);
   if (upperIdx === -1) return [];

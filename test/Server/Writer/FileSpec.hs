@@ -131,14 +131,13 @@ spec runner = do
           -- so it never shows up as a *further* top-level occurrence here).
           length summaryTicks `shouldBe` n
           all ((== Just "journal") . lookup "kind" . wtFields) summaryTicks `shouldBe` True
-          -- Each occurrence is independently anchored via wtRefs[2] (the
-          -- last real atom it covers -- refs is [lowerBound, prevAltHead,
-          -- anchor], anchor deliberately last, see summaryTicksFor's own
+          -- Each occurrence is independently anchored via its single ref
+          -- (the last real atom it covers -- see summaryTicksFor's own
           -- comment) -- never left empty the way the old family-wide
           -- synthetic tick was -- and every occurrence's own anchor is
           -- distinct, since each covers a later stretch of atoms.
-          all ((== 3) . length . wtRefs) summaryTicks `shouldBe` True
-          length (nub (map ((!! 2) . wtRefs) summaryTicks)) `shouldBe` n
+          all ((== 1) . length . wtRefs) summaryTicks `shouldBe` True
+          length (nub (map (head . wtRefs) summaryTicks)) `shouldBe` n
           -- Every real (non-summary) tick's own id is one that could only
           -- have come from an actual journal.md atom -- never a Summary
           -- tick's id riding along under the wrong kind.
@@ -157,23 +156,23 @@ spec runner = do
         Right (upd, _sig) -> do
           let summaryTicks = filter ((== "summary") . wtKind) (updateTicks upd)
           length summaryTicks `shouldBe` 2
-          -- Each occurrence's own anchor is always its last ref (index 2);
-          -- a lower bound (the previous occurrence's own anchor, its lower
-          -- coverage bound) is present once an earlier occurrence exists.
-          let anchors = map (\wt -> case wtRefs wt of [_, _, a] -> Just a; _ -> Nothing) summaryTicks
+          -- Each occurrence's own anchor is its single ref; its two
+          -- boundaries (the previous occurrence's own anchor and alt-chain
+          -- tip) are plain fields, present only once an earlier occurrence
+          -- exists -- named directly, never re-derived by the client.
+          let anchors = map (\wt -> case wtRefs wt of [a] -> Just a; _ -> Nothing) summaryTicks
               ids     = map wtTickId summaryTicks
           all (/= Nothing) anchors `shouldBe` True
           -- distinct anchors, distinct tick ids
           (case anchors of [Just a1, Just a2] -> a1 /= a2; _ -> False) `shouldBe` True
           (case ids of [i1, i2] -> i1 /= i2; _ -> False) `shouldBe` True
-          -- wtRefs is always [lowerBound, prevAltHead, anchor] (the first
-          -- two empty-string when there's no older occurrence) -- the
-          -- second (later) occurrence's own first/second refs are
-          -- non-empty, naming the first's own real-file anchor and
-          -- alt-chain tip directly, never re-derived by the client.
-          (case summaryTicks of
-             [_, second] -> wtRefs second `shouldSatisfy` (\rs -> length rs == 3 && all (not . T.null) rs)
-             _           -> expectationFailure "expected exactly two summary ticks")
+          (case (summaryTicks, anchors) of
+             ([first, second], [firstAnchor, _]) -> do
+               lookup "lowerBound"  (wtFields first)  `shouldBe` Nothing
+               lookup "prevAltHead" (wtFields first)  `shouldBe` Nothing
+               lookup "lowerBound"  (wtFields second) `shouldBe` firstAnchor
+               lookup "prevAltHead" (wtFields second) `shouldSatisfy` (/= Nothing)
+             _ -> expectationFailure "expected exactly two summary ticks")
 
   describe "editChatPrompt" $ do
 

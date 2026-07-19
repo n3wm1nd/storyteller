@@ -172,6 +172,24 @@ perPathSpec = describe "runSummarizerForPath" $ do
           return (wrote, firstTick == secondTick)
     result `shouldBe` Right (Nothing, True)
 
+  it "(c) holds even when a newer same-kind tick for another file doesn't cover this one" $ do
+    -- Summarize ch2 first, then ch1: ch1's Summary tick lands *behind*
+    -- ch2's on the chain (positioned at ch1's own last atom), so the
+    -- kind's newest tick covers only ch2. ch1's freshness must still be
+    -- judged against the newest tick that actually *covers* it -- not the
+    -- kind's head-most tick -- or every repeat call regenerates ch1 from
+    -- scratch (minting a fresh tick each time), and 'densest' never sees
+    -- the summary that already exists.
+    let result = runOne $ do
+          _ <- runStorage @Source (Ops.addAtom "ch1.md" "ch1 raw.")
+          _ <- runStorage @Source (Ops.addAtom "ch2.md" "ch2 raw.")
+          _ <- runSummarizerForPath @Source "prose/chapter" "ch2.md" stubGenerateOne
+          _ <- runSummarizerForPath @Source "prose/chapter" "ch1.md" stubGenerateOne
+          wrote <- runSummarizerForPath @Source "prose/chapter" "ch1.md" stubGenerateOne
+          ch1 <- densest @Source ["prose/chapter"] "ch1.md"
+          return (wrote, ch1)
+    result `shouldBe` Right (Nothing, "compressed:ch1 raw.")
+
   it "summarizing one file never touches another stale file of the same kind" $ do
     let result = runOne $ do
           _ <- runStorage @Source (Ops.addAtom "ch1.md" "ch1 raw.")

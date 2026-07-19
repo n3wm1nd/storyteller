@@ -108,6 +108,18 @@ export function summaryKindsFor(path: string): string[] {
   return [];
 }
 
+// The two summarizer behaviors (see .summarization-ui.md): "running
+// content" kinds (journal) are incremental — each pass covers only the
+// stretch since the previous occurrence — while file kinds (chapter/lore)
+// always recompress the whole file, so every occurrence covers everything
+// from the file's start up to its own anchor. Advisory, display-only (same
+// caveat as summaryKindsFor above): this only shapes the split view's
+// coverage excerpt (utils.summaryCoverageFor), never what the server
+// actually summarized.
+export function summaryKindIsIncremental(kind: string): boolean {
+  return kind === "journal";
+}
+
 // Display label for a summarizer kind. Each family is one plain kind label
 // -- no per-tier kind suffixes -- a recursive family like "journal" shows
 // its own depth purely by how many hops deep the split view's own nesting

@@ -570,19 +570,12 @@ summarizePath path = case summaryKindsFor path of
     | kind == "lore/article"   -> runSummarizerForPath @Main kind path loreSummaryAgent
     | otherwise                 -> return Nothing
 
--- | @path@'s currently-available summary tiers, as synthetic 'WireTick's
---   riding along in the ordinary push -- not a request/response command.
---   A 'Storyteller.Common.Summary.Summary' carries no @file@ field (one
+-- | @path@'s summary history, as synthetic 'WireTick's riding along in
+--   the ordinary push -- not a request/response command. A
+--   'Storyteller.Common.Summary.Summary' carries no @file@ field (one
 --   alternate-chain commit can cover many files in a single pass), so it
 --   never appears in this file's own 'Server.Core.File.fileState' the way
---   a real atom does; this is what makes it visible there instead, using
---   each level's own real 'Storyteller.Writer.Agent.SummaryAccess.zlTickId'
---   (not 'Storyteller.Common.Summary.summaryAltHead', a different object)
---   as the synthetic tick's id, so the client's ordinary upsert-by-id
---   model dedupes/updates it exactly like any other tick. Content is
---   'Storyteller.Writer.Agent.SummaryAccess.completeContents' -- current as
---   of this call, not just as of whenever the summarizer last ran -- same
---   completeness guarantee every other 'SummaryAccess' reader gets.
+--   a real atom does; this is what makes it visible there instead.
 --
 --   'fileStateWithSummaries' folds the returned ticks' own ids into a
 --   signature 'Server.Writer.File.Connection.pushIncremental' compares
@@ -592,15 +585,17 @@ summarizePath path = case summaryKindsFor path of
 --   this only on reconnect would be exactly the "not implementing the WS
 --   interface correctly" gap WS-PROTOCOL.md's push-everything model rules
 --   out.
---   One real 'WireTick' per historical occurrence now, not one synthetic
---   tick per family: each occurrence is independently anchored via
---   'wtRefs' (always @[lowerBound, prevAltHead, anchor]@ -- anchor
---   deliberately *last*, see 'toWireTick's own comment -- the first two
---   empty-string when there's no older occurrence), so a client can render
---   every pass as its own inline annotation positioned at the right spot,
---   and open its own view (both "what real content led to this" and "what
---   did this pass itself add") by a direct lookup against this one tick's
---   own 'wtRefs' -- never by searching/sorting across every occurrence of
+--
+--   One real 'WireTick' per historical occurrence, not one synthetic tick
+--   per family: each occurrence is anchored via 'wtRefs' (exactly
+--   @[anchor]@ -- the last real atom on @path@ it covers) and carries its
+--   own two boundaries as plain fields (@lowerBound@: the previous
+--   occurrence's anchor; @prevAltHead@: the previous occurrence's
+--   alt-chain tip -- each absent when there is no older occurrence), so a
+--   client can render every pass as its own inline annotation positioned
+--   at the right spot, and open its own view (both "what real content led
+--   to this" and "what did this pass itself add") by direct lookup against
+--   this one tick -- never by searching/sorting across every occurrence of
 --   the kind to guess which is "previous." 'wtTickId' is that occurrence's
 --   own real 'Summary' tick id, so the client's ordinary upsert-by-id
 --   model dedupes/updates each one independently -- and a later pass
@@ -641,21 +636,17 @@ summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
       return WireTick
         { wtTickId  = unTickId (Summary.occTickId occ)
         , wtKind    = "summary"
-        -- The anchor goes *last*, not first: fileview.tsx's own
-        -- annotationsFor (shared with every other annotation kind) finds
-        -- an anchor via '[...tick.refs].reverse().find(atomIds.has)' --
-        -- i.e. it takes the *last* ref that's a real atom id. Since
-        -- 'occLowerBound' (an older, but still real, atom id) sorts
-        -- ahead of 'occAnchor' when both are present, putting the anchor
-        -- anywhere but last would let that generic scan pick the wrong
-        -- one for every occurrence after the first (anchoring it one
-        -- occurrence too early).
-        , wtRefs    =
-            [ maybe "" unTickId (Summary.occLowerBound occ)
-            , maybe "" unTickId (Summary.occPrevAltHead occ)
-            , unTickId (Summary.occAnchor occ)
-            ]
-        , wtFields  = [("kind", kind)]
+        -- Only the anchor lives in 'wtRefs' -- that's the one generic
+        -- positioning mechanism the client already has (fileview.tsx's
+        -- annotationsFor matches refs against real atom ids, same as a
+        -- Note). The two per-occurrence boundaries are structured
+        -- metadata only summary-specific code reads, so they ride in
+        -- 'wtFields' like every other field -- putting them in refs too
+        -- would force the generic scan to guess which ref is the anchor.
+        , wtRefs    = [unTickId (Summary.occAnchor occ)]
+        , wtFields  = ("kind", kind)
+            :  [ ("lowerBound",  unTickId tid) | Just tid <- [Summary.occLowerBound  occ] ]
+            ++ [ ("prevAltHead", unTickId tid) | Just tid <- [Summary.occPrevAltHead occ] ]
         , wtMessage = delta
         , wtContent = Just delta
         , wtParent  = Nothing

@@ -53,7 +53,7 @@ import Polysemy (Member, Sem)
 import qualified Storage.Ops as Ops
 import qualified Storage.FS as FS
 import Storyteller.Common.Summary
-  ( Summary(..), Occurrence(..), lastSummaryOf, lastTouchedIn, previewPath
+  ( Summary(..), Occurrence(..), lastSummaryTouching, lastTouchedIn, previewPath
   , summaryContent, summaryTickFor, summariesTouching, ticksSince
   )
 import Storyteller.Core.Atom (contentFor)
@@ -77,12 +77,14 @@ data ZoomLevel = ZoomLevel
 
 -- | Every zoom level currently available for @path@, most detailed
 --   first: the raw branch, then one entry per @kind@ in @kinds@ (given
---   finest-first) that both has a 'Summary' tick at all and actually
---   covers @path@ in its alternate chain. Stops at the first @kind@ in
---   the list that's missing either -- a coarser tier is expected to have
---   been built *from* a finer one existing, so a gap there means nothing
---   coarser was ever produced. Cheap: no full file content is read here
---   beyond each level's small, optional preview blurb.
+--   finest-first) that actually covers @path@
+--   ('Storyteller.Common.Summary.lastSummaryTouching' -- the most recent
+--   tick of the kind that genuinely covers this file, which is not always
+--   the kind's most recent tick, full stop; see its own Haddock). Stops at
+--   the first @kind@ in the list with no coverage -- a coarser tier is
+--   expected to have been built *from* a finer one existing, so a gap
+--   there means nothing coarser was ever produced. No full file content is
+--   read here beyond each level's small, optional preview blurb.
 zoomLevels
   :: forall source r
   .  Member (BranchOp source) r
@@ -93,21 +95,13 @@ zoomLevels kinds path = do
   where
     go [] = return []
     go (kind : more) = do
-      mSum <- lastSummaryOf kind
+      mSum <- lastSummaryTouching kind path
       case mSum of
         Nothing -> return []
         Just (tid, s) -> do
-          mContent <- summaryContent s path
-          case mContent of
-            -- This kind's alternate chain doesn't cover @path@ at all (a
-            -- summarizer that only ever touches other files) -- nothing
-            -- deeper to offer for *this* file, even if the hierarchy
-            -- itself continues for others.
-            Nothing -> return []
-            Just _  -> do
-              preview <- summaryContent s previewPath
-              restLevels <- go more
-              return (ZoomLevel (Just tid) (Just s) preview : restLevels)
+          preview <- summaryContent s previewPath
+          restLevels <- go more
+          return (ZoomLevel (Just tid) (Just s) preview : restLevels)
 
 -- | @path@'s current content at one zoom level -- 'Nothing' if that
 --   level doesn't have (or never had) this file at all.
