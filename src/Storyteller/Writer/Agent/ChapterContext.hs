@@ -6,6 +6,14 @@
 -- what's earlier") answered against real file content, which is why this
 -- lives beside 'Storyteller.Writer.Agent.WorldContext' rather than inside
 -- that pure, IO-free module.
+--
+-- __Status: unused in production as of 2026-07-20.__
+-- 'Server.Writer.File.roleplayWriter' (its only production caller) now
+-- reads earlier chapters through
+-- 'Storyteller.Context.DSL.Library.contextChapters' instead (via
+-- @context.main@'s own @"chapters"@ bucket). Still exercised directly by
+-- @agent-integration@ fixtures as an independent read path; not yet
+-- deleted.
 module Storyteller.Writer.Agent.ChapterContext
   ( earlierChaptersOf
   ) where

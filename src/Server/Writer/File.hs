@@ -85,7 +85,7 @@ import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, atGeneric)
 
-import Storyteller.Context.DSL.Value (Value(..), valueDefault, messagesText, namedEntry)
+import Storyteller.Context.DSL.Value (valueDefault, messagesText, namedEntry, withoutKey)
 import Storyteller.Context.DSL.Compile (bval)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
@@ -154,26 +154,14 @@ activeCharacterContext path = do
 --   for how it turns into a real @['UniversalLLM.Message']@ rather than one
 --   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
--- | Drops @path@'s own entry from a bucket built by @for f in ...: as f:
---   ...@ (keyed by full matched path -- see
---   'Storyteller.Context.DSL.Compile.treeValueOfCommit's own Haddock on
---   why that's always the shape a glob-derived container's keys take).
---   Neither 'Storyteller.Context.DSL.Library.contextChapters' nor
---   @context.main@'s own @"other"@ bucket know, or should know, that a
---   particular call is in the middle of writing to one specific file --
---   that's caller-local knowledge, so the caller filters it out after the
---   fact rather than the DSL definition trying to parameterize over it.
-dropPath :: FilePath -> Value -> Value
-dropPath path v = v { valueEntries = filter ((/= T.pack path) . fst) (valueEntries v) }
-
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems contextProgram mFlowTid = do
   mainBinding <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) contextProgram
   mainVal     <- runContextBinding0 @Main mainBinding
   (loreBlocks, styleBlocks, earlierChapters) <- runContextValue @Main $ do
     loreV     <- namedEntry "lore" mainVal
-    otherV    <- dropPath path <$> namedEntry "other" mainVal
-    chaptersV <- dropPath path <$> namedEntry "chapters" mainVal
+    otherV    <- withoutKey (T.pack path) <$> namedEntry "other" mainVal
+    chaptersV <- withoutKey (T.pack path) <$> namedEntry "chapters" mainVal
     styleV    <- namedEntry "style" mainVal
     lore  <- (<>) <$> Render.valueBlocks loreV <*> Render.valueBlocks otherV
     earlier <- Render.valueMessages chaptersV
@@ -230,7 +218,7 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
 --   flattened together (no role/message split needed here -- unlike
 --   'chatWriter', 'roleplayAgent' takes one flat @['ContextBlock']@), with
 --   @path@'s own entry dropped from @"chapters"@\/@"other"@ explicitly
---   (see 'dropPath') since, unlike 'chatWriter', nothing downstream of
+--   (see 'Storyteller.Context.DSL.Value.withoutKey') since, unlike 'chatWriter', nothing downstream of
 --   'roleplayAgent' ever wants to see the very file it's about to append
 --   to as if it were already-existing "earlier" content. No override
 --   parameter yet (still just the compiled-in default) -- adding one is a
@@ -252,8 +240,8 @@ roleplayWriter path prompt = do
   mainVal      <- runContextBinding0 @Main mainBinding
   sceneContext <- runContextValue @Main $ do
     loreV     <- namedEntry "lore" mainVal
-    otherV    <- dropPath path <$> namedEntry "other" mainVal
-    chaptersV <- dropPath path <$> namedEntry "chapters" mainVal
+    otherV    <- withoutKey (T.pack path) <$> namedEntry "other" mainVal
+    chaptersV <- withoutKey (T.pack path) <$> namedEntry "chapters" mainVal
     concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
   active <- activeCharactersFor @Main path
   let characters    = [ (CharLabel (characterLabel c), c) | c <- active ]

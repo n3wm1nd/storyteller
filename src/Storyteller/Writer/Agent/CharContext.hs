@@ -8,6 +8,17 @@
 
 -- | Character context agent.
 --
+-- __Status: unused in production as of 2026-07-20.__ Every real caller
+-- (ambient scene generation, 'Storyteller.Writer.Agent.AskCharacter',
+-- 'Storyteller.Writer.Agent.Roleplay') now reads character context through
+-- 'Storyteller.Context.DSL.Library.characterSummary' instead — see that
+-- module's Haddock for the four/five-bucket ('"sheet"'\/'"blurb"'\/
+-- '"full"'\/'"journal"'\/'"journalFull"') shape this module's three
+-- functions collapse to. Still exercised directly by several tests
+-- (@CharContextSpec@, @agent-integration@'s own fixtures) as an
+-- independent read path, which is the only reason this module still
+-- exists; not yet deleted.
+--
 -- Exploring a character branch — listing and reading its files — is
 -- genuine work: there's no way to summarize a character without it, so
 -- unlike most agents in this folder this one can't be reduced to something

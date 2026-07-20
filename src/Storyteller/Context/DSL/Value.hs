@@ -38,6 +38,7 @@ module Storyteller.Context.DSL.Value
   , listPaths
   , lookupPath
   , namedEntry
+  , withoutKey
   ) where
 
 import Control.Monad.Trans.Class (lift)
@@ -179,3 +180,15 @@ namedEntry :: Name -> Value -> Action Value
 namedEntry name v = case lookup name (valueEntries v) of
   Just act -> act
   Nothing  -> pure emptyValue
+
+-- | Drops one key from a glob-derived container's own 'valueEntries' --
+--   the Haskell-side counterpart to the DSL's own @exclude@\/@without@
+--   filters (see "Storyteller.Context.DSL.Compile"'s @coreFilters@),
+--   reached for when the key to drop is genuinely call-time data (e.g. a
+--   Server handler's own @path@ argument -- the file it's about to write
+--   to, not something a project's DSL text could name in advance) rather
+--   than something expressible as project policy inside a 'Definition'
+--   itself. Matches 'namedEntry's own "absence, not an error" spirit --
+--   dropping an absent key is a no-op, not a failure.
+withoutKey :: Name -> Value -> Value
+withoutKey key v = v { valueEntries = filter ((/= key) . fst) (valueEntries v) }

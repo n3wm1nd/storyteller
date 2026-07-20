@@ -4,7 +4,20 @@
 -- | Story-wide (not per-character) context: the freeform lore a user
 -- hand-authors (notes, places, events, world-building, the whole-story
 -- outline, a chapter's own beat sheet) versus the one reserved file meant
--- as standing instruction to the model (a style guide). Both are drawn from
+-- as standing instruction to the model (a style guide).
+--
+-- __Status: partially superseded, as of 2026-07-20.__ 'Server.Writer.File'
+-- ('chatWriter', 'Server.Writer.File.roleplayWriter') both now read lore
+-- through 'Storyteller.Context.DSL.Library.contextMain'\/'contextQuery'
+-- instead -- see that module's own Haddock on why 'isWorldContextEligible'
+-- and 'contextLore''s @lore\/**\/*@ positive glob draw the line
+-- differently (broader vs. narrower), which is exactly why this wasn't a
+-- safe drop-in swap everywhere. The one remaining real caller is
+-- 'Server.Writer.Branch.fetchLore' (the Tasks lore-source-branch feature)
+-- -- migrating that too is a deliberate policy decision (narrows what
+-- counts as lore for a project's configured source branch), not done.
+--
+-- Both are drawn from
 -- the same 'isWorldContextEligible' file set by a single path-convention
 -- split, not two independent classification schemes -- 'style.md' at the
 -- branch root is 'SystemContext', everything else eligible is 'WorldLore'.

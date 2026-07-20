@@ -4,16 +4,23 @@
 --   takes -- the "interpretation" @CONTEXT-DSL.md@'s own spec deliberately
 --   left out of scope, now that a real caller needs one.
 --
---   Two shapes, not one: 'valueMessages' preserves each entry's own
---   'Message' role (@User@\/@Assistant@), which is what lets a definition
---   like 'Storyteller.Context.DSL.Library.contextChapters' build a real
---   alternating-turn sequence (a header, then its content re-tagged
---   @Assistant@ via the widened @>@ -- see
+--   Three target shapes, one shared walk ('valueAllMessages'): every
+--   'Message' reachable from a 'Value', both its own forced default and
+--   every entry's own default (so a leaf bucket -- e.g.
+--   'Storyteller.Context.DSL.Library.contextCharacter''s own
+--   @"sheet"@\/@"blurb"@\/@"journal"@ -- and a container bucket built via
+--   @for@\/@as@ -- e.g. that same definition's own @"full"@, or
+--   @context.main@'s @"lore"@\/@"chapters"@\/@"other"@ -- both flatten
+--   correctly without a caller needing to know which shape a given
+--   definition happens to produce). 'valueMessages' preserves each
+--   message's own role (@User@\/@Assistant@), which is what lets a
+--   definition like 'Storyteller.Context.DSL.Library.contextChapters'
+--   build a real alternating-turn sequence (a header, then its content
+--   re-tagged @Assistant@ via the widened @>@ -- see
 --   'Storyteller.Context.DSL.AST.Expr''s own haddock on 'EAssistant') that
---   survives translation intact; 'valueBlocks' flattens the same walk into
---   plain 'ContextBlock's for a slot where role isn't meaningful (a leaf
---   like 'Storyteller.Context.DSL.Library.contextStyle', or a container
---   that never re-tags anything @Assistant@).
+--   survives translation intact; 'valueBlocks'\/'valueCharBlocks' flatten
+--   the same walk into plain 'ContextBlock's\/'CharContextBlock's for a
+--   slot where role isn't meaningful.
 --
 --   A bare 'FileRead' -- role deliberately left undecided by the DSL
 --   itself (see 'Storyteller.Context.DSL.Value.Message's own haddock) --
@@ -25,6 +32,8 @@
 module Storyteller.Context.DSL.Render
   ( dslMessageToLLM
   , messageToBlock
+  , messageToCharBlock
+  , valueAllMessages
   , valueMessages
   , valueBlocks
   , valueCharBlocks
@@ -51,37 +60,31 @@ messageToBlock (FileRead path text) = ContextBlock (renderEmbeddedFile path text
 messageToBlock (User text)          = ContextBlock text
 messageToBlock (Assistant text)     = ContextBlock text
 
--- | Every entry's own forced message list, concatenated in
---   'valueEntries' order -- role-preserving, so a container whose entries
---   each carry a real @User@\/@Assistant@ sequence (not just one message)
---   comes out as that same alternating sequence, not one message per
---   entry.
-valueMessages :: Value -> Action [LLM.Message m]
-valueMessages v = concat <$>
-  mapM (\(_, act) -> map dslMessageToLLM <$> (valueDefault =<< act)) (valueEntries v)
-
--- | 'valueMessages', flattened into 'ContextBlock's instead.
-valueBlocks :: Value -> Action [ContextBlock]
-valueBlocks v = concat <$>
-  mapM (\(_, act) -> map messageToBlock <$> (valueDefault =<< act)) (valueEntries v)
-
+-- | Same decision again, into a 'CharContextBlock' -- same reasoning as
+--   'messageToBlock', a different target type.
 messageToCharBlock :: Message -> CharContextBlock
 messageToCharBlock (FileRead path text) = CharContextBlock (renderEmbeddedFile path text)
 messageToCharBlock (User text)          = CharContextBlock text
 messageToCharBlock (Assistant text)     = CharContextBlock text
 
--- | Every message reachable from a character-context bucket 'Value' --
---   both its own forced default (a leaf bucket like
---   'Storyteller.Context.DSL.Library.contextCharacter''s own
---   @"sheet"@\/@"blurb"@\/@"journal"@) and each entry's own default (a
---   container bucket built via @for@\/@as@, like that same definition's
---   @"full"@) -- flattened into 'CharContextBlock's. Unlike
---   'valueBlocks', which only ever walks entries (right for a top-level
---   container like @context.main@'s own buckets, none of which carry a
---   default of their own), a character bucket can be either shape
---   depending on how it was built, so this checks both.
-valueCharBlocks :: Value -> Action [CharContextBlock]
-valueCharBlocks v = do
-  own      <- map messageToCharBlock <$> valueDefault v
-  children <- concat <$> mapM (\(_, act) -> map messageToCharBlock <$> (valueDefault =<< act)) (valueEntries v)
+-- | Every 'Message' reachable from a 'Value' -- its own forced default,
+--   then every entry's own default in 'valueEntries' order -- the one
+--   traversal 'valueMessages'\/'valueBlocks'\/'valueCharBlocks' all share,
+--   varying only in which per-'Message' renderer they map over the
+--   result.
+valueAllMessages :: Value -> Action [Message]
+valueAllMessages v = do
+  own      <- valueDefault v
+  children <- concat <$> mapM (\(_, act) -> valueDefault =<< act) (valueEntries v)
   pure (own <> children)
+
+valueMessages :: Value -> Action [LLM.Message m]
+valueMessages v = map dslMessageToLLM <$> valueAllMessages v
+
+-- | 'valueMessages', flattened into 'ContextBlock's instead.
+valueBlocks :: Value -> Action [ContextBlock]
+valueBlocks v = map messageToBlock <$> valueAllMessages v
+
+-- | 'valueMessages', flattened into 'CharContextBlock's instead.
+valueCharBlocks :: Value -> Action [CharContextBlock]
+valueCharBlocks v = map messageToCharBlock <$> valueAllMessages v
