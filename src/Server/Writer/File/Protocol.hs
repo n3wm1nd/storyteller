@@ -132,14 +132,20 @@ data FileCommand
   --
   --   'fcContext' is this call's one Context DSL program (see
   --   @CONTEXT-DSL.md@\/"Storyteller.Context.DSL.Library") -- replaces the
-  --   old @contextLayout@\/@characterLayouts@ 'PickerRule' knobs: empty
-  --   means "no query-level override", falling through to
-  --   'Storyteller.Core.Context.resolveContextQuery''s own
-  --   branch-override-then-compiled-default chain rather than "show
-  --   nothing". World lore, style, earlier chapters, and (eventually)
-  --   character context are all selected by running this one program
-  --   instead of picking each independently.
-  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: T.Text, fcFlowTid :: Maybe T.Text }
+  --   old @contextLayout@\/@characterLayouts@ 'PickerRule' knobs.
+  --   'Nothing' (the field wire-absent) means "no query-level override",
+  --   falling through to 'Storyteller.Core.Context.resolveContextQuery''s
+  --   own branch-override-then-compiled-default chain. This is
+  --   deliberately @Maybe Text@, not @Text@ defaulting to @\"\"@: an empty
+  --   string is a real, if degenerate, DSL program (parses to an empty
+  --   definition, resolving to @Value{valueDefault=[], valueEntries=[]}@ —
+  --   genuinely "include nothing"), a completely different thing from "no
+  --   override was sent" — collapsing the two would make an explicitly
+  --   empty program impossible to express and silently reinterpret it as
+  --   "use the default" instead. World lore, style, earlier chapters, and
+  --   (eventually) character context are all selected by running this one
+  --   program instead of picking each independently.
+  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: Maybe T.Text, fcFlowTid :: Maybe T.Text }
   -- | Roleplay writer: every character present on this file (see
   --   'Storyteller.Writer.Presence.activeCharactersFor') is interrogated,
   --   in character, for what they'd do or say before one scene gets
@@ -191,7 +197,7 @@ data FileCommand
   --   'frontend/src/app/fileview.actions.ts''s 'correctAtom'. Same
   --   'fcPinned'\/'fcContext' shape as 'ChatWriter' -- it rebases and
   --   re-runs exactly that command.
-  | CorrectGroup { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: T.Text }
+  | CorrectGroup { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: Maybe T.Text }
   -- | Split this file (a whole-story outline, @outline.md@ by convention)
   --   into per-chapter beat sheets. No prompt or targets — the outline text is
   --   the whole input; the model decides the chapter breakdown. See
@@ -275,7 +281,7 @@ instance FromJSON FileCommand where
       "unhide.atoms" -> UnhideAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
         pinned  <- fromMaybe [] <$> o .:? "pinned"
-        context <- fromMaybe "" <$> o .:? "context"
+        context <- o .:? "context"
         flowTid <- o .:? "flowTid"
         ChatWriter i <$> o .: "text" <*> pure pinned <*> pure context <*> pure flowTid
       "chat.roleplay" -> RoleplayWrite i . fromMaybe "" <$> o .:? "text"
@@ -289,7 +295,7 @@ instance FromJSON FileCommand where
         ChatRegen i <$> o .: "text" <*> pure pinned <*> pure byBeat
       "correct.group" -> do
         pinned  <- fromMaybe [] <$> o .:? "pinned"
-        context <- fromMaybe "" <$> o .:? "context"
+        context <- o .:? "context"
         targets <- fromMaybe [] <$> o .:? "targets"
         CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text" <*> pure pinned <*> pure context
       "chat.converse" -> ChatConverse i <$> o .: "text"

@@ -6,17 +6,13 @@
 // see lib/serverCacheStore.ts's header for the write-access convention.
 
 import { fileConn, branchConn, saveRawFileAsNew } from "@/lib/ws";
-import type { FileCommand, ContextItem, PickerRule } from "@/lib/ws";
+import type { FileCommand, ContextItem } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
-import { tickChain, promptGroupForAtom, activeCharacterBranches } from "@/lib/utils";
-import { useSettings, contextFilterKey, toContextLayout } from "@/lib/settingsStore";
-import { WRITER_STORY_SOURCE_ID, CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
+import { tickChain, promptGroupForAtom } from "@/lib/utils";
 import { resolveMentions } from "@/lib/mentions";
-import { triggeredLorePaths } from "@/lib/loreTrigger";
-import { composeContextLayout } from "@/lib/contextAssembly";
 
 // A summary tier (see .summarization-ui.md) is genuinely just another file
 // connection — Server.Writer.File.Connection's own openTarget resolves
@@ -443,64 +439,32 @@ export function unhideSelected(path: string) {
   dropFromSelection(targets);
 }
 
-function writerContextLayout(): PickerRule[] {
-  const branch = getServerCache().activeBranch;
-  if (!branch) return [];
-  const filter = useSettings.getState().contextFilters[contextFilterKey(branch, WRITER_STORY_SOURCE_ID)];
-  return filter ? toContextLayout(filter) : [];
-}
-
-// Every codex-entry path the active branch's writer:story filter has
-// flagged "Triggered" (see settingsStore.ts's ContextFilter.triggers and
-// lore-selector.tsx) whose name or an alias is actually mentioned in
-// `text` — see lib/loreTrigger.ts. Empty whenever there's no active
-// branch, no triggers configured, or nothing matches.
-function triggeredLoreForText(text: string): string[] {
-  const branch = getServerCache().activeBranch;
-  if (!branch) return [];
-  const filter = useSettings.getState().contextFilters[contextFilterKey(branch, WRITER_STORY_SOURCE_ID)];
-  if (!filter || filter.triggers.length === 0) return [];
-  return triggeredLorePaths(text, getServerCache().loreTree, new Set(filter.triggers));
-}
-
-// One entry per currently-active (in-scene) character branch that's
-// actually been curated via character-sidebar.tsx's Context panel — a
-// branch with no configured override (the common case) is simply omitted,
-// since an absent entry and an explicit empty layout resolve identically
-// server-side (see Server.Writer.File.activeCharacterContext).
-function activeCharacterLayouts(path: string): Record<string, PickerRule[]> {
-  const fc = getServerCache().openFiles[path];
-  if (!fc) return {};
-  const result: Record<string, PickerRule[]> = {};
-  for (const branch of activeCharacterBranches(fc.ticks, fc.head)) {
-    const filter = useSettings.getState().contextFilters[contextFilterKey(branch, CHARACTER_CONTEXT_SOURCE_ID)];
-    if (filter && filter.tags.length > 0) result[branch] = toContextLayout(filter);
-  }
-  return result;
-}
-
-// The Writer agent's own context shape (pinned selection, mention-aware
-// bucket layout, active character overrides) — shared by chatWrite and
-// correctAtom, since "correct" is the same agent/context, just landing
-// back at the group's old position instead of appending at file end.
+// The Writer agent's own context shape (pinned selection plus the cleaned
+// prompt text) — shared by chatWrite and correctAtom, since "correct" is
+// the same agent/context, just landing back at the group's old position
+// instead of appending at file end. There's no more client-curated bucket
+// layout or per-character override to assemble here — that's now either a
+// directory convention (lore/**, chapters/**, style.md; see
+// CONTEXT-DSL.md/Storyteller.Context.DSL.Library) the server resolves on
+// its own, or a future Contexts-branch override with no frontend editor
+// yet — so `context` is always omitted entirely, not sent as `""`: those
+// are genuinely different programs server-side (see Storyteller.Core.
+// Context.resolveContextQuery) — an omitted field defers to the branch/
+// compiled-in default, where an empty string is itself a real (if
+// degenerate) program that resolves to "include nothing". `@mention`
+// markup is still stripped to plain `@Name` text for readability, but no
+// longer forces anything into context: a mentioned lore file is either
+// already included by the lore/** convention, or it isn't, regardless of
+// whether it's named in the prompt.
 function writerCommandContext(path: string, text: string) {
-  const context = buildContextItems(path);
-  const { cleanText, paths: mentionedPaths } = resolveMentions(text);
-  const baseLayout = writerContextLayout();
-  // Two independent sources force a path to the front, ahead of the
-  // curated layout: an explicit `@mention` and a Triggered lore entry whose
-  // alias got matched in the raw text (see triggeredLoreForText/
-  // lib/loreTrigger.ts) — same outcome either way, so they're deduped into
-  // one forced-bucket-1 list.
-  const forcedPaths = [...new Set([...mentionedPaths, ...triggeredLoreForText(cleanText)])];
-  const contextLayout = composeContextLayout(baseLayout, forcedPaths);
-  const characterLayouts = activeCharacterLayouts(path);
-  return { cleanText, context, contextLayout, characterLayouts };
+  const pinned = buildContextItems(path);
+  const cleanText = resolveMentions(text);
+  return { cleanText, pinned };
 }
 
 export function chatWrite(path: string, text: string) {
-  const { cleanText, context, contextLayout, characterLayouts } = writerCommandContext(path, text);
-  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text: cleanText, context, contextLayout, flowTid, characterLayouts }));
+  const { cleanText, pinned } = writerCommandContext(path, text);
+  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text: cleanText, pinned, flowTid }));
 }
 
 // Roleplay writer — every character present on this file is interrogated,
@@ -542,22 +506,20 @@ export function correctAtom(path: string, atomTickId: string) {
   const group = promptGroupForAtom(fc.ticks, fc.head, atomTickId);
   if (!group) return;
 
-  const { cleanText, context, contextLayout, characterLayouts } = writerCommandContext(path, group.promptTick.message);
+  const { cleanText, pinned } = writerCommandContext(path, group.promptTick.message);
   sendChatCommand(path, () => ({
     type: "correct.group",
     promptTickId: group.promptTick.tickId,
     targets: group.atomTickIds,
     text: cleanText,
-    context,
-    contextLayout,
-    characterLayouts,
+    pinned,
   }));
 }
 
 export function chatFix(path: string, text: string) {
-  const context = buildContextItems(path);
+  const pinned = buildContextItems(path);
   const targets = buildContextTargets(path);
-  sendChatCommand(path, () => ({ type: "chat.fixer", text, context, targets }));
+  sendChatCommand(path, () => ({ type: "chat.fixer", text, pinned, targets }));
 }
 
 // A note with nothing selected implicitly targets the last atom in the
@@ -585,8 +547,8 @@ export function referenceImage(path: string, assetPath: string) {
 }
 
 export function chatRegen(path: string, text: string, byBeat: boolean) {
-  const context = buildContextItems(path);
-  sendChatCommand(path, () => ({ type: "chat.regen", text, context, byBeat }));
+  const pinned = buildContextItems(path);
+  sendChatCommand(path, () => ({ type: "chat.regen", text, pinned, byBeat }));
 }
 
 export function chatOutline(path: string) {

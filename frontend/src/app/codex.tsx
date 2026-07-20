@@ -1,14 +1,12 @@
 "use client";
 
-// Codex tab: the story branch's own lore curation, via the shared
-// LoreSelector (see lore-selector.tsx) bound to the Writer agent's
-// `writer:story` ContextFilter — the same key the Agents tab's Writer ->
-// Story branch tree editor reads/writes, so either view is interchangeable
-// on the same live filter.
+// Codex tab: a read-only browse of the story branch's own lore (see
+// lore-selector.tsx) — what actually feeds a Writer/FlowWriter call's
+// ambient context is now a directory convention the Context DSL resolves
+// server-side (lore/**, chapters/**, style.md), not anything curated here.
 
 import { LoreSelector } from "./lore-selector";
-import { WRITER_STORY_SOURCE_ID } from "@/lib/agents";
 
 export function CodexTab({ activeBranch }: { activeBranch: string | null }) {
-  return <LoreSelector branch={activeBranch} sourceId={WRITER_STORY_SOURCE_ID} />;
+  return <LoreSelector branch={activeBranch} />;
 }

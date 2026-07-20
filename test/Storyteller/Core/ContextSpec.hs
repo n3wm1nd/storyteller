@@ -33,7 +33,8 @@ import Runix.Git (Git)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Context
-  (contextsBranchName, getContextDefinition, interpretContextStorageFS, interpretContextStorageMap, resolveContextOverride)
+  ( contextsBranchName, getContextDefinition, interpretContextStorageFS, interpretContextStorageMap
+  , resolveContextOverride, resolveContextQuery )
 import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
@@ -61,6 +62,7 @@ runDefaultZeroAry _ (Binding n _) = pure (Left ("expected arity 0, got " <> show
 spec :: Spec
 spec = do
   resolveContextOverrideSpec
+  resolveContextQuerySpec
   interpretContextStorageMapSpec
   interpretContextStorageFSSpec
 
@@ -80,6 +82,32 @@ resolveContextOverrideSpec = describe "resolveContextOverride" $ do
   it "falls back to the default when the override's own arity doesn't match" $
     let Binding arity _ = resolveContextOverride defaultGreeting (Just "charname:\n  charname\n")
     in arity `shouldBe` 0
+
+-- | @Maybe Text@, not @Text@ defaulting to @""@: 'Nothing' (wire-absent) is
+--   the sentinel for "no query-level override"; @Just ""@ is a real,
+--   distinct DSL program -- a valid, 0-arity, "produces nothing" one (see
+--   'Storyteller.Context.DSL.Parser.pTopBlock's own haddock: an empty
+--   top-level program is meaningful, not an error), genuinely different
+--   from @Nothing@'s "fall through to the default". Collapsing the two
+--   (as an earlier version of this code did, treating "" as a stand-in
+--   for absence) would make a deliberately-empty override indistinguishable
+--   from "nothing was sent" and silently reinterpret it as "use the
+--   default" instead.
+resolveContextQuerySpec :: Spec
+resolveContextQuerySpec = describe "resolveContextQuery" $ do
+  it "Nothing (wire-absent) falls through to the branch/compiled default" $
+    run (testStack $ interpretContextStorageMap Map.empty $ do
+      Binding arity _ <- resolveContextQuery "context.greeting" defaultGreeting Nothing
+      pure arity)
+    `shouldBe` Right 0
+
+  it "Just \"\" is a distinct, real (if empty) program -- produces nothing, not the default's own text" $
+    run (testStack $ do
+      _ <- createBranch (BranchName "empty")
+      binding <- interpretContextStorageMap Map.empty $
+        resolveContextQuery "context.greeting" defaultGreeting (Just "")
+      runDefaultZeroAry (BranchName "empty") binding)
+    `shouldBe` Right (Right "")
 
 interpretContextStorageMapSpec :: Spec
 interpretContextStorageMapSpec = describe "interpretContextStorageMap" $ do

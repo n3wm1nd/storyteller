@@ -317,37 +317,45 @@ export type FileCommand =
   | { type: "unhide.atoms"; id?: string; targets: string[] }
   // Writer, or FlowWriter (implicitly) when `flowTid` is set — the tick
   // that was HEAD when the user started typing, so the agent can judge
-  // whether atoms generated since then are still provisional. `contextLayout`
-  // is the user-configured bucket-picker ordering for this call's ambient
-  // context (see PickerRule below); omitted/empty falls back to the
-  // server's default alphabetical order. `characterLayouts` is the same
-  // picker model, one entry per active character branch that's actually
-  // been curated (branch name -> layout) — a branch absent here means "no
-  // override", which the server reads as today's fixed sheet-in/journal-out
-  // behavior, not "show nothing" (see Server.Writer.File.activeCharacterContext).
-  | { type: "chat.writer"; id?: string; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; flowTid?: string; characterLayouts?: Record<string, PickerRule[]> }
+  // whether atoms generated since then are still provisional. `pinned` is
+  // the user's own explicit atom/annotation selection (see ContextItem) —
+  // unrelated to context assembly, added as reference text regardless of
+  // what `context` resolves to. `context` is this call's own Context DSL
+  // program (see CONTEXT-DSL.md) — replaces the old `contextLayout`/
+  // `characterLayouts` bucket-picker knobs entirely: empty/omitted means
+  // "no query-level override", falling back to whatever the branch/
+  // compiled-in default resolves to (today: lore/**, chapters/**, style.md,
+  // by convention) rather than "show nothing". There's no per-file curation
+  // UI for this anymore — organize by directory convention instead (see
+  // lore-selector.tsx, now a read-only codex browser).
+  | { type: "chat.writer"; id?: string; text: string; pinned?: ContextItem[]; context?: string; flowTid?: string }
   // Roleplay: every character present on this file is interrogated, in
   // character, for what they'd do or say before one scene gets written and
   // appended — see Server.Writer.File.roleplayWriter. `text` is the
   // author's direction and may be empty (the scene just continues
-  // naturally). No context/contextLayout/characterLayouts yet — each
-  // interrogated character reads their own full branch, not a curated
-  // ambient slice.
+  // naturally). No context of its own yet — each interrogated character
+  // reads their own full branch, not a curated ambient slice.
   | { type: "chat.roleplay"; id?: string; text: string }
-  // Fixer: `targets` are the atoms flagged as the subject of `text`.
-  | { type: "chat.fixer";  id?: string; text: string; context?: ContextItem[]; targets?: string[] }
+  // Fixer: `targets` are the atoms flagged as the subject of `text`. No
+  // context program of its own — with targets present the Fixer agent takes
+  // no ambient context at all; with none, the server falls through to
+  // chat.writer with an empty (default-resolving) program.
+  | { type: "chat.fixer";  id?: string; text: string; pinned?: ContextItem[]; targets?: string[] }
   // Regen: rewrite this chapter to fit its beat sheet (ch{N}.outline.md by
   // convention), respecting `text` as the user's steer. A reconciliation, not
   // a wipe — unchanged prose keeps its atoms. `byBeat` selects the
-  // beat-by-beat driver over the whole-chapter one.
-  | { type: "chat.regen";  id?: string; text: string; context?: ContextItem[]; byBeat?: boolean }
+  // beat-by-beat driver over the whole-chapter one. No context program of
+  // its own yet, same as chat.fixer.
+  | { type: "chat.regen";  id?: string; text: string; pinned?: ContextItem[]; byBeat?: boolean }
   // Correct: delete `promptTickId` and every atom in `targets` (an
   // instruction group's own prompt + generated output), then regenerate
   // from `text` via chat.writer, rebased at the prompt tick's own parent —
   // all as one server-side transaction (one undo point, the group staying
   // on screen untouched until the replacement lands, rather than
   // vanishing tick-by-tick as N separate delete.atom round trips would).
-  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; context?: ContextItem[]; contextLayout?: PickerRule[]; characterLayouts?: Record<string, PickerRule[]> }
+  // Same `pinned`/`context` shape as chat.writer — it rebases and re-runs
+  // exactly that command.
+  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; pinned?: ContextItem[]; context?: string }
   // Converse: discuss, don't write. Send a message to the chat agent — see
   // WRITER.md's chat/ convention. No context/targets: a chat file has no
   // atom-selection concept of its own.

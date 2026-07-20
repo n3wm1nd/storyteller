@@ -29,7 +29,6 @@ import type {
   FileCommand,    FileEvent,
   CharacterEvent, CharacterSummary,
   LibraryCommand, LibraryEvent, LibraryNode, ChapterUnit,
-  LoreEvent, LoreNode,
   WireUndoEntry,
 } from "./ws";
 
@@ -87,17 +86,6 @@ export interface ServerCacheState {
   // — this client never reconstructs that pairing itself; see library.tsx.
   libraryChapters: ChapterUnit[];
 
-  // The active branch's codex tree — kept live by /lore/{name}'s own
-  // notifier, same lifecycle as 'libraryTree'/'_library' above (see
-  // sidebar.actions.ts's selectBranch). Distinct from lore-selector.tsx's
-  // own per-component /lore/{branch} connection (used for arbitrary
-  // branches, e.g. a character sidebar): this one is specifically the
-  // *active* branch's tree, kept alive regardless of what's mounted, so
-  // lib/loreTrigger.ts's trigger-scan (see fileview.actions.ts's
-  // writerCommandContext) always has aliases to match against when a
-  // Writer command is sent.
-  loreTree: LoreNode[];
-
   // Open file connections, keyed by path — this is also where a summary
   // tier's own connection lives (see fileview.actions.ts's openFile
   // 'opts.key'/'opts.branch'), under a synthetic key distinct from its own
@@ -138,7 +126,6 @@ export interface ServerCacheState {
   _session: StoryWS<SessionCommand, SessionEvent> | null;
   _branch:  StoryWS<BranchCommand,  BranchEvent>  | null;
   _library: StoryWS<LibraryCommand, LibraryEvent> | null;
-  _lore:    StoryWS<never,          LoreEvent>    | null;
 }
 
 const _store = create<ServerCacheState>(() => ({
@@ -151,7 +138,6 @@ const _store = create<ServerCacheState>(() => ({
   branchHead: null,
   libraryTree: [],
   libraryChapters: [],
-  loreTree: [],
   openFiles: {},
   openCharacters: {},
   openJournals: {},
@@ -160,7 +146,6 @@ const _store = create<ServerCacheState>(() => ({
   _session: null,
   _branch: null,
   _library: null,
-  _lore: null,
 }));
 
 // Read access — a hook (optionally with a selector, same convention as

@@ -40,24 +40,15 @@ describe("mentionSuggestions", () => {
 
 describe("resolveMentions", () => {
   test("plain text with no mentions passes through untouched", () => {
-    expect(resolveMentions("just prose")).toEqual({ cleanText: "just prose", paths: [] });
+    expect(resolveMentions("just prose")).toBe("just prose");
   });
 
-  test("strips markup back to a plain @Name and collects the path", () => {
-    expect(resolveMentions("ask @[Alice](lore/alice.md) about the war")).toEqual({
-      cleanText: "ask @Alice about the war",
-      paths: ["lore/alice.md"],
-    });
+  test("strips markup back to a plain @Name", () => {
+    expect(resolveMentions("ask @[Alice](lore/alice.md) about the war")).toBe("ask @Alice about the war");
   });
 
-  test("duplicate mentions of the same path are deduped in paths, kept in text", () => {
-    const result = resolveMentions("@[Alice](lore/alice.md) met @[Alice](lore/alice.md) again");
-    expect(result.cleanText).toBe("@Alice met @Alice again");
-    expect(result.paths).toEqual(["lore/alice.md"]);
-  });
-
-  test("multiple distinct mentions preserve first-seen order", () => {
-    const result = resolveMentions("@[Bob](lore/bob.md) and @[Alice](lore/alice.md)");
-    expect(result.paths).toEqual(["lore/bob.md", "lore/alice.md"]);
+  test("repeated mentions of the same name are each stripped in place", () => {
+    expect(resolveMentions("@[Alice](lore/alice.md) met @[Alice](lore/alice.md) again"))
+      .toBe("@Alice met @Alice again");
   });
 });

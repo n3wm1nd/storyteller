@@ -7,7 +7,6 @@ import { type CharacterSummary } from "@/lib/ws";
 import { tickChain, activeCharacterBranches, characterDisplayName as displayName, characterColor, nearestJournalMarker, presentDuringAtoms } from "@/lib/utils";
 import { WireTickList } from "./fileview";
 import { LoreSelector } from "./lore-selector";
-import { CHARACTER_CONTEXT_SOURCE_ID } from "@/lib/agents";
 import { TasksPanel } from "./tasks-panel";
 import { CharacterAvatar } from "./avatar";
 
@@ -222,13 +221,11 @@ function AskPanel({ answers, onAsk }: { answers: { question: string; answer: str
 
 // ── Context panel ────────────────────────────────────────────────────────────
 //
-// This character's own curated lore, via the shared LoreSelector (see
-// lore-selector.tsx) bound to CHARACTER_CONTEXT_SOURCE_ID — the same
-// bucket-picker ContextFilter model the story branch's Codex tab uses, just
-// scoped to this character's own branch. sheet.md/journal.md never appear
-// as candidates here at all (excluded server-side, see
-// Storyteller.Writer.Lore) — this panel only ever shows extra files beyond
-// those two, which is usually nothing.
+// A read-only browse of this character's own extra lore, via the shared
+// LoreSelector (see lore-selector.tsx), scoped to this character's own
+// branch. sheet.md/journal.md never appear as candidates here at all
+// (excluded server-side, see Storyteller.Writer.Lore) — this panel only
+// ever shows extra files beyond those two, which is usually nothing.
 
 function ContextPanel({ branch }: { branch: string }) {
   return (
@@ -238,7 +235,7 @@ function ContextPanel({ branch }: { branch: string }) {
           Context
         </span>
       </div>
-      <LoreSelector branch={branch} sourceId={CHARACTER_CONTEXT_SOURCE_ID} compact />
+      <LoreSelector branch={branch} compact />
     </div>
   );
 }

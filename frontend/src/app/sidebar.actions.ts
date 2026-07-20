@@ -7,7 +7,7 @@
 // safe (writes go through the loudly-named 'mirrorServerEvent', importable
 // from anywhere).
 
-import { sessionConn, branchConn, libraryConn, loreConn, uploadBranchFile, uploadImage } from "@/lib/ws";
+import { sessionConn, branchConn, libraryConn, uploadBranchFile, uploadImage } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { applyUpdate, isChatPreviewEvent } from "@/lib/wsHelpers";
@@ -106,7 +106,6 @@ export function resetToUndo(entryId: string) {
 export async function selectBranch(name: string): Promise<void> {
   const prev = getServerCache()._branch;
   const prevLibrary = getServerCache()._library;
-  const prevLore = getServerCache()._lore;
   const prevName = getServerCache().activeBranch;
   if (prev) {
     prev.close();
@@ -115,10 +114,6 @@ export async function selectBranch(name: string): Promise<void> {
   if (prevLibrary) {
     prevLibrary.close();
     if (prevName) removeConn(`library:${prevName}`);
-  }
-  if (prevLore) {
-    prevLore.close();
-    if (prevName) removeConn(`lore-active:${prevName}`);
   }
 
   for (const fc of Object.values(getServerCache().openFiles)) fc.conn.close();
@@ -133,7 +128,6 @@ export async function selectBranch(name: string): Promise<void> {
     branchHead: null,
     libraryTree: [],
     libraryChapters: [],
-    loreTree: [],
     openFiles: {},
     openCharacters: {},
     openJournals: {},
@@ -215,41 +209,6 @@ export async function selectBranch(name: string): Promise<void> {
     mirrorServerEvent({ _library: library });
   } catch (err) {
     setConnStatus(libraryLabel, "error");
-    setError(String(err));
-  }
-
-  // A third connection, same lifecycle as 'library' above — the active
-  // branch's codex tree, kept live regardless of which tab is mounted (see
-  // serverCacheStore.ts's 'loreTree' doc comment) so the Writer composer's
-  // trigger-scan (lib/loreTrigger.ts, consumed by fileview.actions.ts's
-  // writerCommandContext) always has aliases to match against. Labeled
-  // "lore-active" rather than "lore" to stay distinct from
-  // lore-selector.tsx's own per-component /lore/{branch} connection, which
-  // very often targets this exact same branch.
-  const loreLabel = `lore-active:${name}`;
-  setConnStatus(loreLabel, "connecting");
-
-  const lore = loreConn(name);
-
-  lore.onStatus((s) => {
-    if (s !== "connected") setConnStatus(loreLabel, "connecting");
-  });
-
-  lore.subscribe((evt) => {
-    bumpActivity(loreLabel);
-    if (evt.type === "lore.tree") {
-      mirrorServerEvent({ loreTree: evt.nodes });
-      setConnStatus(loreLabel, "connected");
-    } else if (evt.type === "error") {
-      setError(evt.message);
-    }
-  });
-
-  try {
-    await lore.connect();
-    mirrorServerEvent({ _lore: lore });
-  } catch (err) {
-    setConnStatus(loreLabel, "error");
     setError(String(err));
   }
 }

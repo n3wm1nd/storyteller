@@ -42,16 +42,13 @@ export function mentionSuggestions(text: string, cursor: number, entries: LoreNo
 
 const MENTION_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
 
-// Single pass over the raw composer text: strips every `@[Name](path)` back
-// to plain `@Name` for the LLM-facing prompt, and collects the unique paths
-// referenced — done together so the two can never drift out of sync with
-// each other (e.g. a path collected from a match that then gets cleaned
-// differently).
-export function resolveMentions(text: string): { cleanText: string; paths: string[] } {
-  const paths = new Set<string>();
-  const cleanText = text.replace(MENTION_RE, (_all, name: string, path: string) => {
-    paths.add(path);
-    return `@${name}`;
-  });
-  return { cleanText, paths: [...paths] };
+// Strips every `@[Name](path)` back to plain `@Name` for the LLM-facing
+// prompt text. A mention no longer forces anything into context (see
+// app/fileview.actions.ts's writerCommandContext) — the referenced path,
+// if it lives under the lore/** convention, is already part of the
+// server's default context regardless of whether it's named in the
+// prompt; if it isn't, mentioning it by name doesn't change that. So this
+// is now purely a readability transform, not a context-selection input.
+export function resolveMentions(text: string): string {
+  return text.replace(MENTION_RE, (_all, name: string) => `@${name}`);
 }

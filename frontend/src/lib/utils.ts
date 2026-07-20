@@ -184,11 +184,9 @@ export function basenameNoExt(path: string): string {
 }
 
 // Flatten a lore tree into its leaves, depth-first — shared by
-// app/lore-selector.tsx's card grouping, app/fileview.tsx's mention
-// autocomplete, and lib/loreTrigger.ts's trigger-scan, all of which want a
-// flat, searchable list rather than the folder tree. Lives in lib/ (not
-// lore-selector.tsx, its original home) so lib/loreTrigger.ts can use it
-// without a lib -> app import.
+// app/lore-selector.tsx's card grouping and app/fileview.tsx's mention
+// autocomplete, both of which want a flat, searchable list rather than the
+// folder tree.
 export function flattenLore(nodes: LoreNode[], acc: LoreNode[] = []): LoreNode[] {
   for (const n of nodes) {
     if (n.children.length > 0) flattenLore(n.children, acc);

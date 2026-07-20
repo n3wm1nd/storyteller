@@ -343,20 +343,45 @@ pIndentedBlock parentCol = do
 -- | Statements at the top of a file: like 'pIndentedBlock', but with no
 --   enclosing statement to be indented further than -- whatever column
 --   the first statement lands on becomes the reference for its
---   siblings.
+--   siblings. Unlike 'pIndentedBlock' (via 'pStatementsAtCol'), zero
+--   statements is a valid top-level program, not a parse error: an empty
+--   (or whitespace\/comment-only) definition is a genuine, meaningful
+--   0-arity 'Storyteller.Context.DSL.Value.Value' -- @Value{valueDefault =
+--   pure [], valueEntries = []}@, "produces nothing" -- not a mistake the
+--   way an empty @as \"x\":@ body is (see the parser test for that: a
+--   dangling @as@ with nothing under it is still rejected, since there's
+--   no sensible empty-on-purpose reading for "attach nothing to this
+--   name").
 pTopBlock :: Parser Block
 pTopBlock = do
   scn
   col <- currentPos
-  pStatementsAtCol (posCol col)
+  many (try (atCol (posCol col)) *> pStmtLine)
 
+-- | 'try' scoped to just 'atCol' (a cheap positional check: is there a
+--   statement at all at this column, or have we dedented\/hit eof) --
+--   deliberately not wrapped around 'pStmtLine' itself. Once a statement
+--   is known to start here, any failure while actually parsing its own
+--   content (a dangling @as@ with no body, say) has to propagate as a
+--   real error, not be silently swallowed as "must just be the end of
+--   this block" the way wrapping the whole thing in one 'try' would (this
+--   is exactly what made 'pTopBlock's own "zero is fine" case, needed for
+--   a genuinely empty program, also mask a real parse error in a
+--   malformed one, before this was split out).
 pStatementsAtCol :: Int -> Parser Block
-pStatementsAtCol col = some (try (atCol *> pStmtLine))
-  where
-    atCol = do
-      scn
-      p <- currentPos
-      guard (posCol p == col)
+pStatementsAtCol col = some (try (atCol col) *> pStmtLine)
+
+-- | 'eof' is checked explicitly, not left to 'currentPos'\/'guard' alone:
+--   trailing whitespace can leave @eof@'s own reported column
+--   coincidentally equal to @col@, which would otherwise read as "yes,
+--   there's a statement right here" and send 'pStmtLine' in against
+--   nothing at all.
+atCol :: Int -> Parser ()
+atCol col = do
+  scn
+  notFollowedBy eof
+  p <- currentPos
+  guard (posCol p == col)
 
 currentPos :: Parser Pos
 currentPos = do

@@ -32,18 +32,17 @@ export interface FilterTag {
 // patterns with nothing broad after them reproduces "show only these".
 // There is no longer a mode flag — just the tag list and each tag's bucket.
 //
-// `triggers` is a second, independent axis, populated and consumed only by
-// the Codex tab (lore-selector.tsx) and the trigger-scan step
-// (lib/loreTrigger.ts) — a lore-entry path here means "auto-include this
-// entry, but only for a generation call whose text actually mentions one of
-// its aliases", same forced-bucket-1 mechanism `@mention` already uses (see
-// fileview.actions.ts's writerCommandContext), just triggered by matched
-// text instead of an explicit `@[Name](path)`. context-source.tsx's raw
-// glob editor never reads or writes this field — a glob pattern has no
-// notion of "mentioned in text" to trigger on.
+// Only used by context-source.tsx's generic per-agent context sources now
+// (summarizers, journal chunking, ...) — the Writer/character-branch case
+// this originally also served (lore-selector.tsx's Off/Triggered/Always
+// control, lib/loreTrigger.ts's trigger-scan) moved to the Context DSL
+// (CONTEXT-DSL.md/Storyteller.Context.DSL.Library): ambient context for a
+// Writer/FlowWriter call is now a directory convention the server resolves
+// on its own (lore/**, chapters/**, style.md), not a client-curated
+// bucket/trigger list. This type stays exactly as it was for the agents
+// whose backend (Server.Writer.ContextView) hasn't made that same move.
 export interface ContextFilter {
   tags: FilterTag[];
-  triggers: string[];
 }
 
 interface SettingsState {
@@ -67,11 +66,13 @@ export const useSettings = create<SettingsState>()(
       // context-source.tsx). v2 -> v3: dropped the `invert` mode flag
       // entirely — ordering the tags themselves now covers what it did (see
       // ContextFilter's doc comment above). v3 -> v4: added `triggers`
-      // (lore-mentions trigger-based inclusion). Old entries aren't worth
+      // (lore-mentions trigger-based inclusion). v4 -> v5: removed
+      // `triggers` again — that whole mechanism moved to the Context DSL
+      // (see ContextFilter's own doc comment). Old entries aren't worth
       // translating any of these times — this is client-local, low-stakes UI
       // config, not user content — so a version bump just resets
       // contextFilters wholesale rather than crashing on the old shape.
-      version: 4,
+      version: 5,
       migrate: () => ({ contextFilters: {} }),
     }
   )
@@ -126,39 +127,15 @@ export function cycleFilterTagBucket(filter: ContextFilter, pattern: string, nex
   };
 }
 
-// The Codex tab's simplified Off/Triggered/Always control (lore-selector.tsx)
-// — "Always" is exactly a bucket-1 tag, same substrate `cycleFilterTagBucket`
-// already claims into, just fixed to bucket 1 instead of exposing the full
-// 1/2/3 cycle. Turning it off also clears any Triggered flag for the same
-// path, since the three states are mutually exclusive in that UI (the raw
-// glob editor's tags are untouched by this — only a tag whose pattern is
-// exactly `path` is affected).
-export function setAlwaysIncluded(filter: ContextFilter, path: string, on: boolean): ContextFilter {
-  const withoutTrigger = setTriggered(filter, path, false);
-  if (!on) return removeFilterTag(withoutTrigger, path);
-  const withTag = withoutTrigger.tags.some((t) => t.pattern === path)
-    ? withoutTrigger
-    : addPatternTag(withoutTrigger, path);
-  return { ...withTag, tags: withTag.tags.map((t) => (t.pattern === path ? { ...t, bucket: 1 } : t)) };
-}
-
-// Same mutual-exclusion stance as 'setAlwaysIncluded': flagging a path
-// Triggered clears any Always (bucket) tag for it first.
-export function setTriggered(filter: ContextFilter, path: string, on: boolean): ContextFilter {
-  const withoutTag = removeFilterTag(filter, path);
-  const triggers = withoutTag.triggers.filter((p) => p !== path);
-  return { ...withoutTag, triggers: on ? [...triggers, path] : triggers };
-}
-
-// Compile a persisted {tags} filter into the PickerRule[] layout actually
-// sent over the wire (chat.writer's contextLayout, or context.preview's
-// slot layout) — the one place this translation happens, so the preview a
-// user sees and the layout a real chat.writer call uses can never drift
-// apart. Rule order is tag order (first match wins server-side) — a broad
-// `**/*` tag placed after specific ones acts as a catch-all for "hide
-// these"; specific tags with nothing broad after them means only those show
-// ("show only these"). Empty tags list compiles to [] ("no layout
-// configured"), matching the server's own no-filtering default.
+// Compile a persisted {tags} filter into the PickerRule[] layout sent over
+// the wire as a context.preview slot's own layout (see context-source.tsx)
+// — the one place this translation happens, so the live preview a user
+// sees always matches what's actually persisted. Rule order is tag order
+// (first match wins server-side) — a broad `**/*` tag placed after
+// specific ones acts as a catch-all for "hide these"; specific tags with
+// nothing broad after them means only those show ("show only these").
+// Empty tags list compiles to [] ("no layout configured"), matching the
+// server's own no-filtering default.
 export function toContextLayout(filter: ContextFilter): PickerRule[] {
   return filter.tags.map((t) => {
     const effective = t.bucket !== undefined ? t.bucket : defaultBucket();

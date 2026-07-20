@@ -73,10 +73,8 @@ const STORY_AMBIENT: ContextSourceDef = { id: "story", label: "Story branch", mo
 
 // The two settingsStore.ts ContextFilter keys real generation actually
 // consults today (see fileview.actions.ts's chatWrite) — centralized here
-// rather than duplicated per call site, since both are also the sourceId a
-// UI passes to lore-selector.tsx's LoreSelector.
+// rather than duplicated per call site.
 export const WRITER_STORY_SOURCE_ID = `writer:${STORY_AMBIENT.id}`;
-export const CHARACTER_CONTEXT_SOURCE_ID = "character:context";
 
 export const AGENTS: AgentDef[] = [
   {

@@ -162,19 +162,24 @@ interpretContextStorageMap overrides = interpret $ \case
 --   would look like the edit did nothing, where a stored branch override
 --   failing quietly (still reachable, still fixable, not something a user
 --   is actively watching the result of) is the right call.
-resolveContextQuery :: (Member ContextStorage r, Member Fail r) => Name -> Binding -> Text -> Sem r Binding
-resolveContextQuery name def queryText
-  | T.null queryText = getContextDefinition name def
-  | otherwise = case parseDefinition "<query context>" queryText of
-      Left err -> fail (T.unpack (renderParseErr err))
-      Right parsedDef
-        | length (defParams parsedDef) /= arity -> fail $
-            "context program: expected arity " <> show arity
-              <> ", got " <> show (length (defParams parsedDef))
-        | otherwise -> pure $ Binding arity $ \args _scope ->
-            runDefinition parsedDef (map bval args)
-  where
-    Binding arity _ = def
+--
+--   Takes @Maybe Text@, not @Text@ defaulting to @\"\"@: 'Nothing' (the
+--   wire field genuinely absent) is what falls through to
+--   'getContextDefinition'; @Just \"\"@ is a real, if degenerate, program
+--   (parses to an empty definition -- "include nothing", a completely
+--   different thing from "no override was sent") and gets parsed and run
+--   like any other query text, not silently reinterpreted as "use the
+--   default".
+resolveContextQuery :: (Member ContextStorage r, Member Fail r) => Name -> Binding -> Maybe Text -> Sem r Binding
+resolveContextQuery name def Nothing = getContextDefinition name def
+resolveContextQuery _name (Binding arity _) (Just queryText) = case parseDefinition "<query context>" queryText of
+  Left err -> fail (T.unpack (renderParseErr err))
+  Right parsedDef
+    | length (defParams parsedDef) /= arity -> fail $
+        "context program: expected arity " <> show arity
+          <> ", got " <> show (length (defParams parsedDef))
+    | otherwise -> pure $ Binding arity $ \args _scope ->
+        runDefinition parsedDef (map bval args)
 
 -- | Runs a Context DSL 'Action' positioned at whatever commit @branch@'s
 --   own 'Storyteller.Core.Git.BranchOp' scope is currently ambient at

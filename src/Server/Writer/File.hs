@@ -187,9 +187,11 @@ contextBucket name v = case lookup name (valueEntries v) of
 --   'Storyteller.Writer.Agent.FlowWrite'). World lore, style, and earlier
 --   chapters now come from running the Context DSL's @context.main@
 --   definition (see "Storyteller.Context.DSL.Library") -- 'contextProgram'
---   (this call's own wire-sent program text) takes priority when non-empty,
---   falling back through 'Storyteller.Core.Context.resolveContextQuery' to
---   a committed branch override, then the compiled-in default
+--   (this call's own wire-sent program text, genuinely absent rather than
+--   an empty-string stand-in when the client sent none) takes priority
+--   when 'Just', falling back through
+--   'Storyteller.Core.Context.resolveContextQuery' to a committed branch
+--   override, then the compiled-in default
 --   ('Storyteller.Context.DSL.Library.contextQuery'). Character summaries
 --   and pinned/short-term context are still gathered the old way (see
 --   'activeCharacterContext') -- migrating those is a separate follow-up,
@@ -200,7 +202,7 @@ contextBucket name v = case lookup name (valueEntries v) of
 --   for how it turns into a real @['UniversalLLM.Message']@ rather than one
 --   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
-chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> T.Text -> Maybe TickId -> Sem r ()
+chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems contextProgram mFlowTid = do
   mainBinding <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) contextProgram
   mainVal     <- runContextBinding0 @Main mainBinding
@@ -321,7 +323,7 @@ roleplayWriter path prompt = do
 --   replays back on top of the fresh generation -- see 'atGeneric's own
 --   Haddock: popped ticks are replayed verbatim, so anything still
 --   present when it starts winding back would simply reappear.
-correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> T.Text -> Sem r ()
+correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> Maybe T.Text -> Sem r ()
 correctGroup path promptTid targets prompt pinnedItems contextProgram = do
   typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash (unTickId promptTid)))
   case tickParent typed of
@@ -340,7 +342,7 @@ correctGroup path promptTid targets prompt pinnedItems contextProgram = do
 --   resolveContextQuery' reads as "no query-level override, use whatever
 --   branch override\/compiled-in default is already configured."
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems "" Nothing
+chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems Nothing Nothing
 chatFixer path prompt _pinnedItems targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path

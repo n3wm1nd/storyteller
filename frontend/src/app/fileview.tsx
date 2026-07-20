@@ -1981,11 +1981,12 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
   // a different one, not silently swapped out from under you.
   const [mode, setMode] = useState<AgentId>(() => (hasContext ? "fix" : "write"));
 
-  // Mentions only make sense for Write (the one mode with a contextLayout
-  // channel — see fileview.actions.ts's chatWrite) and only outside a
-  // '/command' line ('@' there is already command-param syntax, see
-  // lib/commands.ts). Passing an empty entries list is how this hook gets
-  // disabled — mentionSuggestions itself doesn't know about modes.
+  // Mentions only make sense for Write (see fileview.actions.ts's
+  // chatWrite — a mention is just a readability nudge in the prompt text
+  // now, not a context-forcing mechanism) and only outside a '/command'
+  // line ('@' there is already command-param syntax, see lib/commands.ts).
+  // Passing an empty entries list is how this hook gets disabled —
+  // mentionSuggestions itself doesn't know about modes.
   const loreEntries = flattenLore(useLoreTree(activeBranch));
   const mentionsEnabled = mode === "write" && !text.trimStart().startsWith("/");
   const mentionAuto = useMentionAutocomplete(text, setText, mentionsEnabled ? loreEntries : [], auto.taRef);

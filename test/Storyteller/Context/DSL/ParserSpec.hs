@@ -109,6 +109,10 @@ workedExamplesSpec = describe "worked examples from CONTEXT-DSL.md" $ do
 
 shapeSpec :: Spec
 shapeSpec = describe "AST shape" $ do
+  it "an empty (or whitespace-only) source is a valid 0-arity, empty-body definition -- not a parse error" $ do
+    parseDefinition "<test>" "" `shouldBe` Right (Definition [] [])
+    parseDefinition "<test>" "\n  \n" `shouldBe` Right (Definition [] [])
+
   it "produces Assistant text for a bare '>' literal" $
     parseDefinition "<test>" "> \"seed text\"\n"
       `shouldBe` Right (Definition [] [Located (Pos 1 1) (SExpr (EAssistant (EString Quoted [Lit "seed text"])))])
