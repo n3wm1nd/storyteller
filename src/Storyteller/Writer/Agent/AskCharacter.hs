@@ -20,30 +20,36 @@ import qualified Data.Text as T
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead)
+import Runix.Git (Git)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
+import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt)
-import Storyteller.Writer.Agent (CharContextBlock(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Core.Storage (StoryStorage)
+import Storyteller.Core.Context (runContextValue)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 
--- | Answer @question@ using only what's readable from @project@'s
---   filesystem -- deliberately effect-minimal like
---   'Storyteller.Writer.Agent.Continuation.proseAgent': no branch name, no
---   dynamic FS open, no world-lore lookup (deferred -- see the design
---   conversation). Opening the right character's branch is the caller's
---   job (see 'Server.Writer.File.askCharacter'), same seam
---   'Storyteller.Writer.Agent.CharContext.charSummaryAgent' itself already
---   draws, which this reuses directly for the read.
+-- | Answer @question@ using only what's readable from @charname@'s own
+--   branch -- deliberately effect-minimal like
+--   'Storyteller.Writer.Agent.Continuation.proseAgent' otherwise: no
+--   world-lore lookup (deferred -- see the design conversation). Reads via
+--   'Storyteller.Context.DSL.Library.characterSummary' (the @"journalFull"@
+--   bucket -- everything, uncurated, same as this agent always wanted),
+--   which crosses to @charname@'s own branch itself -- unlike the old
+--   'Storyteller.Writer.Agent.CharContext.charSummaryAgent'-backed version,
+--   the caller (see 'Server.Writer.File.askCharacter') no longer needs to
+--   open that branch's filesystem first.
 askCharacterAgent
-  :: forall project r
-  .  (LLMs r, Members '[FileSystem project, FileSystemRead project, PromptStorage, Fail, Logging] r)
-  => T.Text -> Sem r T.Text
-askCharacterAgent question = do
-  blocks <- charSummaryAgent @project (const True)
+  :: forall branch r
+  .  (LLMs r, Members '[BranchOp branch, Git, StoryStorage, PromptStorage, Fail, Logging] r)
+  => T.Text -> T.Text -> Sem r T.Text
+askCharacterAgent charname question = do
+  summary <- runContextValue @branch (CtxLibrary.characterSummary "journalFull" charname)
+  let blocks = flattenCharSummary summary
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig
   let userMsg = renderAskPrompt blocks question
   info "askCharacterAgent: querying model..."

@@ -37,6 +37,7 @@ module Storyteller.Context.DSL.Value
   , messagesText
   , listPaths
   , lookupPath
+  , namedEntry
   ) where
 
 import Control.Monad.Trans.Class (lift)
@@ -164,3 +165,17 @@ lookupPath v []           = pure (Just v)
 lookupPath v (seg : rest) = case lookup seg (valueEntries v) of
   Nothing     -> pure Nothing
   Just action -> action >>= \child -> lookupPath child rest
+
+-- | One named top-level entry out of a container's own 'valueEntries' --
+--   'emptyValue' when absent, matching @read@\'s own "absence, not an
+--   error" convention (rule 3) rather than failing the whole call over a
+--   definition that simply doesn't export a given bucket. What a caller
+--   picking apart a multi-bucket definition's result (e.g.
+--   'Storyteller.Context.DSL.Library.contextCharacter''s own
+--   @"sheet"@\/@"blurb"@\/@"full"@\/@"journal"@\/@"journalFull"@) reaches
+--   for, instead of a bespoke @lookup name (valueEntries v)@ at every call
+--   site.
+namedEntry :: Name -> Value -> Action Value
+namedEntry name v = case lookup name (valueEntries v) of
+  Just act -> act
+  Nothing  -> pure emptyValue

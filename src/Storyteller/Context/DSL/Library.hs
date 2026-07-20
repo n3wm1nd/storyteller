@@ -38,16 +38,21 @@ module Storyteller.Context.DSL.Library
   , contextCharacter
   , contextCharacterDefault
   , characterBlurb
+  , characterSummary
   , contextMentionFilter
   , contextMain
   , contextQuery
   , toBinding1
   ) where
 
+import Data.Text (Text)
+
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, journalDelta)
 import Storyteller.Context.DSL.QQ (dsl)
-import Storyteller.Context.DSL.Value (Action, Value)
+import Storyteller.Context.DSL.Value (Action, Value, Message(..), leafValue, namedEntry)
+import qualified Storyteller.Context.DSL.Render as Render
+import Storyteller.Writer.Agent (CharSummary(..))
 
 -- | The one reserved standing-instruction file, if a project has one --
 --   mirrors 'Storyteller.Writer.Agent.WorldContext.isSystemContextPath',
@@ -205,6 +210,26 @@ charname: blurb: journal:
 contextCharacterDefault :: Binding -> Action Value
 contextCharacterDefault charnameB =
   contextCharacter charnameB (toBinding1 characterBlurb) (journalDelta 30 10 2)
+
+-- | Runs 'contextCharacterDefault' for one character and reshapes its
+--   buckets into a 'CharSummary' -- the shared piece every consumer
+--   wanting that exact shape reaches for
+--   ('Server.Writer.File.activeCharacterContext', ambient scene context;
+--   'Storyteller.Writer.Agent.Roleplay.askCharacter'\/
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent', a
+--   character's own subagent), rather than picking 'Value' buckets apart
+--   at every call site. @journalBucket@ selects which of
+--   'contextCharacter''s own two journal readings a caller wants --
+--   @"journal"@ (curated via
+--   'Storyteller.Context.DSL.Compile.journalDelta') or @"journalFull"@
+--   (verbatim) -- see that definition's own Haddock on the pair.
+characterSummary :: Text -> Text -> Action CharSummary
+characterSummary journalBucket charname = do
+  charVal <- contextCharacterDefault (bval (pure (leafValue [User charname])))
+  sheet   <- Render.valueCharBlocks =<< namedEntry "sheet" charVal
+  full    <- Render.valueCharBlocks =<< namedEntry "full" charVal
+  journal <- Render.valueCharBlocks =<< namedEntry journalBucket charVal
+  pure (CharSummary sheet full journal)
 
 -- | Identity pass-through -- every candidate alias stays active for
 --   auto-inclusion on mention until a project's own override narrows it

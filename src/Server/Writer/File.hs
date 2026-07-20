@@ -67,7 +67,6 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import Storyteller.Writer.Agent.CharContext (charSummaryFull)
 import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
 import qualified Storyteller.Writer.Agent.ChapterContext as ChapterContext
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
@@ -88,9 +87,8 @@ import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, atGeneric)
 
-import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Value (Value, Action, Message(..), valueEntries, valueDefault, emptyValue, messagesText, leafValue)
-import Storyteller.Context.DSL.Compile (Binding, bval)
+import Storyteller.Context.DSL.Value (valueDefault, messagesText, namedEntry)
+import Storyteller.Context.DSL.Compile (bval)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Context (resolveContextQuery, runContextBinding0, runContextValue)
@@ -110,26 +108,17 @@ data ActiveChar
 --   signal, so this is the one place that decides which character branches
 --   an agent sees.
 --
---   Runs 'Storyteller.Context.DSL.Library.contextCharacterDefault' per
---   active character and picks its @"sheet"@\/@"full"@\/@"journal"@ buckets
---   apart into a 'CharSummary' -- the same rich, four-bucket definition
+--   Runs 'Storyteller.Context.DSL.Library.characterSummary' (curated
+--   @"journal"@ bucket -- ambient generation wants the deduped slice, not
+--   a present character's full self-knowledge) per active character --
+--   the same shared definition
 --   ('Storyteller.Context.DSL.Library.contextCharacter''s own Haddock)
---   every character-context consumer is meant to share, not a bespoke read
---   here. This replaces the former direct call to
---   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' (still
---   used by 'Storyteller.Writer.Agent.Roleplay' for a present character's
---   own full, uncurated self-knowledge, a genuinely different need -- see
---   that module's Haddock): @sheet.md@\/@journal.md@ are still never
---   lore-gated (per-branch content filtering was previously theoretical --
---   every call site always passed an empty layout map -- and is now, if
---   ever wanted, a project's own override of @context.character@'s
---   @"full"@ bucket, not a Haskell-side parameter here), the journal is
---   still curated via 'Storyteller.Context.DSL.Compile.journalDelta'
---   (dropping entries unchanged from what they reference), and everything
---   else on the branch is real codex content. Full, uncurated journal
---   access is still available on request, via
---   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' -- the
---   sidebar's Ask panel.
+--   every character-context consumer now reads through, not a bespoke
+--   read here. @sheet.md@\/@journal.md@ are never lore-gated (per-branch
+--   content filtering was previously theoretical -- every call site
+--   always passed an empty layout map -- and is now, if ever wanted, a
+--   project's own override of @context.character@'s @"full"@ bucket, not
+--   a Haskell-side parameter here).
 --
 --   Returns the full 'CharSummary' split per character, not a flattened
 --   list -- 'chatWriter', still a single-shot prompt, collapses it back via
@@ -144,30 +133,8 @@ activeCharacterContext path = do
   where
     summarize (Character (BranchName name)) = do
       let ident = branchDisplayName name
-      (sheet, full, journal) <- runContextValue @Main $ do
-        charVal  <- CtxLibrary.contextCharacterDefault (charnameArg ident)
-        sheetV   <- contextBucket "sheet" charVal
-        fullV    <- contextBucket "full" charVal
-        journalV <- contextBucket "journal" charVal
-        (,,) <$> Render.valueCharBlocks sheetV <*> Render.valueCharBlocks fullV <*> Render.valueCharBlocks journalV
-      pure (CharLabel ident, CharSummary sheet full journal)
-
--- | A bare character identifier (no @character/@ prefix -- 'fBranch'
---   prepends that itself), ready to apply to a Context DSL definition's
---   own @charname@ parameter.
-charnameArg :: T.Text -> Binding
-charnameArg = bval . pure . leafValue . (: []) . User
-
--- | One named top-level entry out of a Context DSL definition's own
---   result (e.g. @"lore"@\/@"chapters"@\/@"other"@\/@"style"@ out of
---   @context.main@\'s own 'Storyteller.Context.DSL.Library.contextMain')
---   -- 'emptyValue' when absent, matching @read@\'s own "absence, not an
---   error" convention rather than failing the whole call over a
---   definition that simply doesn't export a given bucket.
-contextBucket :: Name -> Value -> Action Value
-contextBucket name v = case lookup name (valueEntries v) of
-  Just act -> act
-  Nothing  -> pure emptyValue
+      summary <- runContextValue @Main (CtxLibrary.characterSummary "journal" ident)
+      pure (CharLabel ident, summary)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
@@ -194,10 +161,10 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
   mainBinding <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) contextProgram
   mainVal     <- runContextBinding0 @Main mainBinding
   (loreBlocks, styleBlocks, earlierChapters) <- runContextValue @Main $ do
-    loreV     <- contextBucket "lore" mainVal
-    otherV    <- contextBucket "other" mainVal
-    chaptersV <- contextBucket "chapters" mainVal
-    styleV    <- contextBucket "style" mainVal
+    loreV     <- namedEntry "lore" mainVal
+    otherV    <- namedEntry "other" mainVal
+    chaptersV <- namedEntry "chapters" mainVal
+    styleV    <- namedEntry "style" mainVal
     lore  <- (<>) <$> Render.valueBlocks loreV <*> Render.valueBlocks otherV
     earlier <- Render.valueMessages chaptersV
     styleTxt <- messagesText <$> valueDefault styleV
@@ -273,20 +240,21 @@ roleplayWriter path prompt = do
     characterLabel (Character (BranchName name)) = branchDisplayName name
 
       -- Full, uncurated branch context (sheet, whole journal, notes.md if
-      -- any) -- not the windowed 'charSummaryWithJournal' slice
-      -- 'activeCharacterContext' uses for ambient generation context.
-      -- Reflecting on a scene just witnessed needs everything this
-      -- character actually knows going in, the same reasoning
-      -- 'Storyteller.Writer.Agent.Roleplay.askCharacterImpl' already
-      -- applies to interrogation. One scope covers the whole pass --
-      -- context read, 'characterReflectAgent''s own tool calls (it may
-      -- update characters/*.md or add a thought based on what actually
-      -- happened, not just what was planned), and the final ref-carrying
-      -- journal commit -- since all three need this same branch's effects
-      -- live at once.
-    reflectFor narrative sceneRef character@(Character branch) =
-      runBranchAndFS @ActiveChar branch $ do
-        ownContext <- charSummaryFull @(BranchTag ActiveChar) (const True)
+      -- any) -- 'characterSummary's own "journalFull" bucket, not the
+      -- curated "journal" slice 'activeCharacterContext' uses for ambient
+      -- generation context. Reflecting on a scene just witnessed needs
+      -- everything this character actually knows going in, the same
+      -- reasoning 'Storyteller.Writer.Agent.Roleplay.askCharacter' already
+      -- applies to interrogation. The context read itself doesn't need
+      -- this character's own branch open (the DSL crosses to it itself),
+      -- but 'characterReflectAgent''s own tool calls (it may update
+      -- characters/*.md or add a thought based on what actually happened)
+      -- and the final ref-carrying journal commit both do, so those two
+      -- stay inside one 'runBranchAndFS' scope.
+    reflectFor narrative sceneRef character@(Character (BranchName name)) = do
+      let ident = branchDisplayName name
+      ownContext <- runContextValue @Main (CtxLibrary.characterSummary "journalFull" ident)
+      runBranchAndFS @ActiveChar (BranchName name) $ do
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
         void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] journalPath entry)
 
@@ -536,10 +504,13 @@ setPresence path character event = void $ recordPresence @Main path character ev
 --   the result gets recorded, and it goes on @Main@ (the scene's own
 --   chain), not the character's: asking a question is something that
 --   happened during *this* writing, not a new memory for the character --
---   see 'Storyteller.Writer.Types.CharacterAnswer'.
+--   see 'Storyteller.Writer.Types.CharacterAnswer'. No branch-opening dance
+--   needed here any more -- 'askCharacterAgent' reads via the Context DSL
+--   now, which crosses to the character's own branch itself.
 askCharacter :: (FileOpen r, SessionEffects r) => FilePath -> Character -> T.Text -> Sem r T.Text
-askCharacter path character@(Character branch) question = do
-  answer <- runBranchAndFS @ActiveChar branch (askCharacterAgent @(BranchTag ActiveChar) question)
+askCharacter path character@(Character (BranchName name)) question = do
+  let ident = branchDisplayName name
+  answer <- askCharacterAgent @Main ident question
   _ <- runStorage @Main (Tick.storeAs (CharacterAnswer character question answer (Just path)))
   return answer
 
