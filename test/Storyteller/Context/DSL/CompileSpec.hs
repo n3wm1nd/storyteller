@@ -1,12 +1,14 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | End-to-end: parse a definition from @CONTEXT-DSL.md@-shaped source,
 --   compile it with 'Storyteller.Context.DSL.Compile.compileDefinition'
@@ -18,17 +20,18 @@
 --   "Storyteller.Context.DSL.Compile" itself has no Polysemy dependency
 --   and no type parameter anywhere -- 'Value' is monomorphic, and every
 --   deferred computation is an 'Action', generic over any backend that
---   can satisfy 'Core.StoreM'. The one thing that can't be expressed
---   that way (resolving a 'BranchName' to a commit) is threaded through
---   'runAction' as an explicit parameter rather than baked into any one
---   'Action'. This module is exactly where a *real* one gets supplied:
---   'resolveBranch' below, closing over 'getBranch', is the *only*
---   Polysemy-specific code anywhere in this file's use of the DSL.
+--   can satisfy 'Core.StoreM' and 'MonadBranch'. The one thing that can't
+--   be expressed via 'Core.StoreM' alone (resolving a 'BranchName' to a
+--   commit) is exactly 'MonadBranch'. This module is exactly where a
+--   *real* instance gets supplied: the @instance MonadBranch (Sem r)@
+--   below, closing over 'getBranch', is the *only* Polysemy-specific
+--   code anywhere in this file's use of the DSL.
 module Storyteller.Context.DSL.CompileSpec (spec) where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (Members, Sem, run)
@@ -51,16 +54,14 @@ import Storyteller.Context.DSL.Compile
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
 
-type DSL r = Members '[Git, StoryStorage, Fail] r
-
--- | The one Polysemy-specific piece: a real 'BranchResolver', closing
---   over 'getBranch'. Everything else in this file is 'Action' code
---   that has no idea this is how branches get resolved -- it only ever
---   sees a resolver at the point 'runAction' finally runs one.
-resolveBranch :: DSL r => BranchResolver (Sem r)
-resolveBranch name = getBranch name >>= \case
-  Nothing -> pure Nothing
-  Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
+-- | The one Polysemy-specific piece: a real 'MonadBranch' instance,
+--   closing over 'getBranch'. Everything else in this file is 'Action'
+--   code that has no idea this is how branches get resolved -- it only
+--   ever reaches for it via 'askBranch'.
+instance Members '[Git, StoryStorage, Fail] r => MonadBranch (Sem r) where
+  resolveBranch name = getBranch name >>= \case
+    Nothing -> pure Nothing
+    Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
 
 -- | Creates a branch and seeds it with files, all in one short-lived
 --   'BranchOp' scope -- setup only, the DSL interpreter itself never
@@ -77,18 +78,26 @@ seedBranch name files = do
   runBranchOpGit @Main (BranchName name)
     (mapM_ (\(path, content) -> runStorage @Main (Ops.addAtom path content)) files)
 
+-- | Resolves @bname@ to its current head and runs @act@'s 'StoreT'
+--   computation from there -- the ambient position 'currentScope'\/
+--   'runDefinition' bootstrap themselves from, established here rather
+--   than threaded through the DSL's own API.
+runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
+runDslOn bname act = resolveBranch bname >>= \case
+  Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
+  Just h  -> fst <$> Core.runStoreT h (runAction act)
+
 -- | Compiles @def@ against @bname@'s current tree, applies it to
 --   @args@ (each a plain-text leaf), and forces both the result's own
 --   default text and one level of its named exports' text -- enough to
 --   assert against without dragging 'Value''s laziness machinery into
---   every test. The whole DSL side is one 'Action', run once via
---   'resolveBranch'.
+--   every test.
 runDsl :: Text -> Definition -> [Text] -> Sem (StoryStorage : TestEffects '[]) (Text, Map Name Text)
-runDsl bname def args = runAction go resolveBranch
+runDsl bname def args = runDslOn (BranchName bname) go
   where
     go = do
       let argActions = map (pure . leafValue . (: []) . User) args
-      v         <- runDefinitionOnBranch (BranchName bname) def argActions
+      v         <- runDefinition def argActions
       defMsgs   <- valueDefault v
       entryText <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries v)
       pure (messagesText defMsgs, entryText)
@@ -134,12 +143,12 @@ ctx:
 runInjuryCase :: Text -> [(FilePath, Text)] -> Either String Text
 runInjuryCase bname files = run $ testStack $ do
   seedBranch bname files
-  runAction go resolveBranch
+  runDslOn (BranchName bname) go
   where
     go = do
-      scope    <- treeValueOfBranch (BranchName bname)
-      ctxValue <- compileDefinition coreFilters ctxDef scope []
-      result   <- compileDefinition coreFilters callerDef scope [pure ctxValue]
+      scope    <- currentScope
+      ctxValue <- compileDefinition ctxDef scope []
+      result   <- compileDefinition callerDef scope [pure ctxValue]
       messagesText <$> valueDefault result
 
 injuryExampleSpec :: Spec
@@ -202,15 +211,15 @@ forLoopEntriesSpec = describe "for/as nested entries" $
         [ ("tracking/gun.md", "a gun on the mantelpiece")
         , ("tracking/letter.md", "an unopened letter")
         ]
-      runAction go resolveBranch)
+      runDslOn (BranchName "main") go)
     `shouldBe` Right (Map.fromList
       [ ("tracking/gun.md", "a gun on the mantelpiece")
       , ("tracking/letter.md", "an unopened letter")
       ])
   where
     go = do
-      scope   <- treeValueOfBranch (BranchName "main")
-      v       <- compileDefinition coreFilters openTrackingDef scope []
+      scope   <- currentScope
+      v       <- compileDefinition openTrackingDef scope []
       Just openAction <- pure (Map.lookup "open" (valueEntries v))
       openVal <- openAction
       mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
@@ -227,12 +236,12 @@ forceUserRoleSpec = describe "< <expr> (force User role)" $
   it "re-tags a read's FileRead messages as User, leaving the text itself unchanged" $
     run (testStack $ do
       seedBranch "main" [("notes.md", "the door was left ajar")]
-      runAction go resolveBranch)
+      runDslOn (BranchName "main") go)
     `shouldBe` Right [User "the door was left ajar"]
   where
     go = do
-      scope <- treeValueOfBranch (BranchName "main")
-      v     <- compileDefinition coreFilters forceUserRoleDef scope []
+      scope <- currentScope
+      v     <- compileDefinition forceUserRoleDef scope []
       valueDefault v
 
 -- | A local function isn't a different kind of thing from a plain value
@@ -260,12 +269,12 @@ localFunctionInForLoopSpec = describe "a local function bound fresh each for-loo
         [ ("tracking/gun.md", "a gun on the mantelpiece")
         , ("tracking/letter.md", "an unopened letter")
         ]
-      runAction go resolveBranch)
+      runDslOn (BranchName "main") go)
     `shouldBe` Right (Map.fromList [("tracking/gun.md", "gun"), ("tracking/letter.md", "letter")])
   where
     go = do
-      scope   <- treeValueOfBranch (BranchName "main")
-      v       <- compileDefinition coreFilters localFunctionInForLoopDef scope []
+      scope   <- currentScope
+      v       <- compileDefinition localFunctionInForLoopDef scope []
       Just resultsAction <- pure (Map.lookup "results" (valueEntries v))
       results <- resultsAction
       mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries results)

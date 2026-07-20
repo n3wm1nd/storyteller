@@ -31,16 +31,17 @@
 --   alone: resolving a 'Storyteller.Core.Types.BranchName' to a commit
 --   ('Storyteller.Core.Storage.StoryStorage' is a separate effect from
 --   'Core.MonadStore' throughout this codebase, not a gap this module
---   invented). Rather than close over a resolver inside a deferred
---   'Action' -- which would break the moment a deferred @as@-export
---   (built once, run later) crosses a branch, since the resolver that
---   was ambient at *build* time might not be the one its eventual caller
---   wants -- 'Action' takes a 'BranchResolver' as an explicit parameter
---   to 'runAction' itself, supplied fresh every time. See @branch@\'s own
---   implementation ('fBranch') and 'runDefinitionOnBranch', the one place
---   a concrete resolver (closing over @getBranch@ and whatever effect
---   system a caller uses) actually gets supplied. This module never
---   imports @polysemy@ or any @Storyteller.Core.*@ Polysemy-effect
+--   invented). This is exactly 'Storyteller.Context.DSL.Value.MonadBranch'
+--   -- an 'Action' just carries it as a constraint, alongside
+--   'Core.StoreM', rather than closing over one resolver value fixed at
+--   build time (which would break the moment a deferred @as@-export,
+--   built once and run later, crosses a branch under a caller its
+--   builder never saw). See @branch@\'s own implementation ('fBranch')
+--   and 'treeValueOfBranch', the one place resolution actually happens.
+--   The vocabulary's own closedness (see "Filters" in the spec) means
+--   'coreFilters' is the only 'FilterRegistry' anywhere -- filters are
+--   referenced directly, never threaded as a parameter. This module
+--   never imports @polysemy@ or any @Storyteller.Core.*@ Polysemy-effect
 --   module.
 module Storyteller.Context.DSL.Compile
   ( -- * The interpreter
@@ -54,11 +55,12 @@ module Storyteller.Context.DSL.Compile
   , runStmts
   , evalExpr
   , treeValueOfCommit
+  , currentScope
+  , runDefinition
 
     -- * Branch resolution -- injected, not hardcoded
   , fBranch
   , treeValueOfBranch
-  , runDefinitionOnBranch
   ) where
 
 import Control.Monad (foldM, when)
@@ -145,23 +147,21 @@ treeValueOfCommit commit = do
 -- ---------------------------------------------------------------------------
 
 -- | Compiles and immediately runs a whole 'Definition' against a
---   supplied initial scope, argument list, and filter registry -- the
---   entry point a host embeds (matching the spec's own framing: "a
---   compiled context ends up with exactly the type shape a hand-written
---   agent already has").
+--   supplied initial scope and argument list -- the entry point a host
+--   embeds (matching the spec's own framing: "a compiled context ends
+--   up with exactly the type shape a hand-written agent already has").
 compileDefinition
-  :: FilterRegistry
-  -> Definition
+  :: Definition
   -> Value            -- ^ initial ambient Reader scope
   -> [Action Value]    -- ^ arguments, matched against 'defParams'
   -> Action Value
-compileDefinition filters def scope args
+compileDefinition def scope args
   | length args /= length (defParams def) = fail $
       "arity mismatch: " <> show (length (defParams def)) <> " parameter(s), "
         <> show (length args) <> " argument(s) given"
   | otherwise = do
       let env = Map.fromList (zip (defParams def) (map bval args))
-      mkValue <$> runStmts filters env scope (defBody def)
+      mkValue <$> runStmts env scope (defBody def)
 
 -- | Wraps an already-scoped 'Action' as a 0-arity 'Binding' -- the
 --   caller-supplied scope argument is simply never looked at.
@@ -180,39 +180,39 @@ mkValue (msgs, entries) = Value (pure msgs) entries
 --   fold their own nested statements into the *same* accumulator this
 --   call already threads (see their cases below).
 runStmts
-  :: FilterRegistry -> Env -> Value -> Block
+  :: Env -> Value -> Block
   -> Action ([Message], Map Name (Action Value))
-runStmts filters env0 scope0 = go env0 scope0 [] Map.empty
+runStmts env0 scope0 = go env0 scope0 [] Map.empty
   where
     go _ _ msgs entries [] = pure (concat (reverse msgs), entries)
     go env scope msgs entries (Located _ (SExpr e) : rest) = do
-      v <- evalExpr filters env scope e
+      v <- evalExpr env scope e
       m <- valueDefault v
       go env scope (m : msgs) entries rest
     go env scope msgs entries (Located pos (SAs nameE body) : rest) = do
-      name <- nameOf filters env scope nameE
+      name <- nameOf env scope nameE
       when (Map.member name entries) $
         fail $ "duplicate 'as' name " <> show name <> " at line " <> show (posLine pos)
-      let entryAction = mkValue <$> runStmts filters env scope body
+      let entryAction = mkValue <$> runStmts env scope body
       go env scope msgs (Map.insert name entryAction entries) rest
     go env scope msgs entries (Located _ (SLet name mParams body) : rest) =
       let binding = case mParams of
-            Nothing -> bval (mkValue <$> runStmts filters env scope body)
+            Nothing -> bval (mkValue <$> runStmts env scope body)
             Just ps -> Binding (length ps) $ \args callerScope ->
-              mkValue <$> runStmts filters (bindParams ps args env) callerScope body
+              mkValue <$> runStmts (bindParams ps args env) callerScope body
       in go (Map.insert name binding env) scope msgs entries rest
     go env scope msgs entries (Located _ (SIn e body) : rest) = do
-      newScope <- evalExpr filters env scope e
-      (m, es) <- runStmts filters env newScope body
+      newScope <- evalExpr env scope e
+      (m, es) <- runStmts env newScope body
       go env scope (m : msgs) (Map.union es entries) rest
     go env scope msgs entries (Located pos (SFor var pathLit body) : rest) = do
-      matches <- globMatch filters env scope pathLit
+      matches <- globMatch env scope pathLit
       (m, es) <- foldM (runOneIteration pos var body) ([], entries) matches
       go env scope (m : msgs) es rest
       where
         runOneIteration p var' body' (msgsAcc, entriesAcc) matchedPath = do
           let env' = Map.insert var' (bval (pure (leafValue [User matchedPath]))) env
-          (m1, es1) <- runStmts filters env' scope body'
+          (m1, es1) <- runStmts env' scope body'
           case Map.keys (Map.intersection es1 entriesAcc) of
             (dup : _) -> fail $ "duplicate 'as' name " <> show dup
                            <> " across for-loop iterations, near line " <> show (posLine p)
@@ -222,22 +222,22 @@ runStmts filters env0 scope0 = go env0 scope0 [] Map.empty
 bindParams :: [Name] -> [Action Value] -> Env -> Env
 bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env (zip ps args)
 
-nameOf :: FilterRegistry -> Env -> Value -> Expr -> Action Name
-nameOf filters env scope e = do
-  v <- evalExpr filters env scope e
+nameOf :: Env -> Value -> Expr -> Action Name
+nameOf env scope e = do
+  v <- evalExpr env scope e
   messagesText <$> valueDefault v
 
-evalExpr :: FilterRegistry -> Env -> Value -> Expr -> Action Value
-evalExpr filters env scope e = case e of
-  EString Quoted parts -> leafValue . (: []) . User <$> interpText filters env scope parts
+evalExpr :: Env -> Value -> Expr -> Action Value
+evalExpr env scope e = case e of
+  EString Quoted parts -> leafValue . (: []) . User <$> interpText env scope parts
   EString Bare   parts -> do
-    pat     <- interpText filters env scope parts
+    pat     <- interpText env scope parts
     matches <- globMatchPat scope pat
     entries <- Map.fromList <$> mapM (\m -> (,) m . pure <$> forceAt scope m) matches
     pure (Value (pure []) entries)
-  EAssistant parts -> leafValue . (: []) . Assistant <$> interpText filters env scope parts
+  EAssistant parts -> leafValue . (: []) . Assistant <$> interpText env scope parts
   EUser inner -> do
-    v    <- evalExpr filters env scope inner
+    v    <- evalExpr env scope inner
     msgs <- valueDefault v
     pure v { valueDefault = pure (map (User . messageText) msgs) }
   EIdent name -> case Map.lookup name env of
@@ -246,12 +246,12 @@ evalExpr filters env scope e = case e of
       T.unpack name <> " needs " <> show arity <> " argument(s), used with none"
     Nothing -> fail $ "unknown identifier: " <> T.unpack name
   ERead pathLit -> do
-    path <- pathLitText filters env scope pathLit
+    path <- pathLitText env scope pathLit
     resolveRead scope path >>= \case
       Nothing -> pure emptyValue
       Just v  -> pure v
   EApp headE argEs -> do
-    let args = map (evalExpr filters env scope) argEs
+    let args = map (evalExpr env scope) argEs
     case headE of
       EIdent name -> case Map.lookup name env of
         Just (Binding arity fn) -> do
@@ -264,22 +264,22 @@ evalExpr filters env scope e = case e of
   -- call syntax is identical, but it's dispatched here by name, straight
   -- to 'fBranch', rather than through 'applyFilter'\/'FilterRegistry'.
   EFilter inner "branch" argEs -> do
-    v    <- evalExpr filters env scope inner
-    args <- mapM (evalExpr filters env scope) argEs
+    v    <- evalExpr env scope inner
+    args <- mapM (evalExpr env scope) argEs
     fBranch v args
   EFilter inner name argEs -> do
-    v    <- evalExpr filters env scope inner
-    args <- mapM (evalExpr filters env scope) argEs
-    pure (applyFilter filters name v args)
+    v    <- evalExpr env scope inner
+    args <- mapM (evalExpr env scope) argEs
+    pure (applyFilter name v args)
 
 -- | Resolves every @%name%@ span against 'env' (a local binding's own
 --   plain text -- see 'Storyteller.Context.DSL.Value.messagesText'),
 --   leaving literal spans untouched.
-interpText :: FilterRegistry -> Env -> Value -> InterpText -> Action Text
-interpText filters env scope = fmap T.concat . mapM part
+interpText :: Env -> Value -> InterpText -> Action Text
+interpText env scope = fmap T.concat . mapM part
   where
     part (Lit t)    = pure t
-    part (Interp n) = messagesText <$> (valueDefault =<< evalExpr filters env scope (EIdent n))
+    part (Interp n) = messagesText <$> (valueDefault =<< evalExpr env scope (EIdent n))
 
 -- | @read@'s argument text -- almost 'interpText', with one addition the
 --   worked examples need and the bare-token lexeme alone can't resolve:
@@ -295,10 +295,10 @@ interpText filters env scope = fmap T.concat . mapM part
 --   meaningful, not stylistic (see "Value model"), and a quoted
 --   @read "injury"@ must always mean the literal text @injury@, never a
 --   same-named local variable.
-pathLitText :: FilterRegistry -> Env -> Value -> PathLit -> Action Text
-pathLitText filters env scope (PathLit Bare [Lit name])
-  | Map.member name env = messagesText <$> (valueDefault =<< evalExpr filters env scope (EIdent name))
-pathLitText filters env scope (PathLit _ parts) = interpText filters env scope parts
+pathLitText :: Env -> Value -> PathLit -> Action Text
+pathLitText env scope (PathLit Bare [Lit name])
+  | Map.member name env = messagesText <$> (valueDefault =<< evalExpr env scope (EIdent name))
+pathLitText env scope (PathLit _ parts) = interpText env scope parts
 
 -- | @read@'s own path resolution: a flat scope (a branch tree or a glob
 --   result -- see 'treeValueOfCommit') stores full paths as its own
@@ -319,9 +319,9 @@ globMatchPat scope pat = do
   let compiled = Glob.compile (T.unpack pat)
   pure (List.sort (filter (Glob.match compiled . T.unpack) allPaths))
 
-globMatch :: FilterRegistry -> Env -> Value -> PathLit -> Action [Text]
-globMatch filters env scope (PathLit _ parts) =
-  interpText filters env scope parts >>= globMatchPat scope
+globMatch :: Env -> Value -> PathLit -> Action [Text]
+globMatch env scope (PathLit _ parts) =
+  interpText env scope parts >>= globMatchPat scope
 
 forceAt :: Value -> Text -> Action Value
 forceAt scope path = maybe emptyValue id <$> resolveRead scope path
@@ -385,8 +385,8 @@ coreFilters = Map.fromList
   , ("sortBy",       fNotImplemented "sortBy")
   ]
 
-applyFilter :: FilterRegistry -> Name -> Value -> [Value] -> Value
-applyFilter filters name v args = case Map.lookup name filters of
+applyFilter :: Name -> Value -> [Value] -> Value
+applyFilter name v args = case Map.lookup name coreFilters of
   Nothing   -> errorValue ("unknown filter: " <> T.unpack name)
   Just impl -> impl v args
 
@@ -499,20 +499,27 @@ fBranch v [] = do
 fBranch _ args = fail $ "branch: expected no arguments, got " <> show (length args)
 
 -- | 'treeValueOfCommit' for a named branch -- resolves the name via
---   'askBranch', then delegates.
+--   'askBranch', then delegates. The one case a Reader-scope switch
+--   genuinely does correspond to a different commit (contrast
+--   'currentScope', which needs no name or lookup at all).
 treeValueOfBranch :: BranchName -> Action Value
 treeValueOfBranch name = askBranch name >>= \case
   Nothing     -> fail ("branch not found: " <> T.unpack (unBranchName name))
   Just commit -> treeValueOfCommit commit
 
--- | The whole pipeline as one 'Action': resolve @branchName@, build its
---   tree as the initial scope, compile @def@ against it with
---   'coreFilters'. What a host actually calls -- everything above is
---   the reusable machinery this assembles. Still fully generic: the
---   concrete effect system, and the real branch resolver, only enter
---   when the returned 'Action' is finally run via
+-- | The Reader scope for wherever this 'Action' is actually run --
+--   'Storyteller.Context.DSL.Value.currentHead', read straight off the
+--   ambient 'Core.StoreT' position, no 'Storyteller.Core.Types.BranchName'
+--   or lookup needed. This is what makes 'runDefinition' able to just say
+--   "run in whatever branch/session I'm already in."
+currentScope :: Action Value
+currentScope = currentHead >>= treeValueOfCommit
+
+-- | The whole pipeline as one 'Action': take whatever commit is
+--   currently ambient as the initial scope, compile @def@ against it.
+--   What a host actually calls -- everything above is the reusable
+--   machinery this assembles. Still fully generic: the concrete backend
+--   only enters when the returned 'Action' is finally run via
 --   'Storyteller.Context.DSL.Value.runAction'.
-runDefinitionOnBranch :: BranchName -> Definition -> [Action Value] -> Action Value
-runDefinitionOnBranch branchName def args = do
-  scope <- treeValueOfBranch branchName
-  compileDefinition coreFilters def scope args
+runDefinition :: Definition -> [Action Value] -> Action Value
+runDefinition def args = currentScope >>= \scope -> compileDefinition def scope args

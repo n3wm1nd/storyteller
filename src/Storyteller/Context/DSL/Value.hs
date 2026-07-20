@@ -10,25 +10,27 @@
 --
 --   'Value' itself carries no type parameter -- every deferred
 --   computation an 'Action' can describe is genuinely generic over
---   *any* 'Core.StoreM' @m@, so there's no one concrete monad to name.
---   The one operation that isn't expressible via 'Core.StoreM' alone
---   (resolving a branch name to a commit -- see
---   "Storyteller.Context.DSL.Compile"'s module haddock) doesn't break
---   this: it's threaded through 'runAction' as an explicit parameter,
---   supplied fresh every time an 'Action' actually runs, rather than
---   closed over inside one. A deferred @as@-export whose body crosses
---   into another branch (@in (charname | branch): ...@) is exactly why
---   this matters -- if the resolver were captured at the point the
---   export was *built*, the whole point of 'Action' being safe to store
---   and run later, under whatever resolver its eventual caller supplies,
---   would break.
+--   *any* 'Core.StoreT' over a 'Core.StoreM' @m@, so there's no one
+--   concrete monad to name. 'Action' is deliberately 'Core.StoreT'-shaped
+--   (not just bare @m@): every real caller already runs the DSL from
+--   inside a storage transaction that's *already positioned* at some
+--   commit, so the Reader scope's own bootstrap is just reading that
+--   ambient position (see 'Storyteller.Context.DSL.Compile.currentScope')
+--   -- no separate lookup needed for "run in whatever I'm already in."
+--   The one operation that isn't expressible via 'Core.StoreM'\/'Core.StoreT'
+--   alone (resolving a branch *name* to a commit -- see
+--   "Storyteller.Context.DSL.Compile"'s module haddock) is a genuinely
+--   separate capability, not a storage primitive: real backends happen to
+--   provide both, but nothing here assumes that, so it's its own
+--   constraint, 'MonadBranch', rather than folded into 'Core.StoreM'.
 module Storyteller.Context.DSL.Value
   ( Message(..)
   , messageText
-  , BranchResolver
+  , MonadBranch(..)
   , Action(..)
   , liftStore
   , askBranch
+  , currentHead
   , Value(..)
   , emptyValue
   , leafValue
@@ -37,6 +39,7 @@ module Storyteller.Context.DSL.Value
   , lookupPath
   ) where
 
+import Control.Monad.Trans.Class (lift)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -63,40 +66,48 @@ messageText (Assistant t)  = t
 
 -- | Resolves a branch name to its current commit -- see the module
 --   haddock for why this can't just be another 'Core.StoreM' operation.
-type BranchResolver m = BranchName -> m (Maybe Core.ObjectHash)
+--   A real git backend satisfies both this and 'Core.StoreM' at once (see
+--   "Storyteller.Context.DSL.Compile"'s module haddock for the deferred
+--   @Sem r@ instance), but nothing here assumes that pairing.
+class Monad m => MonadBranch m where
+  resolveBranch :: BranchName -> m (Maybe Core.ObjectHash)
 
--- | A deferred computation, generic over any backend that can satisfy
---   'Core.StoreM', plus the one capability that can't be ('BranchResolver',
---   supplied when the 'Action' finally runs, not before). This is
---   @Thunk@ made concrete: constructing an 'Action' performs no effect
---   at all (it's just a function value, same as any other Haskell
---   closure); the effect only happens at 'runAction'.
+-- | A deferred storage transaction, generic over any backend that can
+--   satisfy 'Core.StoreM' and 'MonadBranch'. This is @Thunk@ made
+--   concrete: constructing an 'Action' performs no effect at all (it's
+--   just a function value, same as any other Haskell closure); the
+--   effect only happens at 'runAction'.
 newtype Action a = Action
-  { runAction :: forall m. Core.StoreM m => BranchResolver m -> m a }
+  { runAction :: forall m. (Core.StoreM m, MonadBranch m) => Core.StoreT m a }
 
 instance Functor Action where
-  fmap f (Action g) = Action (\rb -> f <$> g rb)
+  fmap f (Action g) = Action (f <$> g)
 
 instance Applicative Action where
-  pure a = Action (\_ -> pure a)
-  Action f <*> Action g = Action (\rb -> f rb <*> g rb)
+  pure a = Action (pure a)
+  Action f <*> Action g = Action (f <*> g)
 
 instance Monad Action where
-  Action g >>= f = Action (\rb -> g rb >>= \a -> runAction (f a) rb)
+  Action g >>= f = Action (g >>= \a -> runAction (f a))
 
 instance MonadFail Action where
-  fail msg = Action (\_ -> fail msg)
+  fail msg = Action (fail msg)
 
 -- | Lifts an ordinary 'Core.StoreM' computation (one that doesn't need
---   branch resolution -- almost everything: reading a blob, listing a
---   tree) into 'Action'.
+--   branch resolution or the ambient position -- almost everything:
+--   reading a blob, listing a tree) into 'Action'.
 liftStore :: (forall m. Core.StoreM m => m a) -> Action a
-liftStore act = Action (\_ -> act)
+liftStore act = Action (lift act)
 
--- | The one 'Action' that actually reaches for the injected
---   'BranchResolver'.
+-- | The one 'Action' that actually reaches for 'MonadBranch'.
 askBranch :: BranchName -> Action (Maybe Core.ObjectHash)
-askBranch name = Action (\resolveBranch -> resolveBranch name)
+askBranch name = Action (lift (resolveBranch name))
+
+-- | The commit an 'Action' is currently ambiently positioned at -- see
+--   'Core.headHash'. What 'Storyteller.Context.DSL.Compile.currentScope'
+--   bootstraps the Reader scope from, with no branch lookup needed.
+currentHead :: Action Core.ObjectHash
+currentHead = Action Core.headHash
 
 -- | @Value = { default :: Thunk [Message], entries :: Map Name Value }@.
 data Value = Value
