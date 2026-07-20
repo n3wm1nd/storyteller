@@ -46,6 +46,7 @@ import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
 import qualified Storyteller.Context.DSL.ParserSpec
 import qualified Storyteller.Context.DSL.CompileSpec
+import qualified Storyteller.Context.DSL.QQSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.Writer.FileSpec
@@ -105,6 +106,7 @@ main = hspec $ do
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
   describe "Storyteller.Context.DSL.Parser" Storyteller.Context.DSL.ParserSpec.spec
   describe "Storyteller.Context.DSL.Compile" Storyteller.Context.DSL.CompileSpec.spec
+  describe "[dsl| ... |]"                    Storyteller.Context.DSL.QQSpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
   -- eager, and buffered through 'Storyteller.Core.Git.withStorage' — the

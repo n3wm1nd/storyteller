@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Abstract syntax for the Context DSL described in @CONTEXT-DSL.md@.
@@ -41,6 +42,7 @@ module Storyteller.Context.DSL.AST
   ) where
 
 import Data.Text (Text)
+import Language.Haskell.TH.Syntax (Lift)
 
 type Name = Text
 
@@ -50,7 +52,7 @@ type Name = Text
 data Pos = Pos
   { posLine :: !Int
   , posCol  :: !Int
-  } deriving (Eq, Ord, Show)
+  } deriving (Eq, Ord, Show, Lift)
 
 -- | Pairs a value with the source position it started at. Carried on
 --   every statement (not every expression) because the only place this
@@ -60,7 +62,7 @@ data Pos = Pos
 data Located a = Located
   { locPos  :: !Pos
   , locItem :: !a
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Lift)
 
 -- | Whether a string/path/glob token was written quoted or bare. This is
 --   meaningful, not stylistic -- see "Value model" in the spec: only the
@@ -72,14 +74,14 @@ data Located a = Located
 --   left to the compiler, per the spec's own tension between the general
 --   quoting rule and @read@'s "never a glob" restriction.
 data Quoting = Quoted | Bare
-  deriving (Eq, Show)
+  deriving (Eq, Show, Lift)
 
 -- | One piece of a string/path/glob literal after splitting out
 --   @%name%@ interpolation spans.
 data InterpPart
   = Lit Text
   | Interp Name
-  deriving (Eq, Show)
+  deriving (Eq, Show, Lift)
 
 type InterpText = [InterpPart]
 
@@ -92,7 +94,7 @@ type InterpText = [InterpPart]
 data PathLit = PathLit
   { pathQuoting :: !Quoting
   , pathText    :: !InterpText
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Lift)
 
 data Expr
   = EString !Quoting !InterpText
@@ -132,7 +134,7 @@ data Expr
     --   only records the call, never what the filter does.
   | ERead !PathLit
     -- ^ Primitive 3.
-  deriving (Eq, Show)
+  deriving (Eq, Show, Lift)
 
 data Stmt
   = SExpr !Expr
@@ -152,7 +154,7 @@ data Stmt
   | SFor !Name !PathLit !Block
     -- ^ Sugar over @each@ applied to a glob (see the module haddock for
     --   why the source is a 'PathLit', not an 'Expr').
-  deriving (Eq, Show)
+  deriving (Eq, Show, Lift)
 
 type Block = [Located Stmt]
 
@@ -162,4 +164,4 @@ type Block = [Located Stmt]
 data Definition = Definition
   { defParams :: [Name]
   , defBody   :: Block
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Lift)
