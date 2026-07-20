@@ -40,11 +40,6 @@ import Storyteller.Context.DSL.Value
 
 import Prelude hiding (writeFile)
 
-instance Members '[Git, StoryStorage, Fail] r => MonadBranch (Sem r) where
-  resolveBranch name = getBranch name >>= \case
-    Nothing -> pure Nothing
-    Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
-
 spec :: Spec
 spec = describe "liveTreeValueOfCommit" $
   it "excludes a never-atom-tracked path, keeping every atom-tracked one" $ do

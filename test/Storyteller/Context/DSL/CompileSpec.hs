@@ -54,16 +54,11 @@ import Storyteller.Context.DSL.Compile (Binding, bval, fn1)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
 
--- | The one Polysemy-specific piece: a real 'MonadBranch' instance,
---   closing over 'getBranch'. Everything else in this file is 'Action'
---   code that has no idea this is how branches get resolved -- it only
---   ever reaches for it via 'askBranch'.
-instance Members '[Git, StoryStorage, Fail] r => MonadBranch (Sem r) where
-  resolveBranch name = getBranch name >>= \case
-    Nothing -> pure Nothing
-    Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
-
--- | Creates a branch and seeds it with files, all in one short-lived
+-- | The real, production 'MonadBranch' instance now lives in
+--   "Storyteller.Core.Git" (closing over 'getBranch', same as this file's
+--   own removed orphan used to) -- everything else here is 'Action' code
+--   that has no idea this is how branches get resolved, it only ever
+--   reaches for it via 'askBranch'. Creates a branch and seeds it with files, all in one short-lived
 --   'BranchOp' scope -- setup only, the DSL interpreter itself never
 --   touches this. Deliberately commits each file as a real 'Ops.addAtom'
 --   tick (via 'runStorage', not 'Runix.FileSystem.writeFile') -- plain
@@ -110,6 +105,7 @@ spec = do
   sortByFilterSpec
   sortByThenReexportSpec
   excludeByAnotherDefinitionSpec
+  assistantWrapsExprSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -441,3 +437,29 @@ excludeByAnotherDefinitionSpec = describe "expr | exclude(anotherDefinition)" $
       v <- excludeByAnotherDefinitionDsl (bval loreDsl)
       entryTexts <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
       pure (Map.fromList entryTexts)
+
+-- | @> expr@ (not just a literal) lets one entry build the exact
+--   "User header, then Assistant content" pairing a hand-written agent's
+--   own message assembly would otherwise have to construct in Haskell --
+--   see 'Storyteller.Writer.Agent.Write.buildChapterMessages''s own
+--   earlier-chapters framing, the case that motivated widening @>@.
+assistantWrapsExprDsl :: Action Value
+assistantWrapsExprDsl = [dsl|
+as "chapter":
+  "## Chapter: ch1.md"
+  > read ch1.md
+|]
+
+assistantWrapsExprSpec :: Spec
+assistantWrapsExprSpec = describe "> <expr> (Assistant-tag a general expression, not just a literal)" $
+  it "builds a User header + Assistant content pair in one entry's own message list" $
+    run (testStack $ do
+      seedBranch "main" [("ch1.md", "chapter one prose")]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right [User "## Chapter: ch1.md", Assistant "chapter one prose"]
+  where
+    go = do
+      v <- assistantWrapsExprDsl
+      Just chapterAction <- pure (lookup "chapter" (valueEntries v))
+      chapter <- chapterAction
+      valueDefault chapter

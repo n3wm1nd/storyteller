@@ -41,7 +41,7 @@ import Runix.FileSystem (HasProjectPath(..), fileSystemLocal)
 import Runix.FileSystem.System (filesystemIO)
 
 import Runix.Logging (info)
-import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt, Message(..))
 import Storyteller.Writer.Agent (CharContextBlock, CharLabel(..), CharSummary(..), ExistingContent(..), Instruction(..), Prose(..))
 import Storyteller.Writer.Agent.CharContext (readCharFiles, renderCharContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
@@ -106,7 +106,7 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
         charSummary = CharSummary { csSheet = [], csContext = charBlocks, csJournal = [] }
 
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [(CharLabel "Mira", charSummary)] [] [("scene.md", existingText)] [] instruction
+      Prose text <- writeAgent [] [] [(CharLabel "Mira", charSummary)] [] [UserText "## Chapter: scene.md", AssistantText existingText] [] instruction
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

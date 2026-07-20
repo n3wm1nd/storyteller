@@ -38,6 +38,7 @@ module Storyteller.Context.DSL.Library
   , contextCharacter
   , contextMentionFilter
   , contextMain
+  , contextQuery
   ) where
 
 import Storyteller.Context.DSL.AST (Name)
@@ -79,11 +80,22 @@ for f in lore/**/*:
 --   re-export through a second glob (see
 --   'Storyteller.Context.DSL.Compile.globMatchPat''s own haddock for why
 --   that used to silently undo it).
+--
+--   Each chapter's own entry is a @User@ header immediately followed by
+--   its content re-tagged @Assistant@ (@> read f@, widened per
+--   'Storyteller.Context.DSL.AST.EAssistant''s own haddock) -- the exact
+--   prior-turn framing @Storyteller.Writer.Agent.Write.
+--   buildChapterMessages@ used to hand-construct in Haskell for
+--   "earlier chapters" (a header naming the chapter, then its prose
+--   presented as the model's own earlier output), now built once here
+--   instead of duplicated at every call site.
 contextChapters :: Action Value
 contextChapters = [dsl|
 x =
   for f in chapters/**/*:
-    as f: read f
+    as f:
+      "## Chapter: %f%"
+      > read f
 in (x | sortBy):
   for f in **/*:
     as f: read f
@@ -115,12 +127,18 @@ aliases:
 --   context parameter -- composes 'contextLore'\/'contextChapters'\/
 --   'contextStyle' by passing each in as an ordinary parameter (see the
 --   module haddock for why, not by referencing them as free identifiers).
---   @"style"@ is exported as its own top-level entry, distinct from
---   @lore@\/@chapters@' individual per-file entries, so a caller that
---   wants to fold it into a system prompt instead of the ordinary message
---   stream can still tell it apart.
 --
---   The third block is the catch-all: any file that isn't under either
+--   Exports four *distinguished, unflattened* top-level entries --
+--   @"lore"@, @"chapters"@, @"other"@, @"style"@ -- each its own nested
+--   container, rather than merging everything into one flat pool. This
+--   matters beyond bookkeeping: 'Storyteller.Writer.Agent.Write.
+--   writeAgent' has to keep chapters in their own cache-stable,
+--   alternating-role slot and style out of the message stream entirely
+--   (see that module's own Haddock on why flattening would break its
+--   prompt-cache-prefix discipline) -- so the wiring layer needs to pull
+--   each bucket out separately, not walk one merged entry list.
+--
+--   @"other"@ is the catch-all: any file that isn't under either
 --   @lore@\/@chapters@' own convention (a stray hand-authored note
 --   nobody's filed into @lore\/@ yet, say) still shows up, built directly
 --   from @lore@\/@chapters@'s own key sets via @exclude@ -- not by
@@ -134,25 +152,43 @@ aliases:
 contextMain :: Binding -> Binding -> Binding -> Action Value
 contextMain = [dsl|
 lore: chapters: style:
-  in lore:
-    for f in **/*:
-      as f: read f
-  in chapters:
-    for f in **/*:
-      as f: read f
-  in (**/* | exclude(lore, chapters, "style.md") | exclude("chat/**/*")):
-    for f in **/*:
-      as f: read f
+  as "lore":
+    in lore:
+      for f in **/*:
+        as f: read f
+  as "chapters":
+    in chapters:
+      for f in **/*:
+        as f: read f
+  as "other":
+    in (**/* | exclude(lore, chapters, "style.md") | exclude("chat/**/*")):
+      for f in **/*:
+        as f: read f
   as "style": style
 |]
 
+-- | 'contextMain', fully applied to the other three default definitions --
+--   the actual 0-arity program a chat\/write query's own wire-level
+--   context field resolves to by default (see
+--   'Storyteller.Core.Context.resolveContextQuery'\/'getContextDefinition':
+--   both only ever run a 0-arity 'Binding', since the wire never sends
+--   parameters). 'contextMain' itself stays exported separately since it's
+--   the reusable composer -- a project overriding just @context.lore@
+--   still gets it threaded into this same composition, unmodified.
+contextQuery :: Action Value
+contextQuery = contextMain (bval contextLore) (bval contextChapters) (bval contextStyle)
+
 -- | Every default definition this application ships. Arity differs per
---   entry ('contextStyle'\/'contextLore'\/'contextChapters' are plain
---   0-arity values; 'contextCharacter'\/'contextMentionFilter' take one
---   argument; 'contextMain' takes three) -- 'Binding' already carries its
---   own arity (see its own haddock: "values are just 0-arity functions,
---   otherwise no different"), so a uniform @[(Name, Binding)]@ is exactly
---   the right shape regardless, with no arity-indexed type needed.
+--   entry ('contextStyle'\/'contextLore'\/'contextChapters'\/'contextQuery'
+--   are plain 0-arity values; 'contextCharacter'\/'contextMentionFilter'
+--   take one argument) -- 'Binding' already carries its own arity (see its
+--   own haddock: "values are just 0-arity functions, otherwise no
+--   different"), so a uniform @[(Name, Binding)]@ is exactly the right
+--   shape regardless, with no arity-indexed type needed. @context.main@
+--   names 'contextQuery' (0-arity, ready to run as-is), not 'contextMain'
+--   itself (3-arity, a composer) -- the dotted key is what a client\/branch
+--   override addresses, and an override is always a fresh 0-arity program,
+--   never something that takes parameters.
 defaultLibrary :: [(Name, Binding)]
 defaultLibrary =
   [ ("context.style",         bval contextStyle)
@@ -160,7 +196,7 @@ defaultLibrary =
   , ("context.chapters",      bval contextChapters)
   , ("context.character",     toBinding1 contextCharacter)
   , ("context.mentionFilter", toBinding1 contextMentionFilter)
-  , ("context.main",          toBinding3 contextMain)
+  , ("context.main",          bval contextQuery)
   ]
 
 -- | Re-curries a QQ-spliced 1-arity definition (@'Binding' ->
@@ -174,10 +210,3 @@ toBinding1 f = Binding 1 go
   where
     go [a] _  = f (bval a)
     go args _ = fail $ "expected exactly 1 argument, got " <> show (length args)
-
--- | 'toBinding1', three arguments (what 'contextMain' needs).
-toBinding3 :: (Binding -> Binding -> Binding -> Action Value) -> Binding
-toBinding3 f = Binding 3 go
-  where
-    go [a, b, c] _ = f (bval a) (bval b) (bval c)
-    go args _      = fail $ "expected exactly 3 arguments, got " <> show (length args)

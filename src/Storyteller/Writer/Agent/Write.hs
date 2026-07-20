@@ -60,7 +60,7 @@ import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storage.Tick (FileTick)
 
-import Storyteller.Core.LLM.Role (LLMs)
+import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), CharSummary(..)
   , ContextBlock(..) )
@@ -79,18 +79,19 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --
 --     1. World lore (if any) -- one message, stable across an entire
 --        story.
---     2. Earlier chapters, oldest first -- one @('UserText', 'AssistantText')@
---        pair per chapter: a short 'UserText' naming the chapter's path,
---        then its full current prose verbatim (no prompts, no instructions:
---        a chapter file's working-tree content already is just its prose)
+--     2. Earlier chapters, oldest first -- passed in already built as one
+--        @('UserText', 'AssistantText')@ pair per chapter (a short
+--        'UserText' naming the chapter's path, then its full current prose
 --        as 'AssistantText' -- framed as something the assistant already
---        wrote, not as reference material the user is presenting, which is
---        both the more accurate framing (this *is* prior assistant output)
---        and what keeps a run of several chapters from reading as one
---        undifferentiated 'UserText' blob if a provider concatenates
---        adjacent same-role messages -- see 'buildChapterMessages's
---        Haddock below for why the naming message matters even once the
---        prose itself is safely on the other role.
+--        wrote, not reference material the user is presenting, which is
+--        both the more accurate framing and what keeps a run of several
+--        chapters from reading as one undifferentiated 'UserText' blob if a
+--        provider concatenates adjacent same-role messages). This module no
+--        longer constructs that pairing itself -- it's built by whatever
+--        assembled the caller's own context (typically a Context DSL
+--        definition, e.g. @Storyteller.Context.DSL.Library.contextChapters@,
+--        via its own @> read f@ -- see 'Storyteller.Context.DSL.AST.Expr'\'s
+--        @EAssistant@ haddock) and spliced straight through unchanged.
 --     3. This chapter's "identity" block -- every active character's
 --        'csSheet'\/'csContext', under a @"## Character: {name}"@ header
 --        each (see 'flattenCharBlocks') -- mostly stable for the whole
@@ -118,7 +119,7 @@ writeAgent
   -> [ContextBlock]              -- ^ standing style guide, already rendered (see 'Storyteller.Writer.Agent.WorldContext.SystemContext') -- appended to the system prompt, not a message
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
   -> [ContextBlock]              -- ^ pinned/short-term context (e.g. the user's own selection)
-  -> [(FilePath, T.Text)]        -- ^ earlier chapters, oldest-first, each its own path and full prose
+  -> [Message ProseModel]        -- ^ earlier chapters, oldest-first, already built as alternating User\/Assistant pairs -- see 'buildChapterMessages's own Haddock on why this is pre-built rather than @[(FilePath, Text)]@ constructed here
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> Sem r Prose
@@ -157,26 +158,14 @@ buildChapterMessages
   .  [ContextBlock]              -- ^ world lore, already rendered
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
   -> [ContextBlock]              -- ^ pinned/short-term context
-  -> [(FilePath, T.Text)]        -- ^ earlier chapters, oldest-first, each its own path and full prose
+  -> [Message m]                 -- ^ earlier chapters, oldest-first, already built as alternating User\/Assistant pairs -- see 'writeAgent's own Haddock: this used to be constructed here from @[(FilePath, Text)]@, now built by whatever assembled the caller's own context (typically a Context DSL definition, e.g. @Storyteller.Context.DSL.Library.contextChapters@'s own @> read f@ pairing) and spliced straight through
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> [Message m]
-buildChapterMessages lore chars pinned earlierChapters currentTicks (Instruction instr) =
+buildChapterMessages lore chars pinned earlierMsgs currentTicks (Instruction instr) =
   loreMsgs ++ earlierMsgs ++ chapterStartMsgs ++ conversationMsgs ++ [instructionMsg]
   where
     loreMsgs = [ UserText (renderContextBlocks lore) | not (null lore) ]
-
-    -- Each earlier chapter is its own naming 'UserText' ("which chapter is
-    -- this") immediately followed by its full prose as 'AssistantText' --
-    -- framed as something the assistant already wrote, since it genuinely
-    -- is prior assistant output, and (see 'writeAgent's own Haddock) so a
-    -- run of several chapters back to back doesn't read as one
-    -- undifferentiated 'UserText' blob if a provider concatenates adjacent
-    -- same-role messages.
-    earlierMsgs = concat
-      [ [UserText ("## Chapter: " <> T.pack path), AssistantText content]
-      | (path, content) <- earlierChapters, not (T.null content)
-      ]
 
     -- 'flattenCharBlocks' always prepends a header per entry, so a
     -- character with nothing under 'csSheet'\/'csContext' has to be

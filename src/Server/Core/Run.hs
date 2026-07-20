@@ -23,6 +23,7 @@ import Runix.Time (Time, Sleep)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Prompt (PromptStorage)
+import Storyteller.Core.Context (ContextStorage)
 import Storyteller.Core.Undo (Undo)
 
 -- | Effects available at the session level (no branch open). Deliberately
@@ -48,5 +49,6 @@ type SessionEffects r =
              , Error String
              , StoryStorage
              , PromptStorage
+             , ContextStorage
              ] r
   )

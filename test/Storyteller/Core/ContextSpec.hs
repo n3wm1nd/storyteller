@@ -44,11 +44,6 @@ import Server.TestStack
 import Storyteller.Context.DSL.Compile (Binding(..), bval)
 import Storyteller.Context.DSL.Value
 
-instance Members '[Git, StoryStorage, Fail] r => MonadBranch (Sem r) where
-  resolveBranch name = getBranch name >>= \case
-    Nothing -> pure Nothing
-    Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
-
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
 seedBranch name files = do
   _ <- createBranch (BranchName name)

@@ -90,6 +90,13 @@ import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runBranchOpGit, runStorage, atGeneric)
 
+import Storyteller.Context.DSL.AST (Name)
+import Storyteller.Context.DSL.Value (Value, Action, valueEntries, valueDefault, emptyValue, messagesText)
+import Storyteller.Context.DSL.Compile (bval)
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Context (resolveContextQuery, runContextBinding0, runContextValue)
+
 import Prelude hiding (readFile, writeFile)
 
 -- | A phantom tag for opening one active character branch's filesystem at
@@ -164,24 +171,50 @@ journalLookback = 30
 journalMaxOut   = 10
 journalPadding  = 2
 
+-- | One named top-level entry out of a Context DSL definition's own
+--   result (e.g. @"lore"@\/@"chapters"@\/@"other"@\/@"style"@ out of
+--   @context.main@\'s own 'Storyteller.Context.DSL.Library.contextMain')
+--   -- 'emptyValue' when absent, matching @read@\'s own "absence, not an
+--   error" convention rather than failing the whole call over a
+--   definition that simply doesn't export a given bucket.
+contextBucket :: Name -> Value -> Action Value
+contextBucket name v = case lookup name (valueEntries v) of
+  Just act -> act
+  Nothing  -> pure emptyValue
+
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Writer.Agent.FlowWrite'). Context (world lore, earlier
---   chapters, character summaries, pinned/short-term context, and this
---   chapter's own tick history) is gathered here and handed to the agents
---   as plain data -- see 'Storyteller.Writer.Agent.Write.writeAgent' for
---   how it turns into a real @['UniversalLLM.Message']@ rather than one
+--   'Storyteller.Writer.Agent.FlowWrite'). World lore, style, and earlier
+--   chapters now come from running the Context DSL's @context.main@
+--   definition (see "Storyteller.Context.DSL.Library") -- 'contextProgram'
+--   (this call's own wire-sent program text) takes priority when non-empty,
+--   falling back through 'Storyteller.Core.Context.resolveContextQuery' to
+--   a committed branch override, then the compiled-in default
+--   ('Storyteller.Context.DSL.Library.contextQuery'). Character summaries
+--   and pinned/short-term context are still gathered the old way (see
+--   'activeCharacterContext') -- migrating those is a separate follow-up,
+--   not yet possible for the journal-curation half without an LLM-backed
+--   DSL filter (@summarize@ is still a stub, see
+--   "Storyteller.Context.DSL.Compile"'s @coreFilters@). Handed to the
+--   agents as plain data -- see 'Storyteller.Writer.Agent.Write.writeAgent'
+--   for how it turns into a real @['UniversalLLM.Message']@ rather than one
 --   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
-chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> ContextLayout -> Maybe TickId -> Map.Map T.Text ContextLayout -> Sem r ()
-chatWriter path prompt context layout mFlowTid charLayouts = do
-  (_existing, fileCtx) <- hideLore @(BranchTag Main) (hideChapters @(BranchTag Main) (hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) layout path)))
-  (loreBlocks, styleBlocks, earlierChapters) <- runStorage @Main $ do
-    (WorldContext.WorldLore lore, WorldContext.SystemContext style) <- WorldContext.worldContextOf
-    earlier <- ChapterContext.earlierChaptersOf path
-    return (lore, style, earlier)
-  charBlocks <- activeCharacterContext charLayouts path
-  let pinned      = toContextBlocks context <> fileCtx
+chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> T.Text -> Maybe TickId -> Sem r ()
+chatWriter path prompt pinnedItems contextProgram mFlowTid = do
+  mainBinding <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) contextProgram
+  mainVal     <- runContextBinding0 @Main mainBinding
+  (loreBlocks, styleBlocks, earlierChapters) <- runContextValue @Main $ do
+    loreV     <- contextBucket "lore" mainVal
+    otherV    <- contextBucket "other" mainVal
+    chaptersV <- contextBucket "chapters" mainVal
+    styleV    <- contextBucket "style" mainVal
+    lore  <- (<>) <$> Render.valueBlocks loreV <*> Render.valueBlocks otherV
+    earlier <- Render.valueMessages chaptersV
+    styleTxt <- messagesText <$> valueDefault styleV
+    pure (lore, [ContextBlock styleTxt | not (T.null styleTxt)], earlier)
+  charBlocks <- activeCharacterContext Map.empty path
+  let pinned      = toContextBlocks pinnedItems
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
       -- below has already read whatever tick history it needs -- both
@@ -288,23 +321,27 @@ roleplayWriter path prompt = do
 --   replays back on top of the fresh generation -- see 'atGeneric's own
 --   Haddock: popped ticks are replayed verbatim, so anything still
 --   present when it starts winding back would simply reappear.
-correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> ContextLayout -> Map.Map T.Text ContextLayout -> Sem r ()
-correctGroup path promptTid targets prompt context layout charLayouts = do
+correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> T.Text -> Sem r ()
+correctGroup path promptTid targets prompt pinnedItems contextProgram = do
   typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash (unTickId promptTid)))
   case tickParent typed of
     Nothing -> fail "correctGroup: prompt tick has no parent to rebase onto"
     Just parentTid -> do
       deleteFileTicks (promptTid : targets)
-      atGeneric @Main parentTid (chatWriter path prompt context layout Nothing charLayouts)
+      atGeneric @Main parentTid (chatWriter path prompt pinnedItems contextProgram Nothing)
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
 --   With no targets, there's nothing to rework — that's a different policy
 --   ("just write") from the Fixer's, so it's handled here as a fall through
 --   to the same Writer path 'chatWriter' takes, rather than living inside
---   'Storyteller.Writer.Agent.Fix.fixAgent'.
+--   'Storyteller.Writer.Agent.Fix.fixAgent'. 'chatFixer' itself never had a
+--   context-program wire field (unlike 'chatWriter'\/'correctGroup') -- the
+--   fallthrough passes @""@, which 'Storyteller.Core.Context.
+--   resolveContextQuery' reads as "no query-level override, use whatever
+--   branch override\/compiled-in default is already configured."
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt context [] = chatWriter path prompt context [] Nothing Map.empty
-chatFixer path prompt _context targets = do
+chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems "" Nothing
+chatFixer path prompt _pinnedItems targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
   _ <- fixAgent @Main path targets (Instruction prompt)

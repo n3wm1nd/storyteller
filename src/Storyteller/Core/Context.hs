@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -46,6 +47,9 @@ module Storyteller.Core.Context
   , interpretContextStorageMap
   , contextsBranchName
   , resolveContextOverride
+  , resolveContextQuery
+  , runContextValue
+  , runContextBinding0
   ) where
 
 import Control.Monad (void)
@@ -60,16 +64,18 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 
+import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Git (runBranchOpGit, runStorage)
+import Storyteller.Core.Git (BranchOp, runBranchOpGit, runStorage)
 import Storyteller.Core.Runtime (Contexts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Storyteller.Context.DSL.AST (Definition(..), Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, runDefinition)
-import Storyteller.Context.DSL.Parser (parseDefinition)
+import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
+import Storyteller.Context.DSL.Value (Action, Value, emptyValue, runAction)
 
 data ContextStorage (m :: Type -> Type) a where
   -- | Look up @name@'s own override, falling back to the caller-supplied
@@ -144,3 +150,53 @@ interpretContextStorageMap
   -> Sem r a
 interpretContextStorageMap overrides = interpret $ \case
   GetContextDefinition name def -> return (resolveContextOverride def (Map.lookup name overrides))
+
+-- | Resolves a query's own inline program text with priority over
+--   'getContextDefinition''s branch-override-then-default chain -- "you
+--   send it with the query, but a persistent branch exists for
+--   subfunctions and settings; the sent-with-the-query one is
+--   authoritative" (the project chat that settled this). Unlike
+--   'resolveContextOverride', a malformed or wrong-arity query fails
+--   loudly rather than silently downgrading: a client just submitted this
+--   text this call, so silently falling back to some other definition
+--   would look like the edit did nothing, where a stored branch override
+--   failing quietly (still reachable, still fixable, not something a user
+--   is actively watching the result of) is the right call.
+resolveContextQuery :: (Member ContextStorage r, Member Fail r) => Name -> Binding -> Text -> Sem r Binding
+resolveContextQuery name def queryText
+  | T.null queryText = getContextDefinition name def
+  | otherwise = case parseDefinition "<query context>" queryText of
+      Left err -> fail (T.unpack (renderParseErr err))
+      Right parsedDef
+        | length (defParams parsedDef) /= arity -> fail $
+            "context program: expected arity " <> show arity
+              <> ", got " <> show (length (defParams parsedDef))
+        | otherwise -> pure $ Binding arity $ \args _scope ->
+            runDefinition parsedDef (map bval args)
+  where
+    Binding arity _ = def
+
+-- | Runs a Context DSL 'Action' positioned at whatever commit @branch@'s
+--   own 'Storyteller.Core.Git.BranchOp' scope is currently ambient at
+--   (accounting for an in-progress rebase\/transaction the same way any
+--   other read in that scope would) -- via 'Storage.Core.runStoreT'
+--   directly against 'Sem r' itself, not 'runStorage'\/'BranchOp'
+--   dispatch (see 'Storyteller.Core.Git''s own @MonadBranch (Sem r)@
+--   instance haddock for why 'runStorage''s type can't accept an
+--   'Action' at all: the DSL is read-only, so it never needs 'BranchOp'
+--   write-buffering).
+runContextValue :: forall branch r a. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Action a -> Sem r a
+runContextValue act = do
+  h <- runStorage @branch Core.headHash
+  fst <$> Core.runStoreT h (runAction act)
+
+-- | 'runContextValue' for a 0-arity 'Binding' specifically -- every real
+--   context-program call site resolves to one of these (the scope
+--   argument a 'Binding'\'s own function takes is always ignored for a
+--   top-level definition, per 'resolveContextOverride'\/'resolveContextQuery'
+--   both routing through 'runDefinition' -- see their own haddocks), so
+--   this is what every caller actually wants rather than pattern-matching
+--   'Binding' by hand at each site.
+runContextBinding0 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Binding -> Sem r Value
+runContextBinding0 (Binding 0 fn) = runContextValue @branch (fn [] emptyValue)
+runContextBinding0 (Binding n _)  = fail ("expected a 0-arity context definition, got arity " <> show n)

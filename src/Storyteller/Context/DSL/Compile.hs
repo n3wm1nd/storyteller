@@ -281,7 +281,10 @@ evalExpr env scope e = case e of
     matches <- globMatchPat scope pat
     entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
     pure (Value (pure []) entries)
-  EAssistant parts -> leafValue . (: []) . Assistant <$> interpText env scope parts
+  EAssistant inner -> do
+    v    <- evalExpr env scope inner
+    msgs <- valueDefault v
+    pure v { valueDefault = pure (map (Assistant . messageText) msgs) }
   EUser inner -> do
     v    <- evalExpr env scope inner
     msgs <- valueDefault v

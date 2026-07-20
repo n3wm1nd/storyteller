@@ -102,8 +102,19 @@ data Expr
     --   model, a quoted one becomes @User@ text; a bare one is a live
     --   glob expression against the current Reader scope. Which one
     --   applies is exactly 'EString's own 'Quoting' tag.
-  | EAssistant !InterpText
-    -- ^ @> "text"@ -- primitive 7, produces @Assistant@-tagged text.
+  | EAssistant !Expr
+    -- ^ @> expr@ -- primitive 7, symmetric with @<@ (rule 8, 'EUser'):
+    --   re-tags whatever @expr@'s own messages already are as
+    --   @Assistant@. Originally only ever wrapped a literal string (the
+    --   spec's own worked examples never needed more) -- widened to a
+    --   general 'Expr', matching 'EUser', once a real caller needed
+    --   @> read f@: pairing a literal @User@ header with a @read@'s own
+    --   content re-tagged as @Assistant@ (@"## Chapter: %f%"@ then
+    --   @> read f@, one entry's own multi-message default) is what lets a
+    --   DSL definition build the exact prior-turn framing a hand-written
+    --   agent's message assembly otherwise has to hardcode in Haskell —
+    --   see @Storyteller.Writer.Agent.Write.buildChapterMessages@'s own
+    --   earlier-chapters framing, the case that motivated this.
   | EUser !Expr
     -- ^ @< expr@ -- primitive 8, symmetric with @>@: re-tags whatever
     --   @expr@'s own messages already are (typically
@@ -115,11 +126,7 @@ data Expr
     --   @read@'s own undecided-until-rendered default. Constructs no new
     --   message on its own -- the Value model's three
     --   message-construction rules are unchanged; this only relabels
-    --   ones an inner expression already produced. Takes a general
-    --   'Expr' (unlike @>@, which only ever wraps a literal string)
-    --   since its job is redecorating whatever an arbitrary
-    --   already-composed expression yields, most often @read@ but not
-    --   limited to it.
+    --   ones an inner expression already produced.
   | EIdent !Name
     -- ^ A reference to a local binding, function parameter, or a
     --   'Contexts'-branch definition, resolved statically (never through

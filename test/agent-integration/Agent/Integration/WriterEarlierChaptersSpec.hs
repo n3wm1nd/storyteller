@@ -26,7 +26,7 @@ import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (embed)
-import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
+import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt, Message(..))
 
 import Runix.Logging (info)
 import Storyteller.Writer.Agent (Instruction(..), Prose(..))
@@ -69,7 +69,7 @@ spec
 spec runner = describe "earlier-chapter continuity reaching the writer (real LLM, cached)" $
   it "keeps a new chapter consistent with a fact only an earlier chapter established" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [] [] [("chapters/ch1.md", earlierChapter)] [] instruction
+      Prose text <- writeAgent [] [] [] [] [UserText "## Chapter: chapters/ch1.md", AssistantText earlierChapter] [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

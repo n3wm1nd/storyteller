@@ -56,6 +56,7 @@ import Storyteller.Core.LLM.Registry (SomeProseLLMRunner(..), SomeAgentLLMRunner
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Runtime (runInfrastructureWithCancellation)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
+import Storyteller.Core.Context (interpretContextStorageFS, ContextStorage)
 import Storyteller.Core.Git (runStoryStorageGitNotify)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (TickId, unTickId)
@@ -157,7 +158,7 @@ actionStack
   => ServerEnv
   -> TVar Bool
   -> Sem ( LLM ProseModel : LLM AgentModel
-         : Config StreamingEnabled : PromptStorage : StoryStorage : Undo
+         : Config StreamingEnabled : ContextStorage : PromptStorage : StoryStorage : Undo
          : Random : HTTP : HTTPStreaming : Sleep : Time : Git
          : Fail : Error String : Logging : r) a
   -> Sem (Logging : r) (Either String a)
@@ -175,6 +176,7 @@ actionStack env cancelFlag action =
       . runInfrastructureWithCancellation cancelFlag (runGitViaWorker (envGitWorker env))
       . runStoryStorageGitNotify (notifyRemaps (envNotifyChan env))
       . interpretPromptStorageFS
+      . interpretContextStorageFS
       . runConfig (StreamingEnabled True)
       . agentRunner
       . reinterpretAgent @agentChosen

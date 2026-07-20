@@ -304,10 +304,14 @@ pExpr = do
 pNameExpr :: Parser Expr
 pNameExpr = pQuotedExpr <|> (EIdent <$> identifier)
 
+-- | @> expr@ -- rule 7, widened to a general expression, symmetric with
+--   'pUserExpr'. Still statement-only (not folded into 'pAtom' the way
+--   @<@ is) -- every real use is a bare top-level re-tag, not something
+--   nested inside a filter chain or application argument.
 pAssistantExpr :: Parser Expr
 pAssistantExpr = do
   _ <- symbol ">"
-  EAssistant . parseInterp <$> pQuotedText
+  EAssistant <$> pApp
 
 -- ---------------------------------------------------------------------------
 -- Layout-sensitive blocks

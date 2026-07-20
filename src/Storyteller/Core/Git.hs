@@ -102,6 +102,7 @@ import Storyteller.Core.Storage
 import Storyteller.Core.Branch (BranchOp(..), runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
+import Storyteller.Context.DSL.Value (MonadBranch(..))
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 
@@ -560,6 +561,20 @@ instance Members '[Git, StoryStorage, Fail] r => Core.MonadStore (Sem r) where
   writeObject o  = toCoreHash <$> RG.writeObject (fromCoreObject o)
   resolveHash h  = coreHashOfTick <$> resolveTick (tickOfCoreHash h)
   recordRemap o n = updateReferences [(tickOfCoreHash o, tickOfCoreHash n)]
+
+-- | The production counterpart to every test module's own orphan
+--   'MonadBranch' instance (see e.g. "Storyteller.Context.DSL.CompileSpec")
+--   -- the same 'Members' set the 'Core.MonadStore' instance right above
+--   already needs, so a Context DSL 'Storyteller.Context.DSL.Value.Action'
+--   runs directly against 'Sem r' here too (via 'Storage.Core.runStoreT',
+--   not 'runStorage'\/'BranchOp' — the DSL is read-only, so it never needs
+--   'BranchOp''s own write-buffering, and 'runStorage''s own type demands
+--   its argument work for *any* 'Core.StoreM' n, which an 'Action''s extra
+--   'MonadBranch' constraint doesn't satisfy).
+instance Members '[Git, StoryStorage, Fail] r => MonadBranch (Sem r) where
+  resolveBranch name = getBranch name >>= \case
+    Nothing -> pure Nothing
+    Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
 
 tickOfCoreHash :: Core.ObjectHash -> TickId
 tickOfCoreHash = TickId . Core.unObjectHash

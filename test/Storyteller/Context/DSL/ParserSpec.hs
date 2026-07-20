@@ -111,7 +111,11 @@ shapeSpec :: Spec
 shapeSpec = describe "AST shape" $ do
   it "produces Assistant text for a bare '>' literal" $
     parseDefinition "<test>" "> \"seed text\"\n"
-      `shouldBe` Right (Definition [] [Located (Pos 1 1) (SExpr (EAssistant [Lit "seed text"]))])
+      `shouldBe` Right (Definition [] [Located (Pos 1 1) (SExpr (EAssistant (EString Quoted [Lit "seed text"])))])
+
+  it "wraps a general expression (not just a literal) for '>'" $
+    parseDefinition "<test>" "> read f\n"
+      `shouldBe` Right (Definition [] [Located (Pos 1 1) (SExpr (EAssistant (ERead (PathLit Bare [Lit "f"]))))])
 
   it "wraps a general expression (not just a literal) for '<'" $
     parseDefinition "<test>" "< read notes.md\n"

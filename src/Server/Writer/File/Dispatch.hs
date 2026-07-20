@@ -89,20 +89,20 @@ runCommand path cmd = case cmd of
   UnhideAtoms _mid targets ->
     [] <$ unhideFileAtoms (map TickId targets)
 
-  ChatWriter _mid prompt context layout flowTid charLayouts ->
-    [] <$ chatWriter path prompt context layout (TickId <$> flowTid) charLayouts
+  ChatWriter _mid prompt pinned context flowTid ->
+    [] <$ chatWriter path prompt pinned context (TickId <$> flowTid)
 
   RoleplayWrite _mid prompt ->
     [] <$ roleplayWriter path prompt
 
-  ChatFixer _mid prompt context targets ->
-    [] <$ chatFixer path prompt context (map TickId targets)
+  ChatFixer _mid prompt pinned targets ->
+    [] <$ chatFixer path prompt pinned (map TickId targets)
 
-  ChatRegen _mid prompt context byBeat ->
-    [] <$ chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt context
+  ChatRegen _mid prompt pinned byBeat ->
+    [] <$ chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt pinned
 
-  CorrectGroup _mid promptTid targets prompt context layout charLayouts ->
-    [] <$ correctGroup path (TickId promptTid) (map TickId targets) prompt context layout charLayouts
+  CorrectGroup _mid promptTid targets prompt pinned context ->
+    [] <$ correctGroup path (TickId promptTid) (map TickId targets) prompt pinned context
 
   ChatConverse _mid prompt ->
     [] <$ chatConverse path prompt

@@ -41,11 +41,6 @@ import Storyteller.Context.DSL.Library
   (contextChapters, contextLore, contextMain, contextMentionFilter, contextStyle)
 import Storyteller.Context.DSL.Value
 
-instance Members '[Git, StoryStorage, Fail] r => MonadBranch (Sem r) where
-  resolveBranch name = getBranch name >>= \case
-    Nothing -> pure Nothing
-    Just b  -> pure (Just (Core.ObjectHash (unTickId (branchHead b))))
-
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
 seedBranch name files = do
   _ <- createBranch (BranchName name)
@@ -68,7 +63,7 @@ spec = do
 
 contextMainSpec :: Spec
 contextMainSpec = describe "contextMain (the default context.main library entry)" $
-  it "threads contextLore/contextChapters/contextStyle into its own exports, chapters in natural order, catches a stray note via exclude(lore,chapters), still hides chat scratch" $
+  it "exports lore/chapters/other/style as distinguished, unflattened buckets -- chapters in natural order with User/Assistant pairing, style separate, a stray note caught by other, chat scratch hidden" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/notes.md", "a hand-authored note")
@@ -80,20 +75,26 @@ contextMainSpec = describe "contextMain (the default context.main library entry)
         ]
       runDslOn (BranchName "main") go)
     `shouldBe` Right
-      ( Map.fromList
-          [ ("lore/notes.md", "a hand-authored note")
-          , ("chapters/ch2.md", "chapter two prose")
-          , ("chapters/ch11.md", "chapter eleven prose")
-          , ("todo.md", "a stray root note, filed under neither lore/ nor chapters/")
-          , ("style", "write in past tense")
-          ]
-      , ["lore/notes.md", "chapters/ch2.md", "chapters/ch11.md", "todo.md", "style"]
+      ( ["lore", "chapters", "other", "style"]
+      , Map.fromList [("lore/notes.md", "a hand-authored note")]
+      , [ "## Chapter: chapters/ch2.md\nchapter two prose"
+        , "## Chapter: chapters/ch11.md\nchapter eleven prose"
+        ]
+      , Map.fromList [("todo.md", "a stray root note, filed under neither lore/ nor chapters/")]
+      , "write in past tense"
       )
   where
+    bucket name v = case lookup name (valueEntries v) of
+      Just act -> act
+      Nothing  -> pure emptyValue
     go = do
       v <- contextMain (bval contextLore) (bval contextChapters) (bval contextStyle)
-      txt <- entryTexts v
-      pure (txt, map fst (valueEntries v))
+      loreTxt      <- entryTexts =<< bucket "lore" v
+      chaptersVal  <- bucket "chapters" v
+      chapterTexts <- mapM (\(_, act) -> messagesText <$> (valueDefault =<< act)) (valueEntries chaptersVal)
+      otherTxt     <- entryTexts =<< bucket "other" v
+      style        <- messagesText <$> (valueDefault =<< bucket "style" v)
+      pure (map fst (valueEntries v), loreTxt, chapterTexts, otherTxt, style)
 
 contextMentionFilterSpec :: Spec
 contextMentionFilterSpec = describe "contextMentionFilter (the default context.mentionFilter library entry)" $

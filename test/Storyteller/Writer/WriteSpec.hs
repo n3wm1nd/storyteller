@@ -32,9 +32,18 @@ noSummary :: CharSummary
 noSummary = CharSummary [] [] []
 
 build
-  :: [ContextBlock] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [(FilePath, T.Text)] -> [FileTick] -> Instruction
+  :: [ContextBlock] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [Message ProseModel] -> [FileTick] -> Instruction
   -> [Message ProseModel]
 build = buildChapterMessages
+
+-- | The pairing 'buildChapterMessages' used to construct itself from
+--   @(path, content)@ pairs -- now built by the caller (in production, a
+--   Context DSL definition's own @> read f@, see
+--   'Storyteller.Context.DSL.Library.contextChapters') and just spliced
+--   through. Kept local to this test so the existing cases below barely
+--   change.
+earlierChapterMsgs :: FilePath -> T.Text -> [Message ProseModel]
+earlierChapterMsgs path content = [UserText ("## Chapter: " <> T.pack path), AssistantText content]
 
 spec :: Spec
 spec = describe "buildChapterMessages" $ do
@@ -50,7 +59,7 @@ spec = describe "buildChapterMessages" $ do
       []      -> expectationFailure "expected at least one message"
 
   it "puts earlier chapters right after world lore, oldest first, each as a naming user message plus its prose as an assistant message" $ do
-    let msgs = build [] [] [] [("chapters/ch1.md", "chapter one prose"), ("chapters/ch2.md", "chapter two prose")] [] (Instruction "go")
+    let msgs = build [] [] [] (earlierChapterMsgs "chapters/ch1.md" "chapter one prose" ++ earlierChapterMsgs "chapters/ch2.md" "chapter two prose") [] (Instruction "go")
     take 4 msgs `shouldBe`
       [ UserText "## Chapter: chapters/ch1.md", AssistantText "chapter one prose"
       , UserText "## Chapter: chapters/ch2.md", AssistantText "chapter two prose"
@@ -106,7 +115,7 @@ spec = describe "buildChapterMessages" $ do
           [ContextBlock "### lore.md\n\nlore"]
           [(CharLabel "Alice", alice)]
           [ContextBlock "### pinned.md\n\npinned"]
-          [("chapters/ch1.md", "earlier chapter")]
+          (earlierChapterMsgs "chapters/ch1.md" "earlier chapter")
           [atomTick "existing prose"]
           (Instruction "finish the scene")
     case reverse msgs of

@@ -25,13 +25,13 @@ module Storyteller.Writer.Agent.FlowWrite
   ( flowWriteAgent
   ) where
 
-import qualified Data.Text as T
-
 import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.LLM.Role (LLMs)
+import UniversalLLM (Message)
+
+import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Writer.Agent (Instruction(..), Prose, CharLabel, CharSummary, ContextBlock)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
@@ -57,7 +57,7 @@ flowWriteAgent
   -> [ContextBlock]                                  -- ^ standing style guide
   -> [(CharLabel, CharSummary)]                       -- ^ every active character's summary
   -> [ContextBlock]                                  -- ^ pinned/short-term context
-  -> [(FilePath, T.Text)]                            -- ^ earlier chapters, oldest-first, each its own path and full prose
+  -> [Message ProseModel]                            -- ^ earlier chapters, already built as alternating User\/Assistant pairs -- see 'writeAgent's own Haddock
   -> Instruction
   -> Sem r ([TickId], Prose)
 flowWriteAgent path flowTid lore style chars pinned earlierChapters instruction = do

@@ -25,11 +25,9 @@ module Server.Writer.File.Protocol
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
 import Data.Maybe (fromMaybe)
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 
 import Server.Core.Protocol (Update, withId)
-import Storyteller.Writer.Agent.ContextFilter (PickerRule)
 
 -- | A piece of pinned context the client attaches to a chat prompt — an
 --   atom or annotation the user selected as reference material. 'ciContent'
@@ -128,32 +126,36 @@ data FileCommand
   --   place -- the atoms stay in the file. See 'Storage.Ops.setAtomHidden'.
   | HideAtoms   { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | UnhideAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
-  -- | 'fcContextLayout' is the client's bucket-picker ordering for this
-  --   call's ambient context (empty means "no layout configured", falling
-  --   back to the default alphabetical order — see
-  --   'Storyteller.Writer.Agent.Continuation.gatherFileContext'). See the
-  --   project's context-assembly design notes for the picker model this
-  --   implements.
+  -- | 'fcPinned' is the client's own explicit tick-level selection --
+  --   unrelated to context assembly, added as (mostly) plain text into the
+  --   query, same field\/meaning on every constructor that carries it.
   --
-  --   'fcCharacterLayouts' is the same picker model, one entry per active
-  --   character branch the client has curated (branch name -> layout) —
-  --   see 'Server.Writer.File.activeCharacterContext'. A branch absent from
-  --   this map (the common case: nobody has opened that character's
-  --   context UI) means "no override", which reads as today's fixed
-  --   sheet-in/journal-out behavior, not "show nothing".
-  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcFlowTid :: Maybe T.Text, fcCharacterLayouts :: Map.Map T.Text [PickerRule] }
+  --   'fcContext' is this call's one Context DSL program (see
+  --   @CONTEXT-DSL.md@\/"Storyteller.Context.DSL.Library") -- replaces the
+  --   old @contextLayout@\/@characterLayouts@ 'PickerRule' knobs: empty
+  --   means "no query-level override", falling through to
+  --   'Storyteller.Core.Context.resolveContextQuery''s own
+  --   branch-override-then-compiled-default chain rather than "show
+  --   nothing". World lore, style, earlier chapters, and (eventually)
+  --   character context are all selected by running this one program
+  --   instead of picking each independently.
+  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: T.Text, fcFlowTid :: Maybe T.Text }
   -- | Roleplay writer: every character present on this file (see
   --   'Storyteller.Writer.Presence.activeCharactersFor') is interrogated,
   --   in character, for what they'd do or say before one scene gets
   --   written and appended -- see 'Server.Writer.File.roleplayWriter'.
   --   'fcPromptText' may be empty (the orchestrator continues the scene
-  --   naturally in that case). No @context@\/@contextLayout@\/character
-  --   layouts here yet, unlike 'ChatWriter' -- the per-character context a
-  --   roleplay turn reads is each interrogated character's own full branch,
-  --   not a curated ambient slice, so there's nothing for those knobs to
-  --   configure yet.
+  --   naturally in that case). No @context@ here yet, unlike 'ChatWriter'
+  --   -- the per-character context a roleplay turn reads is each
+  --   interrogated character's own full branch, not a curated ambient
+  --   slice, so there's nothing for that knob to configure yet.
   | RoleplayWrite { fcId :: Maybe T.Text, fcPromptText :: T.Text }
-  | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcTargets :: [T.Text] }
+  -- | 'fcPinned' still rides along, but this command has no context
+  --   program of its own -- with targets present, the Fixer agent takes no
+  --   ambient context at all; with none, 'Server.Writer.File.chatFixer'
+  --   falls through to 'chatWriter' with an empty (default-resolving)
+  --   program, not a client-chosen one.
+  | ChatFixer  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem], fcTargets :: [T.Text] }
   -- | Discuss, don't write: send a message to the chat agent, which sees
   --   this file's own prior 'ChatConverse' exchanges as conversation
   --   history (see 'Server.Writer.File.chatConverse') plus every other
@@ -174,8 +176,9 @@ data FileCommand
   --   (@ch{N}.outline.md@ by convention), respecting 'fcPromptText' as the
   --   user's steer. 'fcByBeat' selects the beat-by-beat driver over the
   --   whole-chapter one. A reconciliation, not a wipe — see
-  --   'Server.Writer.File.chatChapterRegen'.
-  | ChatRegen  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcContext :: [ContextItem], fcByBeat :: Bool }
+  --   'Server.Writer.File.chatChapterRegen'. No context program of its own
+  --   yet -- 'fcPinned' only, same as 'ChatFixer'.
+  | ChatRegen  { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem], fcByBeat :: Bool }
   -- | "Correct this": delete 'fcPromptTickId' and every atom in
   --   'fcTargets' (an instruction group's own prompt + generated output),
   --   then regenerate from 'fcPromptText' via 'chatWriter', rebased at
@@ -185,8 +188,10 @@ data FileCommand
   --   trips (N distinct undo points, the group visibly vanishing atom by
   --   atom before generation even started) for what's actually one atomic
   --   edit. See 'Server.Writer.File.Dispatch's handler and
-  --   'frontend/src/app/fileview.actions.ts''s 'correctAtom'.
-  | CorrectGroup { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text, fcContext :: [ContextItem], fcContextLayout :: [PickerRule], fcCharacterLayouts :: Map.Map T.Text [PickerRule] }
+  --   'frontend/src/app/fileview.actions.ts''s 'correctAtom'. Same
+  --   'fcPinned'\/'fcContext' shape as 'ChatWriter' -- it rebases and
+  --   re-runs exactly that command.
+  | CorrectGroup { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: T.Text }
   -- | Split this file (a whole-story outline, @outline.md@ by convention)
   --   into per-chapter beat sheets. No prompt or targets — the outline text is
   --   the whole input; the model decides the chapter breakdown. See
@@ -269,26 +274,24 @@ instance FromJSON FileCommand where
       "hide.atoms"   -> HideAtoms   i . fromMaybe [] <$> o .:? "targets"
       "unhide.atoms" -> UnhideAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
-        context      <- fromMaybe [] <$> o .:? "context"
-        layout       <- fromMaybe [] <$> o .:? "contextLayout"
-        flowTid      <- o .:? "flowTid"
-        charLayouts  <- fromMaybe Map.empty <$> o .:? "characterLayouts"
-        ChatWriter i <$> o .: "text" <*> pure context <*> pure layout <*> pure flowTid <*> pure charLayouts
+        pinned  <- fromMaybe [] <$> o .:? "pinned"
+        context <- fromMaybe "" <$> o .:? "context"
+        flowTid <- o .:? "flowTid"
+        ChatWriter i <$> o .: "text" <*> pure pinned <*> pure context <*> pure flowTid
       "chat.roleplay" -> RoleplayWrite i . fromMaybe "" <$> o .:? "text"
       "chat.fixer"  -> do
-        context <- fromMaybe [] <$> o .:? "context"
+        pinned  <- fromMaybe [] <$> o .:? "pinned"
         targets <- fromMaybe [] <$> o .:? "targets"
-        ChatFixer i <$> o .: "text" <*> pure context <*> pure targets
+        ChatFixer i <$> o .: "text" <*> pure pinned <*> pure targets
       "chat.regen"  -> do
-        context <- fromMaybe [] <$> o .:? "context"
-        byBeat  <- fromMaybe False <$> o .:? "byBeat"
-        ChatRegen i <$> o .: "text" <*> pure context <*> pure byBeat
+        pinned <- fromMaybe [] <$> o .:? "pinned"
+        byBeat <- fromMaybe False <$> o .:? "byBeat"
+        ChatRegen i <$> o .: "text" <*> pure pinned <*> pure byBeat
       "correct.group" -> do
-        context     <- fromMaybe [] <$> o .:? "context"
-        layout      <- fromMaybe [] <$> o .:? "contextLayout"
-        charLayouts <- fromMaybe Map.empty <$> o .:? "characterLayouts"
-        targets     <- fromMaybe [] <$> o .:? "targets"
-        CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text" <*> pure context <*> pure layout <*> pure charLayouts
+        pinned  <- fromMaybe [] <$> o .:? "pinned"
+        context <- fromMaybe "" <$> o .:? "context"
+        targets <- fromMaybe [] <$> o .:? "targets"
+        CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text" <*> pure pinned <*> pure context
       "chat.converse" -> ChatConverse i <$> o .: "text"
       "chat.converse.regen" ->
         ChatConverseSwipe i <$> o .: "promptTickId" <*> o .: "atomTickId" <*> o .: "text"
