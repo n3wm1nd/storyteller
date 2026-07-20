@@ -17,6 +17,7 @@ module Storyteller.Core.Runtime
     -- * Branch phantoms
   , Main
   , Prompts
+  , Contexts
 
     -- * Runners
   , runInfrastructure
@@ -77,6 +78,12 @@ data Main
 --   only prompt/template overrides, keyed by path, independent of any story
 --   or character branch.
 data Prompts
+
+-- | Phantom for the dedicated, project-scoped branch backing
+--   'Storyteller.Core.Context.ContextStorage' -- the same "override, keyed
+--   by path, independent of any story/character branch" shape as 'Prompts',
+--   just holding Context DSL definition source instead of prompt text.
+data Contexts
 
 -- ---------------------------------------------------------------------------
 -- Auth

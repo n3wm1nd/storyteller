@@ -48,6 +48,7 @@ import qualified Storyteller.Context.DSL.ParserSpec
 import qualified Storyteller.Context.DSL.CompileSpec
 import qualified Storyteller.Context.DSL.ScopeSpec
 import qualified Storyteller.Context.DSL.LibrarySpec
+import qualified Storyteller.Core.ContextSpec
 import qualified Storyteller.Context.DSL.QQSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
@@ -110,6 +111,7 @@ main = hspec $ do
   describe "Storyteller.Context.DSL.Compile" Storyteller.Context.DSL.CompileSpec.spec
   describe "Storyteller.Context.DSL.Scope"   Storyteller.Context.DSL.ScopeSpec.spec
   describe "Storyteller.Context.DSL.Library" Storyteller.Context.DSL.LibrarySpec.spec
+  describe "Storyteller.Core.Context" Storyteller.Core.ContextSpec.spec
   describe "[dsl| ... |]"                    Storyteller.Context.DSL.QQSpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
