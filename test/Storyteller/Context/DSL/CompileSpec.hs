@@ -10,12 +10,12 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
--- | End-to-end: parse a definition from @CONTEXT-DSL.md@-shaped source,
---   compile it with 'Storyteller.Context.DSL.Compile.compileDefinition'
---   against a real (mock-git-backed) branch, and check the resulting
---   'Value''s forced text -- the thing "Storyteller.Context.DSL.ParserSpec"
---   can't check on its own (it only ever inspects the AST, never runs
---   it).
+-- | End-to-end: parse a definition from @CONTEXT-DSL.md@-shaped source
+--   via @['dsl'| ... |]@, run the curried function it splices to
+--   (see "Storyteller.Context.DSL.QQ") against a real (mock-git-backed)
+--   branch, and check the resulting 'Value''s forced text -- the thing
+--   "Storyteller.Context.DSL.ParserSpec" can't check on its own (it only
+--   ever inspects the AST, never runs it).
 --
 --   "Storyteller.Context.DSL.Compile" itself has no Polysemy dependency
 --   and no type parameter anywhere -- 'Value' is monomorphic, and every
@@ -49,8 +49,8 @@ import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Context.DSL.AST (Definition, Name)
-import Storyteller.Context.DSL.Compile
+import Storyteller.Context.DSL.AST (Name)
+import Storyteller.Context.DSL.Compile (Binding, bval, fn1)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
 
@@ -79,33 +79,22 @@ seedBranch name files = do
     (mapM_ (\(path, content) -> runStorage @Main (Ops.addAtom path content)) files)
 
 -- | Resolves @bname@ to its current head and runs @act@'s 'StoreT'
---   computation from there -- the ambient position 'currentScope'\/
---   'runDefinition' bootstrap themselves from, established here rather
---   than threaded through the DSL's own API.
+--   computation from there -- the ambient position every
+--   'Storyteller.Context.DSL.Compile.currentScope'-derived call in this
+--   file relies on, established here rather than threaded through the
+--   DSL's own API.
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
   Just h  -> fst <$> Core.runStoreT h (runAction act)
 
--- | Compiles @def@ against @bname@'s current tree, applies it to
---   @args@ (each a plain-text leaf), and forces both the result's own
---   default text and one level of its named exports' text -- enough to
---   assert against without dragging 'Value''s laziness machinery into
---   every test.
-runDsl :: Text -> Definition -> [Text] -> Sem (StoryStorage : TestEffects '[]) (Text, Map Name Text)
-runDsl bname def args = runDslOn (BranchName bname) go
-  where
-    go = do
-      let argActions = map (pure . leafValue . (: []) . User) args
-      v         <- runDefinition def argActions
-      defMsgs   <- valueDefault v
-      entryText <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries v)
-      pure (messagesText defMsgs, entryText)
-
-runCase :: Text -> [(FilePath, Text)] -> Definition -> [Text] -> Either String (Text, Map Name Text)
-runCase bname files def args = run $ testStack $ do
-  seedBranch bname files
-  runDsl bname def args
+-- | A plain-text leaf, ready to apply to a @['dsl'| ... |]@-spliced
+--   function's own parameters -- 'bval' baked in, so passing a leaf
+--   value stays exactly as terse as it was before 'Binding' became the
+--   parameter currency (see 'Storyteller.Context.DSL.Compile.Binding'\'s
+--   own haddock).
+textArg :: Text -> Binding
+textArg = bval . pure . leafValue . (: []) . User
 
 spec :: Spec
 spec = do
@@ -116,6 +105,7 @@ spec = do
   forLoopEntriesSpec
   forceUserRoleSpec
   localFunctionInForLoopSpec
+  hostFunctionParamSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -124,18 +114,19 @@ spec = do
 --   its path... no separate function\/def keyword") -- so "thisResult"
 --   only makes sense from a *caller* that already has the Value in
 --   hand. That's the "Builtins are not filters" convention: an
---   already-computed 'Value' passed in as an ordinary parameter, not a
---   made-up self-reference. A real caller would resolve the injury
---   context by its path on a @Contexts@ branch (not implemented yet --
---   see "Storyteller.Context.DSL.Compile"'s module haddock); compiling
---   it directly here and passing the result in stands in for that.
-ctxDef :: Definition
-ctxDef = [dsl|
+--   already-computed 'Action' 'Value' passed in as an ordinary
+--   parameter, not a made-up self-reference. A real caller would
+--   resolve the injury context by its path on a @Contexts@ branch (not
+--   implemented yet -- see "Storyteller.Context.DSL.Compile"'s module
+--   haddock); compiling it directly here and passing the result in
+--   stands in for that.
+ctxDsl :: Action Value
+ctxDsl = [dsl|
 as "injury": read status/injury.md
 |]
 
-callerDef :: Definition
-callerDef = [dsl|
+callerDsl :: Binding -> Action Value
+callerDsl = [dsl|
 ctx:
   in ctx: read "injury" | orifempty "not injured"
 |]
@@ -143,13 +134,7 @@ ctx:
 runInjuryCase :: Text -> [(FilePath, Text)] -> Either String Text
 runInjuryCase bname files = run $ testStack $ do
   seedBranch bname files
-  runDslOn (BranchName bname) go
-  where
-    go = do
-      scope    <- currentScope
-      ctxValue <- compileDefinition ctxDef scope []
-      result   <- compileDefinition callerDef scope [pure ctxValue]
-      messagesText <$> valueDefault result
+  runDslOn (BranchName bname) (messagesText <$> (valueDefault =<< callerDsl (bval ctxDsl)))
 
 injuryExampleSpec :: Spec
 injuryExampleSpec = describe "injury/status continuity example" $
@@ -163,8 +148,8 @@ absenceSpec = describe "absence, not an error (Non-goals)" $
     runInjuryCase "main" []
       `shouldBe` Right "not injured"
 
-crossBranchDef :: Definition
-crossBranchDef = [dsl|
+crossBranchDsl :: Binding -> Action Value
+crossBranchDsl = [dsl|
 charname:
   in (charname | branch): read "sheet.md"
 |]
@@ -175,14 +160,15 @@ crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $
     run (testStack $ do
          seedBranch "main" []
          seedBranch "character/aria" [("sheet.md", "Aria is a wandering rogue.")]
-         runDsl "main" crossBranchDef ["aria"])
-       `shouldBe` Right ("Aria is a wandering rogue.", Map.empty)
+         runDslOn (BranchName "main")
+           (messagesText <$> (valueDefault =<< crossBranchDsl (textArg "aria"))))
+       `shouldBe` Right "Aria is a wandering rogue."
 
 -- | Shared by 'forLoopSpec' (checks the container's own default text)
 --   and 'forLoopEntriesSpec' (checks what's inside each entry) -- both
 --   exercise the same definition.
-openTrackingDef :: Definition
-openTrackingDef = [dsl|
+openTrackingDsl :: Action Value
+openTrackingDsl = [dsl|
 as "open":
   for f in tracking/**.md:
     as f: read f
@@ -191,17 +177,23 @@ as "open":
 forLoopSpec :: Spec
 forLoopSpec = describe "for/as over a glob (Chekhov's-gun list example)" $
   it "exports one named entry per matched file, each holding that file's own content" $
-    runCase "main"
-      [ ("tracking/gun.md", "a gun on the mantelpiece")
-      , ("tracking/letter.md", "an unopened letter")
-      , ("other/unrelated.md", "should not be matched")
-      ]
-      openTrackingDef
-      []
-      `shouldBe` Right ("", Map.fromList [("open", "")])
+    run (testStack $ do
+      seedBranch "main"
+        [ ("tracking/gun.md", "a gun on the mantelpiece")
+        , ("tracking/letter.md", "an unopened letter")
+        , ("other/unrelated.md", "should not be matched")
+        ]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right ("", Map.fromList [("open", "")])
       -- 'open' itself has no default text (it's a pure container of
       -- named exports) -- see the follow-up test below for what's
       -- actually inside it.
+  where
+    go = do
+      v         <- openTrackingDsl
+      defMsgs   <- valueDefault v
+      entryText <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries v)
+      pure (messagesText defMsgs, entryText :: Map Name Text)
 
 forLoopEntriesSpec :: Spec
 forLoopEntriesSpec = describe "for/as nested entries" $
@@ -218,16 +210,15 @@ forLoopEntriesSpec = describe "for/as nested entries" $
       ])
   where
     go = do
-      scope   <- currentScope
-      v       <- compileDefinition openTrackingDef scope []
+      v       <- openTrackingDsl
       Just openAction <- pure (Map.lookup "open" (valueEntries v))
       openVal <- openAction
       mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
 --   'FileRead'; @<@ forces it to read as ordinary authored text instead.
-forceUserRoleDef :: Definition
-forceUserRoleDef = [dsl|
+forceUserRoleDsl :: Action Value
+forceUserRoleDsl = [dsl|
 < read notes.md
 |]
 
@@ -236,13 +227,8 @@ forceUserRoleSpec = describe "< <expr> (force User role)" $
   it "re-tags a read's FileRead messages as User, leaving the text itself unchanged" $
     run (testStack $ do
       seedBranch "main" [("notes.md", "the door was left ajar")]
-      runDslOn (BranchName "main") go)
+      runDslOn (BranchName "main") (valueDefault =<< forceUserRoleDsl))
     `shouldBe` Right [User "the door was left ajar"]
-  where
-    go = do
-      scope <- currentScope
-      v     <- compileDefinition forceUserRoleDef scope []
-      valueDefault v
 
 -- | A local function isn't a different kind of thing from a plain value
 --   -- it's bound fresh every iteration exactly like any other @let@
@@ -253,8 +239,8 @@ forceUserRoleSpec = describe "< <expr> (force User role)" $
 --   unable to actually be called -- and checks the *content*, not just
 --   the shape, so a function silently ignoring its argument (always
 --   resolving the same loop iteration) wouldn't slip through.
-localFunctionInForLoopDef :: Definition
-localFunctionInForLoopDef = [dsl|
+localFunctionInForLoopDsl :: Action Value
+localFunctionInForLoopDsl = [dsl|
 as "results":
   for f in tracking/**.md:
     wrap = x: x | filewithname
@@ -273,8 +259,35 @@ localFunctionInForLoopSpec = describe "a local function bound fresh each for-loo
     `shouldBe` Right (Map.fromList [("tracking/gun.md", "gun"), ("tracking/letter.md", "letter")])
   where
     go = do
-      scope   <- currentScope
-      v       <- compileDefinition localFunctionInForLoopDef scope []
+      v       <- localFunctionInForLoopDsl
       Just resultsAction <- pure (Map.lookup "results" (valueEntries v))
       results <- resultsAction
       mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries results)
+
+-- | A parameter doesn't have to be a leaf value -- 'Binding' being the
+--   actual currency (see its own haddock) means a host can pass in a
+--   real Haskell function for "operations that only make sense for this
+--   particular call" (the invented-calendar example's own framing for
+--   @dateMath@, which this mirrors: parse-tested in "ParserSpec", never
+--   compile-tested until now). 'shout' here stands in for that: a pure
+--   transform over its own argument, with no reason to see the caller's
+--   ambient scope, wrapped via 'fn1' rather than a leaf 'bval'.
+shout :: Action Value -> Action Value
+shout av = do
+  v    <- av
+  msgs <- valueDefault v
+  pure (leafValue [User (T.toUpper (messagesText msgs))])
+
+hostFunctionDsl :: Binding -> Action Value
+hostFunctionDsl = [dsl|
+transform:
+  transform (read notes.md)
+|]
+
+hostFunctionParamSpec :: Spec
+hostFunctionParamSpec = describe "a parameter can be a real Haskell function, not just a leaf value" $
+  it "applies a host-supplied fn1 the same way it'd apply any other callable" $
+    run (testStack $ do
+      seedBranch "main" [("notes.md", "quietly written")]
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< hostFunctionDsl (fn1 shout))))
+    `shouldBe` Right "QUIETLY WRITTEN"

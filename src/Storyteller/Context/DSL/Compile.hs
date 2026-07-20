@@ -46,6 +46,9 @@
 module Storyteller.Context.DSL.Compile
   ( -- * The interpreter
     Binding(..)
+  , bval
+  , fn1
+  , fn2
   , Env
   , DSLFilter
   , FilterRegistry
@@ -102,7 +105,42 @@ import Storyteller.Core.Types (BranchName(..))
 --   case) -- which is what makes the capture-before-narrowing pattern
 --   (@root = **/*@, used later via @in root: ...@ regardless of what's
 --   ambient by then) work at all.
+--
+--   'Binding' isn't only for local @let@s -- it's also the currency
+--   'compileDefinition'\/'runDefinition' take *external* arguments as
+--   (see 'defParams'), which is what makes a host-implemented function
+--   (the invented-calendar example's @dateMath@: "math operations that
+--   only make sense for this particular call", not a general-vocabulary
+--   filter) a legitimate argument, not just a leaf 'Value' -- "values are
+--   just 0-arity functions, otherwise no different." 'bval'\/'fn1'\/'fn2'
+--   are the two ways to build one from the outside.
 data Binding = Binding Int ([Action Value] -> Value -> Action Value)
+
+-- | Wraps an already-scoped 'Action' as a 0-arity 'Binding' -- the
+--   ordinary "just a value" case, and by far the common one.
+bval :: Action Value -> Binding
+bval action = Binding 0 (\_ _ -> action)
+
+-- | Wraps a plain, scope-blind Haskell function as a 1-arity 'Binding'
+--   -- what a host passes a real function (@dateMath@-style: a pure
+--   transform over its own argument, no reason to see the caller's
+--   ambient scope) in as. The wrong-length-@args@ case can't actually
+--   happen ('evalExpr'\'s @EApp@\/@EIdent@ cases already check arity
+--   before ever calling into a 'Binding'\'s own function), but 'Binding'
+--   itself carries no type-level guarantee of that, so this fails loudly
+--   rather than via an incomplete pattern match.
+fn1 :: (Action Value -> Action Value) -> Binding
+fn1 f = Binding 1 go
+  where
+    go [a] _    = f a
+    go args _   = fail $ "fn1: expected exactly 1 argument, got " <> show (length args)
+
+-- | 'fn1', two arguments.
+fn2 :: (Action Value -> Action Value -> Action Value) -> Binding
+fn2 f = Binding 2 go
+  where
+    go [a, b] _ = f a b
+    go args _   = fail $ "fn2: expected exactly 2 arguments, got " <> show (length args)
 
 type Env = Map Name Binding
 
@@ -152,21 +190,16 @@ treeValueOfCommit commit = do
 --   up with exactly the type shape a hand-written agent already has").
 compileDefinition
   :: Definition
-  -> Value            -- ^ initial ambient Reader scope
-  -> [Action Value]    -- ^ arguments, matched against 'defParams'
+  -> Value          -- ^ initial ambient Reader scope
+  -> [Binding]      -- ^ arguments, matched against 'defParams'
   -> Action Value
 compileDefinition def scope args
   | length args /= length (defParams def) = fail $
       "arity mismatch: " <> show (length (defParams def)) <> " parameter(s), "
         <> show (length args) <> " argument(s) given"
   | otherwise = do
-      let env = Map.fromList (zip (defParams def) (map bval args))
+      let env = Map.fromList (zip (defParams def) args)
       mkValue <$> runStmts env scope (defBody def)
-
--- | Wraps an already-scoped 'Action' as a 0-arity 'Binding' -- the
---   caller-supplied scope argument is simply never looked at.
-bval :: Action Value -> Binding
-bval action = Binding 0 (\_ _ -> action)
 
 mkValue :: ([Message], Map Name (Action Value)) -> Value
 mkValue (msgs, entries) = Value (pure msgs) entries
@@ -521,5 +554,5 @@ currentScope = currentHead >>= treeValueOfCommit
 --   machinery this assembles. Still fully generic: the concrete backend
 --   only enters when the returned 'Action' is finally run via
 --   'Storyteller.Context.DSL.Value.runAction'.
-runDefinition :: Definition -> [Action Value] -> Action Value
+runDefinition :: Definition -> [Binding] -> Action Value
 runDefinition def args = currentScope >>= \scope -> compileDefinition def scope args
