@@ -52,3 +52,34 @@ const MENTION_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
 export function resolveMentions(text: string): string {
   return text.replace(MENTION_RE, (_all, name: string) => `@${name}`);
 }
+
+// Live extraction of every `@[Name](path)` mention currently in the
+// composer text, classified by what it points at. Drives the per-call
+// context overlay (callContextStore's `mentions[path]` → composed into
+// the wire's `context` program at send). Only mentions of a character
+// branch (`path === "character/<id>"`, the canonical shape the
+// autocomplete inserts and Server.Writer.Session's characterBranches
+// reports) become an inclusion -- a mention of a lore file or arbitrary
+// path is informational only, since lore/** is already auto-included
+// and arbitrary paths aren't a context primitive the casual UI exposes.
+//
+// Returns the character ids (no `character/` prefix), deduped, in
+// document order. The caller (useMentionAutocomplete in
+// mention-autocomplete.tsx, called from InputBar) wires this to
+// callContextStore.setMentions on every keystroke.
+export function extractCharacterMentions(text: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  const re = new RegExp(MENTION_RE.source, "g");
+  while ((m = re.exec(text)) !== null) {
+    const path: string = m[2];
+    const match = path.match(/^character\/(.+)$/);
+    if (!match) continue;
+    const id = match[1];
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}

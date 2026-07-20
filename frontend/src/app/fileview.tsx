@@ -18,6 +18,11 @@ import { useMentionAutocomplete } from "./mention-autocomplete";
 import { useLoreTree, flattenLore } from "./lore-selector";
 import { branchFileUrl, saveRawFile, saveRawFileAsNew } from "@/lib/ws";
 import { IMAGE_DRAG_MIME, summaryKindLabel } from "@/lib/library";
+import { extractCharacterMentions } from "@/lib/mentions";
+import { useCallContext } from "@/lib/callContextStore";
+import { useUI } from "@/lib/uiStore";
+import { ContextStrip } from "./context-strip";
+import { ContextPanel } from "./context-panel";
 
 // tiptap-markdown's Markdown extension adds `storage.markdown` at runtime
 // (see TextEditPanel below) but ships no type augmentation for it, so
@@ -1197,6 +1202,7 @@ export function FileContentView({
       <InputBar
         enabled={enabled}
         activeBranch={activeBranch}
+        path={targetFile ?? null}
         contextAtomCount={contextAtomCount} contextAnnotationCount={contextAnnotationCount}
         rebasing={rebasing}
         onClearRebase={onClearRebase}
@@ -1923,11 +1929,17 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   roleplay: { label: "Roleplay", title: "Interrogate every character present, then write the scene", icon: Users },
 };
 
-export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform, onSummarize }: {
+export function InputBar({ enabled, activeBranch, path, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform, onSummarize }: {
   enabled: boolean;
   // The active branch's own /lore data feeds '@mention' completion (see
   // lib/mentions.ts) — current-branch-only for now, no cross-branch search.
   activeBranch: string | null;
+  // The file this InputBar is currently composing for — used as the key
+  // for the per-file call-context state (lib/callContextStore.ts) that
+  // the new ContextStrip / ContextPanel mount against. Null when no file
+  // is open; in that case the strip + panel are hidden (no context to
+  // edit), and `text`-driven mention overlay is a no-op.
+  path: string | null;
   contextAtomCount: number;
   contextAnnotationCount: number;
   rebasing: boolean;
@@ -1973,6 +1985,67 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
   const auto = useCommandAutocomplete(text, setText);
 
   const hasContext = contextAtomCount > 0 || contextAnnotationCount > 0;
+
+  // Live-parse character @mentions out of the composer text on every
+  // keystroke, mirrored into the per-file call-context store. At send
+  // time, lib/dslCompose composes those into the `context` program as
+  // `context.character(id)` calls (see composeSendProgram). Drives the
+  // strip's `@Name` chips too -- removing the chip in the strip is
+  // just a setText edit that drops the matching `@[Name](...)` here.
+  // No-op when no file is open (path === null).
+  const setMentions = useCallContext((s) => s.setMentions);
+  const clearMentions = useCallContext((s) => s.clearForFile);
+  useEffect(() => {
+    if (!path) return;
+    const ids = extractCharacterMentions(text);
+    setMentions(path, ids);
+  }, [text, path, setMentions]);
+  // Clear mention state when the InputBar unmounts or the file changes
+  // out from under it -- otherwise stale mentions linger on a path the
+  // user is no longer composing against.
+  useEffect(() => {
+    return () => { if (path) clearMentions(path); };
+  }, [path, clearMentions]);
+
+  // Consume pending @mention insert requests from any other UI surface
+  // (currently the Codex tab's lore cards — see lib/uiStore's
+  // pendingMention). Inserts `@[Name](path) ` at the textarea's caret
+  // and clears the request. The `ts` field on the request makes repeat
+  // requests for the same path re-fire the effect (otherwise zustand
+  // would dedupe the equal state and the cursor wouldn't move).
+  const pendingMention = useUI((s) => s.pendingMention);
+  const clearPendingMention = useUI((s) => s.clearPendingMention);
+  useEffect(() => {
+    if (!pendingMention || !path) return;
+    const ta = auto.taRef.current;
+    const insert = `@[${pendingMention.name}](${pendingMention.path}) `;
+    if (ta) {
+      const at = ta.selectionStart ?? text.length;
+      const next = text.slice(0, at) + insert + text.slice(at);
+      setText(next);
+      // Move the caret past the inserted mention on the next tick,
+      // after the textarea has re-rendered with the new value.
+      requestAnimationFrame(() => {
+        const t = auto.taRef.current;
+        if (t) {
+          const pos = at + insert.length;
+          t.focus();
+          t.setSelectionRange(pos, pos);
+        }
+      });
+    } else {
+      // No textarea mounted yet (shouldn't happen, but defensive) --
+      // append to the text state so the mention isn't lost.
+      setText((prev) => prev + insert);
+    }
+    clearPendingMention();
+  }, [pendingMention, path, text, auto.taRef, clearPendingMention]);
+
+  // The strip is always visible above the textarea when a file is open;
+  // the panel (Layer 1/2) is an inline expandable region between the
+  // strip and the textarea. Owned locally -- nothing else needs to
+  // toggle the panel, and a single InputBar mounts both.
+  const [panelOpen, setPanelOpen] = useState(false);
 
   // Explicit, sticky mode — Shift+Tab (or the pill/dropdown) cycles it, and
   // it stays put until you change it again. Seeded from context at mount
@@ -2055,6 +2128,17 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
   }
 
   return (
+    <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface-deep)" }}>
+      {path && (
+        <ContextStrip path={path} onOpenPanel={() => setPanelOpen(true)} />
+      )}
+      {path && panelOpen && (
+        <ContextPanel
+          path={path}
+          activeBranch={activeBranch}
+          onClose={() => setPanelOpen(false)}
+        />
+      )}
     <div style={{
       flexShrink: 0, height,
       borderTop: "1px solid var(--border-subtle)", background: "var(--surface-deep)",
@@ -2158,6 +2242,7 @@ export function InputBar({ enabled, activeBranch, contextAtomCount, contextAnnot
           )}
         </div>
       </div>
+    </div>
     </div>
   );
 }

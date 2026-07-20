@@ -92,6 +92,18 @@ interface UIState {
   setJournalMarker:        (branch: string, tickId: string | null) => void;
   addAgentLog:             (level: string, message: string) => void;
   addCharacterAnswer:      (character: string, question: string, answer: string) => void;
+
+  // A pending "insert this @mention into the active composer" request,
+  // set by any UI surface that wants to drop a mention at the cursor
+  // (currently the Codex tab's lore cards — see lore-selector.tsx's
+  // ContextAwareLoreCard) and consumed by InputBar's effect, which
+  // inserts `@[name](path) ` at the textarea's caret and clears the
+  // request. The `ts` disambiguates repeated requests for the same
+  // path (otherwise the effect wouldn't re-fire on identical content).
+  // Null when no request is pending.
+  pendingMention: { name: string; path: string; ts: number } | null;
+  requestMention: (name: string, path: string) => void;
+  clearPendingMention: () => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -135,6 +147,10 @@ export const useUI = create<UIState>((set) => ({
   addCharacterAnswer: (character, question, answer) => set((s) => ({
     characterAnswers: [...s.characterAnswers, { character, question, answer }].slice(-50),
   })),
+
+  pendingMention: null,
+  requestMention: (name, path) => set({ pendingMention: { name, path, ts: Date.now() } }),
+  clearPendingMention: () => set({ pendingMention: null }),
 }));
 
 // Selection is a temporary "about to act on this" marker, not a durable

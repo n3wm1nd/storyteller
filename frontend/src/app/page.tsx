@@ -1115,7 +1115,7 @@ export default function Home() {
                   askCharacter={askCharacter} characterAnswers={characterAnswers}
                 />
               ) : (
-                <CodexTab activeBranch={activeBranch} />
+                <CodexTab activeBranch={activeBranch} selectedFile={selectedFile} />
               )}
             </div>
           </div>

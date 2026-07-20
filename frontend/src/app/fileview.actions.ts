@@ -13,6 +13,8 @@ import { applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } 
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain, promptGroupForAtom } from "@/lib/utils";
 import { resolveMentions } from "@/lib/mentions";
+import { getCallContext } from "@/lib/callContextStore";
+import { composeSendProgram } from "@/lib/dslCompose";
 
 // A summary tier (see .summarization-ui.md) is genuinely just another file
 // connection — Server.Writer.File.Connection's own openTarget resolves
@@ -442,29 +444,32 @@ export function unhideSelected(path: string) {
 // The Writer agent's own context shape (pinned selection plus the cleaned
 // prompt text) — shared by chatWrite and correctAtom, since "correct" is
 // the same agent/context, just landing back at the group's old position
-// instead of appending at file end. There's no more client-curated bucket
-// layout or per-character override to assemble here — that's now either a
-// directory convention (lore/**, chapters/**, style.md; see
-// CONTEXT-DSL.md/Storyteller.Context.DSL.Library) the server resolves on
-// its own, or a future Contexts-branch override with no frontend editor
-// yet — so `context` is always omitted entirely, not sent as `""`: those
-// are genuinely different programs server-side (see Storyteller.Core.
-// Context.resolveContextQuery) — an omitted field defers to the branch/
-// compiled-in default, where an empty string is itself a real (if
-// degenerate) program that resolves to "include nothing". `@mention`
-// markup is still stripped to plain `@Name` text for readability, but no
-// longer forces anything into context: a mentioned lore file is either
-// already included by the lore/** convention, or it isn't, regardless of
-// whether it's named in the prompt.
+// instead of appending at file end. The `context` field carries the
+// per-call Context DSL program (see CONTEXT-DSL.md) composed from the new
+// context UI (lib/callContextStore.ts + lib/dslCompose.ts): null = omit
+// the field entirely (server's compiled-in default runs), a string =
+// either synthesized DSL source (casual panel edits) or a bare function
+// name (loaded/authored named function on the contexts branch). The
+// @mention overlay composes on top in either case.
+//
+// `@mention` markup is still stripped to plain `@Name` text for
+// readability in the prompt itself; the inclusion it triggers is in the
+// composed `context` program, not the prompt text.
 function writerCommandContext(path: string, text: string) {
   const pinned = buildContextItems(path);
   const cleanText = resolveMentions(text);
-  return { cleanText, pinned };
+  const ctx = getCallContext(path);
+  const context = composeSendProgram(ctx);
+  return { cleanText, pinned, context };
 }
 
 export function chatWrite(path: string, text: string) {
-  const { cleanText, pinned } = writerCommandContext(path, text);
-  sendChatCommand(path, (flowTid) => ({ type: "chat.writer", text: cleanText, pinned, flowTid }));
+  const { cleanText, pinned, context } = writerCommandContext(path, text);
+  sendChatCommand(path, (flowTid) => {
+    const cmd: FileCommand = { type: "chat.writer", text: cleanText, pinned, flowTid };
+    if (context !== null) cmd.context = context;
+    return cmd;
+  });
 }
 
 // Roleplay writer — every character present on this file is interrogated,
@@ -506,14 +511,18 @@ export function correctAtom(path: string, atomTickId: string) {
   const group = promptGroupForAtom(fc.ticks, fc.head, atomTickId);
   if (!group) return;
 
-  const { cleanText, pinned } = writerCommandContext(path, group.promptTick.message);
-  sendChatCommand(path, () => ({
-    type: "correct.group",
-    promptTickId: group.promptTick.tickId,
-    targets: group.atomTickIds,
-    text: cleanText,
-    pinned,
-  }));
+  const { cleanText, pinned, context } = writerCommandContext(path, group.promptTick.message);
+  sendChatCommand(path, () => {
+    const cmd: FileCommand = {
+      type: "correct.group",
+      promptTickId: group.promptTick.tickId,
+      targets: group.atomTickIds,
+      text: cleanText,
+      pinned,
+    };
+    if (context !== null) cmd.context = context;
+    return cmd;
+  });
 }
 
 export function chatFix(path: string, text: string) {
