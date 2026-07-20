@@ -40,8 +40,6 @@ module Storyteller.Context.DSL.Value
   ) where
 
 import Control.Monad.Trans.Class (lift)
-import qualified Data.Map.Strict as Map
-import Data.Map.Strict (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -109,18 +107,28 @@ askBranch name = Action (lift (resolveBranch name))
 currentHead :: Action Core.ObjectHash
 currentHead = Action Core.headHash
 
--- | @Value = { default :: Thunk [Message], entries :: Map Name Value }@.
+-- | @Value = { default :: Thunk [Message], entries :: [(Name, Value)] }@.
+--   An ordered association list, not a 'Data.Map.Strict.Map' -- order is
+--   a real, preserved, and freely reassignable property of a 'Value'
+--   (construction order by default: @as@-export declaration order,
+--   'Storage.Core.WorkingTree'\'s own order for a branch's tree, ...),
+--   not something a 'Map' would collapse to key order regardless of how
+--   the entries were actually produced. This is what makes @sortBy@ (a
+--   real filter, not a stub) and a non-lexical glob order (chapter
+--   numbering, say) expressible at all -- both are just "produce this
+--   list in a different order," ordinary list operations on already-pure
+--   data, not a capability bolted on from outside 'Value'.
 data Value = Value
   { valueDefault :: Action [Message]
-  , valueEntries :: Map Name (Action Value)
+  , valueEntries :: [(Name, Action Value)]
   }
 
 emptyValue :: Value
-emptyValue = Value (pure []) Map.empty
+emptyValue = Value (pure []) []
 
 -- | A leaf with no children -- "there is no separate leaf type."
 leafValue :: [Message] -> Value
-leafValue msgs = Value (pure msgs) Map.empty
+leafValue msgs = Value (pure msgs) []
 
 -- | Flattens a message list to plain text, ignoring role -- what
 --   filters and interpolation operate on (see "Value model": "Filters
@@ -139,7 +147,7 @@ messagesText = T.intercalate "\n" . map messageText
 --   'for'\'s own loop-variable laziness relies on downstream.
 listPaths :: Value -> Action [Text]
 listPaths v = do
-  parts <- mapM childPaths (Map.toList (valueEntries v))
+  parts <- mapM childPaths (valueEntries v)
   pure (concat parts)
   where
     childPaths (name, action) = do
@@ -153,6 +161,6 @@ listPaths v = do
 --   "absence, not an error" rule for a @read@/glob that finds nothing.
 lookupPath :: Value -> [Name] -> Action (Maybe Value)
 lookupPath v []           = pure (Just v)
-lookupPath v (seg : rest) = case Map.lookup seg (valueEntries v) of
+lookupPath v (seg : rest) = case lookup seg (valueEntries v) of
   Nothing     -> pure Nothing
   Just action -> action >>= \child -> lookupPath child rest

@@ -170,7 +170,7 @@ treeValueOfCommit commit = do
   wt <- liftStore (Core.loadWorkingTree commit)
   pure Value
     { valueDefault = pure []
-    , valueEntries = Map.fromList
+    , valueEntries =
         [ (T.pack path, leafValue . (: []) . FileRead path . TE.decodeUtf8 <$> readBlob h)
         | (path, Core.FSFile h) <- Map.toList wt
         ]
@@ -201,8 +201,20 @@ compileDefinition def scope args
       let env = Map.fromList (zip (defParams def) args)
       mkValue <$> runStmts env scope (defBody def)
 
-mkValue :: ([Message], Map Name (Action Value)) -> Value
+mkValue :: ([Message], [(Name, Action Value)]) -> Value
 mkValue (msgs, entries) = Value (pure msgs) entries
+
+-- | Combines a newly-produced entry list with what's already
+--   accumulated -- @new@'s own values win on a key collision (matching
+--   'Data.Map.Strict.union's convention, which this replaced), but the
+--   combined order keeps @old@'s entries in their existing position,
+--   only appending genuinely new keys at the end. Declaration order,
+--   preserved by construction now that 'valueEntries' is an ordered
+--   list rather than a 'Map' (see its own haddock).
+unionEntries :: [(Name, a)] -> [(Name, a)] -> [(Name, a)]
+unionEntries new old =
+  [ (k, maybe v id (lookup k new)) | (k, v) <- old ]
+  ++ filter (\(k, _) -> k `notElem` map fst old) new
 
 -- | Runs a whole 'Block', folding every statement's contribution into
 --   one @([Message], entries)@ pair -- this *is* "a fresh writer
@@ -214,8 +226,8 @@ mkValue (msgs, entries) = Value (pure msgs) entries
 --   call already threads (see their cases below).
 runStmts
   :: Env -> Value -> Block
-  -> Action ([Message], Map Name (Action Value))
-runStmts env0 scope0 = go env0 scope0 [] Map.empty
+  -> Action ([Message], [(Name, Action Value)])
+runStmts env0 scope0 = go env0 scope0 [] []
   where
     go _ _ msgs entries [] = pure (concat (reverse msgs), entries)
     go env scope msgs entries (Located _ (SExpr e) : rest) = do
@@ -224,10 +236,10 @@ runStmts env0 scope0 = go env0 scope0 [] Map.empty
       go env scope (m : msgs) entries rest
     go env scope msgs entries (Located pos (SAs nameE body) : rest) = do
       name <- nameOf env scope nameE
-      when (Map.member name entries) $
+      when (any ((== name) . fst) entries) $
         fail $ "duplicate 'as' name " <> show name <> " at line " <> show (posLine pos)
       let entryAction = mkValue <$> runStmts env scope body
-      go env scope msgs (Map.insert name entryAction entries) rest
+      go env scope msgs (entries ++ [(name, entryAction)]) rest
     go env scope msgs entries (Located _ (SLet name mParams body) : rest) =
       let binding = case mParams of
             Nothing -> bval (mkValue <$> runStmts env scope body)
@@ -237,7 +249,7 @@ runStmts env0 scope0 = go env0 scope0 [] Map.empty
     go env scope msgs entries (Located _ (SIn e body) : rest) = do
       newScope <- evalExpr env scope e
       (m, es) <- runStmts env newScope body
-      go env scope (m : msgs) (Map.union es entries) rest
+      go env scope (m : msgs) (unionEntries es entries) rest
     go env scope msgs entries (Located pos (SFor var pathLit body) : rest) = do
       matches <- globMatch env scope pathLit
       (m, es) <- foldM (runOneIteration pos var body) ([], entries) matches
@@ -246,11 +258,11 @@ runStmts env0 scope0 = go env0 scope0 [] Map.empty
         runOneIteration p var' body' (msgsAcc, entriesAcc) matchedPath = do
           let env' = Map.insert var' (bval (pure (leafValue [User matchedPath]))) env
           (m1, es1) <- runStmts env' scope body'
-          case Map.keys (Map.intersection es1 entriesAcc) of
-            (dup : _) -> fail $ "duplicate 'as' name " <> show dup
-                           <> " across for-loop iterations, near line " <> show (posLine p)
-            []        -> pure ()
-          pure (msgsAcc ++ m1, Map.union es1 entriesAcc)
+          case filter ((`elem` map fst entriesAcc) . fst) es1 of
+            ((dup, _) : _) -> fail $ "duplicate 'as' name " <> show dup
+                                <> " across for-loop iterations, near line " <> show (posLine p)
+            []             -> pure ()
+          pure (msgsAcc ++ m1, unionEntries es1 entriesAcc)
 
 bindParams :: [Name] -> [Action Value] -> Env -> Env
 bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env (zip ps args)
@@ -266,7 +278,7 @@ evalExpr env scope e = case e of
   EString Bare   parts -> do
     pat     <- interpText env scope parts
     matches <- globMatchPat scope pat
-    entries <- Map.fromList <$> mapM (\m -> (,) m . pure <$> forceAt scope m) matches
+    entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
     pure (Value (pure []) entries)
   EAssistant parts -> leafValue . (: []) . Assistant <$> interpText env scope parts
   EUser inner -> do
@@ -342,7 +354,7 @@ pathLitText env scope (PathLit _ parts) = interpText env scope parts
 --   "looks it up by key, recursively" wording, even though nothing this
 --   interpreter builds today actually produces multi-level nesting.
 resolveRead :: Value -> Text -> Action (Maybe Value)
-resolveRead scope path = case Map.lookup path (valueEntries scope) of
+resolveRead scope path = case lookup path (valueEntries scope) of
   Just action -> Just <$> action
   Nothing     -> lookupPath scope (T.splitOn "/" path)
 
@@ -391,7 +403,7 @@ type FilterRegistry = Map Name DSLFilter
 --   filter reports a problem (an arity mismatch, an unimplemented
 --   filter) without itself needing to run anything.
 errorValue :: String -> Value
-errorValue msg = Value { valueDefault = fail msg, valueEntries = Map.empty }
+errorValue msg = Value { valueDefault = fail msg, valueEntries = [] }
 
 -- | Every filter except @branch@ (see the section haddock) and the
 --   content-\/LLM-backed ones, deliberately left as loud failures rather
@@ -462,42 +474,43 @@ fJoin :: DSLFilter
 fJoin v [sepArg] = leafValueA $ do
   sepMsgs <- valueDefault sepArg
   let sep = messagesText sepMsgs
-  entryTexts <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (Map.elems (valueEntries v))
+  entryTexts <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (map snd (valueEntries v))
   pure [User (T.intercalate sep entryTexts)]
 fJoin _ args = errorValue $ "join: expected exactly 1 argument, got " <> show (length args)
 
 -- | Trims @v@'s own entries down to the ones @args@' text names --
---   deferred per-entry rather than eagerly restricting the 'Map': the
+--   deferred per-entry rather than eagerly restricting the list: the
 --   argument names can only be known by forcing @args@, and 'Value'\'s
 --   own shape ("Value model") requires 'valueEntries'\'s *key set* to be
 --   known without running anything at all, so an excluded entry stays a
---   key (still visible to 'listPaths'\/glob matching) but becomes
---   'emptyValue' once actually forced -- observably equivalent for
---   every real use (nothing here globs *over* a @without@\/@only@
---   result), and the only way to keep filter application itself pure.
+--   key (still visible to 'listPaths'\/glob matching, in its original
+--   position) but becomes 'emptyValue' once actually forced --
+--   observably equivalent for every real use (nothing here globs *over*
+--   a @without@\/@only@ result), and the only way to keep filter
+--   application itself pure.
 fWithout :: DSLFilter
-fWithout v args = v { valueEntries = Map.mapWithKey trim (valueEntries v) }
+fWithout v args = v { valueEntries = map (\(k, action) -> (k, trim k action)) (valueEntries v) }
   where
     trim k action = do
       excluded <- mapM (\a -> messagesText <$> valueDefault a) args
       if k `elem` excluded then pure emptyValue else action
 
 fOnly :: DSLFilter
-fOnly v args = v { valueEntries = Map.mapWithKey trim (valueEntries v) }
+fOnly v args = v { valueEntries = map (\(k, action) -> (k, trim k action)) (valueEntries v) }
   where
     trim k action = do
       keep <- mapM (\a -> messagesText <$> valueDefault a) args
       if k `elem` keep then action else pure emptyValue
 
 -- | Same deferred-per-entry shape as 'fWithout'\/'fOnly' -- the *set* of
---   keys ('Map.keys') is available purely, so the sort\/cutoff needs no
---   forcing; only @n@ itself does.
+--   keys is available purely, so the sort\/cutoff needs no forcing;
+--   only @n@ itself does.
 fLatest :: DSLFilter
 fLatest v [nArg]
   | null (valueEntries v) = v -- applied to a single already-read leaf (see the invented-calendar example): no list structure to take "latest" from, pass through unchanged.
-  | otherwise = v { valueEntries = Map.mapWithKey trim (valueEntries v) }
+  | otherwise = v { valueEntries = map (\(k, action) -> (k, trim k action)) (valueEntries v) }
   where
-    sortedKeys = List.sortBy (flip compare) (Map.keys (valueEntries v))
+    sortedKeys = List.sortBy (flip compare) (map fst (valueEntries v))
     trim k action = do
       nMsgs <- valueDefault nArg
       let n = maybe 1 id (readMaybeInt (messagesText nMsgs))
@@ -505,7 +518,7 @@ fLatest v [nArg]
 fLatest _ args = errorValue $ "latest: expected exactly 1 argument, got " <> show (length args)
 
 leafValueA :: Action [Message] -> Value
-leafValueA action = Value { valueDefault = action, valueEntries = Map.empty }
+leafValueA action = Value { valueDefault = action, valueEntries = [] }
 
 readMaybeInt :: Text -> Maybe Int
 readMaybeInt t = case reads (T.unpack t) of

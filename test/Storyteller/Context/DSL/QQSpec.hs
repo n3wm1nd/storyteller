@@ -12,7 +12,6 @@
 --   curried-function shape "Storyteller.Context.DSL.QQ" describes.
 module Storyteller.Context.DSL.QQSpec (spec) where
 
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Test.Hspec
 
@@ -38,7 +37,7 @@ as "injury": read status/injury.md
 -- | The 'injury' export's own text, or a sentinel if the definition
 --   somehow stopped exporting one at all -- what both specs below force.
 injuryText :: Value -> Action T.Text
-injuryText v = case Map.lookup "injury" (valueEntries v) of
+injuryText v = case lookup "injury" (valueEntries v) of
   Nothing     -> pure "no 'injury' export"
   Just action -> messagesText <$> (valueDefault =<< action)
 

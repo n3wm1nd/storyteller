@@ -192,8 +192,8 @@ forLoopSpec = describe "for/as over a glob (Chekhov's-gun list example)" $
     go = do
       v         <- openTrackingDsl
       defMsgs   <- valueDefault v
-      entryText <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries v)
-      pure (messagesText defMsgs, entryText :: Map Name Text)
+      entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
+      pure (messagesText defMsgs, Map.fromList entryText :: Map Name Text)
 
 forLoopEntriesSpec :: Spec
 forLoopEntriesSpec = describe "for/as nested entries" $
@@ -211,9 +211,10 @@ forLoopEntriesSpec = describe "for/as nested entries" $
   where
     go = do
       v       <- openTrackingDsl
-      Just openAction <- pure (Map.lookup "open" (valueEntries v))
+      Just openAction <- pure (lookup "open" (valueEntries v))
       openVal <- openAction
-      mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
+      entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
+      pure (Map.fromList entryText)
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
 --   'FileRead'; @<@ forces it to read as ordinary authored text instead.
@@ -260,9 +261,10 @@ localFunctionInForLoopSpec = describe "a local function bound fresh each for-loo
   where
     go = do
       v       <- localFunctionInForLoopDsl
-      Just resultsAction <- pure (Map.lookup "results" (valueEntries v))
+      Just resultsAction <- pure (lookup "results" (valueEntries v))
       results <- resultsAction
-      mapM (\act -> messagesText <$> (valueDefault =<< act)) (valueEntries results)
+      entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries results)
+      pure (Map.fromList entryText)
 
 -- | A parameter doesn't have to be a leaf value -- 'Binding' being the
 --   actual currency (see its own haddock) means a host can pass in a
