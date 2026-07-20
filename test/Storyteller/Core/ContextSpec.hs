@@ -34,7 +34,7 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Context
   ( contextsBranchName, getContextDefinition, interpretContextStorageFS, interpretContextStorageMap
-  , resolveContextOverride, resolveContextQuery )
+  , resolveContextOverride, resolveContextQuery, runContextBinding1, runContextValue )
 import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
@@ -42,7 +42,7 @@ import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Context.DSL.Compile (Binding(..), bval)
+import Storyteller.Context.DSL.Compile (Binding(..), bval, fn1)
 import Storyteller.Context.DSL.Value
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
@@ -65,9 +65,21 @@ spec = do
   resolveContextQuerySpec
   interpretContextStorageMapSpec
   interpretContextStorageFSSpec
+  runContextBinding1Spec
 
 defaultGreeting :: Binding
 defaultGreeting = bval (pure (leafValue [User "default text"]))
+
+-- | An arity-1 default -- the shape @context.character@-style definitions
+--   actually have (real production callers now resolve @context.character@
+--   through exactly this same machinery, see
+--   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent') -- echoes
+--   its own argument's text back, wrapped, so a caller can tell whether
+--   the argument it passed in actually reached the running 'Binding'.
+defaultEcho :: Binding
+defaultEcho = fn1 (\arg -> do
+  msgs <- valueDefault =<< arg
+  pure (leafValue [User ("default: " <> messagesText msgs)]))
 
 resolveContextOverrideSpec :: Spec
 resolveContextOverrideSpec = describe "resolveContextOverride" $ do
@@ -145,3 +157,42 @@ interpretContextStorageFSSpec = describe "interpretContextStorageFS" $ do
       binding <- interpretContextStorageFS (getContextDefinition "context.greeting" defaultGreeting)
       runDefaultZeroAry (BranchName "main") binding)
     `shouldBe` Right (Right "hello from main")
+
+  -- | Regression for the real gap the project chat found: every real
+  --   character-context caller used to call
+  --   'Storyteller.Context.DSL.Library.contextCharacterDefault' directly,
+  --   never through 'getContextDefinition', so a project committing an
+  --   override for @context.character@ (a 1-arity key, unlike every other
+  --   registered definition tested above) was silently ignored even
+  --   though 'interpretContextStorageFS' itself worked fine. Proves a
+  --   1-arity override actually takes over, with the real argument
+  --   ('runContextBinding1's own job) reaching the overriding definition.
+  it "resolves and runs a real 1-arity override too, e.g. context.character's own shape" $
+    run (testStack $ do
+      seedBranch "main" []
+      seedBranch (unBranchName contextsBranchName)
+        [("context/greeting1.dsl", "name:\n  \"overridden for %name%\"\n")]
+      binding <- interpretContextStorageFS (getContextDefinition "context.greeting1" defaultEcho)
+      runBranchOpGit @Main (BranchName "main") $ do
+        v <- runContextBinding1 @Main binding "Aria"
+        messagesText <$> runContextValue @Main (valueDefault v))
+    `shouldBe` Right "overridden for Aria"
+
+  it "falls back to the 1-arity default (echoing its own argument) when no override is committed" $
+    run (testStack $ do
+      seedBranch "main" []
+      binding <- interpretContextStorageFS (getContextDefinition "context.greeting1" defaultEcho)
+      runBranchOpGit @Main (BranchName "main") $ do
+        v <- runContextBinding1 @Main binding "Aria"
+        messagesText <$> runContextValue @Main (valueDefault v))
+    `shouldBe` Right "default: Aria"
+
+runContextBinding1Spec :: Spec
+runContextBinding1Spec = describe "runContextBinding1" $
+  it "fails loudly on an arity mismatch rather than silently misapplying" $
+    run (testStack $ do
+      seedBranch "main" []
+      runBranchOpGit @Main (BranchName "main") $ do
+        v <- runContextBinding1 @Main defaultGreeting "Aria"
+        messagesText <$> runContextValue @Main (valueDefault v))
+    `shouldBe` Left "expected a 1-arity context definition, got arity 0"

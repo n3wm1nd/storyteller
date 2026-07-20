@@ -29,26 +29,30 @@ import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Core.Context (runContextValue)
+import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 
 -- | Answer @question@ using only what's readable from @charname@'s own
 --   branch -- deliberately effect-minimal like
 --   'Storyteller.Writer.Agent.Continuation.proseAgent' otherwise: no
---   world-lore lookup (deferred -- see the design conversation). Reads via
---   'Storyteller.Context.DSL.Library.characterSummary' (the @"journalFull"@
---   bucket -- everything, uncurated, same as this agent always wanted),
---   which crosses to @charname@'s own branch itself -- unlike the old
---   'Storyteller.Writer.Agent.CharContext.charSummaryAgent'-backed version,
---   the caller (see 'Server.Writer.File.askCharacter') no longer needs to
---   open that branch's filesystem first.
+--   world-lore lookup (deferred -- see the design conversation). Resolves
+--   @context.character@ (a branch override on the @contexts@ branch, then
+--   'Storyteller.Context.DSL.Library.contextCharacterDefault' as fallback
+--   -- see 'Storyteller.Core.Context.resolveContextQuery') and reads its
+--   @"journalFull"@ bucket -- everything, uncurated, same as this agent
+--   always wanted -- which crosses to @charname@'s own branch itself --
+--   unlike the old 'Storyteller.Writer.Agent.CharContext.charSummaryAgent'-
+--   backed version, the caller (see 'Server.Writer.File.askCharacter') no
+--   longer needs to open that branch's filesystem first.
 askCharacterAgent
   :: forall branch r
-  .  (LLMs r, Members '[BranchOp branch, Git, StoryStorage, PromptStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[BranchOp branch, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
-  summary <- runContextValue @branch (CtxLibrary.characterSummary "journalFull" charname)
+  charBinding <- resolveContextQuery "context.character" (CtxLibrary.toBinding1 CtxLibrary.contextCharacterDefault) Nothing
+  charVal     <- runContextBinding1 @branch charBinding charname
+  summary     <- runContextValue @branch (CtxLibrary.characterSummaryOf "journalFull" charVal)
   let blocks = flattenCharSummary summary
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig
   let userMsg = renderAskPrompt blocks question

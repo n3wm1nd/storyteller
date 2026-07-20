@@ -38,7 +38,7 @@ module Storyteller.Context.DSL.Library
   , contextCharacter
   , contextCharacterDefault
   , characterBlurb
-  , characterSummary
+  , characterSummaryOf
   , contextMentionFilter
   , contextMain
   , contextQuery
@@ -50,7 +50,7 @@ import Data.Text (Text)
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, journalDelta)
 import Storyteller.Context.DSL.QQ (dsl)
-import Storyteller.Context.DSL.Value (Action, Value, Message(..), leafValue, namedEntry)
+import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Writer.Agent (CharSummary(..))
 
@@ -211,11 +211,10 @@ contextCharacterDefault :: Binding -> Action Value
 contextCharacterDefault charnameB =
   contextCharacter charnameB (toBinding1 characterBlurb) (journalDelta 30 10 2)
 
--- | Runs 'contextCharacterDefault' for one character and reshapes its
---   buckets into a 'CharSummary' -- the shared piece every consumer
---   wanting that exact shape reaches for
---   ('Server.Writer.File.activeCharacterContext', ambient scene context;
---   'Storyteller.Writer.Agent.Roleplay.askCharacter'\/
+-- | Reshapes an already-resolved @context.character@-shaped 'Value' into
+--   a 'CharSummary' -- the shared piece every consumer wanting that exact
+--   shape reaches for ('Server.Writer.File.activeCharacterContext',
+--   ambient scene context; 'Storyteller.Writer.Agent.Roleplay.askCharacter'\/
 --   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent', a
 --   character's own subagent), rather than picking 'Value' buckets apart
 --   at every call site. @journalBucket@ selects which of
@@ -223,9 +222,26 @@ contextCharacterDefault charnameB =
 --   @"journal"@ (curated via
 --   'Storyteller.Context.DSL.Compile.journalDelta') or @"journalFull"@
 --   (verbatim) -- see that definition's own Haddock on the pair.
-characterSummary :: Text -> Text -> Action CharSummary
-characterSummary journalBucket charname = do
-  charVal <- contextCharacterDefault (bval (pure (leafValue [User charname])))
+--
+--   Deliberately takes the resolved 'Value', not a @charname@ to resolve
+--   itself -- resolving @context.character@ (branch override, then this
+--   module's own 'contextCharacterDefault' as fallback) is the caller's
+--   job, via 'Storyteller.Core.Context.resolveContextQuery'\/
+--   'Storyteller.Core.Context.runContextBinding1'. This function used to
+--   call 'contextCharacterDefault' directly, which meant a project
+--   committing an override to @contexts/context/character.dsl@ was
+--   silently ignored by every real caller -- the override machinery
+--   existed ('Storyteller.Core.Context' has run the real branch-backed
+--   'Storyteller.Core.Context.interpretContextStorageFS' in production
+--   since @context.main@ shipped) but nothing ever asked it about
+--   @context.character@. Splitting resolution out is what fixes that:
+--   'Action' itself has no 'Storyteller.Core.Context.ContextStorage'
+--   effect to reach for (it's constrained to
+--   'Storyteller.Context.DSL.Value.MonadBranch'\/'Storage.Core.StoreM'
+--   only), so the override lookup has to happen at the 'Polysemy.Sem'
+--   level, one step up from here.
+characterSummaryOf :: Text -> Value -> Action CharSummary
+characterSummaryOf journalBucket charVal = do
   sheet   <- Render.valueCharBlocks =<< namedEntry "sheet" charVal
   full    <- Render.valueCharBlocks =<< namedEntry "full" charVal
   journal <- Render.valueCharBlocks =<< namedEntry journalBucket charVal

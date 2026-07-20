@@ -29,7 +29,7 @@
 --   character's own branch via 'Storyteller.Core.Git.runBranchAndFS' and
 --   primed with their full, uncurated context (sheet, whole journal,
 --   everything else on their branch -- see
---   'Storyteller.Context.DSL.Library.characterSummary's @"journalFull"@
+--   'Storyteller.Context.DSL.Library.characterSummaryOf's @"journalFull"@
 --   bucket, read by 'askCharacter' before the branch is even opened; a
 --   character's own branch, not any windowed ambient slice, is their only
 --   source of what's going on, besides shared world lore, which the
@@ -104,7 +104,7 @@ import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools (ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition)
 
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS)
-import Storyteller.Core.Context (runContextValue)
+import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.LLM.Interceptor (withToolCallBudget)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel, ProseModel)
@@ -138,7 +138,7 @@ type Exchange = (Text, Text, Text)
 --   model's job; whether they get asked at all isn't.
 roleplayAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Git, StoryStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
   => [ContextBlock]            -- ^ scene context: existing prose, world lore
   -> [(CharLabel, Character)]  -- ^ every character present
   -> Text                      -- ^ the author's direction; may be empty
@@ -151,29 +151,33 @@ roleplayAgent sceneContext characters prompt = do
     pure (label, question, answer)
   Prose <$> composeSceneAgent sceneContext exchanges prompt
 
--- | Read @character@'s own full context via the Context DSL
---   ('Storyteller.Context.DSL.Library.characterSummary', the
+-- | Read @character@'s own full context via the Context DSL --
+--   @context.character@ (a branch override on the @contexts@ branch, then
+--   'Storyteller.Context.DSL.Library.contextCharacterDefault' as fallback
+--   -- see 'Storyteller.Core.Context.resolveContextQuery'), its
 --   @"journalFull"@ bucket -- everything, uncurated, same as this always
---   wanted), then open their branch just for 'characterIntentAgent''s own
+--   wanted -- then open their branch just for 'characterIntentAgent''s own
 --   tool loop (its @write_file@\/@edit_file@\/@add_thought@\/
 --   @add_suspicion@ tools genuinely need that branch's write effects --
 --   the context read itself doesn't, since the DSL crosses to it itself).
 --   This is the one place this module actually reaches outside the
 --   ambient scene context, which is why it (unlike
 --   'questionForCharacterAgent'\/'composeSceneAgent') needs
---   'BranchOp Main'\/'Git'\/'StoryStorage' at all. Logs the question and
---   the answer it got back, not just that a call happened -- with
---   'characterIntentAgent' potentially running several turns internally,
---   the question/answer pair is the one thing worth seeing in the log
---   even when nothing else is.
+--   'BranchOp Main'\/'Git'\/'StoryStorage'\/'ContextStorage' at all. Logs
+--   the question and the answer it got back, not just that a call
+--   happened -- with 'characterIntentAgent' potentially running several
+--   turns internally, the question/answer pair is the one thing worth
+--   seeing in the log even when nothing else is.
 askCharacter
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Git, StoryStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
   => Character -> Text -> [ContextBlock] -> Text -> Sem r Text
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
-  ownContext <- runContextValue @Main (CtxLibrary.characterSummary "journalFull" ident)
+  charBinding <- resolveContextQuery "context.character" (CtxLibrary.toBinding1 CtxLibrary.contextCharacterDefault) Nothing
+  charVal     <- runContextBinding1 @Main charBinding ident
+  ownContext  <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
   answer <- runBranchAndFS @RoleplayChar (BranchName branchName) $
     characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question
   info (name <> " answers: " <> answer)
@@ -310,7 +314,7 @@ characterIntentAgent
                 , PromptStorage, Fail, Logging] r
      )
   => Text                  -- ^ this character's display name
-  -> CharSummary            -- ^ their own full, uncurated branch context (see 'Storyteller.Context.DSL.Library.characterSummary')
+  -> CharSummary            -- ^ their own full, uncurated branch context (see 'Storyteller.Context.DSL.Library.characterSummaryOf')
   -> [ContextBlock]        -- ^ the scene's own context (existing prose, world lore)
   -> Text                  -- ^ the question put to them
   -> Sem r Text
@@ -642,7 +646,7 @@ characterReflectAgent
                 , PromptStorage, Fail, Logging] r
      )
   => Text                 -- ^ this character's display name
-  -> CharSummary          -- ^ their own pre-scene branch context (see 'Storyteller.Context.DSL.Library.characterSummary')
+  -> CharSummary          -- ^ their own pre-scene branch context (see 'Storyteller.Context.DSL.Library.characterSummaryOf')
   -> Text                 -- ^ the scene's finished narrative
   -> Sem r Text
 characterReflectAgent name ownContext narrative = do

@@ -50,6 +50,7 @@ module Storyteller.Core.Context
   , resolveContextQuery
   , runContextValue
   , runContextBinding0
+  , runContextBinding1
   ) where
 
 import Control.Monad (void)
@@ -75,7 +76,7 @@ import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Context.DSL.AST (Definition(..), Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, runDefinition)
 import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
-import Storyteller.Context.DSL.Value (Action, Value, emptyValue, runAction)
+import Storyteller.Context.DSL.Value (Action, Value, Message(User), emptyValue, leafValue, runAction)
 
 data ContextStorage (m :: Type -> Type) a where
   -- | Look up @name@'s own override, falling back to the caller-supplied
@@ -205,3 +206,13 @@ runContextValue act = do
 runContextBinding0 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Binding -> Sem r Value
 runContextBinding0 (Binding 0 fn) = runContextValue @branch (fn [] emptyValue)
 runContextBinding0 (Binding n _)  = fail ("expected a 0-arity context definition, got arity " <> show n)
+
+-- | 'runContextBinding0' for a 1-arity 'Binding' -- what a resolved
+--   @context.character@-shaped definition (@charname: ...@) needs, since
+--   unlike @context.main@ it always takes one real argument, never just
+--   an ignored scope. @arg@ is always plain text at every real call site
+--   (a bare character identifier), so this wraps it as a leaf 'Value'
+--   itself rather than making every caller do that by hand.
+runContextBinding1 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Binding -> Text -> Sem r Value
+runContextBinding1 (Binding 1 fn) arg = runContextValue @branch (fn [pure (leafValue [User arg])] emptyValue)
+runContextBinding1 (Binding n _)  _   = fail ("expected a 1-arity context definition, got arity " <> show n)

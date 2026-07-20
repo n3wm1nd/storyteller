@@ -89,7 +89,7 @@ import Storyteller.Context.DSL.Value (valueDefault, messagesText, namedEntry, wi
 import Storyteller.Context.DSL.Compile (bval)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (resolveContextQuery, runContextBinding0, runContextValue)
+import Storyteller.Core.Context (resolveContextQuery, runContextBinding0, runContextBinding1, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -106,17 +106,20 @@ data ActiveChar
 --   signal, so this is the one place that decides which character branches
 --   an agent sees.
 --
---   Runs 'Storyteller.Context.DSL.Library.characterSummary' (curated
+--   Resolves @context.character@ (a branch override on the @contexts@
+--   branch, then 'Storyteller.Context.DSL.Library.contextCharacterDefault'
+--   as fallback -- see 'Storyteller.Core.Context.resolveContextQuery')
+--   per active character, then reshapes it via
+--   'Storyteller.Context.DSL.Library.characterSummaryOf' (curated
 --   @"journal"@ bucket -- ambient generation wants the deduped slice, not
---   a present character's full self-knowledge) per active character --
---   the same shared definition
---   ('Storyteller.Context.DSL.Library.contextCharacter''s own Haddock)
---   every character-context consumer now reads through, not a bespoke
---   read here. @sheet.md@\/@journal.md@ are never lore-gated (per-branch
---   content filtering was previously theoretical -- every call site
---   always passed an empty layout map -- and is now, if ever wanted, a
---   project's own override of @context.character@'s @"full"@ bucket, not
---   a Haskell-side parameter here).
+--   a present character's full self-knowledge) -- the same shared
+--   definition ('Storyteller.Context.DSL.Library.contextCharacter''s own
+--   Haddock) every character-context consumer now reads through, not a
+--   bespoke read here. @sheet.md@\/@journal.md@ are never lore-gated
+--   (per-branch content filtering was previously theoretical -- every
+--   call site always passed an empty layout map -- and is now, if ever
+--   wanted, a project's own override of @context.character@'s @"full"@
+--   bucket, not a Haskell-side parameter here).
 --
 --   Returns the full 'CharSummary' split per character, not a flattened
 --   list -- 'chatWriter', still a single-shot prompt, collapses it back via
@@ -131,7 +134,9 @@ activeCharacterContext path = do
   where
     summarize (Character (BranchName name)) = do
       let ident = branchDisplayName name
-      summary <- runContextValue @Main (CtxLibrary.characterSummary "journal" ident)
+      charBinding <- resolveContextQuery "context.character" (CtxLibrary.toBinding1 CtxLibrary.contextCharacterDefault) Nothing
+      charVal     <- runContextBinding1 @Main charBinding ident
+      summary     <- runContextValue @Main (CtxLibrary.characterSummaryOf "journal" charVal)
       pure (CharLabel ident, summary)
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
@@ -257,7 +262,7 @@ roleplayWriter path prompt = do
     characterLabel (Character (BranchName name)) = branchDisplayName name
 
       -- Full, uncurated branch context (sheet, whole journal, notes.md if
-      -- any) -- 'characterSummary's own "journalFull" bucket, not the
+      -- any) -- 'characterSummaryOf's "journalFull" bucket, not the
       -- curated "journal" slice 'activeCharacterContext' uses for ambient
       -- generation context. Reflecting on a scene just witnessed needs
       -- everything this character actually knows going in, the same
@@ -267,10 +272,13 @@ roleplayWriter path prompt = do
       -- but 'characterReflectAgent''s own tool calls (it may update
       -- characters/*.md or add a thought based on what actually happened)
       -- and the final ref-carrying journal commit both do, so those two
-      -- stay inside one 'runBranchAndFS' scope.
+      -- stay inside one 'runBranchAndFS' scope. Resolves 'context.character'
+      -- the same override-aware way 'activeCharacterContext' does.
     reflectFor narrative sceneRef character@(Character (BranchName name)) = do
       let ident = branchDisplayName name
-      ownContext <- runContextValue @Main (CtxLibrary.characterSummary "journalFull" ident)
+      charBinding <- resolveContextQuery "context.character" (CtxLibrary.toBinding1 CtxLibrary.contextCharacterDefault) Nothing
+      charVal     <- runContextBinding1 @Main charBinding ident
+      ownContext  <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
       runBranchAndFS @ActiveChar (BranchName name) $ do
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
         void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] journalPath entry)
