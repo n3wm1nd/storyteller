@@ -82,6 +82,7 @@ import Storyteller.Context.DSL.AST
 import Storyteller.Context.DSL.Value
 
 import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Writer.Library (naturalKey)
 
 -- ---------------------------------------------------------------------------
 -- Bindings and environment
@@ -312,10 +313,72 @@ evalExpr env scope e = case e of
     v    <- evalExpr env scope inner
     args <- mapM (evalExpr env scope) argEs
     fBranch v args
+  -- @without@\/@only@\/@exclude@\/@latest@ all decide *which keys
+  -- survive* -- genuinely shrinking 'valueEntries', "like [a dropped key]
+  -- was never there" (not just neutering a kept key's own content to
+  -- 'emptyValue', the old behaviour) -- so, like @branch@, they're
+  -- dispatched here rather than through the pure 'applyFilter'\/
+  -- 'FilterRegistry': deciding the surviving key set needs each
+  -- argument's own text forced first (see 'argCriteria'), which a pure
+  -- @Value -> [Value] -> Value@ filter structurally can't do. This is
+  -- what makes @exclude(lore)@ -- passing in another already-computed
+  -- definition's own result, not just a literal pattern -- actually work:
+  -- 'lore's own key *names* are known purely (no forcing needed at all),
+  -- and once matched keys are genuinely gone, a subsequent @for@\/glob
+  -- over the result can't resurrect them the way it used to.
+  EFilter inner "without" argEs -> do
+    v    <- evalExpr env scope inner
+    args <- mapM (evalExpr env scope) argEs
+    shrinkEntries (==) False v args
+  EFilter inner "only" argEs -> do
+    v    <- evalExpr env scope inner
+    args <- mapM (evalExpr env scope) argEs
+    shrinkEntries (==) True v args
+  EFilter inner "exclude" argEs -> do
+    v    <- evalExpr env scope inner
+    args <- mapM (evalExpr env scope) argEs
+    shrinkEntries globMatches False v args
+  EFilter inner "latest" argEs -> do
+    v    <- evalExpr env scope inner
+    args <- mapM (evalExpr env scope) argEs
+    case args of
+      [nArg] -> do
+        nMsgs <- valueDefault nArg
+        let n = maybe 1 id (readMaybeInt (messagesText nMsgs))
+        if null (valueEntries v)
+          then pure v -- a single already-read leaf (see the invented-calendar example): no list to take "latest" from.
+          else do
+            let latestKeys = take n (List.sortBy (flip compare) (map fst (valueEntries v)))
+            pure v { valueEntries = filter (\(k, _) -> k `elem` latestKeys) (valueEntries v) }
+      _ -> fail $ "latest: expected exactly 1 argument, got " <> show (length args)
   EFilter inner name argEs -> do
     v    <- evalExpr env scope inner
     args <- mapM (evalExpr env scope) argEs
     pure (applyFilter name v args)
+
+-- | What a single @without@\/@only@\/@exclude@ argument contributes to the
+--   match set: another already-computed 'Value' with its own entries
+--   (e.g. @lore@, passed in as @exclude(lore)@) contributes its own key
+--   *names* directly -- always known purely, no forcing needed -- a plain
+--   leaf (an ordinary string-literal pattern\/name) contributes its own
+--   forced default text instead.
+argCriteria :: Value -> Action [Text]
+argCriteria a
+  | null (valueEntries a) = (: []) . messagesText <$> valueDefault a
+  | otherwise             = pure (map fst (valueEntries a))
+
+globMatches :: Text -> Text -> Bool
+globMatches k pat = Glob.match (Glob.compile (T.unpack pat)) (T.unpack k)
+
+-- | Shrinks @v@'s own 'valueEntries' by whether each key satisfies
+--   @matches@ against any criterion contributed by @args@ (see
+--   'argCriteria'). @keep = True@ retains a key some criterion matches
+--   (@only@); @keep = False@ drops it (@without@\/@exclude@).
+shrinkEntries :: (Text -> Text -> Bool) -> Bool -> Value -> [Value] -> Action Value
+shrinkEntries matches keep v args = do
+  criteria <- concat <$> mapM argCriteria args
+  let isMatched k = any (matches k) criteria
+  pure v { valueEntries = filter (\(k, _) -> isMatched k == keep) (valueEntries v) }
 
 -- | Resolves every @%name%@ span against 'env' (a local binding's own
 --   plain text -- see 'Storyteller.Context.DSL.Value.messagesText'),
@@ -358,11 +421,19 @@ resolveRead scope path = case lookup path (valueEntries scope) of
   Just action -> Just <$> action
   Nothing     -> lookupPath scope (T.splitOn "/" path)
 
+-- | Matches never re-sort -- 'listPaths' already walks 'valueEntries' in
+--   that 'Value's own order (see its own haddock: "order is a real,
+--   preserved property"), so a scope's current order (construction order
+--   for a freshly-read tree, or whatever a prior 'fSortBy' left it in)
+--   survives a glob untouched. This is what makes 'sortBy' observable
+--   through an ordinary @in ...: for f in ...: as f: ...@ re-export, not
+--   just through 'fJoin' -- forcing a fresh lexical sort here every time
+--   would silently undo any reordering a filter upstream already did.
 globMatchPat :: Value -> Text -> Action [Text]
 globMatchPat scope pat = do
   allPaths <- listPaths scope
   let compiled = Glob.compile (T.unpack pat)
-  pure (List.sort (filter (Glob.match compiled . T.unpack) allPaths))
+  pure (filter (Glob.match compiled . T.unpack) allPaths)
 
 globMatch :: Env -> Value -> PathLit -> Action [Text]
 globMatch env scope (PathLit _ parts) =
@@ -391,6 +462,14 @@ forceAt scope path = maybe emptyValue id <$> resolveRead scope path
 -- routed through 'applyFilter'\/'FilterRegistry' at all. Its own
 -- implementation ('fBranch') is ordinary 'Action' code, no different in
 -- kind from @read@\'s.
+--
+-- @without@\/@only@\/@exclude@\/@latest@ join @branch@ in that same
+-- exception, for a related but distinct reason: deciding which keys
+-- *survive* needs each argument's own text forced first (or, for a
+-- 'Value' argument with its own entries, its key names -- always known
+-- purely, see 'argCriteria'), and only 'evalExpr' -- not a pure
+-- 'DSLFilter' -- runs in 'Action' at all. See their own dispatch in
+-- 'evalExpr' and 'shrinkEntries'.
 -- ---------------------------------------------------------------------------
 
 -- | A filter's implementation: the piped 'Value', its call arguments,
@@ -418,16 +497,12 @@ coreFilters = Map.fromList
   , ("charname",     fPassthrough)   -- stub: no character-display-name registry to resolve against yet: passes the identifier's own text through unchanged.
   , ("truncate",     fTruncate)
   , ("join",         fJoin)
-  , ("without",      fWithout)
-  , ("only",         fOnly)
-  , ("latest",       fLatest)
+  , ("sortBy",       fSortBy)
   , ("summarize",          fNotImplemented "summarize")
   , ("draftDefinition",    fNotImplemented "draftDefinition")
   , ("extractProperNouns", fNotImplemented "extractProperNouns")
-  , ("exclude",      fNotImplemented "exclude")
   , ("whereType",    fNotImplemented "whereType")
   , ("whereTag",     fNotImplemented "whereTag")
-  , ("sortBy",       fNotImplemented "sortBy")
   ]
 
 applyFilter :: Name -> Value -> [Value] -> Value
@@ -478,44 +553,17 @@ fJoin v [sepArg] = leafValueA $ do
   pure [User (T.intercalate sep entryTexts)]
 fJoin _ args = errorValue $ "join: expected exactly 1 argument, got " <> show (length args)
 
--- | Trims @v@'s own entries down to the ones @args@' text names --
---   deferred per-entry rather than eagerly restricting the list: the
---   argument names can only be known by forcing @args@, and 'Value'\'s
---   own shape ("Value model") requires 'valueEntries'\'s *key set* to be
---   known without running anything at all, so an excluded entry stays a
---   key (still visible to 'listPaths'\/glob matching, in its original
---   position) but becomes 'emptyValue' once actually forced --
---   observably equivalent for every real use (nothing here globs *over*
---   a @without@\/@only@ result), and the only way to keep filter
---   application itself pure.
-fWithout :: DSLFilter
-fWithout v args = v { valueEntries = map (\(k, action) -> (k, trim k action)) (valueEntries v) }
-  where
-    trim k action = do
-      excluded <- mapM (\a -> messagesText <$> valueDefault a) args
-      if k `elem` excluded then pure emptyValue else action
-
-fOnly :: DSLFilter
-fOnly v args = v { valueEntries = map (\(k, action) -> (k, trim k action)) (valueEntries v) }
-  where
-    trim k action = do
-      keep <- mapM (\a -> messagesText <$> valueDefault a) args
-      if k `elem` keep then action else pure emptyValue
-
--- | Same deferred-per-entry shape as 'fWithout'\/'fOnly' -- the *set* of
---   keys is available purely, so the sort\/cutoff needs no forcing;
---   only @n@ itself does.
-fLatest :: DSLFilter
-fLatest v [nArg]
-  | null (valueEntries v) = v -- applied to a single already-read leaf (see the invented-calendar example): no list structure to take "latest" from, pass through unchanged.
-  | otherwise = v { valueEntries = map (\(k, action) -> (k, trim k action)) (valueEntries v) }
-  where
-    sortedKeys = List.sortBy (flip compare) (map fst (valueEntries v))
-    trim k action = do
-      nMsgs <- valueDefault nArg
-      let n = maybe 1 id (readMaybeInt (messagesText nMsgs))
-      if k `elem` take n sortedKeys then action else pure emptyValue
-fLatest _ args = errorValue $ "latest: expected exactly 1 argument, got " <> show (length args)
+-- | Reorders 'valueEntries' by 'naturalKey' on each entry's own key text
+--   (@\"ch2\"@ before @\"ch11\"@) -- decidable purely from the key set
+--   already required to exist without forcing anything (see 'Value's own
+--   haddock on why 'valueEntries' is a list, not a 'Map'), so, unlike
+--   'summarize'\/'draftDefinition'\/'extractProperNouns', this needs no
+--   LLM/content-analysis effect at all -- unusual for wanting an argument
+--   list of exactly zero, since the ordering itself is fixed (there's only
+--   one @naturalKey@), not a piped-in comparator.
+fSortBy :: DSLFilter
+fSortBy v [] = v { valueEntries = List.sortBy (\a b -> compare (naturalKey (fst a)) (naturalKey (fst b))) (valueEntries v) }
+fSortBy _ args = errorValue $ "sortBy: expected no arguments, got " <> show (length args)
 
 leafValueA :: Action [Message] -> Value
 leafValueA action = Value { valueDefault = action, valueEntries = [] }

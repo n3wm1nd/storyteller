@@ -74,6 +74,8 @@ library
                   , Storyteller.Context.DSL.Parser
                   , Storyteller.Context.DSL.Value
                   , Storyteller.Context.DSL.Compile
+                  , Storyteller.Context.DSL.Scope
+                  , Storyteller.Context.DSL.Library
                   , Storyteller.Context.DSL.QQ
                   , Server.Core.Protocol
                   , Server.Core.Util
@@ -282,6 +284,8 @@ test-suite storyteller-test
                   , Storyteller.ContextPreviewSpec
                   , Storyteller.Context.DSL.ParserSpec
                   , Storyteller.Context.DSL.CompileSpec
+                  , Storyteller.Context.DSL.ScopeSpec
+                  , Storyteller.Context.DSL.LibrarySpec
                   , Storyteller.Context.DSL.QQSpec
                   , Storyteller.OutlineSpec
                   , Storyteller.Common.SwipeSpec

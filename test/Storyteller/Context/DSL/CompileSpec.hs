@@ -106,6 +106,10 @@ spec = do
   forceUserRoleSpec
   localFunctionInForLoopSpec
   hostFunctionParamSpec
+  excludeFilterSpec
+  sortByFilterSpec
+  sortByThenReexportSpec
+  excludeByAnotherDefinitionSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -293,3 +297,147 @@ hostFunctionParamSpec = describe "a parameter can be a real Haskell function, no
       seedBranch "main" [("notes.md", "quietly written")]
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< hostFunctionDsl (fn1 shout))))
     `shouldBe` Right "QUIETLY WRITTEN"
+
+-- | 'without'\/'only' only ever match a full path *exactly* -- 'exclude'
+--   is their glob-pattern counterpart, needed for a bucket like the
+--   context-selection design's own @"lore"@ scope to drop a whole
+--   subtree (@exclude("secrets\/**")@) without enumerating every file in
+--   it individually.
+excludeFilterDsl :: Action Value
+excludeFilterDsl = [dsl|
+as "kept":
+  in (**/* | exclude("secrets/**")):
+    for f in *:
+      as f: read f
+|]
+
+excludeFilterSpec :: Spec
+excludeFilterSpec = describe "expr | exclude(pattern...) (glob-pattern exclusion)" $
+  it "drops every entry whose key matches any given glob pattern, keeping the rest" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("notes.md", "quietly written")
+        , ("other.md", "also kept")
+        , ("secrets/plan.md", "top secret")
+        , ("secrets/sub/deep.md", "very secret")
+        ]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right (Map.fromList
+      [ ("notes.md", "quietly written")
+      , ("other.md", "also kept")
+      ])
+  where
+    go = do
+      v       <- excludeFilterDsl
+      Just keptAction <- pure (lookup "kept" (valueEntries v))
+      kept <- keptAction
+      entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries kept)
+      pure (Map.fromList entryText)
+
+-- | @sortBy@ needs no LLM\/content-analysis effect at all -- the ordering
+--   ('Storyteller.Writer.Library.naturalKey' on each entry's own key text)
+--   is decidable purely from the key set 'Value' already carries, matching
+--   what a non-lexical chapter ordering (@ch2@ before @ch11@) needs without
+--   forcing a single file's content.
+-- | @for@\/glob matching always sorts its own matches lexically (see
+--   'Storyteller.Context.DSL.Compile.globMatchPat'), so @ch11.md@ already
+--   lands ahead of @ch2.md@ straight out of the loop -- exactly the case
+--   'sortBy' exists for. Checked through 'join' (which walks
+--   'valueEntries' directly, in whatever order they're already in)
+--   rather than a second @for@, since re-globbing would just re-sort
+--   lexically and silently undo 'sortBy's own reordering.
+sortByFilterDsl :: Action Value
+sortByFilterDsl = [dsl|
+x =
+  for f in *.md:
+    as f: f
+x | sortBy | join(",")
+|]
+
+sortByFilterSpec :: Spec
+sortByFilterSpec = describe "expr | sortBy (natural-key reordering)" $
+  it "orders entries by naturalKey on their own key text, ch2 before ch11" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("ch11.md", "eleven")
+        , ("ch2.md", "two")
+        , ("ch1.md", "one")
+        ]
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< sortByFilterDsl)))
+    `shouldBe` Right "ch1.md,ch2.md,ch11.md"
+
+-- | The realistic shape a stored "chapters" definition actually needs:
+--   re-exporting a sorted set of entries through the ordinary @in ...: for
+--   f in ...: as f: ...@ idiom, not just observing the order via 'join'.
+--   Regression case for 'globMatchPat' no longer force-sorting its own
+--   matches lexically (see its own haddock) -- before that fix, this
+--   second @for@ would have silently re-alphabetized @x@'s already-sorted
+--   entries right back to @ch1, ch11, ch2@.
+sortByThenReexportDsl :: Action Value
+sortByThenReexportDsl = [dsl|
+x =
+  for f in *.md:
+    as f: f
+in (x | sortBy):
+  for f in *.md:
+    as f: f
+|]
+
+sortByThenReexportSpec :: Spec
+sortByThenReexportSpec = describe "sortBy's reordering survives a subsequent for/glob re-export" $
+  it "keeps natural-key order across an in/for boundary, not just through join" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("ch11.md", "eleven")
+        , ("ch2.md", "two")
+        , ("ch1.md", "one")
+        ]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right ["ch1.md", "ch2.md", "ch11.md"]
+  where
+    go = do
+      v <- sortByThenReexportDsl
+      pure (map fst (valueEntries v))
+
+-- | @exclude@ can take another already-computed definition's own result
+--   (not just a literal glob pattern) and use its key *names* -- always
+--   known purely, no forcing needed -- as the exclusion set. This is the
+--   whole point of making @without@\/@only@\/@exclude@ genuinely remove
+--   keys rather than just neuter their content: an "everything not
+--   already claimed by @lore@" bucket can be built directly from @lore@'s
+--   own definition, no pattern duplicated between the two, and the
+--   removal survives the second @for@ re-export instead of resurrecting
+--   the excluded paths as empty stubs.
+loreDsl :: Action Value
+loreDsl = [dsl|
+for f in lore/**/*:
+  as f: read f
+|]
+
+excludeByAnotherDefinitionDsl :: Binding -> Action Value
+excludeByAnotherDefinitionDsl = [dsl|
+lore:
+  in (**/* | exclude(lore)):
+    for f in **/*:
+      as f: read f
+|]
+
+excludeByAnotherDefinitionSpec :: Spec
+excludeByAnotherDefinitionSpec = describe "expr | exclude(anotherDefinition)" $
+  it "excludes by another definition's own key set, and the removal survives a second for" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("lore/notes.md", "a hand-authored note")
+        , ("other.md", "not lore, should survive")
+        , ("chapters/ch1.md", "chapter one prose")
+        ]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right (Map.fromList
+      [ ("other.md", "not lore, should survive")
+      , ("chapters/ch1.md", "chapter one prose")
+      ])
+  where
+    go = do
+      v <- excludeByAnotherDefinitionDsl (bval loreDsl)
+      entryTexts <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
+      pure (Map.fromList entryTexts)
