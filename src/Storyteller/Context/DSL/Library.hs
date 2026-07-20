@@ -39,6 +39,7 @@ module Storyteller.Context.DSL.Library
   , contextMentionFilter
   , contextMain
   , contextQuery
+  , toBinding1
   ) where
 
 import Storyteller.Context.DSL.AST (Name)

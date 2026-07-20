@@ -29,10 +29,12 @@ import Data.Aeson (encode)
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as T
 import qualified Network.WebSockets as WS
-import Polysemy (Embed, Member, Sem, embed, runM)
+import Polysemy (Embed, Member, Members, Sem, embed, runM)
+import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
+import Storyteller.Core.Context (ContextStorage)
 import Server.Writer.Lore (loreTree)
 import Server.Writer.Lore.Protocol (LoreEvent(..))
 import Server.Writer.Env (ServerEnv(..))
@@ -75,7 +77,7 @@ onNotify branch conn () = \case
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (LoreError (T.pack err)))
 
-push :: (BranchOpen r, Member (Embed IO) r) => WS.Connection -> Sem r ()
+push :: (BranchOpen r, Members '[ContextStorage, Git] r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 push conn = do
   tree <- loreTree
   embed $ WS.sendTextData conn (encode (LoreTree tree))

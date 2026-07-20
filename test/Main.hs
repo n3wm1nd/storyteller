@@ -52,6 +52,7 @@ import qualified Storyteller.Context.DSL.RenderSpec
 import qualified Storyteller.Core.ContextSpec
 import qualified Storyteller.Context.DSL.QQSpec
 import qualified Server.BranchSpec
+import qualified Server.Writer.LoreSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.Writer.FileSpec
 import qualified Server.Writer.File.ConnectionSpec
@@ -123,6 +124,7 @@ main = hspec $ do
   -- buffered path; running both here is what closes that gap.
   describe "Server.Core.Branch (eager)"         (Server.BranchSpec.spec testStack)
   describe "Server.Core.Branch (withStorage)"   (Server.BranchSpec.spec testStackTransactional)
+  describe "Server.Writer.Lore" Server.Writer.LoreSpec.spec
   describe "Server.Writer.Branch (eager)"       (Server.Writer.BranchSpec.spec testStack)
   describe "Server.Writer.Branch (withStorage)" (Server.Writer.BranchSpec.spec testStackTransactional)
   describe "Server.Writer.File (eager)"         (Server.Writer.FileSpec.spec testStack)

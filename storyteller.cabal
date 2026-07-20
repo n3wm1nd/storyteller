@@ -295,6 +295,7 @@ test-suite storyteller-test
                   , Storyteller.Common.SwipeSpec
                   , Server.TestStack
                   , Server.BranchSpec
+                  , Server.Writer.LoreSpec
                   , Server.Writer.BranchSpec
                   , Server.Writer.FileSpec
                   , Server.Writer.File.ConnectionSpec
