@@ -50,10 +50,10 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..), renderEmbeddedFile)
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
-import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles, hideChapters, hideLore)
+import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
 import Storyteller.Writer.Lore (isLoreEligible)
@@ -67,8 +67,6 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
-import qualified Storyteller.Writer.Agent.ChapterContext as ChapterContext
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
@@ -87,7 +85,7 @@ import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, atGeneric)
 
-import Storyteller.Context.DSL.Value (valueDefault, messagesText, namedEntry)
+import Storyteller.Context.DSL.Value (Value(..), valueDefault, messagesText, namedEntry)
 import Storyteller.Context.DSL.Compile (bval)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
@@ -156,14 +154,26 @@ activeCharacterContext path = do
 --   for how it turns into a real @['UniversalLLM.Message']@ rather than one
 --   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
+-- | Drops @path@'s own entry from a bucket built by @for f in ...: as f:
+--   ...@ (keyed by full matched path -- see
+--   'Storyteller.Context.DSL.Compile.treeValueOfCommit's own Haddock on
+--   why that's always the shape a glob-derived container's keys take).
+--   Neither 'Storyteller.Context.DSL.Library.contextChapters' nor
+--   @context.main@'s own @"other"@ bucket know, or should know, that a
+--   particular call is in the middle of writing to one specific file --
+--   that's caller-local knowledge, so the caller filters it out after the
+--   fact rather than the DSL definition trying to parameterize over it.
+dropPath :: FilePath -> Value -> Value
+dropPath path v = v { valueEntries = filter ((/= T.pack path) . fst) (valueEntries v) }
+
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems contextProgram mFlowTid = do
   mainBinding <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) contextProgram
   mainVal     <- runContextBinding0 @Main mainBinding
   (loreBlocks, styleBlocks, earlierChapters) <- runContextValue @Main $ do
     loreV     <- namedEntry "lore" mainVal
-    otherV    <- namedEntry "other" mainVal
-    chaptersV <- namedEntry "chapters" mainVal
+    otherV    <- dropPath path <$> namedEntry "other" mainVal
+    chaptersV <- dropPath path <$> namedEntry "chapters" mainVal
     styleV    <- namedEntry "style" mainVal
     lore  <- (<>) <$> Render.valueBlocks loreV <*> Render.valueBlocks otherV
     earlier <- Render.valueMessages chaptersV
@@ -208,6 +218,24 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
 --   'activeCharacterContext', the sole source of truth for who's "in this
 --   scene" and thus askable; there is no separate client-supplied roster.
 --
+--   Scene context now comes from the same @context.main@ definition
+--   'chatWriter' uses ("Storyteller.Context.DSL.Library"), not a second,
+--   independently-hardcoded read (formerly
+--   'Storyteller.Writer.Agent.WorldContext.worldContextOf'\/
+--   'Storyteller.Writer.Agent.ChapterContext.earlierChaptersOf'\/
+--   'gatherFileContext') -- those two paths had already drifted (a plain
+--   glob's own notion of "lore" isn't @worldContextOf@'s "everything
+--   eligible that isn't a chapter", and only @gatherFileContext@ ever
+--   excluded @path@ itself). @"lore"@\/@"chapters"@\/@"other"@ are
+--   flattened together (no role/message split needed here -- unlike
+--   'chatWriter', 'roleplayAgent' takes one flat @['ContextBlock']@), with
+--   @path@'s own entry dropped from @"chapters"@\/@"other"@ explicitly
+--   (see 'dropPath') since, unlike 'chatWriter', nothing downstream of
+--   'roleplayAgent' ever wants to see the very file it's about to append
+--   to as if it were already-existing "earlier" content. No override
+--   parameter yet (still just the compiled-in default) -- adding one is a
+--   wire-protocol change, not part of this pass.
+--
 --   Once the scene lands, every present character -- whether or not the
 --   orchestrator ever asked them anything -- gets one post-scene
 --   'Storyteller.Writer.Agent.Roleplay.characterReflectAgent' pass: their
@@ -220,14 +248,15 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
 --   than running against nothing.
 roleplayWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 roleplayWriter path prompt = do
-  (_existing, fileCtx) <- hideLore @(BranchTag Main) (hideChapters @(BranchTag Main) (hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)))
-  (loreBlocks, earlierBlocks) <- runStorage @Main $ do
-    (WorldContext.WorldLore lore, _style) <- WorldContext.worldContextOf
-    earlier <- ChapterContext.earlierChaptersOf path
-    return (lore, [ ContextBlock (renderEmbeddedFile p t) | (p, t) <- earlier ])
+  mainBinding  <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) Nothing
+  mainVal      <- runContextBinding0 @Main mainBinding
+  sceneContext <- runContextValue @Main $ do
+    loreV     <- namedEntry "lore" mainVal
+    otherV    <- dropPath path <$> namedEntry "other" mainVal
+    chaptersV <- dropPath path <$> namedEntry "chapters" mainVal
+    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
   active <- activeCharactersFor @Main path
   let characters    = [ (CharLabel (characterLabel c), c) | c <- active ]
-      sceneContext  = loreBlocks <> earlierBlocks <> fileCtx
   info $ "roleplay agent starting: " <> T.pack path
   Prose narrative <- roleplayAgent sceneContext characters prompt
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
