@@ -39,8 +39,6 @@ library
                   , Storyteller.Writer.Agent.ContextFilter
                   , Storyteller.Writer.Agent.Chat
                   , Storyteller.Writer.Agent.CharContext
-                  , Storyteller.Writer.Agent.WorldContext
-                  , Storyteller.Writer.Agent.ChapterContext
                   , Storyteller.Writer.Agent.AskCharacter
                   , Storyteller.Common.Splitter
                   , Storyteller.Writer.Agent.Tracker
@@ -75,7 +73,7 @@ library
                   , Storyteller.Context.DSL.Parser
                   , Storyteller.Context.DSL.Value
                   , Storyteller.Context.DSL.Compile
-                  , Storyteller.Context.DSL.Scope
+                  , Storyteller.Context.DSL.Context
                   , Storyteller.Context.DSL.Library
                   , Storyteller.Context.DSL.Render
                   , Storyteller.Context.DSL.QQ
@@ -251,6 +249,7 @@ test-suite storyteller-test
                   , Storage.StoreOpCountSpec
                   , Storage.ChainEditSpec
                   , Storage.TickSpec
+                  , Storage.QuerySpec
                   , Storyteller.FileAtomsSpec
                   , Storyteller.AtGenericSpec
                   , Storyteller.BranchScopeSpec
@@ -270,7 +269,6 @@ test-suite storyteller-test
                   , Storyteller.TasksSpec
                   , Storyteller.CharGenSpec
                   , Storyteller.CharContextSpec
-                  , Storyteller.WorldContextSpec
                   , Storyteller.PresenceSpec
                   , Storyteller.Writer.CharacterAnswerSpec
                   , Storyteller.Writer.WriteSpec
@@ -286,7 +284,7 @@ test-suite storyteller-test
                   , Storyteller.ContextPreviewSpec
                   , Storyteller.Context.DSL.ParserSpec
                   , Storyteller.Context.DSL.CompileSpec
-                  , Storyteller.Context.DSL.ScopeSpec
+                  , Storyteller.Context.DSL.ContextSpec
                   , Storyteller.Context.DSL.LibrarySpec
                   , Storyteller.Context.DSL.RenderSpec
                   , Storyteller.Core.ContextSpec
@@ -370,10 +368,8 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.RoleplayHarness
                   , Agent.Integration.RoleplaySpec
                   , Agent.Integration.RoleplayMidStorySpec
-                  , Agent.Integration.WorldLoreSpec
                   , Agent.Integration.JournalInstructionSpec
                   , Agent.Integration.JournalIronySpec
-                  , Agent.Integration.WriterStyleGuideSpec
                   , Agent.Integration.WriterPinnedContextSpec
                   , Agent.Integration.WriterEarlierChaptersSpec
                   , Agent.Integration.WriterConversationHistorySpec

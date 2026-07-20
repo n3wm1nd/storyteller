@@ -55,8 +55,11 @@ import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, Scenar
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
 import Storyteller.Writer.Agent (ContextBlock(..))
+import Storyteller.Context.DSL.Value (namedEntry)
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Context (resolveContextQuery, runContextBinding1, runContextValue)
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..), contentFor)
@@ -396,12 +399,25 @@ suggestTasksOnBranch fallbackName loreSource toFile = do
       | T.null lore = material
       | otherwise    = lore <> "\n\n---\n\n" <> material
 
+-- | @context.main@'s @"lore"@\/@"other"@ buckets, flattened -- the same
+--   @context.main@ definition every other prose path in this application
+--   reads through now, not a second independently-hardcoded
+--   'Storyteller.Writer.Agent.WorldContext.worldContextOf' read (that
+--   module's own notion of "everything eligible that isn't a chapter" had
+--   already drifted from @context.main@'s glob-based classification). No
+--   real target file to exclude here (@branch@'s own content, not
+--   @toFile@, is what's being read), so @path@ is passed as the empty
+--   string, which excludes nothing.
 fetchLore :: SessionEffects r => BranchName -> Sem r T.Text
 fetchLore branch =
-  runBranchAndFS @LoreSource branch $
-    runStorage @LoreSource $ do
-      (WorldContext.WorldLore blocks, _) <- WorldContext.worldContextOf
-      return (T.intercalate "\n\n---\n\n" [ t | ContextBlock t <- blocks ])
+  runBranchAndFS @LoreSource branch $ do
+    mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
+    mainVal     <- runContextBinding1 @LoreSource mainBinding ""
+    blocks <- runContextValue @LoreSource $ do
+      loreV  <- namedEntry "lore" mainVal
+      otherV <- namedEntry "other" mainVal
+      concat <$> mapM Render.valueBlocks [loreV, otherV]
+    return (T.intercalate "\n\n---\n\n" [ t | ContextBlock t <- blocks ])
 
 -- | 'Just f' restricts to exactly that file; 'Nothing' accepts every file
 --   except @toFile@ itself (the tasks file is never its own source) --

@@ -14,8 +14,8 @@
 -- Structure is pure (see 'Storyteller.Writer.Lore'); this module adds what
 -- can't be: the branch's current file list, binary-hiding (reusing
 -- 'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles', the same
--- interceptor 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
--- already wraps its own reads in), and each eligible file's blurb and
+-- interceptor 'Server.Writer.ContextView.Connection' already wraps its own
+-- reads in), and each eligible file's blurb and
 -- aliases (reusing 'Storyteller.Writer.Agent.ContextPreview.blurb' and
 -- 'Storyteller.Writer.Lore.parseAliases' off the same content read). No
 -- incremental cache like 'Server.Writer.Library.LibraryFoldCache' — a full

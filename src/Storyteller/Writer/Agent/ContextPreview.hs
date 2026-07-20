@@ -20,8 +20,8 @@
 --
 -- Deliberately just a preview: no interceptor is installed anywhere, and no
 -- generation agent consults this module's output. Wiring an agent to
--- actually honour a submitted filter (rather than reading everything, as
--- 'Storyteller.Writer.Agent.Continuation.gatherFileContext'/
+-- actually honour a submitted filter (rather than reading everything, the
+-- way @context.main@'s own DSL text and
 -- 'Storyteller.Writer.Agent.CharContext.readCharFiles' do today) is future
 -- work, out of scope here.
 module Storyteller.Writer.Agent.ContextPreview
@@ -56,9 +56,10 @@ data ContextMode = Ambient | OnDemand
 --   chose (e.g. @"character:alice-chen"@, @"branch-files"@), its fixed
 --   delivery mode, and the (client-supplied) bucket-picker layout selecting
 --   and ordering its files. See 'Storyteller.Writer.Agent.ContextFilter'
---   for the picker model — this slot's layout is exactly what a real
---   generation call ('Storyteller.Writer.Agent.Continuation.gatherFileContext')
---   would apply, so the preview shows exactly what generation would see.
+--   for the picker model. Real generation no longer applies this layout at
+--   all (@context.main@'s own DSL text -- see CONTEXT-DSL.md -- decides
+--   what's showable now), so this preview no longer reflects exactly what
+--   a real generation call would see; reconciling the two is unbuilt.
 data ContextSlot = ContextSlot
   { csLabel  :: T.Text
   , csMode   :: ContextMode
@@ -76,8 +77,9 @@ data ContextSlot = ContextSlot
 --   Agents tab's context preview. Unclaimed entries never load
 --   content/blurb: nothing reads a file that won't be sent anyway. An empty
 --   'csLayout' ("nothing configured yet") is the one exception — every file
---   previews as bucket 1, matching 'gatherFileContext'\'s own "no layout
---   configured" fallback, rather than every file previewing as unclaimed.
+--   previews as bucket 1, matching how "no layout configured" always
+--   falls back to showing everything, rather than every file previewing
+--   as unclaimed.
 data ContextEntry = ContextEntry
   { cePath    :: FilePath
   , ceContent :: Maybe T.Text
@@ -98,8 +100,7 @@ data ContextSlotPreview = ContextSlotPreview
 --   behaviour, see 'ContextEntry's 'ceBucket') regardless of how many
 --   buckets are in play. Only claimed entries get their content/blurb
 --   loaded, per the slot's mode. Same 'FileSystem'\/'FileSystemRead' pair
---   'Storyteller.Writer.Agent.Continuation.gatherFileContext' already
---   requires — this is a third consumer of that same read surface, not a
+--   every other plain filesystem read in this codebase requires — not a
 --   new capability.
 buildSlotPreview
   :: forall project r

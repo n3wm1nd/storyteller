@@ -9,6 +9,7 @@ import qualified Storage.FoldIntoOpCountSpec
 import qualified Storage.StoreOpCountSpec
 import qualified Storage.ChainEditSpec
 import qualified Storage.TickSpec
+import qualified Storage.QuerySpec
 import qualified Storyteller.FileAtomsSpec
 import qualified Storyteller.AtGenericSpec
 import qualified Storyteller.BranchScopeSpec
@@ -28,7 +29,6 @@ import qualified Storyteller.JournalSummarizerSpec
 import qualified Storyteller.TasksSpec
 import qualified Storyteller.CharGenSpec
 import qualified Storyteller.CharContextSpec
-import qualified Storyteller.WorldContextSpec
 import qualified Storyteller.PresenceSpec
 import qualified Storyteller.Writer.CharacterAnswerSpec
 import qualified Storyteller.Writer.WriteSpec
@@ -46,7 +46,7 @@ import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
 import qualified Storyteller.Context.DSL.ParserSpec
 import qualified Storyteller.Context.DSL.CompileSpec
-import qualified Storyteller.Context.DSL.ScopeSpec
+import qualified Storyteller.Context.DSL.ContextSpec
 import qualified Storyteller.Context.DSL.LibrarySpec
 import qualified Storyteller.Context.DSL.RenderSpec
 import qualified Storyteller.Core.ContextSpec
@@ -74,6 +74,7 @@ main = hspec $ do
   describe "Storage.StoreOpCount"       Storage.StoreOpCountSpec.spec
   describe "Storage.ChainEdit"          Storage.ChainEditSpec.spec
   describe "Storage.Tick"               Storage.TickSpec.spec
+  describe "Storage.Query"              Storage.QuerySpec.spec
   describe "Storyteller.FileAtoms"      Storyteller.FileAtomsSpec.spec
   describe "Storyteller.AtGeneric"     Storyteller.AtGenericSpec.spec
   describe "Storyteller.BranchScope"   Storyteller.BranchScopeSpec.spec
@@ -93,7 +94,6 @@ main = hspec $ do
   describe "Storyteller.Writer.Agent.Tasks" Storyteller.TasksSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
   describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
-  describe "Storyteller.Writer.Agent.WorldContext" Storyteller.WorldContextSpec.spec
   describe "Storyteller.Presence"       Storyteller.PresenceSpec.spec
   describe "Storyteller.Writer.Types.CharacterAnswer" Storyteller.Writer.CharacterAnswerSpec.spec
   describe "Storyteller.Writer.Agent.Write (buildChapterMessages)" Storyteller.Writer.WriteSpec.spec
@@ -111,7 +111,7 @@ main = hspec $ do
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
   describe "Storyteller.Context.DSL.Parser" Storyteller.Context.DSL.ParserSpec.spec
   describe "Storyteller.Context.DSL.Compile" Storyteller.Context.DSL.CompileSpec.spec
-  describe "Storyteller.Context.DSL.Scope"   Storyteller.Context.DSL.ScopeSpec.spec
+  describe "Storyteller.Context.DSL.Context" Storyteller.Context.DSL.ContextSpec.spec
   describe "Storyteller.Context.DSL.Library" Storyteller.Context.DSL.LibrarySpec.spec
   describe "Storyteller.Context.DSL.Render"  Storyteller.Context.DSL.RenderSpec.spec
   describe "Storyteller.Core.Context" Storyteller.Core.ContextSpec.spec

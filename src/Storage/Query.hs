@@ -19,6 +19,7 @@ module Storage.Query
     findAtom
   , hasAnyAtom
   , atomTrackedAmong
+  , loadLiveWorkingTree
 
     -- * A path's current lifetime
   , atomHistory
@@ -88,6 +89,30 @@ atomTrackedAmong paths = headHash >>= go (Set.fromList paths) Set.empty
           case commitParents cd of
             []        -> return found'
             (par : _) -> go pending' found' par
+
+-- | 'Storage.Core.loadWorkingTree' with every never-atom-tracked path
+--   removed -- an uploaded binary asset, or anything else that opted out
+--   of atom tracking, simply doesn't exist as far as a caller of this
+--   function is concerned, the same absence-not-an-error treatment a
+--   missing lookup already gets elsewhere in this module. Whether a path
+--   has ever been atom-tracked is a real storage fact (a chain walk), not
+--   something derivable from a path's own text -- callers further up
+--   (e.g. "Storyteller.Context.DSL.Compile"'s Reader-scope bootstrap) that
+--   need "only real, prose-bearing content" get it from here rather than
+--   re-deciding that policy themselves.
+--
+--   @commit@ is resolved explicitly throughout -- 'readAt' repositions
+--   just the atom-tracking walk (which otherwise reads the *ambient*
+--   head), matching 'Storage.Core.loadWorkingTree' itself, which already
+--   takes an explicit commit rather than reading ambient state -- so this
+--   is safe to call against a foreign commit without disturbing the
+--   caller's own position.
+loadLiveWorkingTree :: StoreM m => ObjectHash -> StoreT m [(FilePath, ObjectHash)]
+loadLiveWorkingTree commit = do
+  wt <- lift (loadWorkingTree commit)
+  let files = [ (path, h) | (path, FSFile h) <- Map.toList wt ]
+  tracked <- readAt commit (atomTrackedAmong (map fst files))
+  pure [ (path, h) | (path, h) <- files, path `Set.member` tracked ]
 
 -- | This file's own *current lifetime*, oldest first: every atom strictly
 --   after @path@'s most recent deletion event (see

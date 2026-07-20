@@ -90,20 +90,20 @@ parseAliases content =
 --   its own so 'Server.Writer.Lore' can filter the branch's file list before
 --   reading any content, rather than reading everything and discarding.
 --
---   Deliberately narrower than 'Storyteller.Writer.Agent.WorldContext.
---   isWorldContextEligible' -- that module's job is "what does the model
---   see as story-wide reference material", where an outline or beat sheet
---   belongs same as any other hand-authored file; this one's job is "what
---   gets its own codex entry", where an outline already has a home in the
---   Library tab and showing it again here would just be a duplicate.
+--   Deliberately narrower than what a model sees as story-wide reference
+--   material (see 'Storyteller.Context.DSL.Library.contextMain', where an
+--   outline or beat sheet belongs same as any other hand-authored file) --
+--   this one's job is "what gets its own codex entry", where an outline
+--   already has a home in the Library tab and showing it again here would
+--   just be a duplicate.
 isLoreEligible :: FilePath -> Bool
 isLoreEligible path = classifyPath path == OtherFile && isNotScratchOrCharacterFile path
 
--- | The two exclusions 'isLoreEligible' and 'Storyteller.Writer.Agent.
---   WorldContext.isWorldContextEligible' share regardless of how each
---   otherwise scopes "lore" -- chat scratch space and a character's
---   root-level sheet\/journal are never lore under either module's notion
---   of the word.
+-- | The same two exclusions 'Storyteller.Context.DSL.Library.contextMain'
+--   applies (@exclude("chat/**/*")@, and a character's own sheet\/journal
+--   never showing up outside their own branch) -- chat scratch space and a
+--   character's root-level sheet\/journal are never lore under either
+--   notion of the word.
 isNotScratchOrCharacterFile :: FilePath -> Bool
 isNotScratchOrCharacterFile path =
   take 1 (splitDirectories path) /= ["chat"]

@@ -69,6 +69,7 @@ import Storyteller.Writer.Agent
   , ExistingContent(..), WordCount(..) )
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, getConfigWithPrompt)
+import qualified Storyteller.Context.DSL.Value as DSL
 
 -- | A coarse planning document — the source of an expansion. Usually the
 --   contents of @outline.md@ (whole story) or the slice of it covering one
@@ -459,12 +460,12 @@ chapterProse
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
-  -> [ContextBlock]
+  -> [DSL.Message]
   -> ExistingContent       -- ^ prose already written for this chapter (empty for a fresh chapter)
   -> BeatSheet
   -> Sem r Prose
-chapterProse outputHint charContexts contextBlocks existing (BeatSheet sheet) =
-  proseAgent outputHint charContexts contextBlocks existing
+chapterProse outputHint charContexts context existing (BeatSheet sheet) =
+  proseAgent outputHint charContexts context existing
     (beatSheetInstruction sheet)
 
 -- | Generate a chapter beat by beat: repeatedly ask the model for the prose
@@ -485,12 +486,12 @@ chapterProseByBeat
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount       -- ^ approximate length hint, per beat
   -> [CharContextBlock]
-  -> [ContextBlock]
+  -> [DSL.Message]
   -> ExistingContent       -- ^ prose already written for this chapter
   -> BeatSheet
   -> Int                   -- ^ maxBeats: hard cap on iterations
   -> Sem r Prose
-chapterProseByBeat outputHint charContexts contextBlocks (ExistingContent existing0) (BeatSheet sheet) maxBeats =
+chapterProseByBeat outputHint charContexts context (ExistingContent existing0) (BeatSheet sheet) maxBeats =
   Prose . dropWritten <$> go existing0 (1 :: Int) maxBeats
   where
     -- Loop until the model signals done (or the budget runs out), carrying
@@ -502,7 +503,7 @@ chapterProseByBeat outputHint charContexts contextBlocks (ExistingContent existi
       return soFar
     go soFar beatNo budget = do
       info $ "chapterProseByBeat: beat " <> T.pack (show beatNo) <> ": querying model..."
-      Prose piece <- proseAgent outputHint charContexts contextBlocks
+      Prose piece <- proseAgent outputHint charContexts context
         (ExistingContent soFar)
         (nextBeatInstruction sheet)
       let trimmed = T.strip piece
@@ -533,13 +534,13 @@ reconcileChapter
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
-  -> [ContextBlock]
+  -> [DSL.Message]
   -> CurrentProse          -- ^ the chapter's current prose (reference, to be revised)
   -> Instruction           -- ^ the user's additional steer
   -> BeatSheet
   -> Sem r Prose
-reconcileChapter outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) =
-  proseAgent outputHint charContexts contextBlocks (ExistingContent "")
+reconcileChapter outputHint charContexts context current userInstr (BeatSheet sheet) =
+  proseAgent outputHint charContexts context (ExistingContent "")
     (reconcileInstruction current userInstr sheet)
 
 -- | Regenerate a chapter to fit its beat sheet, beat by beat. Same
@@ -553,13 +554,13 @@ reconcileChapterByBeat
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
-  -> [ContextBlock]
+  -> [DSL.Message]
   -> CurrentProse
   -> Instruction
   -> BeatSheet
   -> Int                   -- ^ maxBeats: hard cap on iterations
   -> Sem r Prose
-reconcileChapterByBeat outputHint charContexts contextBlocks current userInstr (BeatSheet sheet) maxBeats =
+reconcileChapterByBeat outputHint charContexts context current userInstr (BeatSheet sheet) maxBeats =
   Prose <$> go "" (1 :: Int) maxBeats
   where
     go soFar beatNo 0 = do
@@ -567,7 +568,7 @@ reconcileChapterByBeat outputHint charContexts contextBlocks current userInstr (
       return soFar
     go soFar beatNo budget = do
       info $ "reconcileChapterByBeat: beat " <> T.pack (show beatNo) <> ": querying model..."
-      Prose piece <- proseAgent outputHint charContexts contextBlocks
+      Prose piece <- proseAgent outputHint charContexts context
         (ExistingContent soFar)
         (reconcileNextBeatInstruction current userInstr sheet)
       let trimmed = T.strip piece

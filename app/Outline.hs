@@ -25,6 +25,7 @@
 module Main (main) where
 
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -32,7 +33,7 @@ import System.IO (hPutStrLn, stderr)
 
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists, readFile)
 import Runix.Logging (Logging)
 
 import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
@@ -42,10 +43,16 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (ExistingContent(..))
-import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.Outline (OutlineDoc(..), ExpandGoal(..), expandAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
+
+import Storyteller.Context.DSL.Value (namedEntry)
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue, interpretContextStorageFS)
+
+import Prelude hiding (readFile)
 
 main :: IO ()
 main = do
@@ -61,7 +68,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS $ splitMarkdownAware $ outlineAction outFile guidance)
+    (interpretPromptStorageFS $ interpretContextStorageFS $ splitMarkdownAware $ outlineAction outFile guidance)
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -69,6 +76,7 @@ main = do
 
 outlineAction
   :: (LLMs r, Members '[ PromptStorage
+              , ContextStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -80,9 +88,23 @@ outlineAction
   => FilePath -> T.Text -> Sem r T.Text
 outlineAction outFile guidance = do
   -- @outline.md@ is the document being expanded; every other branch file goes
-  -- along as surrounding context ("all files" is the context, subject to
-  -- filtering later). 'gatherFileContext' hands back both in one read.
-  (ExistingContent outline, fileCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
+  -- along as surrounding context, via the same @context.main@ definition
+  -- every WS-driven prose path reads through now (see
+  -- 'Server.Writer.File.flatMainContext') -- @outline.md@'s own entry is
+  -- already excluded from @"chapters"@\/@"other"@ by
+  -- 'Storyteller.Context.DSL.Library.contextMain''s own @path@ parameter.
+  -- @outline.md@'s own content is separate, read directly below (it's the
+  -- document being expanded, not surrounding context).
+  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
+  mainVal     <- runContextBinding1 @Main mainBinding "outline.md"
+  fileCtx <- runContextValue @Main $ do
+    loreV     <- namedEntry "lore" mainVal
+    chaptersV <- namedEntry "chapters" mainVal
+    otherV    <- namedEntry "other" mainVal
+    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
+  ExistingContent outline <- fileExists @(BranchTag Main) "outline.md" >>= \case
+    True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) "outline.md"
+    False -> return (ExistingContent "")
   let source = OutlineDoc $ case guidance of
         "" -> outline
         g  -> g <> "\n\n" <> outline

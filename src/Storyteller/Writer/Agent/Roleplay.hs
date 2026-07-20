@@ -106,13 +106,15 @@ import UniversalLLM.Tools (ToolParameter(..), LLMTool(..), mkToolWithMeta, llmTo
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS)
 import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Core.LLM.Interceptor (withToolCallBudget)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent (CharContextBlock(..), CharLabel(..), CharSummary(..), ContextBlock(..), Prose(..))
+import Storyteller.Writer.Agent (CharContextBlock(..), CharLabel(..), CharSummary(..), Prose(..))
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Lore (isLoreEligible)
 import Storyteller.Writer.Types (Character(..))
@@ -139,7 +141,7 @@ type Exchange = (Text, Text, Text)
 roleplayAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, BranchOp Main, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
-  => [ContextBlock]            -- ^ scene context: existing prose, world lore
+  => [DSL.Message]             -- ^ scene context: existing prose, world lore -- model-agnostic Context DSL messages, bound to a concrete model only right before each call actually reaches 'queryLLM' (see 'Storyteller.Writer.Agent.Continuation.proseAgent's own Haddock on why upstream binding is wrong)
   -> [(CharLabel, Character)]  -- ^ every character present
   -> Text                      -- ^ the author's direction; may be empty
   -> Sem r Prose
@@ -171,7 +173,7 @@ roleplayAgent sceneContext characters prompt = do
 askCharacter
   :: forall r
   .  (LLMs r, Members '[PromptStorage, BranchOp Main, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
-  => Character -> Text -> [ContextBlock] -> Text -> Sem r Text
+  => Character -> Text -> [DSL.Message] -> Text -> Sem r Text
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
@@ -190,17 +192,20 @@ askCharacter (Character (BranchName branchName)) name sceneContext question = do
 questionForCharacterAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock] -> [Text] -> Text -> Text -> Sem r Text
+  => [DSL.Message] -> [Text] -> Text -> Text -> Sem r Text
 questionForCharacterAgent sceneContext roster label prompt = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay.question" defaultQuestionSystemPrompt defaultQuestionConfig
-  response <- queryLLM configsWithPrompt [UserText (renderQuestionPrompt sceneContext roster label prompt)]
+  let contextMsgs = map Render.dslMessageToLLM sceneContext
+  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderQuestionTrailing roster label prompt)])
   pure (T.strip (mconcat [t | AssistantText t <- response]))
 
-renderQuestionPrompt :: [ContextBlock] -> [Text] -> Text -> Text -> Text
-renderQuestionPrompt sceneContext roster label prompt =
-  T.intercalate "\n\n" (map unContextBlock sceneContext ++ [rosterLine, direction, ask])
+-- | Everything after @sceneContext@'s own (now real, separate) messages --
+--   genuinely new/synthesized each call, never DSL conversational
+--   structure, so flattening it into one trailing message loses nothing.
+renderQuestionTrailing :: [Text] -> Text -> Text -> Text
+renderQuestionTrailing roster label prompt =
+  T.intercalate "\n\n" [rosterLine, direction, ask]
   where
-    unContextBlock (ContextBlock b) = b
     rosterLine = "Characters present in this scene: " <> T.intercalate ", " roster
     direction
       | T.null (T.strip prompt) = "No specific direction was given -- the scene continues naturally from here."
@@ -234,20 +239,23 @@ defaultQuestionConfig = [MaxTokens 5000, Temperature 0.8]
 composeSceneAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock] -> [Exchange] -> Text -> Sem r Text
+  => [DSL.Message] -> [Exchange] -> Text -> Sem r Text
 composeSceneAgent sceneContext exchanges prompt = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay" defaultComposeSystemPrompt defaultComposeConfig
   info "roleplayAgent: composing the scene..."
-  response <- queryLLM configsWithPrompt [UserText (renderComposePrompt sceneContext exchanges prompt)]
+  let contextMsgs = map Render.dslMessageToLLM sceneContext
+  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderComposeTrailing exchanges prompt)])
   let narrative = T.strip (mconcat [t | AssistantText t <- response])
   info ("roleplayAgent: finished scene (" <> T.pack (show (T.length narrative)) <> " chars):\n" <> narrative)
   pure narrative
 
-renderComposePrompt :: [ContextBlock] -> [Exchange] -> Text -> Text
-renderComposePrompt sceneContext exchanges prompt =
-  T.intercalate "\n\n" (map unContextBlock sceneContext ++ [direction] ++ map renderExchange exchanges ++ [closing])
+-- | Everything after @sceneContext@'s own (now real, separate) messages --
+--   see 'renderQuestionTrailing's own Haddock for why flattening the rest
+--   loses nothing.
+renderComposeTrailing :: [Exchange] -> Text -> Text
+renderComposeTrailing exchanges prompt =
+  T.intercalate "\n\n" ([direction] ++ map renderExchange exchanges ++ [closing])
   where
-    unContextBlock (ContextBlock b) = b
     direction
       | T.null (T.strip prompt) = "No specific direction was given -- continue the scene naturally from here."
       | otherwise                = "Direction from the author: " <> prompt
@@ -315,7 +323,7 @@ characterIntentAgent
      )
   => Text                  -- ^ this character's display name
   -> CharSummary            -- ^ their own full, uncurated branch context (see 'Storyteller.Context.DSL.Library.characterSummaryOf')
-  -> [ContextBlock]        -- ^ the scene's own context (existing prose, world lore)
+  -> [DSL.Message]         -- ^ the scene's own context (existing prose, world lore)
   -> Text                  -- ^ the question put to them
   -> Sem r Text
 characterIntentAgent name ownContext sceneContext question = do
@@ -358,8 +366,9 @@ characterIntentAgent name ownContext sceneContext question = do
 --   ('protectCharacterFiles', baked directly into @write_file@\/@edit_file@'s
 --   own tool definitions below), not by checking the path inside their
 --   implementation -- the same 'Runix.FileSystem.PathFilter'\/
---   'Runix.FileSystem.filterWrite' machinery 'hideChapters'\/'hideLore'
---   already use for read-side narrowing, just on the write side. Wrapping
+--   'Runix.FileSystem.filterWrite' machinery
+--   'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles' already uses
+--   for read-side narrowing, just on the write side. Wrapping
 --   only those two tools' own functions (rather than the whole tool loop)
 --   is deliberate: @add_thought@\/@add_suspicion@ append to @journal.md@
 --   through this exact same 'FileSystemWrite' effect, and would be denied
@@ -418,8 +427,8 @@ characterTools =
 --   character's own branch through it -- see 'characterTools's own Haddock
 --   for why this is a real filesystem-effect interception, not a per-tool
 --   guess. Same 'Runix.FileSystem.PathFilter'\/'Runix.FileSystem.filterWrite'
---   machinery 'hideChapters'\/'hideLore' already use for read-side
---   narrowing, on the write side instead.
+--   machinery 'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles'
+--   already uses for read-side narrowing, on the write side instead.
 protectCharacterFiles
   :: forall project r a
   .  Members '[FileSystem project, FileSystemWrite project] r
@@ -506,17 +515,22 @@ addSuspicionTool = LLMTool $ mkToolWithMeta
 --   what keeps a change to the always-changing journal from being able to
 --   silently fuse backward into, and invalidate, the stable prefix in front
 --   of it, no matter how a given provider handles same-role adjacency.
-characterOpeningMessages :: Text -> CharSummary -> [ContextBlock] -> [FilePath] -> Text -> [Message m]
+characterOpeningMessages :: Text -> CharSummary -> [DSL.Message] -> [FilePath] -> Text -> [Message m]
 characterOpeningMessages name ownContext sceneContext lore question =
   UserText (characterIdentityNote name)
     : labelledPair "## Your character sheet" (blocksText (csSheet ownContext))
    ++ labelledPair "## What else I know" (T.intercalate "\n\n" (filter (not . T.null) [blocksText (csContext ownContext), renderLoreList lore]))
    ++ labelledPair "## My own journal so far" (blocksText (csJournal ownContext))
-   ++ [UserText (T.intercalate "\n\n" (sceneBlocks ++ [asked]))]
+   ++ sceneMsgs
+   ++ [UserText asked]
   where
-    sceneBlocks
+    -- Real, separate messages -- not flattened into one string the way the
+    -- rest of this function's static framing is -- so any role structure
+    -- @sceneContext@ itself carries (@context.main@'s own alternating-turn
+    -- "chapters" bucket, say) survives into this call too.
+    sceneMsgs
       | null sceneContext = []
-      | otherwise          = "### The scene so far" : map (\(ContextBlock b) -> b) sceneContext
+      | otherwise          = UserText "### The scene so far" : map Render.dslMessageToLLM sceneContext
     asked = "You're being asked: " <> question
 
 -- | One labelled section as a @('UserText', 'AssistantText')@ pair -- see

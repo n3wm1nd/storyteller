@@ -9,14 +9,11 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
--- | 'Storyteller.Context.DSL.Scope.liveTreeValueOfCommit' against a real
---   (mock-git-backed) branch: everything else about "what's lore" is DSL
---   policy now (see the module's own haddock), so the only thing left to
---   check here is the one fact that has to be decided in Haskell -- a
---   genuinely never-atom-tracked path (same fixture shape as
+-- | 'Storage.Query.loadLiveWorkingTree' against a real (mock-git-backed)
+--   branch: a genuinely never-atom-tracked path (same fixture shape as
 --   'Storyteller.ContextFilterSpec's own 'hideBinaryFiles' case) never
---   shows up in the scope at all.
-module Storyteller.Context.DSL.ScopeSpec (spec) where
+--   shows up in its result at all.
+module Storage.QuerySpec (spec) where
 
 import Test.Hspec
 
@@ -28,6 +25,7 @@ import Runix.Git (Git)
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import Storage.Query (loadLiveWorkingTree)
 import Storyteller.Core.Git (BranchTag, runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
@@ -35,13 +33,10 @@ import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Context.DSL.Scope (liveTreeValueOfCommit)
-import Storyteller.Context.DSL.Value
-
 import Prelude hiding (writeFile)
 
 spec :: Spec
-spec = describe "liveTreeValueOfCommit" $
+spec = describe "loadLiveWorkingTree" $
   it "excludes a never-atom-tracked path, keeping every atom-tracked one" $ do
     let result = run $ testStack $ do
           _ <- createBranch (BranchName "story")
@@ -52,6 +47,6 @@ spec = describe "liveTreeValueOfCommit" $
             _ <- runStorage @Main (Ops.commitFiles ["cover.png"])
             Just b <- getBranch (BranchName "story")
             let commit = Core.ObjectHash (unTickId (branchHead b))
-            scope <- fst <$> Core.runStoreT commit (runAction (liveTreeValueOfCommit commit))
-            pure (map fst (valueEntries scope))
+            files <- fst <$> Core.runStoreT commit (loadLiveWorkingTree commit)
+            pure (map fst files)
     result `shouldBe` Right ["chapters/ch1.md", "notes.md"]

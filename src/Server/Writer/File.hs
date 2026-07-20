@@ -52,8 +52,6 @@ import UniversalLLM (Message(..))
 
 import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
-import Storyteller.Writer.Agent.Continuation (gatherFileContext)
-import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
 import Storyteller.Writer.Lore (isLoreEligible)
@@ -85,11 +83,12 @@ import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, atGeneric)
 
-import Storyteller.Context.DSL.Value (valueDefault, messagesText, namedEntry, withoutKey)
-import Storyteller.Context.DSL.Compile (bval)
+import Storyteller.Context.DSL.Value (valueDefault, messagesText, namedEntry)
+import qualified Storyteller.Context.DSL.Value as DSL
 import qualified Storyteller.Context.DSL.Render as Render
+import Storyteller.Context.DSL.Context (toContext, runContext)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (resolveContextQuery, runContextBinding0, runContextBinding1, runContextValue)
+import Storyteller.Core.Context (resolveContextQuery, runContextBinding1, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -161,12 +160,12 @@ activeCharacterContext path = do
 --   result is done here too.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems contextProgram mFlowTid = do
-  mainBinding <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) contextProgram
-  mainVal     <- runContextBinding0 @Main mainBinding
+  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) contextProgram
+  mainVal     <- runContextBinding1 @Main mainBinding (T.pack path)
   (loreBlocks, styleBlocks, earlierChapters) <- runContextValue @Main $ do
     loreV     <- namedEntry "lore" mainVal
-    otherV    <- withoutKey (T.pack path) <$> namedEntry "other" mainVal
-    chaptersV <- withoutKey (T.pack path) <$> namedEntry "chapters" mainVal
+    otherV    <- namedEntry "other" mainVal
+    chaptersV <- namedEntry "chapters" mainVal
     styleV    <- namedEntry "style" mainVal
     lore  <- (<>) <$> Render.valueBlocks loreV <*> Render.valueBlocks otherV
     earlier <- Render.valueMessages chaptersV
@@ -202,6 +201,38 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
 
+-- | The flat, unsplit @context.main@ render -- @"lore"@\/@"chapters"@\/
+--   @"other"@ concatenated into one @['ContextBlock']@, @path@'s own entry
+--   already excluded by 'Storyteller.Context.DSL.Library.contextMain''s own
+--   @path@ parameter. What 'roleplayWriter'\/'chatChapterRegen'\/
+--   'chatSplitOutline' all want: unlike 'chatWriter', none of them need lore
+--   and style split into their own dedicated message slots, or chapters
+--   placed at a specific position relative to the rest (see 'chatWriter''s
+--   own Haddock on why it can't just reuse this) -- @"lore"@\/@"chapters"@\/
+--   @"other"@ just get concatenated into one sequence here. That
+--   concatenation still preserves each individual message's own role,
+--   though (model-agnostic Context DSL 'Storyteller.Context.DSL.Value.Message's,
+--   not flattened text) -- @context.main@'s own alternating-turn "chapters"
+--   bucket survives to whichever caller's own agent finally renders these
+--   against a real model, rather than being collapsed here. This is the one
+--   shared entry point every non-'chatWriter' prose path in this module now
+--   reads context through -- no more per-caller
+--   'gatherFileContext'\/'Storyteller.Writer.Agent.WorldContext.worldContextOf'
+--   reads that could quietly drift from @context.main@'s own policy.
+--
+--   @contextProgram@ is only ever 'Just' for 'chatWriter''s own wire-level
+--   override today ('roleplayWriter'\/'chatChapterRegen'\/'chatSplitOutline'
+--   have no such parameter yet) -- threaded through here anyway so adding
+--   one to any of them later is a one-line change, not a second code path.
+flatMainMessages :: (FileOpen r, SessionEffects r) => Maybe T.Text -> FilePath -> Sem r [DSL.Message]
+flatMainMessages contextProgram path = do
+  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) contextProgram
+  mainVal     <- runContextBinding1 @Main mainBinding (T.pack path)
+  runContextValue @Main $ runContext $
+       toContext (namedEntry "lore" mainVal)
+    <> toContext (namedEntry "chapters" mainVal)
+    <> toContext (namedEntry "other" mainVal)
+
 -- | The roleplay writer: rather than one call producing the scene directly
 --   (the shape 'chatWriter' uses), every character present is interrogated
 --   for what they'd do or say (via 'Storyteller.Writer.Agent.Roleplay.
@@ -219,15 +250,17 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
 --   'gatherFileContext') -- those two paths had already drifted (a plain
 --   glob's own notion of "lore" isn't @worldContextOf@'s "everything
 --   eligible that isn't a chapter", and only @gatherFileContext@ ever
---   excluded @path@ itself). @"lore"@\/@"chapters"@\/@"other"@ are
---   flattened together (no role/message split needed here -- unlike
---   'chatWriter', 'roleplayAgent' takes one flat @['ContextBlock']@), with
---   @path@'s own entry dropped from @"chapters"@\/@"other"@ explicitly
---   (see 'Storyteller.Context.DSL.Value.withoutKey') since, unlike 'chatWriter', nothing downstream of
---   'roleplayAgent' ever wants to see the very file it's about to append
---   to as if it were already-existing "earlier" content. No override
---   parameter yet (still just the compiled-in default) -- adding one is a
---   wire-protocol change, not part of this pass.
+--   excluded @path@ itself). 'flatMainMessages' is what actually pulls this
+--   together now -- @"lore"@\/@"chapters"@\/@"other"@ concatenated into one
+--   sequence (unlike 'chatWriter', 'roleplayAgent' has no dedicated
+--   earlier-chapters slot), but still as real, model-agnostic Context DSL
+--   messages, not flattened text -- 'Storyteller.Writer.Agent.Roleplay.roleplayAgent'
+--   itself now binds them to a concrete model only right before each of its
+--   own 'Runix.LLM.queryLLM' calls. @path@'s own entry is already dropped
+--   from @"chapters"@\/@"other"@ by
+--   'Storyteller.Context.DSL.Library.contextMain''s own @path@ parameter. No
+--   override parameter yet (still just the compiled-in default) -- adding
+--   one is a wire-protocol change, not part of this pass.
 --
 --   Once the scene lands, every present character -- whether or not the
 --   orchestrator ever asked them anything -- gets one post-scene
@@ -241,13 +274,7 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
 --   than running against nothing.
 roleplayWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 roleplayWriter path prompt = do
-  mainBinding  <- resolveContextQuery "context.main" (bval CtxLibrary.contextQuery) Nothing
-  mainVal      <- runContextBinding0 @Main mainBinding
-  sceneContext <- runContextValue @Main $ do
-    loreV     <- namedEntry "lore" mainVal
-    otherV    <- withoutKey (T.pack path) <$> namedEntry "other" mainVal
-    chaptersV <- withoutKey (T.pack path) <$> namedEntry "chapters" mainVal
-    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
+  sceneContext <- flatMainMessages Nothing path
   active <- activeCharactersFor @Main path
   let characters    = [ (CharLabel (characterLabel c), c) | c <- active ]
   info $ "roleplay agent starting: " <> T.pack path
@@ -443,6 +470,12 @@ data RegenMode = RegenWhole | RegenByBeat
 --   The beat sheet path is derived from the chapter path by the WRITER.md
 --   convention (@chapters/ch{N}.md@ → @chapters/ch{N}.outline.md@); a missing
 --   beat sheet is a clear failure, not a silent no-op.
+--
+--   Scene context comes from 'flatMainContext' now (the same @context.main@
+--   render 'roleplayWriter' uses), not a second independently-hardcoded
+--   'gatherFileContext' read -- @path@ itself (the chapter being
+--   regenerated) is excluded the same way, via
+--   'Storyteller.Context.DSL.Library.contextMain''s own @path@ parameter.
 chatChapterRegen :: (FileOpen r, SessionEffects r) => RegenMode -> FilePath -> T.Text -> [ContextItem] -> Sem r ()
 chatChapterRegen mode path prompt context = do
   let sheetPath = beatSheetPathFor path
@@ -453,9 +486,9 @@ chatChapterRegen mode path prompt context = do
       _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
-      (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
+      fileCtx <- flatMainMessages Nothing path
       charBlocks <- flattenCharBlocks . map (fmap flattenCharSummary) <$> activeCharacterContext path
-      let extraContext = toContextBlocks context <> fileCtx
+      let extraContext = map (DSL.User . ciContent) context <> fileCtx
           instruction  = Instruction prompt
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path
       Prose regenerated <- case mode of
@@ -490,10 +523,16 @@ chatChapterRegen mode path prompt context = do
 --   substantially more reliable at getting the chapter breakdown right in
 --   the first place — see @FINDINGS.md@ in the same suite for the measured
 --   comparison.
+--
+--   Surrounding context comes from 'flatMainMessages' now, not a second
+--   independently-hardcoded 'gatherFileContext' read -- see
+--   'chatChapterRegen''s own Haddock. 'splitOutlineFreeform' still takes
+--   flat 'ContextBlock's (unmigrated -- it doesn't go through 'proseAgent'),
+--   flattened here at the call site same as 'roleplayWriter's own.
 chatSplitOutline :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> Sem r ()
 chatSplitOutline path = do
   outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
-  (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
+  fileCtx <- map Render.messageToBlock <$> flatMainMessages Nothing path
   info $ "outline split starting: " <> T.pack path
   sheets <- splitOutlineFreeform fileCtx outline
   mapM_ writeSheet sheets

@@ -46,12 +46,16 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent
-  (Prose(..), CharLabel(..), CharContextBlock(..), WordCount(..))
-import Storyteller.Writer.Agent.Continuation (gatherFileContext)
+  (Prose(..), CharLabel(..), CharContextBlock(..), WordCount(..), ExistingContent(..))
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), chapterProse, chapterProseByBeat)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
+
+import Storyteller.Context.DSL.Value (namedEntry)
+import Storyteller.Context.DSL.Context (toContext, runContext)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue, interpretContextStorageFS)
 
 import Prelude hiding (readFile)
 
@@ -77,7 +81,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS $ splitMarkdownAware
+    (interpretPromptStorageFS $ interpretContextStorageFS $ splitMarkdownAware
       $ chapterAction mode sheetPath outFile (envActiveChars env))
 
   case result of
@@ -86,6 +90,7 @@ main = do
 
 chapterAction
   :: (LLMs r, Members '[ PromptStorage
+              , ContextStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -105,7 +110,22 @@ chapterAction mode sheetPath outFile activeChars = do
             $ charSummaryAgent @(BranchTag Char_) (const True)
     return (CharLabel charBranch, blocks)
 
-  (existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
+  -- Same @context.main@ definition every WS-driven prose path reads
+  -- through now -- see 'Server.Writer.File.flatMainMessages'. @outFile@'s
+  -- own current content is separate (its own "existing prose to build
+  -- on" argument below, never part of context.main's own buckets). Kept
+  -- as real, model-agnostic Context DSL messages (not flattened
+  -- 'ContextBlock' text) all the way into 'chapterProse'\/'chapterProseByBeat',
+  -- which now bind them to a concrete model only inside 'proseAgent'.
+  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
+  mainVal     <- runContextBinding1 @Main mainBinding (T.pack outFile)
+  fileCtx <- runContextValue @Main $ runContext $
+       toContext (namedEntry "lore" mainVal)
+    <> toContext (namedEntry "chapters" mainVal)
+    <> toContext (namedEntry "other" mainVal)
+  existing <- fileExists @(BranchTag Main) outFile >>= \case
+    True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile
+    False -> return (ExistingContent "")
   let charContexts = concatMap
         (\(CharLabel name, bs) -> CharContextBlock ("## Character: " <> name) : bs)
         charBlocks

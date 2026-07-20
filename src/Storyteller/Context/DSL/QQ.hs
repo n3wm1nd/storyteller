@@ -47,6 +47,7 @@ import Language.Haskell.TH.Syntax (Lift(lift), Loc(..), location)
 
 import Storyteller.Context.DSL.AST (Definition(..))
 import Storyteller.Context.DSL.Compile (runDefinition)
+import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
 
 -- | Only 'quoteExp' is meaningful for a DSL that produces a 'Value'-typed
@@ -68,16 +69,29 @@ compileDsl src = do
     Left err  -> fail (T.unpack (renderParseErr err))
     Right def -> curriedRunner def
 
--- | Splices to @\\a1 ... an -> 'runDefinition' def [a1, ..., an]@, with
---   exactly as many lambda parameters as 'defParams' -- the 0-arity case
---   (most top-level definitions) needs no lambda at all, just the call.
---   Parameter names are reused from the source's own (so a type error at
---   a call site names @charname@, not a generic @arg1@).
+-- | Splices to @\\a1 ... an -> 'runDefinition' def [toBinding a1, ...,
+--   toBinding an]@, with exactly as many lambda parameters as
+--   'defParams' -- the 0-arity case (most top-level definitions) needs no
+--   lambda at all, just the call. Parameter names are reused from the
+--   source's own (so a type error at a call site names @charname@, not a
+--   generic @arg1@).
+--
+--   Each argument goes through 'Storyteller.Context.DSL.Context.toBinding'
+--   rather than being used bare -- this is what makes every parameter
+--   position independently polymorphic
+--   (@'Storyteller.Context.DSL.Context.ToBinding' a => a -> ...@) instead
+--   of forced to 'Storyteller.Context.DSL.Compile.Binding' by list
+--   homogeneity with 'runDefinition''s own signature, letting a call site
+--   pass a plain 'Data.Text.Text', an 'Storyteller.Context.DSL.Value.Action'
+--   'Storyteller.Context.DSL.Value.Value', a
+--   'Storyteller.Context.DSL.Context.Context', or a host function directly
+--   -- see "Storyteller.Context.DSL.Context"'s own Haddock.
 curriedRunner :: Definition -> Q Exp
 curriedRunner def = do
   argNames <- mapM (newName . T.unpack) (defParams def)
   defExpr  <- lift def
-  let call = AppE (AppE (VarE 'runDefinition) defExpr) (ListE (map VarE argNames))
+  let toBindingArg n = AppE (VarE 'toBinding) (VarE n)
+      call = AppE (AppE (VarE 'runDefinition) defExpr) (ListE (map toBindingArg argNames))
   pure $ if null argNames then call else LamE (map VarP argNames) call
 
 -- | Drops exactly one leading @\\n@, the one every @[dsl|@ opened on its

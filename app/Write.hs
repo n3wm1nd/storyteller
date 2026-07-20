@@ -41,11 +41,15 @@ import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..), CharSummary(..))
-import Storyteller.Writer.Agent.Continuation (gatherFileContext)
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
+
+import Storyteller.Context.DSL.Value (namedEntry)
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue, interpretContextStorageFS)
 
 -- | Phantom tag for character branches opened temporarily within the action.
 data Char_
@@ -64,7 +68,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS $ splitMarkdownAware $ writeAction outFile (Instruction instruction) (envActiveChars env))
+    (interpretPromptStorageFS $ interpretContextStorageFS $ splitMarkdownAware $ writeAction outFile (Instruction instruction) (envActiveChars env))
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -72,6 +76,7 @@ main = do
 
 writeAction
   :: (LLMs r, Members '[ PromptStorage
+              , ContextStorage
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -88,7 +93,19 @@ writeAction outFile instruction activeChars = do
             $ charSummaryAgent @(BranchTag Char_) (const True)
     return (CharLabel charBranch, CharSummary { csSheet = [], csContext = blocks, csJournal = [] })
 
-  (_existing, fileCtx) <- gatherFileContext @(BranchTag Main) [] outFile
+  -- Same @context.main@ definition every WS-driven prose path reads
+  -- through now (see 'Server.Writer.File.flatMainContext') -- not a
+  -- second, independently-hardcoded 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
+  -- read. Passed into 'writeAgent's own @pinned@ slot, matching this
+  -- tool's pre-DSL behaviour exactly (lore\/style stay empty here; a CLI
+  -- run has no separate "user's own selection" to distinguish it from).
+  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
+  mainVal     <- runContextBinding1 @Main mainBinding (T.pack outFile)
+  fileCtx <- runContextValue @Main $ do
+    loreV     <- namedEntry "lore" mainVal
+    chaptersV <- namedEntry "chapters" mainVal
+    otherV    <- namedEntry "other" mainVal
+    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
   currentTicks <- runStorage @Main (Tick.fileTicksOf outFile)
   Prose generated <- writeAgent [] [] charBlocks fileCtx [] currentTicks instruction
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated

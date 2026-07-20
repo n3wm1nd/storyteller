@@ -71,6 +71,7 @@ import Storyteller.Core.LLM.Registry
   , knownModels, modelInterpreter, resolveKnownModel, resolveKnownAgentModel, withKnownModel )
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (Prompt, PromptKey, PromptStorage(..))
+import Storyteller.Core.Context (ContextStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
@@ -117,7 +118,7 @@ mainBranch = BranchName "main"
 type ScenarioEffects judgeModel r =
   ( LLMs r
   , Members
-      '[ LLM judgeModel, PromptStorage, Logging
+      '[ LLM judgeModel, PromptStorage, ContextStorage, Logging
        , Git, StoryStorage, BranchOp Main, Splitter
        , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
        , Fail, Embed IO

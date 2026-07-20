@@ -26,6 +26,7 @@ import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (runBranchAndFS, runStoryStorageGit)
 import Storyteller.Core.LLM.Role (reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
+import Storyteller.Core.Context (interpretContextStorageMap)
 import Storyteller.Core.Storage (createBranch)
 
 import Agent.Integration.Harness
@@ -43,10 +44,8 @@ import qualified Agent.Integration.OutlineSplitEscapingSpec
 import qualified Agent.Integration.CharacterPresenceSpec
 import qualified Agent.Integration.RoleplaySpec
 import qualified Agent.Integration.RoleplayMidStorySpec
-import qualified Agent.Integration.WorldLoreSpec
 import qualified Agent.Integration.JournalInstructionSpec
 import qualified Agent.Integration.JournalIronySpec
-import qualified Agent.Integration.WriterStyleGuideSpec
 import qualified Agent.Integration.WriterPinnedContextSpec
 import qualified Agent.Integration.WriterEarlierChaptersSpec
 import qualified Agent.Integration.WriterConversationHistorySpec
@@ -166,6 +165,7 @@ main = do
               -- the bulk/whole-chapter calls with the largest MaxTokens.
               . httpIO (withRequestTimeout 1800)
               . interpretPromptStorageMap mempty
+              . interpretContextStorageMap mempty
               . runLLMRunner runStoryAgent
               -- '.' -- 'fileSystemLocal' above already chroots to its own
               -- cache dir, so the cache's own lookup/store path is just the
@@ -199,10 +199,8 @@ main = do
         describe "Agent.Integration.CharacterPresenceSpec"    (Agent.Integration.CharacterPresenceSpec.spec @judgeTy runner)
         describe "Agent.Integration.RoleplaySpec"             (Agent.Integration.RoleplaySpec.spec @judgeTy runner)
         describe "Agent.Integration.RoleplayMidStorySpec"     (Agent.Integration.RoleplayMidStorySpec.spec @judgeTy runner)
-        describe "Agent.Integration.WorldLoreSpec"            (Agent.Integration.WorldLoreSpec.spec @judgeTy runner)
         describe "Agent.Integration.JournalInstructionSpec"   (Agent.Integration.JournalInstructionSpec.spec @judgeTy runner)
         describe "Agent.Integration.JournalIronySpec"         (Agent.Integration.JournalIronySpec.spec @judgeTy runner)
-        describe "Agent.Integration.WriterStyleGuideSpec"        (Agent.Integration.WriterStyleGuideSpec.spec @judgeTy runner)
         describe "Agent.Integration.WriterPinnedContextSpec"     (Agent.Integration.WriterPinnedContextSpec.spec @judgeTy runner)
         describe "Agent.Integration.WriterEarlierChaptersSpec"   (Agent.Integration.WriterEarlierChaptersSpec.spec @judgeTy runner)
         describe "Agent.Integration.WriterConversationHistorySpec" (Agent.Integration.WriterConversationHistorySpec.spec @judgeTy runner)

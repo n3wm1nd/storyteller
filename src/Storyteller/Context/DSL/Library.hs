@@ -11,10 +11,12 @@
 --   first as a hardcoded three-bucket 'Storage.Core.ObjectHash'-keyed
 --   scope, then as a @whereType@ filter -- both just moved the same fixed
 --   policy one layer down without actually making it project-editable).
---   The only Haskell-side policy left after this module is
---   'Storyteller.Context.DSL.Scope.liveTreeValueOfCommit''s binary
---   exclusion, which genuinely can't be expressed any other way (see its
---   own haddock).
+--   The DSL never sees a binary file to begin with -- that exclusion is
+--   decided at the storage layer, before any DSL text runs, by
+--   'Storage.Query.loadLiveWorkingTree' (what
+--   'Storyteller.Context.DSL.Compile.treeValueOfCommit' builds every
+--   Reader scope from) -- so there's nothing left, Haskell-side or DSL-
+--   side, for a project to reach for here even if it wanted to.
 --
 --   Every definition here is named the same way
 --   'Storyteller.Core.Prompt.PromptKey' names a prompt override --
@@ -287,48 +289,62 @@ aliases:
 --   equivalent to one call with every argument) -- @chat\/**@ stays a
 --   plain literal pattern here since it's not a whole other definition's
 --   own result, just a fixed scratch-space convention.
-contextMain :: Binding -> Binding -> Binding -> Action Value
+--
+--   @path@ is the file a caller is about to write to, dropped from
+--   @"chapters"@\/@"other"@ so a query never shows a file to itself as if
+--   it were already-existing prior content (@"lore"@ is never
+--   path-excluded -- a lore file being self-referential isn't a case that
+--   comes up). Callers with no real target file (a lore-only read, say)
+--   pass the empty string, which @exclude@ then matches against nothing
+--   real. This used to be a post-hoc 'Storyteller.Context.DSL.Value.withoutKey'
+--   call at every Haskell call site; threading it as a real parameter
+--   instead makes the exclusion DSL policy, inspectable and overridable
+--   like the rest of this module, rather than a Haskell-side patch-up
+--   every caller had to remember to apply.
+contextMain :: Action Value -> Action Value -> Action Value -> Binding -> Action Value
 contextMain = [dsl|
-lore: chapters: style:
+lore: chapters: style: path:
   as "lore":
     in lore:
       for f in **/*:
         as f: read f
   as "chapters":
-    in chapters:
+    in (chapters | exclude(path)):
       for f in **/*:
         as f: read f
   as "other":
-    in (**/* | exclude(lore, chapters, "style.md") | exclude("chat/**/*")):
+    in (**/* | exclude(lore, chapters, "style.md") | exclude("chat/**/*") | exclude(path)):
       for f in **/*:
         as f: read f
   as "style": style
 |]
 
--- | 'contextMain', fully applied to the other three default definitions --
---   the actual 0-arity program a chat\/write query's own wire-level
---   context field resolves to by default (see
---   'Storyteller.Core.Context.resolveContextQuery'\/'getContextDefinition':
---   both only ever run a 0-arity 'Binding', since the wire never sends
---   parameters). 'contextMain' itself stays exported separately since it's
---   the reusable composer -- a project overriding just @context.lore@
---   still gets it threaded into this same composition, unmodified.
-contextQuery :: Action Value
-contextQuery = contextMain (bval contextLore) (bval contextChapters) (bval contextStyle)
+-- | 'contextMain', fully applied to the other three default definitions,
+--   down to the one real parameter left -- @path@ (see 'contextMain''s own
+--   haddock). This is the actual 1-arity program a chat\/write query's own
+--   wire-level context field resolves to by default (see
+--   'Storyteller.Core.Context.resolveContextQuery'\/'getContextDefinition',
+--   'Storyteller.Core.Context.runContextBinding1'). 'contextMain' itself
+--   stays exported separately since it's the reusable composer -- a
+--   project overriding just @context.lore@ still gets it threaded into
+--   this same composition, unmodified.
+contextQuery :: Binding -> Action Value
+contextQuery = contextMain contextLore contextChapters contextStyle
 
 -- | Every default definition this application ships. Arity differs per
---   entry ('contextStyle'\/'contextLore'\/'contextChapters'\/'contextQuery'\/
+--   entry ('contextStyle'\/'contextLore'\/'contextChapters'\/
 --   'characterBlurb' are plain 0-arity values; 'contextCharacterDefault'\/
---   'contextMentionFilter' take one argument, the raw 3-arity
---   'contextCharacter' fully applied down to that same one-argument shape)
---   -- 'Binding' already carries its own arity (see its
---   own haddock: "values are just 0-arity functions, otherwise no
---   different"), so a uniform @[(Name, Binding)]@ is exactly the right
---   shape regardless, with no arity-indexed type needed. @context.main@
---   names 'contextQuery' (0-arity, ready to run as-is), not 'contextMain'
---   itself (3-arity, a composer) -- the dotted key is what a client\/branch
---   override addresses, and an override is always a fresh 0-arity program,
---   never something that takes parameters.
+--   'contextMentionFilter'\/'contextQuery' take one argument -- 'contextQuery'
+--   its target @path@, the other two the raw 3-arity 'contextCharacter'\/
+--   'contextMentionFilter'\'s own composer fully applied down to one-argument
+--   shape) -- 'Binding' already carries its own arity (see its own haddock:
+--   "values are just 0-arity functions, otherwise no different"), so a
+--   uniform @[(Name, Binding)]@ is exactly the right shape regardless, with
+--   no arity-indexed type needed. @context.main@ names 'contextQuery'
+--   (1-arity, ready to run once given @path@ -- see 'runContextBinding1'),
+--   not 'contextMain' itself (4-arity, a composer) -- the dotted key is
+--   what a client\/branch override addresses, and an override always
+--   matches whatever arity the default it's replacing has.
 defaultLibrary :: [(Name, Binding)]
 defaultLibrary =
   [ ("context.style",         bval contextStyle)
@@ -337,7 +353,7 @@ defaultLibrary =
   , ("character.blurb",       toBinding1 characterBlurb)
   , ("context.character",     toBinding1 contextCharacterDefault)
   , ("context.mentionFilter", toBinding1 contextMentionFilter)
-  , ("context.main",          bval contextQuery)
+  , ("context.main",          toBinding1 contextQuery)
   ]
 
 -- | Re-curries a QQ-spliced 1-arity definition (@'Binding' ->

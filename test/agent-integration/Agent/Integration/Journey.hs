@@ -41,6 +41,7 @@ import qualified Data.Text as T
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, listAllFiles)
+import Runix.Git (Git)
 import Runix.LLM (Message)
 import Runix.Logging (Logging, info)
 
@@ -53,25 +54,41 @@ import Storyteller.Core.LLM.Role (AgentModel, LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Writer.Agent (Instruction(..), Prompt(..), Prose(..))
-import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
-import Storyteller.Writer.Agent.Continuation (gatherFileContext)
+import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prompt(..), Prose(..))
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), OutlineDoc(..), splitOutlineAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
+
+import Storyteller.Context.DSL.Value (namedEntry)
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
 
 -- | Every effect one journey step needs -- exactly 'Server.Writer.File'\'s
 --   own imports, minus 'Server.Core.Run.SessionEffects'\' @Random@\/
 --   @Error String@, neither of which any step below touches.
 type JourneyEffects r =
   ( LLMs r
-  , Members '[ PromptStorage, Splitter, Logging
-             , StoryStorage, BranchOp Main
+  , Members '[ PromptStorage, ContextStorage, Splitter, Logging
+             , StoryStorage, BranchOp Main, Git
              , FileSystem      (BranchTag Main)
              , FileSystemRead  (BranchTag Main)
              , FileSystemWrite (BranchTag Main)
              , Fail
              ] r
   )
+
+-- | The flat @context.main@ render ('Server.Writer.File.flatMainContext'
+--   in production) -- what every step below reads surrounding context
+--   through now, instead of a local 'gatherFileContext' read.
+flatMainContext :: JourneyEffects r => FilePath -> Sem r [ContextBlock]
+flatMainContext path = do
+  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
+  mainVal     <- runContextBinding1 @Main mainBinding (T.pack path)
+  runContextValue @Main $ do
+    loreV     <- namedEntry "lore" mainVal
+    chaptersV <- namedEntry "chapters" mainVal
+    otherV    <- namedEntry "other" mainVal
+    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
 
 -- | The three requests a Writer-tab session issues, and what each produced.
 data JourneyResult = JourneyResult
@@ -114,7 +131,7 @@ runJourney = do
   outline <- writeChat "outline.md" storyPremise
 
   info "journey: splitting outline into chapter beat sheets"
-  (_, outlineCtx) <- gatherFileContext @(BranchTag Main) [] "outline.md"
+  outlineCtx <- flatMainContext "outline.md"
   -- A budget of 2: one or two retries recovering from a malformed
   -- 'emit_beat_sheet' call is legitimate self-correction (see
   -- 'Storyteller.Writer.Agent.Outline.splitOutlineAgent's own retry loop)
@@ -166,7 +183,7 @@ writeChat
   .  JourneyEffects r
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
-  (_existing, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
+  fileCtx <- flatMainContext path
   currentTicks <- runStorage @Main (Tick.fileTicksOf path)
   Prose generated <- writeAgent [] [] [] fileCtx [] currentTicks (Instruction prompt)
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
@@ -193,7 +210,7 @@ chapterPathFor path
 
 -- | Frame the chapter-writing request the same way a user, looking at a
 --   freshly split beat sheet, would type it -- naming the beat sheet so the
---   model knows which of the many context blocks 'gatherFileContext' handed
+--   model knows which of the many context blocks 'flatMainContext' handed
 --   it to follow, without dictating a word count or driving style ('writeAgent'
 --   already fixes the length hint).
 chapterInstruction :: FilePath -> T.Text

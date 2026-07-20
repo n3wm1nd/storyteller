@@ -78,6 +78,7 @@ import qualified System.FilePath as FP
 import qualified System.FilePath.Glob as Glob
 
 import qualified Storage.Core as Core
+import qualified Storage.Query as Query
 import qualified Storage.Tick as Tick
 
 import Storyteller.Context.DSL.AST
@@ -159,23 +160,32 @@ type Env = Map Name Binding
 --   started on or one reached via @charname | branch@ mid-evaluation.
 --
 --   'entries' is keyed by *full path*, one level, not a hand-rolled
---   nested trie -- 'Core.loadWorkingTree' (one call: structure only, no
---   blob reads) already gives exactly this shape, the same way a glob
---   result's own 'entries' is already flat and keyed by full matched
---   path (see "Value model"). 'read'\'s resolution (see 'evalExpr'\'s
---   @ERead@ case) tries the whole literal path as one flat key first for
---   exactly this reason, before ever falling back to 'lookupPath'\'s
---   segment-by-segment walk. Content stays deferred: each leaf's own
---   'valueDefault' is its own 'Core.readObject' call, forced only when a
---   definition actually reads it.
+--   nested trie -- 'Storage.Query.loadLiveWorkingTree' (structure only, no
+--   blob reads beyond what it needs for its own atom-tracking check)
+--   already gives exactly this shape, the same way a glob result's own
+--   'entries' is already flat and keyed by full matched path (see "Value
+--   model"). 'read'\'s resolution (see 'evalExpr'\'s @ERead@ case) tries
+--   the whole literal path as one flat key first for exactly this reason,
+--   before ever falling back to 'lookupPath'\'s segment-by-segment walk.
+--   Content stays deferred: each leaf's own 'valueDefault' is its own
+--   'Core.readObject' call, forced only when a definition actually reads
+--   it.
+--
+--   Never-atom-tracked paths (an uploaded binary asset, say) are already
+--   gone by the time this sees the tree -- 'Storage.Query.loadLiveWorkingTree'
+--   is the one place that policy is decided, deliberately at the storage
+--   layer rather than here: a raw, non-UTF8 blob has no sensible
+--   'Message' to become at all, so this module -- the DSL's own
+--   interpreter -- never needs to know binary files exist in the first
+--   place, rather than filtering them out after the fact.
 treeValueOfCommit :: Core.ObjectHash -> Action Value
 treeValueOfCommit commit = do
-  wt <- liftStore (Core.loadWorkingTree commit)
+  files <- Action (Query.loadLiveWorkingTree commit)
   pure Value
     { valueDefault = pure []
     , valueEntries =
         [ (T.pack path, leafValue . (: []) . FileRead path . TE.decodeUtf8 <$> readBlob h)
-        | (path, Core.FSFile h) <- Map.toList wt
+        | (path, h) <- files
         ]
     }
   where

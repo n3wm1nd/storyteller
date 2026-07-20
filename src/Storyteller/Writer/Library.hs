@@ -222,8 +222,7 @@ data UnitInfo = UnitInfo
 --   directory that holds a 'Unit' and\/or a 'UnitOutline'. This is a real
 --   domain fact ("this file is a chapter, and here's its beat sheet if
 --   any"), not a display-only grouping — computed once here rather than
---   independently re-derived by every caller (the Library UI,
---   'Storyteller.Writer.Agent.ChapterContext.earlierChaptersOf', the
+--   independently re-derived by every caller (the Library UI, the
 --   Summarizer agent) that needs the same answer.
 narrativeUnits :: [LibraryNode] -> [UnitInfo]
 narrativeUnits tree = [ toUnit n | n <- leaves, isPrimary n ]

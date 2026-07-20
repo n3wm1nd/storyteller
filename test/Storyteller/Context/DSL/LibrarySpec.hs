@@ -62,7 +62,7 @@ spec = do
   contextMentionFilterSpec
 
 contextMainSpec :: Spec
-contextMainSpec = describe "contextMain (the default context.main library entry)" $
+contextMainSpec = describe "contextMain (the default context.main library entry)" $ do
   it "exports lore/chapters/other/style as distinguished, unflattened buckets -- chapters in natural order with User/Assistant pairing, style separate, a stray note caught by other, chat scratch hidden" $
     run (testStack $ do
       seedBranch "main"
@@ -73,7 +73,7 @@ contextMainSpec = describe "contextMain (the default context.main library entry)
         , ("chat/scratch.md", "chat scratch, never lore or a chapter")
         , ("todo.md", "a stray root note, filed under neither lore/ nor chapters/")
         ]
-      runDslOn (BranchName "main") go)
+      runDslOn (BranchName "main") (go ""))
     `shouldBe` Right
       ( ["lore", "chapters", "other", "style"]
       , Map.fromList [("lore/notes.md", "a hand-authored note")]
@@ -83,12 +83,30 @@ contextMainSpec = describe "contextMain (the default context.main library entry)
       , Map.fromList [("todo.md", "a stray root note, filed under neither lore/ nor chapters/")]
       , "write in past tense"
       )
+
+  it "excludes the target path from chapters and other, but never from lore" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("lore/notes.md", "a hand-authored note")
+        , ("style.md", "write in past tense")
+        , ("chapters/ch2.md", "chapter two prose")
+        , ("todo.md", "a stray root note, filed under neither lore/ nor chapters/")
+        ]
+      runDslOn (BranchName "main") (go "chapters/ch2.md"))
+    `shouldBe` Right
+      ( ["lore", "chapters", "other", "style"]
+      , Map.fromList [("lore/notes.md", "a hand-authored note")]
+      , []
+      , Map.fromList [("todo.md", "a stray root note, filed under neither lore/ nor chapters/")]
+      , "write in past tense"
+      )
   where
     bucket name v = case lookup name (valueEntries v) of
       Just act -> act
       Nothing  -> pure emptyValue
-    go = do
-      v <- contextMain (bval contextLore) (bval contextChapters) (bval contextStyle)
+    go path = do
+      v <- contextMain contextLore contextChapters contextStyle
+                        (bval (pure (leafValue [User path])))
       loreTxt      <- entryTexts =<< bucket "lore" v
       chaptersVal  <- bucket "chapters" v
       chapterTexts <- mapM (\(_, act) -> messagesText <$> (valueDefault =<< act)) (valueEntries chaptersVal)

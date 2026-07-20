@@ -9,10 +9,11 @@ import Test.Hspec
 import UniversalLLM (Message(..))
 
 import Storyteller.Core.LLM.Role (AgentModel)
-import Storyteller.Writer.Agent (ContextBlock(..), CharContextBlock(..), CharSummary(..))
+import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
 import Storyteller.Writer.Agent.Roleplay (characterOpeningMessages, reflectOpeningMessages)
 
-opening :: CharSummary -> [ContextBlock] -> [FilePath] -> T.Text -> [Message AgentModel]
+opening :: CharSummary -> [DSL.Message] -> [FilePath] -> T.Text -> [Message AgentModel]
 opening = characterOpeningMessages "Ren"
 
 reflect :: CharSummary -> T.Text -> [FilePath] -> T.Text -> [Message AgentModel]

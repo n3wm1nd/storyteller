@@ -12,37 +12,45 @@
 -- 'proseAgent' is the pure LLM core: given assembled context, produce new
 -- text. No filesystem access — all context is passed in explicitly, making
 -- it easy to extend with new effects (style guides, persona, etc.) in isolation.
+-- Every caller assembles that context via the Context DSL now (see
+-- CONTEXT-DSL.md and 'Server.Writer.File.flatMainContext') rather than a
+-- hand-rolled filesystem read -- this module used to also export
+-- 'gatherFileContext' for that, removed once its last caller migrated.
 --
--- 'proseAgent' doesn't need to read a file — it needs to know that file's
--- content. 'gatherFileContext' is the machinery that answers that: it reads
--- the target file and every other branch file, and hands back plain data.
--- Callers compose the two themselves (@gatherFileContext >=> ...@), the same
--- way appending an agent's output is the caller's job on the write side —
--- keeps the read side and the write side symmetric.
+-- Context arrives as real, model-agnostic @['Storyteller.Context.DSL.Value.Message']@
+-- straight off a Context DSL 'Storyteller.Context.DSL.Value.Value' -- not
+-- flattened 'Storyteller.Writer.Agent.ContextBlock' text, and not pre-bound
+-- to 'ProseModel' either, since the same DSL messages have to stay usable
+-- for a different role's call too (see 'proseAgent's own Haddock). Binding
+-- to a concrete model/role via 'Storyteller.Context.DSL.Render.dslMessageToLLM'
+-- happens only here, right before 'queryLLM', which is what preserves
+-- whatever role structure a DSL definition built (@context.main@'s own
+-- alternating-turn "chapters" bucket, say) as real, separate messages
+-- rather than string-concatenating everything into one flattened
+-- 'UserText' the way this module used to (still true for the handful of
+-- small, always-static pieces that were never DSL conversational structure
+-- to begin with -- character info, existing content, the instruction --
+-- see 'writerTrailingMessage').
 module Storyteller.Writer.Agent.Continuation
   ( proseAgent
-  , gatherFileContext
   , defaultWriterSystemPrompt
   , defaultWriterConfig
   ) where
 
-import qualified Data.List as List
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 
 import Polysemy
 import Polysemy.Fail
-import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, listAllFiles, readFile)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ContextBlock(..), ExistingContent(..), WordCount(..), renderEmbeddedFile)
-import Storyteller.Writer.Agent.ContextFilter (ContextLayout, applyContextLayout)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ExistingContent(..), WordCount(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 
-import Prelude hiding (readFile)
+import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Value as DSL
 
 -- | Ask the LLM to produce new prose given fully assembled context.
 --   No filesystem access — all inputs are explicit.
@@ -68,18 +76,19 @@ proseAgent
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount        -- ^ approximate desired output length
   -> [CharContextBlock]     -- ^ character context blocks
-  -> [ContextBlock]         -- ^ branch context file blocks
+  -> [DSL.Message]          -- ^ branch context, as model-agnostic Context DSL messages -- typically a DSL 'Storyteller.Context.DSL.Value.Value''s own 'Storyteller.Context.DSL.Render.valueAllMessages', preserving whatever role structure that definition built (e.g. @context.main@'s own alternating-turn "chapters" bucket). Bound to this call's own 'ProseModel' role only here, at the last possible moment (via 'Storyteller.Context.DSL.Render.dslMessageToLLM'), not upstream -- the same DSL messages remain reusable for a different role's call (e.g. 'Storyteller.Writer.Agent.Outline.splitOutlineAgent''s 'AgentModel') without re-rendering from the 'Value' again.
   -> ExistingContent        -- ^ current content of the file being continued
   -> Instruction
   -> Sem r Prose
-proseAgent outputHint charContexts contextBlocks (ExistingContent existing) (Instruction instruction) = do
+proseAgent outputHint charContexts context (ExistingContent existing) (Instruction instruction) = do
   configsWithPrompt <- getConfigWithPrompt "agent.writer" defaultWriterSystemPrompt defaultWriterConfig
   Prompt extraInstructions <- getPrompt "agent.writer.instructions" defaultWriterInstructions
 
-  let userMsg = writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint
+  let trailingMsg = writerTrailingMessage charContexts existing extraInstructions instruction outputHint
+      contextMsgs = map Render.dslMessageToLLM context
 
   info "proseAgent: querying model..."
-  response <- queryLLM configsWithPrompt [UserText userMsg]
+  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText trailingMsg])
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
 -- | Fallback for @agent.writer@ (the namespace root is implicitly the system
@@ -113,24 +122,27 @@ defaultWriterConfig = [MaxTokens 3000, Temperature 0.9]
 defaultWriterInstructions :: Prompt
 defaultWriterInstructions = ""
 
--- | Assemble the user-facing prompt from its parts directly, rather than
---   through a named-placeholder template: the section order and headers are
---   fixed by this function, so there's no way for a caller to typo a slot
---   name that silently drops a section. The one piece of free text a
---   project can still override is @extraInstructions@ (see
---   'defaultWriterInstructions'), inserted verbatim at a single fixed point.
-writerUserMessage
-  :: [ContextBlock]
-  -> [CharContextBlock]
+-- | The one message sent *after* @context@'s own real messages -- character
+--   info, the file being continued, standing instructions, and the actual
+--   instruction, none of which are DSL-produced conversational structure
+--   (they're always exactly one turn's worth of static framing), so
+--   there's no role fidelity to lose by keeping them as one string here.
+--   Assembled directly rather than through a named-placeholder template:
+--   the section order and headers are fixed by this function, so there's
+--   no way for a caller to typo a slot name that silently drops a
+--   section. The one piece of free text a project can still override is
+--   @extraInstructions@ (see 'defaultWriterInstructions'), inserted
+--   verbatim at a single fixed point.
+writerTrailingMessage
+  :: [CharContextBlock]
   -> T.Text            -- ^ existing file content
   -> T.Text            -- ^ extra standing instructions (may be empty)
   -> T.Text            -- ^ per-call instruction
   -> Maybe WordCount
   -> T.Text
-writerUserMessage contextBlocks charContexts existing extraInstructions instruction outputHint =
+writerTrailingMessage charContexts existing extraInstructions instruction outputHint =
   mconcat
-    [ contextSection
-    , charSection
+    [ charSection
     , existingSection
     , extraInstructionsSection
     , "## Instruction\n\n" <> instruction <> "\n\n"
@@ -138,13 +150,6 @@ writerUserMessage contextBlocks charContexts existing extraInstructions instruct
     , "Write only the new text to append. Do not repeat or summarise existing content."
     ]
   where
-    contextSection
-      | null contextBlocks = ""
-      | otherwise =
-          "Context files:\n\n"
-          <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
-          <> "\n\n"
-
     charSection
       | null charContexts = ""
       | otherwise =
@@ -164,50 +169,3 @@ writerUserMessage contextBlocks charContexts existing extraInstructions instruct
       Nothing            -> ""
       Just (WordCount n) -> "Aim for roughly " <> T.pack (show n) <> " words -- a guideline, not a hard cutoff.\n"
 
--- | Read the target file's existing content and every /other/ branch file,
---   as plain data — no LLM involved. Requires the target branch's
---   filesystem to be in scope. This is the machinery 'proseAgent' needs fed
---   in; composing the two is the caller's job, e.g.
---   @gatherFileContext layout path >>= \\(existing, ctx) -> proseAgent hint chars (extra <> ctx) existing instr@.
---
---   @path@ itself is always excluded from the returned context blocks —
---   its content already comes back separately as @existing@, so leaving it
---   in too would show the model its own target file twice (once as
---   "existing content to continue", once as an anonymous "other file"
---   entry) and, worse, means that entry's text grows every time @path@
---   does, right inside what's meant to be the stable "every other file"
---   context.
---
---   @layout@ is the user-facing bucket-picker ordering
---   ('Storyteller.Writer.Agent.ContextFilter.applyContextLayout') a client
---   may have configured for this call. @[]@ ("no layout configured") falls
---   back to the plain alphabetical order this always used, rather than
---   'applyContextLayout'\'s own @[]@ meaning ("claim nothing, show
---   nothing") — only this caller knows that its own no-layout default is
---   "show everything", so that check has to happen here, not inside
---   'applyContextLayout' itself.
-gatherFileContext
-  :: forall project r
-  .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => ContextLayout          -- ^ user-configured bucket ordering, or [] for the default sort
-  -> FilePath               -- ^ file to continue
-  -> Sem r (ExistingContent, [ContextBlock])
-gatherFileContext layout path = do
-  unordered   <- filter (/= path) <$> listAllFiles @project "/"
-  let files = case layout of
-        [] -> List.sort unordered
-        _  -> applyContextLayout layout unordered
-  fileContext <- mapM (readContextFile @project) files
-  existing    <- fileExists @project path >>= \case
-    True  -> ExistingContent . TE.decodeUtf8 <$> readFile @project path
-    False -> return (ExistingContent "")
-  return (existing, fileContext)
-
-readContextFile
-  :: forall project r
-  .  Members '[FileSystemRead project, Fail] r
-  => FilePath
-  -> Sem r ContextBlock
-readContextFile path = do
-  bytes <- readFile @project path
-  return $ ContextBlock $ renderEmbeddedFile path (TE.decodeUtf8 bytes)

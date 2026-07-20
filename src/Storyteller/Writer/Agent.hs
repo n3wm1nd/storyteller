@@ -119,10 +119,10 @@ newtype ContextBlock = ContextBlock Text
 --   attribute is what tells the model *what* this is without needing prose
 --   framing repeated around every single entry; the tags are what tell it
 --   this is embedded reference data, not something to act on directly.
---   Shared by 'Storyteller.Writer.Agent.WorldContext.worldContextOf' (lore
---   and style entries) and 'Storyteller.Writer.Agent.Continuation.
---   gatherFileContext' (every other branch file) -- the two places raw
---   file content gets embedded into a prompt this way.
+--   What 'Storyteller.Context.DSL.Render' reaches for whenever a
+--   DSL-produced 'Storyteller.Context.DSL.Value.FileRead' message gets
+--   flattened into a prompt -- the one place raw file content gets
+--   embedded this way now.
 renderEmbeddedFile :: FilePath -> Text -> Text
 renderEmbeddedFile path content = T.concat
   [ "<context-file path=\"", T.pack path, "\">\n"
