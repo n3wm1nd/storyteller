@@ -27,12 +27,13 @@ module Storyteller.Context.DSL.Render
   , messageToBlock
   , valueMessages
   , valueBlocks
+  , valueCharBlocks
   ) where
 
 import qualified UniversalLLM as LLM
 
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Agent (ContextBlock(..), renderEmbeddedFile)
+import Storyteller.Writer.Agent (CharContextBlock(..), ContextBlock(..), renderEmbeddedFile)
 
 -- | A DSL 'Message', finally rendered into the LLM library's own message
 --   type -- polymorphic over every capability model @m@ since it only ever
@@ -63,3 +64,24 @@ valueMessages v = concat <$>
 valueBlocks :: Value -> Action [ContextBlock]
 valueBlocks v = concat <$>
   mapM (\(_, act) -> map messageToBlock <$> (valueDefault =<< act)) (valueEntries v)
+
+messageToCharBlock :: Message -> CharContextBlock
+messageToCharBlock (FileRead path text) = CharContextBlock (renderEmbeddedFile path text)
+messageToCharBlock (User text)          = CharContextBlock text
+messageToCharBlock (Assistant text)     = CharContextBlock text
+
+-- | Every message reachable from a character-context bucket 'Value' --
+--   both its own forced default (a leaf bucket like
+--   'Storyteller.Context.DSL.Library.contextCharacter''s own
+--   @"sheet"@\/@"blurb"@\/@"journal"@) and each entry's own default (a
+--   container bucket built via @for@\/@as@, like that same definition's
+--   @"full"@) -- flattened into 'CharContextBlock's. Unlike
+--   'valueBlocks', which only ever walks entries (right for a top-level
+--   container like @context.main@'s own buckets, none of which carry a
+--   default of their own), a character bucket can be either shape
+--   depending on how it was built, so this checks both.
+valueCharBlocks :: Value -> Action [CharContextBlock]
+valueCharBlocks v = do
+  own      <- map messageToCharBlock <$> valueDefault v
+  children <- concat <$> mapM (\(_, act) -> map messageToCharBlock <$> (valueDefault =<< act)) (valueEntries v)
+  pure (own <> children)

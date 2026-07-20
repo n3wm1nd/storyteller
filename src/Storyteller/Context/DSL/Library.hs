@@ -36,6 +36,8 @@ module Storyteller.Context.DSL.Library
   , contextLore
   , contextChapters
   , contextCharacter
+  , contextCharacterDefault
+  , characterBlurb
   , contextMentionFilter
   , contextMain
   , contextQuery
@@ -43,7 +45,7 @@ module Storyteller.Context.DSL.Library
   ) where
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (Binding(..), bval)
+import Storyteller.Context.DSL.Compile (Binding(..), bval, journalDelta)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value (Action, Value)
 
@@ -102,13 +104,107 @@ in (x | sortBy):
     as f: read f
 |]
 
--- | A named character's own sheet, read from their branch -- the spec's
---   own cross-branch worked example verbatim.
-contextCharacter :: Binding -> Action Value
-contextCharacter = [dsl|
+-- | The "and this is the character" acquaintance-level line -- the
+--   header @sheet.md@ is required to open with (its display name, see
+--   @WRITER.md@), plus whatever paragraph follows it, by convention
+--   rather than an LLM call (see the project chat that designed this,
+--   2026-07-20: "already stored data", not content analysis). Its own
+--   named definition (@character.blurb@), not folded straight into
+--   'contextCharacter', so a project can override just this one
+--   definition (what "acquaintance summary" ought to include)
+--   independently of the richer buckets around it.
+--
+--   Takes @charname@ and crosses to that branch itself (@in (charname |
+--   branch): ...@), the same as 'contextCharacter''s own @"sheet"@
+--   bucket -- it can't rely on a caller's enclosing @in@ instead, for
+--   the same reason 'Storyteller.Context.DSL.Compile.journalDelta'
+--   can't: 'bval' (what a 0-arity 'Binding' parameter is built from)
+--   wraps an *already-scoped* 'Action', not one that re-resolves the
+--   caller's own ambient Reader scope on every call (see its own
+--   haddock) -- there's no dynamic-scope crossing between two
+--   separately compiled 'Storyteller.Context.DSL.AST.Definition's, only
+--   within one definition's own body. A definition invoked as a
+--   cross-definition parameter has to be self-contained about which
+--   branch it reads from, exactly like 'journalDelta'.
+characterBlurb :: Binding -> Action Value
+characterBlurb = [dsl|
 charname:
-  in (charname | branch): read "sheet.md" | orifempty ""
+  in (charname | branch):
+    n = read "sheet.md" | name
+    a = read "sheet.md" | abstract
+    "%n%: %a%"
 |]
+
+-- | A named character's rich context, as five independently reachable
+--   buckets rather than one flattened blob -- every consumer
+--   ('Storyteller.Writer.Agent.AskCharacter.askCharacterAgent',
+--   'Storyteller.Writer.Agent.Roleplay.roleplayAgent', ambient scene
+--   generation) shares this one definition and picks the buckets it
+--   actually wants, the same way 'contextMain''s own
+--   @"lore"@\/@"chapters"@\/@"other"@\/@"style"@ split lets
+--   'Storyteller.Writer.Agent.Write.writeAgent' place each independently
+--   rather than re-deriving its own notion of "a character's context"
+--   per call site (see the project chat that designed this, 2026-07-20).
+--
+--   * @"sheet"@ -- @sheet.md@ verbatim.
+--   * @"blurb"@ -- 'characterBlurb', threaded in as a parameter rather
+--     than referenced by name, so an override of just @character.blurb@
+--     still reaches every caller of this definition (see the module
+--     haddock: no cross-definition name resolution inside the
+--     interpreter itself). Called with @charname@ explicitly (see
+--     'characterBlurb''s own haddock for why it has to cross branches
+--     itself rather than inheriting this definition's own @in@).
+--   * @"full"@ -- every other file on the character's branch.
+--   * @"journal"@ -- 'Storyteller.Context.DSL.Compile.journalDelta',
+--     also threaded in as a parameter (a host-supplied 'Binding', not
+--     expressible in the DSL itself -- see that function's own haddock
+--     for why @in (charname | branch): ...@ alone can't put it on the
+--     right branch).
+--   * @"journalFull"@ -- @journal.md@ verbatim, uncurated. Together with
+--     @"sheet"@\/@"full"@ this is exactly what
+--     'Storyteller.Writer.Agent.CharContext.charSummaryFull' builds today
+--     for 'askCharacterAgent'\/'roleplayAgent' (a present character's own
+--     full self-knowledge, not the ambient-context curation @"journal"@
+--     is for) -- included so those two can eventually read through this
+--     one definition too, instead of their own separate calls. Costs
+--     nothing when a caller never reaches for it: 'Value''s own entries
+--     are @Action@s, not already-run results (see @CONTEXT-DSL.md@'s
+--     "Value model"), so an unread bucket never resolves the branch or
+--     touches storage at all.
+--
+--   The bare trailing statement re-emits @blurb charname@ as this whole
+--   definition's own default: a caller that never picks a bucket (takes
+--   the default, or does @in characterContext: read "blurb"@-shaped
+--   access without narrowing further) still gets a reasonable
+--   "and this is the character" line, per the project chat's own framing
+--   ("read \"blurb\" is probably a good default").
+contextCharacter :: Binding -> Binding -> Binding -> Action Value
+contextCharacter = [dsl|
+charname: blurb: journal:
+  as "sheet": in (charname | branch): read "sheet.md" | orifempty ""
+  as "blurb": blurb charname
+  as "full":
+    in (charname | branch):
+      in (**/* | exclude("sheet.md", "journal.md")):
+        for f in **/*:
+          as f: read f
+  as "journal": journal charname
+  as "journalFull": in (charname | branch): read "journal.md" | orifempty ""
+  blurb charname
+|]
+
+-- | 'contextCharacter', fully applied to the compiled-in
+--   'characterBlurb' and 'Storyteller.Context.DSL.Compile.journalDelta'
+--   defaults -- the actual 1-arity function (just @charname@) registered
+--   as @context.character@, matching the arity a wire-level "which
+--   character" call site actually has to supply. The curation numbers
+--   here are 'Server.Writer.File.activeCharacterContext''s own prior
+--   @journalLookback@\/@journalMaxOut@\/@journalPadding@ constants,
+--   moved to this definition's own default rather than duplicated at
+--   every future call site.
+contextCharacterDefault :: Binding -> Action Value
+contextCharacterDefault charnameB =
+  contextCharacter charnameB (toBinding1 characterBlurb) (journalDelta 30 10 2)
 
 -- | Identity pass-through -- every candidate alias stays active for
 --   auto-inclusion on mention until a project's own override narrows it
@@ -180,9 +276,11 @@ contextQuery :: Action Value
 contextQuery = contextMain (bval contextLore) (bval contextChapters) (bval contextStyle)
 
 -- | Every default definition this application ships. Arity differs per
---   entry ('contextStyle'\/'contextLore'\/'contextChapters'\/'contextQuery'
---   are plain 0-arity values; 'contextCharacter'\/'contextMentionFilter'
---   take one argument) -- 'Binding' already carries its own arity (see its
+--   entry ('contextStyle'\/'contextLore'\/'contextChapters'\/'contextQuery'\/
+--   'characterBlurb' are plain 0-arity values; 'contextCharacterDefault'\/
+--   'contextMentionFilter' take one argument, the raw 3-arity
+--   'contextCharacter' fully applied down to that same one-argument shape)
+--   -- 'Binding' already carries its own arity (see its
 --   own haddock: "values are just 0-arity functions, otherwise no
 --   different"), so a uniform @[(Name, Binding)]@ is exactly the right
 --   shape regardless, with no arity-indexed type needed. @context.main@
@@ -195,7 +293,8 @@ defaultLibrary =
   [ ("context.style",         bval contextStyle)
   , ("context.lore",          bval contextLore)
   , ("context.chapters",      bval contextChapters)
-  , ("context.character",     toBinding1 contextCharacter)
+  , ("character.blurb",       toBinding1 characterBlurb)
+  , ("context.character",     toBinding1 contextCharacterDefault)
   , ("context.mentionFilter", toBinding1 contextMentionFilter)
   , ("context.main",          bval contextQuery)
   ]

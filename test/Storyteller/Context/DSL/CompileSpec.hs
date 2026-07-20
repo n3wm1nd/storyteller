@@ -28,6 +28,7 @@
 --   code anywhere in this file's use of the DSL.
 module Storyteller.Context.DSL.CompileSpec (spec) where
 
+import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -50,7 +51,8 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (Binding, bval, fn1)
+import Storyteller.Context.DSL.Compile (Binding, bval, fn1, journalDelta)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
 
@@ -106,6 +108,9 @@ spec = do
   sortByThenReexportSpec
   excludeByAnotherDefinitionSpec
   assistantWrapsExprSpec
+  nameAbstractFilterSpec
+  journalDeltaSpec
+  contextCharacterSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -463,3 +468,124 @@ assistantWrapsExprSpec = describe "> <expr> (Assistant-tag a general expression,
       Just chapterAction <- pure (lookup "chapter" (valueEntries v))
       chapter <- chapterAction
       valueDefault chapter
+
+-- | @name@\/@abstract@: the "acquaintance blurb" is convention over
+--   already-stored Markdown (the required leading @# Title@, then its
+--   opening paragraph -- see @WRITER.md@), not an LLM call, so both are
+--   plain filters over 'read'\'s own output.
+exampleSheet :: Text
+exampleSheet = T.unlines
+  [ "# Jenny"
+  , ""
+  , "Jenny is a girl who likes to read."
+  , ""
+  , "Tags: Student, Human"
+  ]
+
+nameFilterDsl :: Action Value
+nameFilterDsl = [dsl|
+read "sheet.md" | name
+|]
+
+abstractFilterDsl :: Action Value
+abstractFilterDsl = [dsl|
+read "sheet.md" | abstract
+|]
+
+nameAbstractFilterSpec :: Spec
+nameAbstractFilterSpec = describe "expr | name / expr | abstract (Markdown convention, not an LLM call)" $ do
+  it "name extracts the leading # heading" $
+    run (testStack $ do
+      seedBranch "main" [("sheet.md", exampleSheet)]
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< nameFilterDsl)))
+    `shouldBe` Right "Jenny"
+  it "abstract extracts the paragraph immediately following the heading" $
+    run (testStack $ do
+      seedBranch "main" [("sheet.md", exampleSheet)]
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< abstractFilterDsl)))
+    `shouldBe` Right "Jenny is a girl who likes to read."
+
+-- | Seeds a character branch with a sheet, an unrelated file (for
+--   'contextCharacterSpec''s @"full"@ bucket), and a journal with one
+--   entry that's a byte-identical copy of what it references (dropped by
+--   'Storage.Tick.recentAtomsOf') and one that's genuinely diverged
+--   (kept) -- the exact seeding shape "Storage.TickSpec" uses for
+--   'Storage.Tick.recentAtomsOf' itself, replayed here through
+--   'runBranchOpGit' since 'journalDelta' is exercised end-to-end via
+--   the DSL, not called directly.
+seedCharacterJournalBranch :: Text -> Sem (StoryStorage : TestEffects '[]) ()
+seedCharacterJournalBranch name = do
+  _ <- createBranch (BranchName name)
+  runBranchOpGit @Main (BranchName name) $ do
+    _  <- runStorage @Main (Ops.addAtom "sheet.md" exampleSheet)
+    _  <- runStorage @Main (Ops.addAtom "extra.md" "some lore about Jenny")
+    s1 <- runStorage @Main (Ops.addAtom "scene.md" "s1 content")
+    _  <- runStorage @Main (Ops.addAtomWithRefs [s1] "journal.md" "s1 content")
+    s2 <- runStorage @Main (Ops.addAtom "scene.md" "s2 content")
+    _  <- runStorage @Main (Ops.addAtomWithRefs [s2] "journal.md" "s2 content, but Jenny remembers it differently")
+    pure ()
+
+journalDeltaDsl :: Binding -> Action Value
+journalDeltaDsl = [dsl|
+journal:
+  journal "jenny"
+|]
+
+journalDeltaSpec :: Spec
+journalDeltaSpec = describe "journalDelta (host-supplied Binding wrapping recentAtomsOf)" $
+  it "reads the named character's own branch and drops entries unchanged from their own ref" $
+    run (testStack $ do
+      seedBranch "main" []
+      seedCharacterJournalBranch "character/jenny"
+      runDslOn (BranchName "main")
+        (messagesText <$> (valueDefault =<< journalDeltaDsl (journalDelta 30 10 0))))
+    `shouldBe` Right
+      ( "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
+        <> "s2 content, but Jenny remembers it differently"
+      )
+
+-- | End-to-end: 'CtxLibrary.contextCharacter', fully applied the same
+--   way 'CtxLibrary.contextCharacterDefault' composes it in production,
+--   exercised against a real character branch -- checks all five
+--   buckets plus the "default is the blurb" behaviour the project chat
+--   that designed this settled on. @"journalFull"@ vs. @"journal"@ is the
+--   interesting pair: same underlying @journal.md@, uncurated
+--   (everything, including the entry that's byte-identical to its own
+--   ref) vs. curated (that duplicate dropped) -- proving the two really
+--   are independent reads, not one derived from the other's already-
+--   filtered result.
+contextCharacterSpec :: Spec
+contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/journalFull buckets)" $
+  it "exposes each bucket independently, with blurb as the whole definition's own default" $
+    run (testStack $ do
+      seedBranch "main" []
+      seedCharacterJournalBranch "character/jenny"
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right
+      ( "Jenny: Jenny is a girl who likes to read."
+      , exampleSheet
+      , "Jenny: Jenny is a girl who likes to read."
+      , ["extra.md"]
+      , "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
+        <> "s2 content, but Jenny remembers it differently"
+      , "s1 contents2 content, but Jenny remembers it differently"
+      )
+  where
+    go = do
+      v <- CtxLibrary.contextCharacter (textArg "jenny") (CtxLibrary.toBinding1 CtxLibrary.characterBlurb) (journalDelta 30 10 0)
+      def <- messagesText <$> valueDefault v
+      Just sheetAction <- pure (lookup "sheet" (valueEntries v))
+      sheet <- messagesText <$> (valueDefault =<< sheetAction)
+      Just blurbAction <- pure (lookup "blurb" (valueEntries v))
+      blurb <- messagesText <$> (valueDefault =<< blurbAction)
+      -- "full" also picks up 'scene.md' (a throwaway ref target for the
+      -- journal fixture, not otherwise interesting here) -- only assert
+      -- 'sheet.md'/'journal.md' stay excluded and 'extra.md' shows up.
+      Just fullAction <- pure (lookup "full" (valueEntries v))
+      full <- fullAction
+      let fullKeys = List.sort (map fst (valueEntries full))
+      Just journalAction <- pure (lookup "journal" (valueEntries v))
+      journal <- messagesText <$> (valueDefault =<< journalAction)
+      Just journalFullAction <- pure (lookup "journalFull" (valueEntries v))
+      journalFull <- messagesText <$> (valueDefault =<< journalFullAction)
+      pure (def, sheet, blurb, filter (== "extra.md") fullKeys, journal, journalFull)

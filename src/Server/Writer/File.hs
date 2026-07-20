@@ -36,8 +36,6 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.List (isSuffixOf)
 import qualified Data.List as List
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
 import Polysemy (Member, Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
@@ -52,10 +50,10 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary, flattenCharSummary, WordCount(..), renderEmbeddedFile)
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..), renderEmbeddedFile)
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Agent.Continuation (gatherFileContext)
-import Storyteller.Writer.Agent.ContextFilter (ContextLayout, hideBinaryFiles, hideChapters, hideLore, classifyPath)
+import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles, hideChapters, hideLore)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
 import Storyteller.Writer.Lore (isLoreEligible)
@@ -69,7 +67,7 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal, charSummaryFull)
+import Storyteller.Writer.Agent.CharContext (charSummaryFull)
 import qualified Storyteller.Writer.Agent.WorldContext as WorldContext
 import qualified Storyteller.Writer.Agent.ChapterContext as ChapterContext
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
@@ -88,11 +86,11 @@ import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
-import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runBranchOpGit, runStorage, atGeneric)
+import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, atGeneric)
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Value (Value, Action, valueEntries, valueDefault, emptyValue, messagesText)
-import Storyteller.Context.DSL.Compile (bval)
+import Storyteller.Context.DSL.Value (Value, Action, Message(..), valueEntries, valueDefault, emptyValue, messagesText, leafValue)
+import Storyteller.Context.DSL.Compile (Binding, bval)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Context (resolveContextQuery, runContextBinding0, runContextValue)
@@ -110,66 +108,55 @@ data ActiveChar
 --   ('Storyteller.Writer.Presence.activeCharactersFor') are the sole source
 --   of truth for "who's in this scene"; there is no separate client-supplied
 --   signal, so this is the one place that decides which character branches
---   an agent sees. Each active branch is opened dynamically (same pattern
---   'Server.Writer.Branch.charGen'\/'trackFiles' use for a runtime-named
---   branch, minus the 'FileSystem' effects neither this nor
---   'charSummaryWithJournal' needs) and summarized via
---   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' -- one
---   'runStorage' dispatch per character, not two.
+--   an agent sees.
 --
---   @sheet.md@ and @journal.md@ are never lore-gated by @charLayouts@ --
---   both are excluded from 'Storyteller.Writer.Lore.isLoreEligible' (so
---   they never even appear as a codex entry a user could toggle), and this
---   function enforces the same two facts unconditionally at the read
---   layer, independent of whatever a user has curated for everything else:
---   the sheet is core identity, always sent verbatim; the journal is long,
---   mostly a copy of what the scene's own history already says, and not
---   written for a narrator to read, so the plain read always excludes it
---   -- but a curated slice of only its *unique* recent content (see
---   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' and
---   'Storage.Tick.recentAtomsOf') is folded back in, separately labelled as
---   the character's own viewpoint. Full, uncurated journal access is still
---   available on request, via
+--   Runs 'Storyteller.Context.DSL.Library.contextCharacterDefault' per
+--   active character and picks its @"sheet"@\/@"full"@\/@"journal"@ buckets
+--   apart into a 'CharSummary' -- the same rich, four-bucket definition
+--   ('Storyteller.Context.DSL.Library.contextCharacter''s own Haddock)
+--   every character-context consumer is meant to share, not a bespoke read
+--   here. This replaces the former direct call to
+--   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' (still
+--   used by 'Storyteller.Writer.Agent.Roleplay' for a present character's
+--   own full, uncurated self-knowledge, a genuinely different need -- see
+--   that module's Haddock): @sheet.md@\/@journal.md@ are still never
+--   lore-gated (per-branch content filtering was previously theoretical --
+--   every call site always passed an empty layout map -- and is now, if
+--   ever wanted, a project's own override of @context.character@'s
+--   @"full"@ bucket, not a Haskell-side parameter here), the journal is
+--   still curated via 'Storyteller.Context.DSL.Compile.journalDelta'
+--   (dropping entries unchanged from what they reference), and everything
+--   else on the branch is real codex content. Full, uncurated journal
+--   access is still available on request, via
 --   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent' -- the
---   sidebar's Ask panel. Everything else on the branch is real codex
---   content: an absent or empty entry in @charLayouts@ for a branch means
---   "no override configured", which reads as "show everything" -- the same
---   convention 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
---   already uses for an empty layout, and exactly today's behavior for
---   anyone who has never opened the per-character context UI. A non-empty
---   entry is fully authoritative over that branch's extra files, via
---   'Storyteller.Writer.Agent.ContextFilter.classifyPath' -- the identical
---   picker semantics 'chatWriter's own @layout@ parameter already applies
---   to the story branch itself, through 'gatherFileContext'.
+--   sidebar's Ask panel.
+--
 --   Returns the full 'CharSummary' split per character, not a flattened
 --   list -- 'chatWriter', still a single-shot prompt, collapses it back via
 --   'flattenCharSummary' at its own call site; a future per-chapter
 --   '[Message]' assembly (see 'Storyteller.Writer.Agent.CharSummary's own
 --   Haddock) is what actually wants 'csSheet'\/'csContext'\/'csJournal'
 --   placed independently, and can consume this function's result directly.
-activeCharacterContext :: (FileOpen r, SessionEffects r) => Map.Map T.Text ContextLayout -> FilePath -> Sem r [(CharLabel, CharSummary)]
-activeCharacterContext charLayouts path = do
+activeCharacterContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [(CharLabel, CharSummary)]
+activeCharacterContext path = do
   active <- activeCharactersFor @Main path
   mapM summarize active
   where
     summarize (Character (BranchName name)) = do
-      let layout = fromMaybe [] (Map.lookup name charLayouts)
-          keep p
-            | null layout = True
-            | otherwise   = isJust (classifyPath layout p)
-      summary <- runBranchOpGit @ActiveChar (BranchName name) $
-        runStorage @ActiveChar (charSummaryWithJournal "sheet.md" journalPath keep journalLookback journalMaxOut journalPadding)
-      let label = branchDisplayName name
-      pure (CharLabel label, summary)
+      let ident = branchDisplayName name
+      (sheet, full, journal) <- runContextValue @Main $ do
+        charVal  <- CtxLibrary.contextCharacterDefault (charnameArg ident)
+        sheetV   <- contextBucket "sheet" charVal
+        fullV    <- contextBucket "full" charVal
+        journalV <- contextBucket "journal" charVal
+        (,,) <$> Render.valueCharBlocks sheetV <*> Render.valueCharBlocks fullV <*> Render.valueCharBlocks journalV
+      pure (CharLabel ident, CharSummary sheet full journal)
 
--- | Bounds for the curated journal slice 'activeCharacterContext' folds
---   back into ambient context -- see 'Storyteller.Writer.Agent.CharContext.
---   charSummaryWithJournal'\/'Storage.Tick.recentAtomsOf' for what each
---   knob actually does.
-journalLookback, journalMaxOut, journalPadding :: Int
-journalLookback = 30
-journalMaxOut   = 10
-journalPadding  = 2
+-- | A bare character identifier (no @character/@ prefix -- 'fBranch'
+--   prepends that itself), ready to apply to a Context DSL definition's
+--   own @charname@ parameter.
+charnameArg :: T.Text -> Binding
+charnameArg = bval . pure . leafValue . (: []) . User
 
 -- | One named top-level entry out of a Context DSL definition's own
 --   result (e.g. @"lore"@\/@"chapters"@\/@"other"@\/@"style"@ out of
@@ -193,12 +180,12 @@ contextBucket name v = case lookup name (valueEntries v) of
 --   'Storyteller.Core.Context.resolveContextQuery' to a committed branch
 --   override, then the compiled-in default
 --   ('Storyteller.Context.DSL.Library.contextQuery'). Character summaries
---   and pinned/short-term context are still gathered the old way (see
---   'activeCharacterContext') -- migrating those is a separate follow-up,
---   not yet possible for the journal-curation half without an LLM-backed
---   DSL filter (@summarize@ is still a stub, see
---   "Storyteller.Context.DSL.Compile"'s @coreFilters@). Handed to the
---   agents as plain data -- see 'Storyteller.Writer.Agent.Write.writeAgent'
+--   now also run through the DSL ('activeCharacterContext', backed by
+--   'Storyteller.Context.DSL.Library.contextCharacterDefault'); only
+--   pinned/short-term context is still gathered outside it (no DSL
+--   equivalent of "whatever the client explicitly pinned this turn" is
+--   needed -- it's already just data, not something to assemble). Handed
+--   to the agents as plain data -- see 'Storyteller.Writer.Agent.Write.writeAgent'
 --   for how it turns into a real @['UniversalLLM.Message']@ rather than one
 --   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
@@ -215,7 +202,7 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
     earlier <- Render.valueMessages chaptersV
     styleTxt <- messagesText <$> valueDefault styleV
     pure (lore, [ContextBlock styleTxt | not (T.null styleTxt)], earlier)
-  charBlocks <- activeCharacterContext Map.empty path
+  charBlocks <- activeCharacterContext path
   let pinned      = toContextBlocks pinnedItems
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
@@ -474,7 +461,7 @@ chatChapterRegen mode path prompt context = do
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       (_, fileCtx) <- hideBinaryFiles @(BranchTag Main) @Main (gatherFileContext @(BranchTag Main) [] path)
-      charBlocks <- flattenCharBlocks . map (fmap flattenCharSummary) <$> activeCharacterContext Map.empty path
+      charBlocks <- flattenCharBlocks . map (fmap flattenCharSummary) <$> activeCharacterContext path
       let extraContext = toContextBlocks context <> fileCtx
           instruction  = Instruction prompt
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path

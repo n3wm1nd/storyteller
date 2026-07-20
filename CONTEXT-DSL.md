@@ -209,20 +209,56 @@ without ever being able to ask how their content came to be.
 
 ## Open / deferred
 
-- **Not wired into any production agent yet.** The only current callers are the test suite.
-  Wiring a real one in (replacing hand-written context assembly like
-  `Storyteller.Writer.Agent.Continuation.gatherFileContext`) would need widening
-  `BranchOp`'s `RunStorage` — currently `forall n. StoreM n => StoreT n a`, no `MonadBranch`
-  — to actually run an `Action` inside an ongoing storage transaction.
-- **`sortBy` and the rest of the `fNotImplemented` filter stubs** (`draftDefinition`,
-  `extractProperNouns`, `whereType`, `whereTag`, ...) are unblocked by the ordered-list
-  change but not yet written.
-- **A tagged "needs postprocessing" message.** A fourth `Message` constructor
-  (`Pending PostProcess Text`) would let `summarize` mark content for a downstream
-  consumer to actually summarize, instead of failing loudly — not yet added.
+- **Wired into `chatWriter` for lore/chapters/style** (`Server.Writer.File.chatWriter`, via
+  `resolveContextQuery "context.main"`), but **character context still isn't** —
+  `activeCharacterContext`/`charSummaryWithJournal` (`Server.Writer.File.hs`) is the
+  hand-written path both `chatWriter` and `roleplayWriter` still use for characters, and
+  `roleplayWriter` hasn't been touched at all (still 100% `gatherFileContext`). The DSL side
+  is ready for this: `Storyteller.Context.DSL.Library.contextCharacter` produces a rich,
+  five-bucket character context (`"sheet"`, `"blurb"`, `"full"`, `"journal"`,
+  `"journalFull"`, default = blurb) that every consumer (ambient scene context,
+  `askCharacterAgent`, `roleplayAgent`) is meant to share and pick buckets from — see its own
+  Haddock. `"journal"`/`"journalFull"` are the curated-vs-uncurated pair: same underlying
+  file, one deduped via `journalDelta`, one verbatim, so `askCharacterAgent`/`roleplayAgent`
+  (which currently want full self-knowledge, not ambient curation) have a bucket to read once
+  they move over. Unused buckets are genuinely free — `Value`'s own entries are `Action`s, not
+  already-run results, and `as "name": body` stores that `Action` via a plain `let`, never
+  forcing it (`Compile.hs`'s `runStmts`, the `SAs` case) — so `activeCharacterContext` (which
+  only ever reads `"sheet"`/`"full"`/`"journal"`) never resolves `"journalFull"`'s branch hop
+  at all. Swapping the Server-side callers over is the next real step, not a redesign.
+- **`sortBy`, `name`, `abstract` are implemented** (`Storyteller.Context.DSL.Compile`).
+  `name`/`abstract` extract a Markdown document's leading `# Title` and its opening
+  paragraph by convention (no LLM) — this is what backs `character.blurb`
+  (`Storyteller.Context.DSL.Library.characterBlurb`): "the acquaintance-level summary" turned
+  out to be already-stored data (the sheet's own header + first paragraph), not a
+  summarization problem, so the `Pending`-message idea below never became necessary for it.
+  `summarize`, `draftDefinition`, `extractProperNouns`, `whereType`, `whereTag` remain
+  `fNotImplemented` stubs — write them only once something actually needs them (a real
+  content-analysis-driven `summarize` is the one that still plausibly wants the `Pending`
+  design below; the other three are speculative until a concrete caller shows up).
+- **A journal-delta primitive exists, but as a host-supplied `Binding`, not a filter.**
+  `Storyteller.Context.DSL.Compile.journalDelta` wraps `Storage.Tick.recentAtomsOf` (drops
+  journal entries byte-identical to whatever they reference, keeps genuinely-changed ones
+  plus padding). It can't be a plain `DSLFilter` — `recentAtomsOf` needs real `StoreT`
+  access — and it can't rely on an enclosing `in (charname | branch): ...` either, because
+  `in`/`branch` only ever redirect the Reader-scope `Value` `read`/`for` glob against; they
+  never reposition `Core.StoreT`'s own ambient scope (`headHash`). So it resolves the
+  character's branch and hops there itself via `Core.readAt`, the same primitive
+  `Storyteller.Common.Summary` uses for a historical peek that mustn't disturb the caller's
+  position. This same constraint bit `character.blurb` during design: a `bval`-wrapped
+  0-arity `Action` (an *already-scoped* Binding, not a re-resolving one) doesn't dynamically
+  inherit an enclosing `in`'s narrowed scope either — there's no dynamic-scope crossing
+  between two separately-compiled `Definition`s, only within one definition's own body (see
+  `Binding`'s own Haddock on `bval`). Any future cross-branch host function needs to take the
+  branch identifier as its own explicit argument and do its own `in`/`branch`-equivalent
+  resolution, the same way `journalDelta` and `characterBlurb` both do now.
+- **A tagged "needs postprocessing" message** (`Pending PostProcess Text`, a fourth `Message`
+  constructor) is still undesigned — still the plan if/when a real `summarize` filter needs
+  an LLM call deferred past `Action`'s own `StoreM`/`MonadBranch`-only ceiling.
 - **File-level ticks, not flattened content.** `read` only ever resolves to a file's current
-  flattened blob. Exposing the tick-level edit history underneath is a materially different
-  primitive, deliberately not designed yet.
+  flattened blob. Exposing the tick-level edit history underneath as a general DSL primitive
+  is still deliberately not designed — `journalDelta` sidesteps this by being a purpose-built
+  host function for exactly one convention (`journal.md`) rather than a general primitive.
 - **A branch-hosted, override-with-fallback function library.** `embed`-style helpers
   (`renderEmbeddedFile`'s `<context-file path="...">` convention, shared across three
   existing agents) fit naturally as `Definition`s stored at a conventional path with a

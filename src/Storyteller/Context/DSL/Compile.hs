@@ -64,6 +64,7 @@ module Storyteller.Context.DSL.Compile
     -- * Branch resolution -- injected, not hardcoded
   , fBranch
   , treeValueOfBranch
+  , journalDelta
   ) where
 
 import Control.Monad (foldM, when)
@@ -77,6 +78,7 @@ import qualified System.FilePath as FP
 import qualified System.FilePath.Glob as Glob
 
 import qualified Storage.Core as Core
+import qualified Storage.Tick as Tick
 
 import Storyteller.Context.DSL.AST
 import Storyteller.Context.DSL.Value
@@ -501,6 +503,8 @@ coreFilters = Map.fromList
   , ("truncate",     fTruncate)
   , ("join",         fJoin)
   , ("sortBy",       fSortBy)
+  , ("name",         fName)
+  , ("abstract",     fAbstract)
   , ("summarize",          fNotImplemented "summarize")
   , ("draftDefinition",    fNotImplemented "draftDefinition")
   , ("extractProperNouns", fNotImplemented "extractProperNouns")
@@ -568,6 +572,45 @@ fSortBy :: DSLFilter
 fSortBy v [] = v { valueEntries = List.sortBy (\a b -> compare (naturalKey (fst a)) (naturalKey (fst b))) (valueEntries v) }
 fSortBy _ args = errorValue $ "sortBy: expected no arguments, got " <> show (length args)
 
+-- | Extracts a Markdown document's @# Title@ -- the one structural
+--   convention @sheet.md@ is actually required to follow (see
+--   @WRITER.md@: the first H1 is a character's display name). Unlike
+--   @summarize@, this is convention over already-stored text, not
+--   content analysis -- no LLM effect needed, so it's a plain filter
+--   rather than something deferred to a render-time pass.
+fName :: DSLFilter
+fName v [] = leafValueA $ do
+  msgs <- valueDefault v
+  pure [User (mdHeading (messagesText msgs))]
+fName _ args = errorValue $ "name: expected no arguments, got " <> show (length args)
+
+-- | Extracts the paragraph immediately following a Markdown document's
+--   leading @# Title@ -- the "acquaintance blurb" convention: whatever
+--   prose a sheet opens with, up to the next blank line or heading.
+--   Same non-LLM rationale as 'fName'.
+fAbstract :: DSLFilter
+fAbstract v [] = leafValueA $ do
+  msgs <- valueDefault v
+  pure [User (mdLeadParagraph (messagesText msgs))]
+fAbstract _ args = errorValue $ "abstract: expected no arguments, got " <> show (length args)
+
+mdHeading :: Text -> Text
+mdHeading = go . T.lines
+  where
+    go []       = ""
+    go (l : ls)
+      | T.isPrefixOf "# " stripped = T.strip (T.drop 2 stripped)
+      | otherwise                  = go ls
+      where stripped = T.stripStart l
+
+mdLeadParagraph :: Text -> Text
+mdLeadParagraph txt =
+  T.strip $ T.unlines $ takeWhile (not . isBoundary) $ dropWhile T.null $
+    drop 1 $ dropWhile (not . isHeading) (T.lines txt)
+  where
+    isHeading  l = T.isPrefixOf "#" (T.stripStart l)
+    isBoundary l = T.null l || isHeading l
+
 leafValueA :: Action [Message] -> Value
 leafValueA action = Value { valueDefault = action, valueEntries = [] }
 
@@ -603,6 +646,60 @@ treeValueOfBranch :: BranchName -> Action Value
 treeValueOfBranch name = askBranch name >>= \case
   Nothing     -> fail ("branch not found: " <> T.unpack (unBranchName name))
   Just commit -> treeValueOfCommit commit
+
+-- | A named character's own @journal.md@, curated by
+--   'Storage.Tick.recentAtomsOf': entries that are byte-identical to
+--   whatever they reference are dropped, kept ones bring @padding@
+--   neighbours along -- see that function's own haddock for why that's
+--   "the same content, not sent twice" rather than a length cap.
+--
+--   Deliberately a host-supplied 'Binding' ('fn1', not a 'coreFilters'
+--   entry), for the same reason 'fBranch' is dispatched outside the
+--   registry: it needs a real capability a pure 'DSLFilter' doesn't
+--   have. But it goes further than 'fBranch' does -- it can't even lean
+--   on an enclosing @in (charname | branch): ...@ to put it on the
+--   right branch, because 'Storage.Tick.recentAtomsOf' reads the
+--   *ambient* 'Core.StoreT' scope (@headHash@), and @in@\/@branch@ only
+--   ever redirect the Reader-scope 'Value' that @read@\/@for@ glob
+--   against -- they never reposition 'Core.StoreT' itself (see
+--   'treeValueOfCommit': it takes an explicit commit hash rather than
+--   reading @headHash@). So this resolves the character's branch itself
+--   and hops there via 'Core.readAt', the same primitive
+--   'Storyteller.Common.Summary' already uses for a historical peek that
+--   must not disturb the caller's own position.
+--
+--   Takes @lookback@\/@maxOut@\/@padding@ baked in from the Haskell side
+--   (a project's own tuning, not DSL-expressible policy -- mirrors the
+--   invented-calendar example's own @dateMath@), and the character
+--   identifier as its one DSL-side argument, e.g. @journal charname@
+--   where @journal@ was threaded in as a parameter the same way
+--   'fBranch' expects @charname | branch@'s own identifier.
+journalDelta :: Int -> Int -> Int -> Binding
+journalDelta lookback maxOut padding = fn1 go
+  where
+    go charnameArg = do
+      ident <- messagesText <$> (valueDefault =<< charnameArg)
+      askBranch (BranchName ("character/" <> ident)) >>= \case
+        Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
+        Just commit -> do
+          ticks <- Action (Core.readAt commit (Tick.recentAtomsOf "journal.md" lookback maxOut padding))
+          pure (leafValue (renderJournalTicks ticks))
+
+-- | One block per curated slice, joined by a plain divider -- entries
+--   may span real timeline gaps (unremarkable ticks in between were
+--   dropped), so they shouldn't read as one continuous entry, plus the
+--   same framing header 'Storyteller.Writer.Agent.CharContext.
+--   renderJournalContext' already uses (so a model doesn't mistake this
+--   for objective narration) -- kept here rather than left to the
+--   calling definition, since it's fixed framing text tied to what a
+--   curated journal slice *is*, not project-overridable policy.
+renderJournalTicks :: [Tick.FileTick] -> [Message]
+renderJournalTicks []    = []
+renderJournalTicks ticks =
+  [ User $
+      "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
+      <> T.intercalate "\n\n---\n\n" (map Tick.ftMessage ticks)
+  ]
 
 -- | The Reader scope for wherever this 'Action' is actually run --
 --   'Storyteller.Context.DSL.Value.currentHead', read straight off the
