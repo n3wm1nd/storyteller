@@ -44,6 +44,8 @@ import qualified Storyteller.ContextFilterSpec
 import qualified Storyteller.ContextPreviewSpec
 import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
+import qualified Storyteller.Context.DSL.ParserSpec
+import qualified Storyteller.Context.DSL.CompileSpec
 import qualified Server.BranchSpec
 import qualified Server.Writer.BranchSpec
 import qualified Server.Writer.FileSpec
@@ -101,6 +103,8 @@ main = hspec $ do
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
   describe "Storyteller.Writer.Agent.Outline" Storyteller.OutlineSpec.spec
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
+  describe "Storyteller.Context.DSL.Parser" Storyteller.Context.DSL.ParserSpec.spec
+  describe "Storyteller.Context.DSL.Compile" Storyteller.Context.DSL.CompileSpec.spec
   -- Server.Core.Branch/Server.Core.File are written once against
   -- 'TestRunner' (see Server.TestStack) and run under both interpreters:
   -- eager, and buffered through 'Storyteller.Core.Git.withStorage' — the

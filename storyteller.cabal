@@ -70,6 +70,10 @@ library
                   , Storyteller.Writer.Library
                   , Storyteller.Writer.Branches
                   , Storyteller.Writer.Lore
+                  , Storyteller.Context.DSL.AST
+                  , Storyteller.Context.DSL.Parser
+                  , Storyteller.Context.DSL.Value
+                  , Storyteller.Context.DSL.Compile
                   , Server.Core.Protocol
                   , Server.Core.Util
                   , Server.Core.Run
@@ -136,6 +140,8 @@ library
                   , time
                   , async
                   , data-default
+                  , megaparsec
+                  , transformers
   hs-source-dirs:   src
   default-language: Haskell2010
   ghc-options:      -Wall
@@ -272,6 +278,8 @@ test-suite storyteller-test
                   , Storyteller.BranchesSpec
                   , Storyteller.ContextFilterSpec
                   , Storyteller.ContextPreviewSpec
+                  , Storyteller.Context.DSL.ParserSpec
+                  , Storyteller.Context.DSL.CompileSpec
                   , Storyteller.OutlineSpec
                   , Storyteller.Common.SwipeSpec
                   , Server.TestStack
