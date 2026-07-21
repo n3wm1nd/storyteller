@@ -82,9 +82,47 @@ entryTexts v = Map.fromList <$>
 spec :: Spec
 spec = do
   contextWriterSpec
+  contextWriterLoreOverrideSpec
   contextLoreSpec
   contextMentionFilterSpec
   contextCharacterBlurbOverrideSpec
+
+-- | The regression test for the sibling bug 'contextCharacterBlurbOverrideSpec'
+--   flagged as "the same shape, sitting right next to it": @contextWriter@'s
+--   own body used to reference @contextLore@ by its bare alias rather than
+--   @context.lore@, so a project's own override of @context.lore@ was
+--   silently invisible to @contextWriter@'s composition, exactly like
+--   @character.blurb@ was to @contextCharacter@ before that fix. Now that
+--   'contextWriterDef' references @context.lore@ by its dotted name (and
+--   'defaultLibrarySource' no longer even registers a bare @contextLore@
+--   alias to fall back to), an override committed under that exact key has
+--   to reach @contextWriter@'s own flat default stream.
+--
+--   The override is a bare string, with no per-file entries of its own --
+--   so @contextOther@'s own @exclude(context.lore, ...)@ (matched against
+--   @context.lore@'s own 'valueEntries', never a forced default -- see
+--   'contextOtherDef''s own haddock) has nothing to exclude @lore\/notes.md@
+--   by, and it falls through into "Other notes" too. Asserting that
+--   honestly, rather than a narrower fixture that hides it, is the point:
+--   an override replacing @context.lore@ wholesale genuinely does affect
+--   what @contextOther@ sees, not just what @context.lore@ itself prints.
+contextWriterLoreOverrideSpec :: Spec
+contextWriterLoreOverrideSpec =
+  describe "contextWriter honors a committed override of context.lore" $
+    it "uses the overridden lore definition, not the compiled-in default, in its own flat stream" $
+      run (testStack $ do
+        seedBranch "main" [("lore/notes.md", "a hand-authored note")]
+        runDslOnWith overrides (BranchName "main") go)
+      `shouldBe` Right
+        [ User "this is a project-committed override, not the default"
+        , User "## Other notes"
+        , User "## lore/notes.md"
+        , FileRead "lore/notes.md" "a hand-authored note"
+        ]
+  where
+    overrides = Map.fromList
+      [ ("context.lore", "\"this is a project-committed override, not the default\"") ]
+    go = valueDefault =<< contextWriter ""
 
 -- | The regression test for the bug that started this whole redesign:
 --   'contextCharacter' used to take @blurb@ as a typed 'Binding'

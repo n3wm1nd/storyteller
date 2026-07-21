@@ -26,8 +26,8 @@
 --   ('defaultLibrarySource'). Composition between these pieces
 --   ('contextWriter' pulling in 'contextLore'\/'contextChapters'\/
 --   'contextOther') is *cross-definition name resolution*, not Haskell
---   parameter passing -- a body referencing @contextLore@ by bare name
---   resolves against the shared 'Storyteller.Context.DSL.Value.ContextLibrary'
+--   parameter passing -- a body referencing @context.lore@ by its dotted
+--   name resolves against the shared 'Storyteller.Context.DSL.Value.ContextLibrary'
 --   (see 'Storyteller.Context.DSL.Compile.resolveIdent'), the identical
 --   way whether the current name means the compiled-in default or a
 --   project's own committed override. Only a genuinely host-backed
@@ -146,15 +146,23 @@ loreEntry a = runDefinition loreEntryDef [toBinding a]
 --
 --   Self-describing (a "## Story background" heading) *and* keeps
 --   per-file entries -- both, not one or the other: the entries exist so
---   'contextOther''s own @exclude(contextLore, ...)@ can match this
+--   'contextOther''s own @exclude(context.lore, ...)@ can match this
 --   definition's key set (an @exclude@ argument's criteria come from
 --   'valueEntries'' own keys, never from a forced default -- see
 --   'Storyteller.Context.DSL.Compile.argCriteria'), and the default
---   exists so referencing @contextLore@ bare (as 'contextWriter' does)
+--   exists so referencing @context.lore@ (as 'contextWriter' does)
 --   gives the whole, honest "what is this" description rather than
 --   nothing. @x = loreEntry f@ binds each entry's own recipe once and
 --   reuses the same reference for both the @as@-export and the bare
 --   re-emit, rather than writing @loreEntry f@ twice.
+--
+--   Registered under *only* the dotted name @context.lore@ (like
+--   @character.blurb@ -- see its own haddock for why a second, bare-name
+--   alias pointing at the same 'Definition' would be a real, separate
+--   gap, not a convenience): every other definition referencing this one
+--   ('contextOther', 'contextWriter') does so by @context.lore@, so a
+--   project's own override actually reaches them, instead of the bug this
+--   whole module exists to avoid repeating.
 contextLoreDef :: Definition
 contextLoreDef = [defQuote|
 "## Story background"
@@ -224,9 +232,13 @@ contextChapters = runDefinition contextChaptersDef []
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
 --   @path@ (the file a caller is about to write to -- dropped so a query
 --   never shows a file to itself as if it were already-existing prior
---   content). Built directly from @contextLore@\/@contextChapters@'s own
---   key sets via @exclude@ -- referenced *by name*, not threaded in as
---   parameters, so this stays correct even if a project overrides either
+--   content). Built directly from @context.lore@\/@context.chapters@'s
+--   own key sets via @exclude@ -- referenced *by dotted name*, not
+--   threaded in as parameters and not by their bare aliases either (see
+--   'contextLoreDef''s own haddock: a bare reference here would mean a
+--   project's own @context.lore@\/@context.chapters@ override silently
+--   never reaches this exclusion, the exact bug this whole module exists
+--   to close), so this stays correct even if a project overrides either
 --   one independently, without 'contextOther' itself needing to change --
 --   not by restating "not lore\/**, not chapters\/**" as a second pattern
 --   list that could drift out of sync with their own definitions. Reuses
@@ -234,14 +246,14 @@ contextChapters = runDefinition contextChaptersDef []
 --   "just another entry," described the same way.
 --
 --   @path@ is 'contextOther''s only real parameter -- everything else it
---   needs (@contextLore@, @contextChapters@) it resolves itself, through
---   the shared library, the same way it would honor an override of
---   either.
+--   needs (@context.lore@, @context.chapters@) it resolves itself,
+--   through the shared library, the same way it would honor an override
+--   of either.
 contextOtherDef :: Definition
 contextOtherDef = [defQuote|
 path:
   "## Other notes"
-  for f in (**/* | exclude(contextLore, contextChapters, "style.md") | exclude("chat/**/*") | exclude(path)):
+  for f in (**/* | exclude(context.lore, context.chapters, "style.md") | exclude("chat/**/*") | exclude(path)):
     x = loreEntry f
     as f: x
     x
@@ -296,7 +308,7 @@ contextOther p = runDefinition contextOtherDef [toBinding p]
 --   @path@ is this definition's only real parameter, for the same reason
 --   it's 'contextOther''s: everything else is a fact about the branch,
 --   resolved through the shared library. Excluding @path@ from
---   @contextChapters@ needs the walk-and-reflatten form (an @exclude@
+--   @context.chapters@ needs the walk-and-reflatten form (an @exclude@
 --   only shrinks entries, so it can't act on 'contextChapters''s own
 --   already-built default) -- deliberately *not* repeating
 --   @contextChapters@'s own @"## Chapters written so far"@ banner here:
@@ -304,13 +316,27 @@ contextOther p = runDefinition contextOtherDef [toBinding p]
 --   exactly the drift risk this whole module exists to avoid. The
 --   transition from @contextLore@'s own heading into each chapter's own
 --   @"## Chapter: %f%"@ header is enough structure on its own.
+--
+--   References @context.lore@\/@context.chapters@\/@context.other@ by
+--   their dotted names, not the bare aliases those definitions used to be
+--   reachable under too -- this used to be the one real, confirmed gap
+--   'characterBlurb''s own haddock called out: a project committing an
+--   override to any of those three, however correctly, was silently
+--   never seen by this composition, the identical bug @character.blurb@
+--   had before it got the same fix. Closing it here meant dropping the
+--   bare aliases from 'defaultLibrarySource' entirely, not just adding the
+--   dotted reference alongside the old one -- two keys pointing at one
+--   'Definition' don't move together under a single override (see
+--   'contextCharacterDef''s own haddock on why), so leaving a bare alias
+--   registered would have left the same silent-miss risk sitting one key
+--   away.
 contextWriterDef :: Definition
 contextWriterDef = [defQuote|
 path:
-  contextLore
-  in (contextChapters | exclude(path)):
+  context.lore
+  in (context.chapters | exclude(path)):
     for f in **/*: read f
-  contextOther path
+  context.other path
   for c in (charactersin path):
     as c: context.character c
 |]
@@ -324,10 +350,10 @@ contextWriter p = runDefinition contextWriterDef [toBinding p]
 --   rather than an LLM call (see the project chat that designed this,
 --   2026-07-20: "already stored data", not content analysis). Its own
 --   named definition (@character.blurb@), registered in
---   'defaultLibrarySource' under both a bare name (what 'contextCharacter'
---   itself calls) and the dotted @character.blurb@ (what a project
---   override addresses), so a project can override just this one
---   definition independently of the richer buckets around it.
+--   'defaultLibrarySource' under its one dotted name (see below for why
+--   only one), what a project override addresses and what
+--   'contextCharacter' itself calls, so a project can override just this
+--   one definition independently of the richer buckets around it.
 --
 --   This used to be threaded into 'contextCharacter' as a typed
 --   'Binding' parameter instead of referenced by name -- which meant a
@@ -352,12 +378,15 @@ contextWriter p = runDefinition contextWriterDef [toBinding p]
 --   separate key -- 'Storyteller.Core.Context.buildContextLibrary'\'s
 --   'Data.Map.Strict.mapWithKey'-based override application checks each
 --   key in 'defaultLibrarySource' independently, so two keys for one
---   definition do not move together under a single override. (This is a
---   real, separate gap worth knowing about: @contextWriter@'s own body
---   still references @contextLore@ by its bare alias rather than
---   @context.lore@, so an override of @context.lore@ today does *not*
---   reach @contextWriter@'s composition either -- out of scope for this
---   fix, but the same shape of bug, sitting right next to it.)
+--   definition do not move together under a single override. (This same
+--   shape of bug used to sit right next to this fix, unfixed:
+--   @contextWriter@'s own body referenced @contextLore@\/@contextChapters@\/
+--   @contextOther@ by their bare aliases rather than
+--   @context.lore@\/@context.chapters@\/@context.other@, so an override of
+--   any of those three didn't reach @contextWriter@'s composition either.
+--   Closed the same way -- see 'contextWriterDef''s own haddock -- so
+--   'defaultLibrarySource' no longer has bare aliases for any of the
+--   three at all, only their dotted names.)
 --
 --   Takes @charname@ and crosses to that branch itself (@in (charname |
 --   branch): ...@), the same as 'contextCharacter''s own @"sheet"@
@@ -541,28 +570,33 @@ identity = [dsl| a: a |]
 --   mean right now"), just asked from inside a definition's own body or
 --   from a plain @Sem@-level caller.
 --
---   Two keys per definition, both pointing at the identical parsed value
---   (no second copy of the source, unlike this map's own predecessor --
---   see 'loreEntryDef''s Haddock on why a bare 'Definition' rather than
---   text is what makes that possible): a bare name (@loreEntry@,
---   @contextLore@, ...) for what a sibling definition's own body
---   actually writes when it references this one, and a dotted name
---   (@context.lore@, ...) for what a client\/project override addresses
---   and what 'resolveContext0'\/'resolveContext1' callers pass. Every
---   definition that *can't* live here -- needs a real Haskell-supplied
---   fallback -- is in 'defaultLibrary' instead; see that list's own
---   Haddock for exactly which two and why.
+--   One key per definition (no second copy of the source, unlike this
+--   map's own predecessor -- see 'loreEntryDef''s Haddock on why a bare
+--   'Definition' rather than text is what makes that possible). Two kinds
+--   of key, though, and they're not interchangeable: a plain internal
+--   helper with no project-facing identity of its own (@loreEntry@,
+--   @chapterEntry@ -- reused by more than one @context.*@ definition, but
+--   never itself something a project overrides independently) keeps its
+--   bare name only; anything a project\/client can meaningfully override
+--   on its own (@context.lore@, @context.chapters@, @context.other@,
+--   @context.writer@, @context.style@, @character.blurb@,
+--   @context.character@) is registered under *only* its dotted name, and
+--   every other definition referencing it does so by that same dotted
+--   name -- see 'contextWriterDef''s\/'characterBlurbDef''s own haddocks
+--   for the bug a bare alias sitting alongside the dotted one causes
+--   (two keys, one 'Definition', don't move together under a single
+--   override). What 'resolveContext0'\/'resolveContext1' callers pass is
+--   always one of these dotted names. Every definition that *can't* live
+--   here -- needs a real Haskell-supplied capability, not expressible as
+--   parsed DSL text -- is in 'hostLibrary' instead; see that map's own
+--   Haddock for exactly which and why.
 defaultLibrarySource :: Map Name Definition
 defaultLibrarySource = Map.fromList
   [ ("loreEntry",       loreEntryDef)
-  , ("contextLore",     contextLoreDef)
   , ("context.lore",    contextLoreDef)
   , ("chapterEntry",    chapterEntryDef)
-  , ("contextChapters", contextChaptersDef)
   , ("context.chapters", contextChaptersDef)
-  , ("contextOther",    contextOtherDef)
   , ("context.other",   contextOtherDef)
-  , ("contextWriter",   contextWriterDef)
   , ("context.writer",  contextWriterDef)
   , ("context.style",   contextStyleDef)
   , ("character.blurb", characterBlurbDef)
