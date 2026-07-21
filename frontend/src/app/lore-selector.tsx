@@ -33,7 +33,7 @@ import type { LoreNode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError, useUI } from "@/lib/uiStore";
 import { SectionHeader } from "./library";
 import { basenameNoExt, flattenLore } from "@/lib/utils";
-import { useCallContext } from "@/lib/callContextStore";
+import { useCallContext, EMPTY_MENTIONS } from "@/lib/callContextStore";
 
 // Re-exported for existing importers (app/fileview.tsx's mention
 // autocomplete) — the implementation now lives in lib/utils.ts.
@@ -179,7 +179,7 @@ function ContextAwareLoreCard({ entry, selectedFile }: {
 
   // Per-file context state for the badges.
   const fileState = useCallContext((s) => (selectedFile ? s.files[selectedFile] : undefined));
-  const mentionIds = useCallContext((s) => (selectedFile ? s.mentions[selectedFile] ?? [] : []));
+  const mentionIds = useCallContext((s) => (selectedFile ? s.mentions[selectedFile] ?? EMPTY_MENTIONS : EMPTY_MENTIONS));
   const requestMention = useUI((s) => s.requestMention);
 
   const inExtraFiles = !!fileState && fileState.mode === "transient"

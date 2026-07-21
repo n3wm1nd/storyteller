@@ -125,7 +125,7 @@ function characterLabel(c: CharacterAdd, characterBranches: CharacterSummary[]):
 
 export function ContextStrip({ path, onOpenPanel }: ContextStripProps) {
   const fileState = useCallContext((s) => s.files[path]);
-  const mentionIds = useCallContext((s) => s.mentions[path] ?? []);
+  const mentionIds = useCallContext((s) => s.mentions[path] ?? EMPTY_MENTIONS);
   const dirty = isFileDirty(path);
   const characterBranches = useServerCache((s) => s.characterBranches);
 
