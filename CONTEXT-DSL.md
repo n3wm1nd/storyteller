@@ -113,41 +113,57 @@ Unchanged from the original eight (function definitions, bare-statement
 emit, `read`, `x = ...`, `as "name": ...`, `in <expr>: ...`, `> <string>`,
 `< <expr>`), plus `for`.
 
-**`read`'s generalization is narrower than an earlier draft of this section
-claimed — worth being precise about, since it's a real gap, not just
-phrasing.** `Storyteller.Context.DSL.AST.ERead` still takes a `PathLit`
-(quoted or bare, `%interp%` allowed), not a general `Expr` — `read
-(charactersin path)` or `read (**/* | exclude("style.md"))` do not parse
-today. The one case that *does* work beyond a literal path is
-`pathLitText`'s own special rule: a single-segment bare token (`read f`,
-inside a `for f in ...:` body) prefers a bound local variable of that exact
-name over literal-text lookup, since a real filename can never
-simultaneously be one. That covers every worked example that needs it, but
-it is not the same claim as "`read` accepts any expression" — fully
-generalizing `read`'s argument to an arbitrary `Expr` (matching what `for`
-just gained) hasn't been done. A bare glob token (`*.md`, `test.md` —
-wildcarded or not, the same kind of expression either way) is still itself
-a complete, meaningful expression on its own, gathering matching entries
-into content but, on its own, **writing nothing** to the enclosing writer
-target — the same "build structure, don't emit" behavior `for`'s own body
-has. `read` always stamps `metaProvenance` on the `Value` it produces (path
-+ the tick it was read at) — free, since the path and ambient commit are
-already known before anything is forced.
+**Both `read` and `for` take a general `Expr` now, confirmed and
+implemented** (see `Storyteller.Context.DSL.AST.SFor`/`ERead`) — a glob was
+never structurally special; a bare glob token is just one more expression
+that happens to evaluate to a `Value` with entries (see `EString`'s own
+case above), exactly like a local variable, a fully-applied function call
+(`for c in (charactersin path): ...`), or a filtered expression (`for f in
+(**/* | exclude(...)): ...`).
 
-**`for`'s source is a general `Expr`, confirmed and implemented** (see
-`Storyteller.Context.DSL.AST.SFor`) — a glob was never structurally
-special; a bare glob token is just one more expression that happens to
-evaluate to a `Value` with entries (see `EString`'s own case above),
-exactly like a local variable, a fully-applied function call (`for c in
-(charactersin path): ...`), or a filtered expression (`for f in (**/* |
-exclude(...)): ...`). `for` evaluates its source to a `Value` and iterates
-its own `valueEntries`' keys, binding the loop variable to each key's text
-exactly as before — whatever produced those entries. The one thing that
-still can't appear there is an *unapplied* function reference, and that
-falls out for free: `EIdent`/`EApp` already fail before producing a `Value`
-at all when a name's `Binding` still needs arguments, the same failure any
+`for` evaluates its source to a `Value` and iterates its own
+`valueEntries`' keys, binding the loop variable to each key's text exactly
+as before — whatever produced those entries. The one thing that still
+can't appear there is an *unapplied* function reference, and that falls
+out for free: `EIdent`/`EApp` already fail before producing a `Value` at
+all when a name's `Binding` still needs arguments, the same failure any
 other expression position hits — there was never a separate check to add
 for `for` specifically.
+
+`read`'s own generalization needed two small, well-justified departures
+from the fully general rule, both confined to `Storyteller.Context.DSL.Compile`'s
+`ERead` case — not the parser, and not a new primitive:
+
+- **A string literal argument (quoted or bare) always resolves as a
+  path/glob, bypassing the ordinary `EString`-quoted meaning ("inert
+  text") entirely.** `read`'s whole point is "resolve a path"; quoting
+  never meant anything to it beyond "definitely a path, never a variable,"
+  deconflicting a literal filename from a same-named local (`read "f"`
+  always means the file, even if a variable `f` is also bound; bare `read
+  f` prefers the variable). Both quoted and bare string arguments go
+  through the identical glob-matching `Storyteller.Context.DSL.Compile.globResolve`
+  helper, so `read *.md` and `read "*.md"` behave identically, and both
+  genuinely can match more than one file now.
+- **A bare identifier that resolves nowhere — not a local, not a library
+  name — still means a literal path**, the one place in the language an
+  unresolved name isn't a hard failure (see Grammar below for why this
+  doesn't reopen the general rule). A bound identifier (a parameter, a
+  `let`, a `for`-loop variable — whose own `valueEntries` now carries a
+  single self-keyed entry holding its real content, not just its name, see
+  `runStmts`'s `SFor` case — or a library function) still evaluates
+  normally instead, so `read f` inside a loop still means "the content at
+  the path named by `f`," not "the loop variable's own placeholder text."
+
+Whichever path produced it, `read`'s result is built the same way: if the
+resolved `Value` has entries, force each one (in `valueEntries` order) and
+fold their own content into the result's own default — list
+concatenation, no separator inserted (matching how any other multi-message
+default already combines) — keeping `valueEntries` itself intact, so a
+multi-match result can still be narrowed further afterward. A `Value` with
+no entries (an already-resolved single leaf) is returned unchanged. `read`
+always stamps `metaProvenance` on each resolved entry (path + the tick it
+was read at) — free, since the path and ambient commit are already known
+before anything is forced.
 
 ## Grammar: bare tokens are disambiguated lexically, at parse time — no runtime fallback
 
@@ -173,28 +189,31 @@ address (`context.lore`, `character.blurb`) be written and referenced
 directly as a bare identifier inside a DSL body, rather than needing a
 second, separately-namespaced spelling.
 
-**`read`'s own argument gets one extra rule the general case doesn't need**,
-covering exactly the case the worked examples require: a *single-segment*
-bare token with no `/`, no `*`, and no `%...%` interpolation (`read f`,
-inside a `for f in ...:` body) is lexically identical whether the author
-meant "the literal filename `f`" or "whatever path is bound to the loop
-variable `f`". Since a real filename can never simultaneously be a bound
-local name, `Storyteller.Context.DSL.Compile.pathLitText` prefers the bound
-variable when one exists, falling straight through to literal-text lookup
-otherwise — covering both readings without new syntax, and without needing
-the general bare-token rule above to bend at all. A *quoted* token
-(`read "injury"`) is excluded from this: quoting is meaningful, not
-stylistic, so a quoted path is always literal text, never a same-named local
-variable.
+**An identifier that fails to resolve is a hard, loud failure everywhere
+except `read`'s own argument position — never a silent fallback anywhere
+else.** `Storyteller.Context.DSL.Compile.resolveIdent` checks the current
+definition's local `Env` (parameters, `let`s, `for`-loop variables) first,
+falls back to the shared `Library` only on a local miss, and fails outright
+(`"unknown identifier: ..."`) if neither has it. A typo'd `contextLroe` used
+as an ordinary reference is a loud runtime `Fail`, not a silently-empty glob
+match — there was never a design tension here to trade off; it only looked
+like one before the parser's own lexical rule was actually read.
 
-**An identifier that fails to resolve is a hard, loud failure — never a
-silent fallback of any kind.** `Storyteller.Context.DSL.Compile.resolveIdent`
-checks the current definition's local `Env` (parameters, `let`s, `for`-loop
-variables) first, falls back to the shared `Library` only on a local miss,
-and fails outright (`"unknown identifier: ..."`) if neither has it. A typo'd
-`contextLroe` is a loud runtime `Fail`, not a silently-empty glob match —
-there was never a design tension here to trade off; it only looked like one
-before the parser's own lexical rule was actually read.
+`read` is the one deliberate, narrow exception, via
+`Storyteller.Context.DSL.Compile.tryResolveIdent` (`resolveIdent`'s
+non-failing twin, used *only* inside `ERead`): a bare identifier that
+resolves nowhere still means a literal path there, because `read`'s
+argument has no other sensible meaning to fall back to — unlike a general
+reference (where an unresolved name really might just be a mistake), a name
+`read` can't resolve was always, structurally, either "the loop variable
+this worked example needs" (covered by ordinary resolution once the
+`for`-loop variable itself carries real content, see Primitives above) or
+"a literal filename with no subdirectory" (`read notes.md`, `read ch1.md`
+— both lexically `EIdent`, since neither contains `/` or `*`), and `read`
+has nothing else to do with either case than treat it as a path. This
+doesn't reopen the general "no silent fallback" rule — it's scoped to
+exactly one primitive whose entire job already is "resolve a path," not a
+general softening.
 
 ## Filters
 
@@ -527,14 +546,6 @@ Unchanged in spirit from the original design:
 
 ## Open questions
 
-- **`read`'s own argument stays a `PathLit`, not a general `Expr`** — `for`
-  got widened (see AST/Primitives above); `read` didn't, even though the
-  original design's ambition was to unify them. Doing so would need
-  `ERead`'s field to change the same way `SFor`'s did, plus deciding what
-  `read` does when its expression evaluates to something with *multiple*
-  entries (a multi-match glob, say) — concatenate them in order, the way a
-  `for`-plus-`join` gives today, or something else? Not yet decided, and
-  not yet built.
 - **`branch`**: it was pulled out of `coreFilters` specifically because
   resolving a branch name needed storage access a pure filter couldn't
   express. That reason is gone now that filters are `Action`-typed — does
@@ -611,33 +622,20 @@ as "injury": x
 x | orifempty "not injured"
 ```
 
-**`read` does *not* take a multi-match glob today** — a corrected example,
-not a worked one: an earlier draft of this section showed `read
-tracking/**/*.md` as a shorthand for "read every matching file, flattened,
-no per-file structure," reasoning that `read` had been unified with glob
-evaluation the same way `for` just was. That was aspirational, not built —
-`Storyteller.Context.DSL.AST.ERead` still takes a `PathLit`
-(`Storyteller.Context.DSL.Compile.resolveRead` does an exact-key or
-segment-path lookup, no `Glob.match` anywhere in it), so `read
-tracking/**/*.md` resolves to an empty `Value` today, silently — there is
-no file literally named `tracking/**/*.md`. The one way to get "every
-matching file's content, flattened, no per-file structure" today is still
-via `for` plus `join` — `for` now being able to iterate any expression
-doesn't change what `read` itself accepts:
+**`read` applied directly to a multi-match glob** — confirmed and
+implemented (see Primitives above): when per-file structure isn't needed,
+`read` over a multi-match glob replaces what used to require an explicit
+`for`, reading every match in order and concatenating their content:
 
 ```
+-- when you need each file addressable by name (a bucket per file):
 for f in tracking/**/*.md:
   as f: read f
 
--- flattened, if a single joined string (not per-file structure) is wanted:
-x =
-  for f in tracking/**/*.md:
-    as f: read f
-x | join("\n\n")
+-- when you only want the flattened content, nothing per-file to address:
+"## Everything currently tracked"
+read tracking/**/*.md
 ```
-
-Fully generalizing `read`'s own argument to an arbitrary `Expr` — matching
-what `for` gained — remains open; see Open questions.
 
 **Bare-token resolution, both outcomes side by side** — illustrating the
 Grammar rule directly: the first line is an application-free name lookup
