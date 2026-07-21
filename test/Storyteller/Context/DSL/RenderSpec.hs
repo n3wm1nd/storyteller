@@ -17,6 +17,7 @@
 --   an agent call actually receives.
 module Storyteller.Context.DSL.RenderSpec (spec) where
 
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Test.Hspec
@@ -36,9 +37,10 @@ import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
+import Storyteller.Core.Context (buildContextLibrary)
 import Storyteller.Core.LLM.Role (ProseModel)
 import Storyteller.Context.DSL.Library (contextChapters, contextLore)
-import Storyteller.Context.DSL.Render (valueBlocks, valueMessages)
+import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Context.DSL.Value
 import Storyteller.Writer.Agent (ContextBlock(..))
 
@@ -48,10 +50,14 @@ seedBranch name files = do
   runBranchOpGit @Main (BranchName name)
     (mapM_ (\(path, content) -> runStorage @Main (Ops.addAtom path content)) files)
 
+-- | Runs against 'Storyteller.Context.DSL.Library.defaultLibrarySource',
+--   not an empty library -- 'contextChapters'\/'contextLore' only resolve
+--   at all because 'Storyteller.Context.DSL.Library.chapterEntry'\/
+--   'Storyteller.Context.DSL.Library.loreEntry' are in it.
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act)
+  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
 
 -- | 'LLM.Message' has no 'Eq' -- compare on 'LLM.messageDirection' plus
 --   the rendered text, which is everything a real caller ('writeAgent',
@@ -66,8 +72,18 @@ spec = do
   valueMessagesSpec
   valueBlocksSpec
 
+-- | Reads a definition's own @valueDefault@ directly, not
+--   'Storyteller.Context.DSL.Render.valueAllMessages'
+--   (@valueMessages@\/@valueBlocks@'s own shared walk): now that
+--   'contextChapters'\/'contextLore' are self-describing (their own
+--   default already carries the full, already-framed content -- see
+--   'contextLore''s own Haddock), also walking 'valueEntries' would
+--   double-count the same messages.
+ownMessages :: Value -> Action [Message]
+ownMessages = valueDefault
+
 valueMessagesSpec :: Spec
-valueMessagesSpec = describe "valueMessages" $
+valueMessagesSpec = describe "valueMessages (via contextChapters' own default)" $
   it "preserves contextChapters' own User/Assistant pairing, in natural order, across two chapters" $
     run (testStack $ do
       seedBranch "main"
@@ -75,24 +91,28 @@ valueMessagesSpec = describe "valueMessages" $
         , ("chapters/ch2.md", "chapter two prose")
         ]
       runDslOn (BranchName "main")
-        (map describeMessage <$> (valueMessages =<< contextChapters :: Action [LLM.Message ProseModel])))
+        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters) :: Action [(LLM.MessageDirection, Text)]))
     `shouldBe` Right
-      [ (LLM.User,      "## Chapter: chapters/ch2.md")
+      [ (LLM.User,      "## Chapters written so far")
+      , (LLM.User,      "## Chapter: chapters/ch2.md")
       , (LLM.Assistant, "chapter two prose")
       , (LLM.User,      "## Chapter: chapters/ch11.md")
       , (LLM.Assistant, "chapter eleven prose")
       ]
 
 valueBlocksSpec :: Spec
-valueBlocksSpec = describe "valueBlocks" $
-  it "flattens contextLore into fenced ContextBlocks, one per file" $
+valueBlocksSpec = describe "valueBlocks (via contextLore's own default)" $
+  it "flattens contextLore into a heading plus one fenced ContextBlock per file" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/places/tavern.md", "the tavern")
         , ("lore/notes.md", "a note")
         ]
-      runDslOn (BranchName "main") (valueBlocks =<< contextLore))
+      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore)))
     `shouldBe` Right
-      [ ContextBlock "<context-file path=\"lore/notes.md\">\na note\n</context-file>"
+      [ ContextBlock "## Story background"
+      , ContextBlock "## lore/notes.md"
+      , ContextBlock "<context-file path=\"lore/notes.md\">\na note\n</context-file>"
+      , ContextBlock "## lore/places/tavern.md"
       , ContextBlock "<context-file path=\"lore/places/tavern.md\">\nthe tavern\n</context-file>"
       ]

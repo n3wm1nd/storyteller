@@ -35,22 +35,29 @@
 module Storyteller.Context.DSL.Library
   ( defaultLibrary
   , contextStyle
+  , loreEntry
   , contextLore
+  , chapterEntry
   , contextChapters
+  , contextOther
+  , contextWriter
   , contextCharacter
   , contextCharacterDefault
   , characterBlurb
   , characterSummaryOf
   , contextMentionFilter
-  , contextMain
-  , contextQuery
   , toBinding1
+  , identity
+  , defaultLibrarySource
   ) where
 
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, journalDelta)
+import Storyteller.Context.DSL.Context (toBindingFn1)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
@@ -65,6 +72,27 @@ contextStyle = [dsl|
 read "style.md" | orifempty ""
 |]
 
+-- | Describes one lore (or "other") entry -- a header naming it, then its
+--   content, still role-undecided (see 'read''s own convention).
+--   Referenced by plain name from 'contextLore''s\/'contextOther''s own
+--   bodies (@loreEntry f@), not threaded in as a parameter: that only
+--   works because 'loreEntry' is *also* registered as plain source in
+--   'defaultLibrarySource', so the shared library table
+--   ('Storyteller.Context.DSL.Value.ContextLibrary') resolves the name at
+--   runtime the same way it would resolve a project's own override. The
+--   two copies of this definition's source (this one, GHC-checked and
+--   directly callable from Haskell; 'defaultLibrarySource''s,
+--   runtime-parsed and library-resolvable) are a real, acknowledged
+--   duplication -- unifying them needs surfacing the quasiquoter's own
+--   already-parsed 'Storyteller.Context.DSL.AST.Definition' as a value in
+--   its own right, not yet done.
+loreEntry :: Action Value -> Action Value
+loreEntry = [dsl|
+f:
+  "## %f%"
+  read f
+|]
+
 -- | Hand-authored lore -- a plain positive convention (@lore\/**@), not
 --   "everything except chapters/style/scratch": 'exclude'\/'without'\/
 --   'only' can only neuter a key's *content* to 'emptyValue', never
@@ -72,43 +100,139 @@ read "style.md" | orifempty ""
 --   themselves DSL 'Value's, not knowable without forcing inside an
 --   'Action', and a filter has to stay pure/synchronous -- see their own
 --   haddocks) -- so an "everything except..." definition re-exported
---   through a second @for@ (exactly what composing this into 'contextMain'
---   needs) would resurrect every "excluded" path as an empty-content
---   entry instead of dropping it. A plain positive glob has no such
---   hazard: nothing here ever needs to un-match a key that was never
---   matched in the first place. A project without a @lore\/@ directory
---   gets nothing from this default until it writes its own convention --
---   consistent with "override, don't guess," not a gap.
+--   through a second @for@ (exactly what 'contextOther' needs) would
+--   resurrect every "excluded" path as an empty-content entry instead of
+--   dropping it. A plain positive glob has no such hazard: nothing here
+--   ever needs to un-match a key that was never matched in the first
+--   place. A project without a @lore\/@ directory gets nothing from this
+--   default until it writes its own convention -- consistent with
+--   "override, don't guess," not a gap.
+--
+--   Self-describing (a "## Story background" heading) *and* keeps
+--   per-file entries -- both, not one or the other: the entries exist so
+--   'contextOther''s own @exclude(contextLore, ...)@ can match this
+--   definition's key set (an @exclude@ argument's criteria come from
+--   'valueEntries'' own keys, never from a forced default -- see
+--   'Storyteller.Context.DSL.Compile.argCriteria'), and the default
+--   exists so referencing @contextLore@ bare (as 'contextWriter' does)
+--   gives the whole, honest "what is this" description rather than
+--   nothing. @x = loreEntry f@ binds each entry's own recipe once and
+--   reuses the same reference for both the @as@-export and the bare
+--   re-emit, rather than writing @loreEntry f@ twice.
 contextLore :: Action Value
 contextLore = [dsl|
+"## Story background"
 for f in lore/**/*:
-  as f: read f
+  x = loreEntry f
+  as f: x
+  x
+|]
+
+-- | Describes one chapter -- a @User@ header immediately followed by its
+--   content re-tagged @Assistant@ (@> read f@, per
+--   'Storyteller.Context.DSL.AST.EAssistant''s own haddock) -- the exact
+--   prior-turn framing @Storyteller.Writer.Agent.Write.
+--   buildChapterMessages@ used to hand-construct in Haskell for "earlier
+--   chapters," now built once here. Registered in 'defaultLibrarySource'
+--   the same way 'loreEntry' is, for the same reason (not referenced by
+--   name from anywhere yet, but kept consistent with 'loreEntry' as its
+--   own named unit rather than inlined, so a project can override "how
+--   one chapter is described" independently of 'contextChapters' as a
+--   whole).
+chapterEntry :: Action Value -> Action Value
+chapterEntry = [dsl|
+f:
+  "## Chapter: %f%"
+  > read f
 |]
 
 -- | Chapter prose, in natural reading order (@ch2@ before @ch11@, not
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
 --   re-export through a second glob (see
 --   'Storyteller.Context.DSL.Compile.globMatchPat''s own haddock for why
---   that used to silently undo it).
---
---   Each chapter's own entry is a @User@ header immediately followed by
---   its content re-tagged @Assistant@ (@> read f@, widened per
---   'Storyteller.Context.DSL.AST.EAssistant''s own haddock) -- the exact
---   prior-turn framing @Storyteller.Writer.Agent.Write.
---   buildChapterMessages@ used to hand-construct in Haskell for
---   "earlier chapters" (a header naming the chapter, then its prose
---   presented as the model's own earlier output), now built once here
---   instead of duplicated at every call site.
+--   that used to silently undo it). Self-describing and entry-keeping,
+--   same reasoning and same @x = ...; as f: x; x@ shape as 'contextLore'.
 contextChapters :: Action Value
 contextChapters = [dsl|
 x =
   for f in chapters/**/*:
-    as f:
-      "## Chapter: %f%"
-      > read f
+    as f: chapterEntry f
+"## Chapters written so far"
 in (x | sortBy):
   for f in **/*:
-    as f: read f
+    y = read f
+    as f: y
+    y
+|]
+
+-- | The catch-all: any file that isn't under @lore@\/@chapters@' own
+--   convention, or @style.md@, or the @chat/**@ scratch convention, or
+--   @path@ (the file a caller is about to write to -- dropped so a query
+--   never shows a file to itself as if it were already-existing prior
+--   content). Built directly from @contextLore@\/@contextChapters@'s own
+--   key sets via @exclude@ -- referenced *by name*, not threaded in as
+--   parameters, so this stays correct even if a project overrides either
+--   one independently, without 'contextOther' itself needing to change --
+--   not by restating "not lore\/**, not chapters\/**" as a second pattern
+--   list that could drift out of sync with their own definitions. Reuses
+--   'loreEntry' for the same per-file framing lore gets: a stray file is
+--   "just another entry," described the same way.
+--
+--   @path@ is 'contextOther''s only real parameter -- everything else it
+--   needs (@contextLore@, @contextChapters@) it resolves itself, through
+--   the shared library, the same way it would honor an override of
+--   either.
+contextOther :: Text -> Action Value
+contextOther = [dsl|
+path:
+  "## Other notes"
+  in (**/* | exclude(contextLore, contextChapters, "style.md") | exclude("chat/**/*") | exclude(path)):
+    for f in **/*:
+      x = loreEntry f
+      as f: x
+      x
+|]
+
+-- | The writer agent's own default background context -- what
+--   'Server.Writer.File.chatWriter' resolves (branch-override-then-this)
+--   when a request carries no context of its own, and what
+--   'Storyteller.Writer.Agent.Roleplay.roleplayWriter'\/
+--   'chatChapterRegen'\/'chatSplitOutline' and the CLI tools always use
+--   (they never take a per-request override). One flat, ordered,
+--   self-describing stream -- lore, then whatever's already been written
+--   (minus the file about to be written), then everything else -- not a
+--   record of separately-picked buckets: forcing this @Value@'s own
+--   default *is* "the context for this call," honestly, whether this
+--   compiled-in body answered it or a project's\/client's own override
+--   did (see the project chat that settled this: a context a caller
+--   submits has to mean "whatever this writes is what the LLM sees," not
+--   something this module quietly reinterprets by picking named entries
+--   apart).
+--
+--   Style is deliberately absent -- it was never "context" (facts about
+--   the story) at all, only an instruction about voice, so it stays its
+--   own separate lookup (@context.style@) wherever an agent wants it,
+--   completely independent of whether this definition or a client's own
+--   program produced the stream above.
+--
+--   @path@ is this definition's only real parameter, for the same reason
+--   it's 'contextOther''s: everything else is a fact about the branch,
+--   resolved through the shared library. Excluding @path@ from
+--   @contextChapters@ needs the walk-and-reflatten form (an @exclude@
+--   only shrinks entries, so it can't act on 'contextChapters''s own
+--   already-built default) -- deliberately *not* repeating
+--   @contextChapters@'s own @"## Chapters written so far"@ banner here:
+--   that text belongs to @contextChapters@, and restating it would be
+--   exactly the drift risk this whole module exists to avoid. The
+--   transition from @contextLore@'s own heading into each chapter's own
+--   @"## Chapter: %f%"@ header is enough structure on its own.
+contextWriter :: Text -> Action Value
+contextWriter = [dsl|
+path:
+  contextLore
+  in (contextChapters | exclude(path)):
+    for f in **/*: read f
+  contextOther path
 |]
 
 -- | The "and this is the character" acquaintance-level line -- the
@@ -185,7 +309,7 @@ charname:
 --   access without narrowing further) still gets a reasonable
 --   "and this is the character" line, per the project chat's own framing
 --   ("read \"blurb\" is probably a good default").
-contextCharacter :: Binding -> Binding -> Binding -> Action Value
+contextCharacter :: Text -> Binding -> Binding -> Action Value
 contextCharacter = [dsl|
 charname: blurb: journal:
   as "sheet": in (charname | branch): read "sheet.md" | orifempty ""
@@ -209,9 +333,9 @@ charname: blurb: journal:
 --   @journalLookback@\/@journalMaxOut@\/@journalPadding@ constants,
 --   moved to this definition's own default rather than duplicated at
 --   every future call site.
-contextCharacterDefault :: Binding -> Action Value
-contextCharacterDefault charnameB =
-  contextCharacter charnameB (toBinding1 characterBlurb) (journalDelta 30 10 2)
+contextCharacterDefault :: Text -> Action Value
+contextCharacterDefault charname =
+  contextCharacter charname (toBinding1 characterBlurb) (journalDelta 30 10 2)
 
 -- | Reshapes an already-resolved @context.character@-shaped 'Value' into
 --   a 'CharSummary' -- the shared piece every consumer wanting that exact
@@ -263,97 +387,26 @@ aliases:
       as f: read f
 |]
 
--- | The default top-level program a chat\/write query sends as its one
---   context parameter -- composes 'contextLore'\/'contextChapters'\/
---   'contextStyle' by passing each in as an ordinary parameter (see the
---   module haddock for why, not by referencing them as free identifiers).
---
---   Exports four *distinguished, unflattened* top-level entries --
---   @"lore"@, @"chapters"@, @"other"@, @"style"@ -- each its own nested
---   container, rather than merging everything into one flat pool. This
---   matters beyond bookkeeping: 'Storyteller.Writer.Agent.Write.
---   writeAgent' has to keep chapters in their own cache-stable,
---   alternating-role slot and style out of the message stream entirely
---   (see that module's own Haddock on why flattening would break its
---   prompt-cache-prefix discipline) -- so the wiring layer needs to pull
---   each bucket out separately, not walk one merged entry list.
---
---   @"other"@ is the catch-all: any file that isn't under either
---   @lore@\/@chapters@' own convention (a stray hand-authored note
---   nobody's filed into @lore\/@ yet, say) still shows up, built directly
---   from @lore@\/@chapters@'s own key sets via @exclude@ -- not by
---   restating "not lore\/**, not chapters\/**" as a second pattern list
---   that could drift out of sync with their own definitions. Chained
---   @exclude@ calls compose the same way a single multi-argument call
---   would (@exclude(lore, chapters, ...) | exclude("chat/**/*")@ is
---   equivalent to one call with every argument) -- @chat\/**@ stays a
---   plain literal pattern here since it's not a whole other definition's
---   own result, just a fixed scratch-space convention.
---
---   @path@ is the file a caller is about to write to, dropped from
---   @"chapters"@\/@"other"@ so a query never shows a file to itself as if
---   it were already-existing prior content (@"lore"@ is never
---   path-excluded -- a lore file being self-referential isn't a case that
---   comes up). Callers with no real target file (a lore-only read, say)
---   pass the empty string, which @exclude@ then matches against nothing
---   real. This used to be a post-hoc 'Storyteller.Context.DSL.Value.withoutKey'
---   call at every Haskell call site; threading it as a real parameter
---   instead makes the exclusion DSL policy, inspectable and overridable
---   like the rest of this module, rather than a Haskell-side patch-up
---   every caller had to remember to apply.
-contextMain :: Action Value -> Action Value -> Action Value -> Binding -> Action Value
-contextMain = [dsl|
-lore: chapters: style: path:
-  as "lore":
-    in lore:
-      for f in **/*:
-        as f: read f
-  as "chapters":
-    in (chapters | exclude(path)):
-      for f in **/*:
-        as f: read f
-  as "other":
-    in (**/* | exclude(lore, chapters, "style.md") | exclude("chat/**/*") | exclude(path)):
-      for f in **/*:
-        as f: read f
-  as "style": style
-|]
-
--- | 'contextMain', fully applied to the other three default definitions,
---   down to the one real parameter left -- @path@ (see 'contextMain''s own
---   haddock). This is the actual 1-arity program a chat\/write query's own
---   wire-level context field resolves to by default (see
---   'Storyteller.Core.Context.resolveContextQuery'\/'getContextDefinition',
---   'Storyteller.Core.Context.runContextBinding1'). 'contextMain' itself
---   stays exported separately since it's the reusable composer -- a
---   project overriding just @context.lore@ still gets it threaded into
---   this same composition, unmodified.
-contextQuery :: Binding -> Action Value
-contextQuery = contextMain contextLore contextChapters contextStyle
-
--- | Every default definition this application ships. Arity differs per
---   entry ('contextStyle'\/'contextLore'\/'contextChapters'\/
---   'characterBlurb' are plain 0-arity values; 'contextCharacterDefault'\/
---   'contextMentionFilter'\/'contextQuery' take one argument -- 'contextQuery'
---   its target @path@, the other two the raw 3-arity 'contextCharacter'\/
---   'contextMentionFilter'\'s own composer fully applied down to one-argument
---   shape) -- 'Binding' already carries its own arity (see its own haddock:
---   "values are just 0-arity functions, otherwise no different"), so a
---   uniform @[(Name, Binding)]@ is exactly the right shape regardless, with
---   no arity-indexed type needed. @context.main@ names 'contextQuery'
---   (1-arity, ready to run once given @path@ -- see 'runContextBinding1'),
---   not 'contextMain' itself (4-arity, a composer) -- the dotted key is
---   what a client\/branch override addresses, and an override always
---   matches whatever arity the default it's replacing has.
+-- | Every default definition this application ships, keyed by the dotted
+--   name a client\/project override addresses -- 'Binding' already
+--   carries its own arity (see its own haddock: "values are just 0-arity
+--   functions, otherwise no different"), so a uniform @[(Name, Binding)]@
+--   is exactly the right shape regardless. @context.writer@ names
+--   'contextWriter' (1-arity, ready to run once given @path@) -- the
+--   replacement for what used to be a bundled @context.main@ (@lore@\/
+--   @chapters@\/@other@\/@style@ as one caller-agnostic record); see
+--   'contextWriter''s own Haddock for why there's no such single "main"
+--   context, only this agent's own default.
 defaultLibrary :: [(Name, Binding)]
 defaultLibrary =
   [ ("context.style",         bval contextStyle)
   , ("context.lore",          bval contextLore)
   , ("context.chapters",      bval contextChapters)
+  , ("context.other",         toBindingFn1 contextOther)
+  , ("context.writer",        toBindingFn1 contextWriter)
   , ("character.blurb",       toBinding1 characterBlurb)
-  , ("context.character",     toBinding1 contextCharacterDefault)
+  , ("context.character",     toBindingFn1 contextCharacterDefault)
   , ("context.mentionFilter", toBinding1 contextMentionFilter)
-  , ("context.main",          toBinding1 contextQuery)
   ]
 
 -- | Re-curries a QQ-spliced 1-arity definition (@'Binding' ->
@@ -367,3 +420,76 @@ toBinding1 f = Binding 1 go
   where
     go [a] _  = f (bval a)
     go args _ = fail $ "expected exactly 1 argument, got " <> show (length args)
+
+-- | The identity -- wraps a plain string as a 'Value' whose own default
+--   is exactly that text, nothing else. What used to get hand-rolled
+--   inline (@[dsl| a: a |]@, or reaching for
+--   'Storyteller.Context.DSL.Value.leafValue' directly) at any call site
+--   that just needed "this text, as a DSL value" -- one named, reusable
+--   definition instead.
+identity :: Text -> Action Value
+identity = [dsl| a: a |]
+
+-- | Plain DSL source for every library-internal definition meant to be
+--   cross-referenceable by name from *another* definition's own body --
+--   what 'Storyteller.Core.Context.buildContextLibrary' parses once (then
+--   folds a project's own 'Storyteller.Core.Context.contextsBranchName'
+--   overrides on top) into the shared table
+--   'Storyteller.Context.DSL.Value.ContextLibrary' resolves cross-references
+--   against. Distinct from 'defaultLibrary': that one holds *compiled*
+--   'Binding's for the wire-\/branch-override boundary
+--   ('Storyteller.Core.Context.resolveContextQuery'), keyed by the dotted
+--   name a client\/project addresses; this one holds *source text*, keyed
+--   by whatever bare identifier a sibling definition's own body actually
+--   writes (@loreEntry@, not @context.lore.entry@ -- there's no dotted
+--   namespacing for a name that's never addressed from outside the DSL).
+--   Every entry here is a literal transcription of the same-named
+--   @[dsl| ... |]@-quoted definition above -- a real, acknowledged
+--   duplication (see 'loreEntry''s own Haddock on why), not yet unified.
+defaultLibrarySource :: Map Name Text
+defaultLibrarySource = Map.fromList
+  [ ( "loreEntry"
+    , "f:\n\
+      \  \"## %f%\"\n\
+      \  read f\n"
+    )
+  , ( "contextLore"
+    , "\"## Story background\"\n\
+      \for f in lore/**/*:\n\
+      \  x = loreEntry f\n\
+      \  as f: x\n\
+      \  x\n"
+    )
+  , ( "chapterEntry"
+    , "f:\n\
+      \  \"## Chapter: %f%\"\n\
+      \  > read f\n"
+    )
+  , ( "contextChapters"
+    , "x =\n\
+      \  for f in chapters/**/*:\n\
+      \    as f: chapterEntry f\n\
+      \\"## Chapters written so far\"\n\
+      \in (x | sortBy):\n\
+      \  for f in **/*:\n\
+      \    y = read f\n\
+      \    as f: y\n\
+      \    y\n"
+    )
+  , ( "contextOther"
+    , "path:\n\
+      \  \"## Other notes\"\n\
+      \  in (**/* | exclude(contextLore, contextChapters, \"style.md\") | exclude(\"chat/**/*\") | exclude(path)):\n\
+      \    for f in **/*:\n\
+      \      x = loreEntry f\n\
+      \      as f: x\n\
+      \      x\n"
+    )
+  , ( "contextWriter"
+    , "path:\n\
+      \  contextLore\n\
+      \  in (contextChapters | exclude(path)):\n\
+      \    for f in **/*: read f\n\
+      \  contextOther path\n"
+    )
+  ]

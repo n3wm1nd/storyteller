@@ -180,7 +180,7 @@ type Env = Map Name Binding
 --   place, rather than filtering them out after the fact.
 treeValueOfCommit :: Core.ObjectHash -> Action Value
 treeValueOfCommit commit = do
-  files <- Action (Query.loadLiveWorkingTree commit)
+  files <- Action (\_lib -> Query.loadLiveWorkingTree commit)
   pure Value
     { valueDefault = pure []
     , valueEntries =
@@ -280,6 +280,25 @@ runStmts env0 scope0 = go env0 scope0 [] []
 bindParams :: [Name] -> [Action Value] -> Env -> Env
 bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env (zip ps args)
 
+-- | Resolves an identifier against the current definition's own local
+--   'Env' first (parameters, @let@s, @for@-loop variables), falling back
+--   to the shared library table ('lookupLibrary') only on a local miss --
+--   the same shadowing a local variable would give a same-named library
+--   entry in any ordinary language. A library hit gets wrapped as an
+--   ordinary 'Binding' whose call takes the *caller's own* ambient scope
+--   (never a fresh 'currentScope') -- see 'ContextLibrary's own Haddock
+--   for why that's what makes a library reference behave indistinguishably
+--   from a local one.
+resolveIdent :: Env -> Name -> Action Binding
+resolveIdent env name = case Map.lookup name env of
+  Just b  -> pure b
+  Nothing -> lookupLibrary name >>= \case
+    Just def -> pure (libraryBinding def)
+    Nothing  -> fail $ "unknown identifier: " <> T.unpack name
+
+libraryBinding :: Definition -> Binding
+libraryBinding def = Binding (length (defParams def)) (\args scope -> compileDefinition def scope (map bval args))
+
 nameOf :: Env -> Value -> Expr -> Action Name
 nameOf env scope e = do
   v <- evalExpr env scope e
@@ -301,11 +320,10 @@ evalExpr env scope e = case e of
     v    <- evalExpr env scope inner
     msgs <- valueDefault v
     pure v { valueDefault = pure (map (User . messageText) msgs) }
-  EIdent name -> case Map.lookup name env of
-    Just (Binding 0 fn)     -> fn [] scope
-    Just (Binding arity _)  -> fail $
+  EIdent name -> resolveIdent env name >>= \case
+    Binding 0 fn    -> fn [] scope
+    Binding arity _ -> fail $
       T.unpack name <> " needs " <> show arity <> " argument(s), used with none"
-    Nothing -> fail $ "unknown identifier: " <> T.unpack name
   ERead pathLit -> do
     path <- pathLitText env scope pathLit
     resolveRead scope path >>= \case
@@ -314,12 +332,11 @@ evalExpr env scope e = case e of
   EApp headE argEs -> do
     let args = map (evalExpr env scope) argEs
     case headE of
-      EIdent name -> case Map.lookup name env of
-        Just (Binding arity fn) -> do
-          when (length args /= arity) $ fail $
-            T.unpack name <> ": expected " <> show arity <> " argument(s), got " <> show (length args)
-          fn args scope
-        Nothing -> fail $ "unknown function: " <> T.unpack name
+      EIdent name -> do
+        Binding arity fn <- resolveIdent env name
+        when (length args /= arity) $ fail $
+          T.unpack name <> ": expected " <> show arity <> " argument(s), got " <> show (length args)
+        fn args scope
       _ -> fail "application head must be a plain identifier"
   -- @branch@ isn't a filter (see the "Filters" section haddock) -- its
   -- call syntax is identical, but it's dispatched here by name, straight
@@ -692,7 +709,7 @@ journalDelta lookback maxOut padding = fn1 go
       askBranch (BranchName ("character/" <> ident)) >>= \case
         Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
         Just commit -> do
-          ticks <- Action (Core.readAt commit (Tick.recentAtomsOf "journal.md" lookback maxOut padding))
+          ticks <- Action (\_lib -> Core.readAt commit (Tick.recentAtomsOf "journal.md" lookback maxOut padding))
           pure (leafValue (renderJournalTicks ticks))
 
 -- | One block per curated slice, joined by a plain divider -- entries

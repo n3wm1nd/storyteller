@@ -27,9 +27,12 @@ module Storyteller.Context.DSL.Value
   ( Message(..)
   , messageText
   , MonadBranch(..)
+  , ContextLibrary(..)
   , Action(..)
   , liftStore
   , askBranch
+  , currentLibrary
+  , lookupLibrary
   , currentHead
   , Value(..)
   , emptyValue
@@ -41,12 +44,14 @@ module Storyteller.Context.DSL.Value
   ) where
 
 import Control.Monad.Trans.Class (lift)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 
 import qualified Storage.Core as Core
 
-import Storyteller.Context.DSL.AST (Name)
+import Storyteller.Context.DSL.AST (Definition, Name)
 import Storyteller.Core.Types (BranchName)
 
 -- | The three, and only three, ways a message gets constructed (see
@@ -71,42 +76,80 @@ messageText (Assistant t)  = t
 class Monad m => MonadBranch m where
   resolveBranch :: BranchName -> m (Maybe Core.ObjectHash)
 
+-- | The shared, once-built library table -- every named definition this
+--   application knows about (compiled-in defaults, then whatever the
+--   current 'Storyteller.Core.Storage.Contexts' branch overrides or adds
+--   on top), fixed for the lifetime of one request/action, resolved by
+--   dotted name. This is what makes cross-definition reference by plain
+--   identifier possible at all (@contextLore@'s own body calling
+--   @loreEntry f@, say): 'Storyteller.Context.DSL.Compile's @EIdent@\/
+--   @EApp@ fall back here once a name misses the current definition's own
+--   local 'Env'. A found 'Definition' gets compiled and run against the
+--   *caller's* own ambient scope (never a fresh one) -- the exact same
+--   calling convention an ordinary local 'Storyteller.Context.DSL.Compile.Binding'
+--   already has, so a library reference behaves indistinguishably from a
+--   parameter or a @let@.
+--
+--   Deliberately *not* a 'MonadBranch'-shaped typeclass constraint on
+--   'Action'\'s own @m@: unlike branch resolution, this is one plain,
+--   already-built, immutable value -- fixed once per request, never
+--   looked up effectfully mid-computation -- so it travels as an ordinary
+--   'Action'-level Reader parameter (see 'runAction'\'s own type) rather
+--   than needing a capability 'Action'\'s abstract backend has to satisfy.
+newtype ContextLibrary = ContextLibrary (Map Name Definition)
+
 -- | A deferred storage transaction, generic over any backend that can
---   satisfy 'Core.StoreM' and 'MonadBranch'. This is @Thunk@ made
---   concrete: constructing an 'Action' performs no effect at all (it's
---   just a function value, same as any other Haskell closure); the
---   effect only happens at 'runAction'.
+--   satisfy 'Core.StoreM' and 'MonadBranch', plus one plain Reader
+--   parameter for 'ContextLibrary' (see its own Haddock for why that one
+--   isn't a third typeclass constraint the way 'MonadBranch' is). This is
+--   @Thunk@ made concrete: constructing an 'Action' performs no effect at
+--   all (it's just a function value, same as any other Haskell closure);
+--   the effect only happens at 'runAction'.
 newtype Action a = Action
-  { runAction :: forall m. (Core.StoreM m, MonadBranch m) => Core.StoreT m a }
+  { runAction :: forall m. (Core.StoreM m, MonadBranch m) => ContextLibrary -> Core.StoreT m a }
 
 instance Functor Action where
-  fmap f (Action g) = Action (f <$> g)
+  fmap f (Action g) = Action (\lib -> f <$> g lib)
 
 instance Applicative Action where
-  pure a = Action (pure a)
-  Action f <*> Action g = Action (f <*> g)
+  pure a = Action (\_lib -> pure a)
+  Action f <*> Action g = Action (\lib -> f lib <*> g lib)
 
 instance Monad Action where
-  Action g >>= f = Action (g >>= \a -> runAction (f a))
+  Action g >>= f = Action (\lib -> g lib >>= \a -> runAction (f a) lib)
 
 instance MonadFail Action where
-  fail msg = Action (fail msg)
+  fail msg = Action (\_lib -> fail msg)
 
 -- | Lifts an ordinary 'Core.StoreM' computation (one that doesn't need
 --   branch resolution or the ambient position -- almost everything:
 --   reading a blob, listing a tree) into 'Action'.
 liftStore :: (forall m. Core.StoreM m => m a) -> Action a
-liftStore act = Action (lift act)
+liftStore act = Action (\_lib -> lift act)
 
 -- | The one 'Action' that actually reaches for 'MonadBranch'.
 askBranch :: BranchName -> Action (Maybe Core.ObjectHash)
-askBranch name = Action (lift (resolveBranch name))
+askBranch name = Action (\_lib -> lift (resolveBranch name))
+
+-- | The 'ContextLibrary' this 'Action' is running against -- whatever
+--   'Storyteller.Core.Context.runContextValue' was handed at the one
+--   place 'runAction' actually gets called.
+currentLibrary :: Action ContextLibrary
+currentLibrary = Action (\lib -> pure lib)
+
+-- | 'currentLibrary', narrowed to one name -- what
+--   'Storyteller.Context.DSL.Compile's cross-definition 'EIdent'\/'EApp'
+--   fallback actually calls.
+lookupLibrary :: Name -> Action (Maybe Definition)
+lookupLibrary name = do
+  ContextLibrary m <- currentLibrary
+  pure (Map.lookup name m)
 
 -- | The commit an 'Action' is currently ambiently positioned at -- see
 --   'Core.headHash'. What 'Storyteller.Context.DSL.Compile.currentScope'
 --   bootstraps the Reader scope from, with no branch lookup needed.
 currentHead :: Action Core.ObjectHash
-currentHead = Action Core.headHash
+currentHead = Action (\_lib -> Core.headHash)
 
 -- | @Value = { default :: Thunk [Message], entries :: [(Name, Value)] }@.
 --   An ordered association list, not a 'Data.Map.Strict.Map' -- order is

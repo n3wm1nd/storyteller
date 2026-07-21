@@ -19,6 +19,7 @@
 --   mock-git-backed harness "Storyteller.Context.DSL.CompileSpec" uses.
 module Storyteller.Context.DSL.ContextSpec (spec) where
 
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Test.Hspec
 
@@ -46,12 +47,40 @@ seedBranch name files = do
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> show bname)
-  Just h  -> fst <$> Core.runStoreT h (runAction act)
+  Just h  -> fst <$> Core.runStoreT h (runAction act (ContextLibrary Map.empty))
 
 spec :: Spec
 spec = do
   contextMonoidSpec
   toBindingSpec
+  inlineLiteralSpec
+
+-- | How close inline @['dsl'| ... |]@ snippets already get to "just wrap
+--   this string as a Value" \/ "just make a one-key Value" without a
+--   named top-level definition -- checking against the real interpreter,
+--   not just reasoning about the grammar.
+inlineLiteralSpec :: Spec
+inlineLiteralSpec = describe "inline single-expression [dsl| |] snippets" $ do
+
+  it "a: a -- the identity, no branch/file access needed at all" $
+    run (testStack $ do
+      seedBranch "main" []
+      runDslOn (BranchName "main")
+        (messagesText <$> (valueDefault =<< identityDsl "the value as text")))
+    `shouldBe` Right "the value as text"
+
+  it "a: b: as a: b -- a one-key Value, keyed by the first argument's own text" $
+    run (testStack $ do
+      seedBranch "main" []
+      runDslOn (BranchName "main")
+        (messagesText <$> (valueDefault =<< (scopedDsl "key" "value" >>= namedEntry "key"))))
+    `shouldBe` Right "value"
+  where
+    identityDsl :: Text -> Action Value
+    identityDsl = [dsl| a: a |]
+
+    scopedDsl :: Text -> Text -> Action Value
+    scopedDsl = [dsl| a: b: as a: b |]
 
 contextMonoidSpec :: Spec
 contextMonoidSpec = describe "Context (Semigroup/Monoid)" $ do

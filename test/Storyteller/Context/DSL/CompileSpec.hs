@@ -83,7 +83,7 @@ seedBranch name files = do
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act)
+  Just h  -> fst <$> Core.runStoreT h (runAction act (ContextLibrary Map.empty))
 
 -- | A plain-text leaf, ready to apply to a @['dsl'| ... |]@-spliced
 --   function's own parameters -- 'bval' baked in, so passing a leaf
@@ -572,7 +572,7 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
       )
   where
     go = do
-      v <- CtxLibrary.contextCharacter (textArg "jenny") (CtxLibrary.toBinding1 CtxLibrary.characterBlurb) (journalDelta 30 10 0)
+      v <- CtxLibrary.contextCharacter "jenny" (CtxLibrary.toBinding1 CtxLibrary.characterBlurb) (journalDelta 30 10 0)
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

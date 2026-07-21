@@ -10,27 +10,21 @@
 -- | Prose generation agents.
 --
 -- 'proseAgent' is the pure LLM core: given assembled context, produce new
--- text. No filesystem access — all context is passed in explicitly, making
--- it easy to extend with new effects (style guides, persona, etc.) in isolation.
--- Every caller assembles that context via the Context DSL now (see
--- CONTEXT-DSL.md and 'Server.Writer.File.flatMainContext') rather than a
--- hand-rolled filesystem read -- this module used to also export
--- 'gatherFileContext' for that, removed once its last caller migrated.
---
--- Context arrives as real, model-agnostic @['Storyteller.Context.DSL.Value.Message']@
--- straight off a Context DSL 'Storyteller.Context.DSL.Value.Value' -- not
--- flattened 'Storyteller.Writer.Agent.ContextBlock' text, and not pre-bound
--- to 'ProseModel' either, since the same DSL messages have to stay usable
--- for a different role's call too (see 'proseAgent's own Haddock). Binding
--- to a concrete model/role via 'Storyteller.Context.DSL.Render.dslMessageToLLM'
--- happens only here, right before 'queryLLM', which is what preserves
--- whatever role structure a DSL definition built (@context.main@'s own
--- alternating-turn "chapters" bucket, say) as real, separate messages
--- rather than string-concatenating everything into one flattened
--- 'UserText' the way this module used to (still true for the handful of
--- small, always-static pieces that were never DSL conversational structure
--- to begin with -- character info, existing content, the instruction --
--- see 'writerTrailingMessage').
+-- text. No filesystem access, no Context DSL awareness at all -- context
+-- arrives as real, already-bound @['UniversalLLM.Message' 'ProseModel']@,
+-- easy to extend with new effects (style guides, persona, etc.) in
+-- isolation. Every real caller assembles that context via the Context DSL
+-- (see CONTEXT-DSL.md and 'Server.Writer.File.flatMainMessages'), but
+-- binds it to 'ProseModel' at its own call site, right where a
+-- 'Storyteller.Context.DSL.Context.Context' gets forced -- 'proseAgent'
+-- itself is always 'ProseModel', unconditionally, so there's no
+-- flexibility lost by settling that there rather than re-deferring it in
+-- here. (Contrast 'Storyteller.Writer.Agent.Roleplay.askCharacter''s own
+-- @sceneContext@, which genuinely feeds both a 'ProseModel' and an
+-- 'AgentModel' call from one resolved value -- that one *does* stay
+-- model-agnostic until each of its own two call sites.) This module used
+-- to also export 'gatherFileContext' for context assembly, removed once
+-- its last caller migrated to the DSL.
 module Storyteller.Writer.Agent.Continuation
   ( proseAgent
   , defaultWriterSystemPrompt
@@ -48,9 +42,6 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ExistingContent(..), WordCount(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
-
-import qualified Storyteller.Context.DSL.Render as Render
-import qualified Storyteller.Context.DSL.Value as DSL
 
 -- | Ask the LLM to produce new prose given fully assembled context.
 --   No filesystem access — all inputs are explicit.
@@ -76,7 +67,7 @@ proseAgent
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount        -- ^ approximate desired output length
   -> [CharContextBlock]     -- ^ character context blocks
-  -> [DSL.Message]          -- ^ branch context, as model-agnostic Context DSL messages -- typically a DSL 'Storyteller.Context.DSL.Value.Value''s own 'Storyteller.Context.DSL.Render.valueAllMessages', preserving whatever role structure that definition built (e.g. @context.main@'s own alternating-turn "chapters" bucket). Bound to this call's own 'ProseModel' role only here, at the last possible moment (via 'Storyteller.Context.DSL.Render.dslMessageToLLM'), not upstream -- the same DSL messages remain reusable for a different role's call (e.g. 'Storyteller.Writer.Agent.Outline.splitOutlineAgent''s 'AgentModel') without re-rendering from the 'Value' again.
+  -> [Message ProseModel]   -- ^ branch context, already bound -- a caller's own 'Storyteller.Context.DSL.Context.Context', forced and rendered via 'Storyteller.Context.DSL.Render.dslMessageToLLM' at its own call site (see this module's own Haddock)
   -> ExistingContent        -- ^ current content of the file being continued
   -> Instruction
   -> Sem r Prose
@@ -85,10 +76,9 @@ proseAgent outputHint charContexts context (ExistingContent existing) (Instructi
   Prompt extraInstructions <- getPrompt "agent.writer.instructions" defaultWriterInstructions
 
   let trailingMsg = writerTrailingMessage charContexts existing extraInstructions instruction outputHint
-      contextMsgs = map Render.dslMessageToLLM context
 
   info "proseAgent: querying model..."
-  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText trailingMsg])
+  response <- queryLLM configsWithPrompt (context ++ [UserText trailingMsg])
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
 -- | Fallback for @agent.writer@ (the namespace root is implicitly the system

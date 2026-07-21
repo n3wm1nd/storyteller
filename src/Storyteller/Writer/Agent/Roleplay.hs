@@ -104,7 +104,7 @@ import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools (ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition)
 
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS)
-import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Value as DSL
@@ -177,9 +177,8 @@ askCharacter
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
-  charBinding <- resolveContextQuery "context.character" (CtxLibrary.toBinding1 CtxLibrary.contextCharacterDefault) Nothing
-  charVal     <- runContextBinding1 @Main charBinding ident
-  ownContext  <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
+  charVal    <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacterDefault ident
+  ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
   answer <- runBranchAndFS @RoleplayChar (BranchName branchName) $
     characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question
   info (name <> " answers: " <> answer)

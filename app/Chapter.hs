@@ -52,10 +52,10 @@ import Storyteller.Writer.Agent.Outline (BeatSheet(..), chapterProse, chapterPro
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
-import Storyteller.Context.DSL.Value (namedEntry)
-import Storyteller.Context.DSL.Context (toContext, runContext)
+import Storyteller.Context.DSL.Value (valueDefault)
+import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue, interpretContextStorageFS)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
 import Prelude hiding (readFile)
 
@@ -110,19 +110,15 @@ chapterAction mode sheetPath outFile activeChars = do
             $ charSummaryAgent @(BranchTag Char_) (const True)
     return (CharLabel charBranch, blocks)
 
-  -- Same @context.main@ definition every WS-driven prose path reads
+  -- Same @context.writer@ definition every WS-driven prose path reads
   -- through now -- see 'Server.Writer.File.flatMainMessages'. @outFile@'s
   -- own current content is separate (its own "existing prose to build
-  -- on" argument below, never part of context.main's own buckets). Kept
+  -- on" argument below, never part of context.writer's own stream). Kept
   -- as real, model-agnostic Context DSL messages (not flattened
   -- 'ContextBlock' text) all the way into 'chapterProse'\/'chapterProseByBeat',
   -- which now bind them to a concrete model only inside 'proseAgent'.
-  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
-  mainVal     <- runContextBinding1 @Main mainBinding (T.pack outFile)
-  fileCtx <- runContextValue @Main $ runContext $
-       toContext (namedEntry "lore" mainVal)
-    <> toContext (namedEntry "chapters" mainVal)
-    <> toContext (namedEntry "other" mainVal)
+  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack outFile)
+  fileCtx <- map Render.dslMessageToLLM <$> runContextValue @Main (valueDefault writerVal)
   existing <- fileExists @(BranchTag Main) outFile >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile
     False -> return (ExistingContent "")

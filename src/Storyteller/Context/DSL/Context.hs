@@ -46,17 +46,20 @@
 module Storyteller.Context.DSL.Context
   ( Context
   , toContext
+  , ownContext
   , user
   , assistant
   , runContext
   , ToBinding(..)
+  , FromArg(..)
+  , toBindingFn1
   ) where
 
 import Data.Text (Text)
 
-import Storyteller.Context.DSL.Compile (Binding, bval, fn1)
+import Storyteller.Context.DSL.Compile (Binding(..), bval, fn1)
 import Storyteller.Context.DSL.Render (valueAllMessages)
-import Storyteller.Context.DSL.Value (Action, Message(..), Value, leafValue)
+import Storyteller.Context.DSL.Value (Action, Message(..), Value, leafValue, messagesText, valueDefault)
 
 -- | An ordered, composable sequence of DSL 'Message's, still deferred
 --   (each fragment's own 'Action' hasn't run yet) and still model-agnostic
@@ -74,6 +77,19 @@ instance Monoid Context where
 --   whole composed 'Context' is itself forced by 'runContext'.
 toContext :: Action Value -> Context
 toContext act = Context (valueAllMessages =<< act)
+
+-- | Lift an already-resolved 'Value''s own bare default into 'Context',
+--   ignoring its named entries entirely -- unlike 'toContext', which
+--   walks *into* a Value's entries too (right for a plain container like
+--   @contextLore@, whose own default is empty and whose entries are the
+--   real content). What a caller wants when a definition's own top-level
+--   default is already the exact combined shape it needs (see
+--   'Storyteller.Context.DSL.Library.contextMain''s own bare re-emit
+--   statements, which build exactly this on purpose), and its named
+--   entries exist for a completely different caller's own separate
+--   purpose (@chatWriter@ picking @"style"@ out on its own).
+ownContext :: Value -> Context
+ownContext v = Context (valueDefault v)
 
 -- | A literal string, in the same currency -- what lets genuinely static
 --   framing text compose with DSL-sourced fragments via the same
@@ -131,3 +147,32 @@ instance ToBinding (Action Value) where
 --   primitives (see @CONTEXT-DSL.md@'s invented-calendar example).
 instance ToBinding (Action Value -> Action Value) where
   toBinding = fn1
+
+-- | The dual of 'ToBinding': how to turn one runtime call argument (an
+--   already-supplied 'Action' 'Value') back into a plain Haskell value a
+--   compiled-in definition's own parameter expects. Only 'Text' has a
+--   real instance today -- every real 1-arity @context.*@ definition's
+--   own parameter is a plain identifier\/path -- but this stays open to
+--   more as 'toBindingFn1' grows real callers needing them.
+class FromArg a where
+  fromArg :: Action Value -> Action a
+
+instance FromArg Text where
+  fromArg act = messagesText <$> (valueDefault =<< act)
+
+-- | Re-curries a plain, concretely-typed 1-arity Haskell function (e.g.
+--   @'Storyteller.Context.DSL.Library.contextQuery' :: Text -> Action
+--   Value@) back into the interpreter's own runtime-dispatched 'Binding'
+--   shape -- the inverse of 'toBinding'. Needed wherever a compiled-in
+--   definition, already as plainly typed as 'ToBinding' lets a *caller*
+--   write it, still has to cross into something fundamentally
+--   'Binding'-shaped: the wire-override registry
+--   ("Storyteller.Context.DSL.Library"'s @defaultLibrary@) or
+--   'Storyteller.Core.Context.resolveContextQuery', which needs the
+--   arity tag *before* it knows whether an override even replaces this
+--   definition.
+toBindingFn1 :: FromArg a => (a -> Action Value) -> Binding
+toBindingFn1 f = Binding 1 go
+  where
+    go [a] _  = f =<< fromArg a
+    go args _ = fail ("expected exactly 1 argument, got " <> show (length args))

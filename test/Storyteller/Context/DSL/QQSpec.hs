@@ -44,13 +44,13 @@ injuryText v = case lookup "injury" (valueEntries v) of
 spec :: Spec
 spec = describe "[dsl| ... |]" $ do
   it "behaves like any other Definition: absence, not an error, for a file that doesn't exist" $
-    (fst <$> runChain (runAction (injuryStatus >>= injuryText)))
+    (fst <$> runChain (runAction (injuryStatus >>= injuryText) (ContextLibrary mempty)))
       `shouldBe` Right "" -- no status/injury.md in an empty scope -> absence, not an error -> empty text
 
   it "produces the same result as parseDefinition + runDefinition on identical text" $
-    (fst <$> runChain (runAction (injuryStatus >>= injuryText)))
+    (fst <$> runChain (runAction (injuryStatus >>= injuryText) (ContextLibrary mempty)))
       `shouldBe`
-      (fst <$> runChain (runAction (manualDsl >>= injuryText)))
+      (fst <$> runChain (runAction (manualDsl >>= injuryText) (ContextLibrary mempty)))
   where
     manualDsl :: Action Value
     manualDsl = case parseDefinition "<test>" (T.unlines ["as \"injury\": read status/injury.md"]) of

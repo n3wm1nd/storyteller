@@ -29,7 +29,7 @@ import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 
@@ -50,9 +50,8 @@ askCharacterAgent
   .  (LLMs r, Members '[BranchOp branch, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
-  charBinding <- resolveContextQuery "context.character" (CtxLibrary.toBinding1 CtxLibrary.contextCharacterDefault) Nothing
-  charVal     <- runContextBinding1 @branch charBinding charname
-  summary     <- runContextValue @branch (CtxLibrary.characterSummaryOf "journalFull" charVal)
+  charVal <- resolveContext1 @branch "context.character" CtxLibrary.contextCharacterDefault charname
+  summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journalFull" charVal)
   let blocks = flattenCharSummary summary
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig
   let userMsg = renderAskPrompt blocks question

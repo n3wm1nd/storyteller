@@ -58,10 +58,10 @@ import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prompt(..), 
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), OutlineDoc(..), splitOutlineAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Storyteller.Context.DSL.Value (namedEntry)
+import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 
 -- | Every effect one journey step needs -- exactly 'Server.Writer.File'\'s
 --   own imports, minus 'Server.Core.Run.SessionEffects'\' @Random@\/
@@ -77,18 +77,13 @@ type JourneyEffects r =
              ] r
   )
 
--- | The flat @context.main@ render ('Server.Writer.File.flatMainContext'
+-- | The flat @context.writer@ render ('Server.Writer.File.flatMainMessages'
 --   in production) -- what every step below reads surrounding context
 --   through now, instead of a local 'gatherFileContext' read.
 flatMainContext :: JourneyEffects r => FilePath -> Sem r [ContextBlock]
 flatMainContext path = do
-  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
-  mainVal     <- runContextBinding1 @Main mainBinding (T.pack path)
-  runContextValue @Main $ do
-    loreV     <- namedEntry "lore" mainVal
-    chaptersV <- namedEntry "chapters" mainVal
-    otherV    <- namedEntry "other" mainVal
-    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
+  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  map Render.messageToBlock <$> runContextValue @Main (valueDefault writerVal)
 
 -- | The three requests a Writer-tab session issues, and what each produced.
 data JourneyResult = JourneyResult

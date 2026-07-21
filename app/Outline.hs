@@ -47,10 +47,10 @@ import Storyteller.Writer.Agent.Outline (OutlineDoc(..), ExpandGoal(..), expandA
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
-import Storyteller.Context.DSL.Value (namedEntry)
+import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (ContextStorage, resolveContextQuery, runContextBinding1, runContextValue, interpretContextStorageFS)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
 import Prelude hiding (readFile)
 
@@ -88,20 +88,15 @@ outlineAction
   => FilePath -> T.Text -> Sem r T.Text
 outlineAction outFile guidance = do
   -- @outline.md@ is the document being expanded; every other branch file goes
-  -- along as surrounding context, via the same @context.main@ definition
+  -- along as surrounding context, via the same @context.writer@ definition
   -- every WS-driven prose path reads through now (see
-  -- 'Server.Writer.File.flatMainContext') -- @outline.md@'s own entry is
-  -- already excluded from @"chapters"@\/@"other"@ by
-  -- 'Storyteller.Context.DSL.Library.contextMain''s own @path@ parameter.
+  -- 'Server.Writer.File.flatMainMessages') -- @outline.md@'s own entry is
+  -- already excluded by
+  -- 'Storyteller.Context.DSL.Library.contextWriter''s own @path@ parameter.
   -- @outline.md@'s own content is separate, read directly below (it's the
   -- document being expanded, not surrounding context).
-  mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
-  mainVal     <- runContextBinding1 @Main mainBinding "outline.md"
-  fileCtx <- runContextValue @Main $ do
-    loreV     <- namedEntry "lore" mainVal
-    chaptersV <- namedEntry "chapters" mainVal
-    otherV    <- namedEntry "other" mainVal
-    concat <$> mapM Render.valueBlocks [loreV, chaptersV, otherV]
+  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter "outline.md"
+  fileCtx <- map Render.messageToBlock <$> runContextValue @Main (valueDefault writerVal)
   ExistingContent outline <- fileExists @(BranchTag Main) "outline.md" >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) "outline.md"
     False -> return (ExistingContent "")

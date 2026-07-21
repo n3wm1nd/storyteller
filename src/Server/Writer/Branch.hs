@@ -56,10 +56,10 @@ import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Writer.Agent (ContextBlock(..))
-import Storyteller.Context.DSL.Value (namedEntry)
+import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (resolveContextQuery, runContextBinding1, runContextValue)
+import Storyteller.Core.Context (resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..), contentFor)
@@ -399,24 +399,30 @@ suggestTasksOnBranch fallbackName loreSource toFile = do
       | T.null lore = material
       | otherwise    = lore <> "\n\n---\n\n" <> material
 
--- | @context.main@'s @"lore"@\/@"other"@ buckets, flattened -- the same
---   @context.main@ definition every other prose path in this application
---   reads through now, not a second independently-hardcoded
---   'Storyteller.Writer.Agent.WorldContext.worldContextOf' read (that
---   module's own notion of "everything eligible that isn't a chapter" had
---   already drifted from @context.main@'s glob-based classification). No
---   real target file to exclude here (@branch@'s own content, not
---   @toFile@, is what's being read), so @path@ is passed as the empty
---   string, which excludes nothing.
+-- | @context.lore@\/@context.other@, combined -- a deliberately different
+--   composition than @context.writer@ (no chapters at all), built from
+--   the same independently-named, independently-overridable pieces every
+--   other prose path in this application reads through, rather than a
+--   second, hardcoded 'Storyteller.Writer.Agent.WorldContext.worldContextOf'
+--   read (that module's own notion of "everything eligible that isn't a
+--   chapter" had already drifted from the DSL's own glob-based
+--   classification). Each piece's own @valueDefault@ is already the
+--   complete, self-describing thing (see
+--   'Storyteller.Context.DSL.Library.contextLore''s own Haddock) -- read
+--   directly, not 'Storyteller.Context.DSL.Render.valueBlocks', which
+--   would double-count by also walking the same content again through
+--   'valueEntries'. No real target file to exclude here (@branch@'s own
+--   content, not @toFile@, is what's being read), so @path@ is passed as
+--   the empty string, which excludes nothing.
 fetchLore :: SessionEffects r => BranchName -> Sem r T.Text
 fetchLore branch =
   runBranchAndFS @LoreSource branch $ do
-    mainBinding <- resolveContextQuery "context.main" (CtxLibrary.toBinding1 CtxLibrary.contextQuery) Nothing
-    mainVal     <- runContextBinding1 @LoreSource mainBinding ""
+    loreV  <- resolveContext0 @LoreSource "context.lore" CtxLibrary.contextLore
+    otherV <- resolveContext1 @LoreSource "context.other" CtxLibrary.contextOther ""
     blocks <- runContextValue @LoreSource $ do
-      loreV  <- namedEntry "lore" mainVal
-      otherV <- namedEntry "other" mainVal
-      concat <$> mapM Render.valueBlocks [loreV, otherV]
+      loreMsgs  <- valueDefault loreV
+      otherMsgs <- valueDefault otherV
+      pure (map Render.messageToBlock (loreMsgs <> otherMsgs))
     return (T.intercalate "\n\n---\n\n" [ t | ContextBlock t <- blocks ])
 
 -- | 'Just f' restricts to exactly that file; 'Nothing' accepts every file

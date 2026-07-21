@@ -11,9 +11,13 @@
 
 -- | The default library ("Storyteller.Context.DSL.Library") actually
 --   composes against a real (mock-git-backed) branch -- a clean compile
---   here proves nothing about whether 'contextMain' correctly threads
---   'contextLore'\/'contextChapters'\/'contextStyle' into its own exports
---   (a wrong parameter order, a swapped @in@, would still typecheck).
+--   here proves nothing about whether 'contextWriter' correctly composes
+--   'contextLore'\/'contextChapters'\/'contextOther' (a wrong parameter, a
+--   swapped @in@, would still typecheck) -- and, since 'contextWriter'
+--   references those by plain name rather than as parameters, this is
+--   also the one place proving the shared-library cross-definition
+--   mechanism ("Storyteller.Context.DSL.Value".'ContextLibrary') actually
+--   resolves them at runtime, not just at the type level.
 module Storyteller.Context.DSL.LibrarySpec (spec) where
 
 import qualified Data.Map.Strict as Map
@@ -29,6 +33,7 @@ import Runix.Git (Git)
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Context (buildContextLibrary)
 import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
@@ -38,7 +43,7 @@ import Server.TestStack
 
 import Storyteller.Context.DSL.Compile (bval)
 import Storyteller.Context.DSL.Library
-  (contextChapters, contextLore, contextMain, contextMentionFilter, contextStyle)
+  (contextLore, contextMentionFilter, contextWriter)
 import Storyteller.Context.DSL.Value
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
@@ -47,10 +52,15 @@ seedBranch name files = do
   runBranchOpGit @Main (BranchName name)
     (mapM_ (\(path, content) -> runStorage @Main (Ops.addAtom path content)) files)
 
+-- | Runs against 'Storyteller.Context.DSL.Library.defaultLibrarySource',
+--   not an empty library -- unlike a leaf definition with no
+--   cross-references, 'contextWriter'\/'contextOther'\/'contextLore' only
+--   resolve at all because their own sibling names ('loreEntry',
+--   'Storyteller.Context.DSL.Library.chapterEntry', ...) are in it.
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act)
+  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
 
 entryTexts :: Value -> Action (Map Text Text)
 entryTexts v = Map.fromList <$>
@@ -58,12 +68,13 @@ entryTexts v = Map.fromList <$>
 
 spec :: Spec
 spec = do
-  contextMainSpec
+  contextWriterSpec
+  contextLoreSpec
   contextMentionFilterSpec
 
-contextMainSpec :: Spec
-contextMainSpec = describe "contextMain (the default context.main library entry)" $ do
-  it "exports lore/chapters/other/style as distinguished, unflattened buckets -- chapters in natural order with User/Assistant pairing, style separate, a stray note caught by other, chat scratch hidden" $
+contextWriterSpec :: Spec
+contextWriterSpec = describe "contextWriter (the default context.writer library entry)" $ do
+  it "composes contextLore/contextChapters/contextOther by name into one self-describing stream -- chapters sorted and User/Assistant framed, style absent entirely" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/notes.md", "a hand-authored note")
@@ -75,44 +86,57 @@ contextMainSpec = describe "contextMain (the default context.main library entry)
         ]
       runDslOn (BranchName "main") (go ""))
     `shouldBe` Right
-      ( ["lore", "chapters", "other", "style"]
-      , Map.fromList [("lore/notes.md", "a hand-authored note")]
-      , [ "## Chapter: chapters/ch2.md\nchapter two prose"
-        , "## Chapter: chapters/ch11.md\nchapter eleven prose"
-        ]
-      , Map.fromList [("todo.md", "a stray root note, filed under neither lore/ nor chapters/")]
-      , "write in past tense"
-      )
+      [ User "## Story background"
+      , User "## lore/notes.md"
+      , FileRead "lore/notes.md" "a hand-authored note"
+      , User "## Chapter: chapters/ch2.md"
+      , Assistant "chapter two prose"
+      , User "## Chapter: chapters/ch11.md"
+      , Assistant "chapter eleven prose"
+      , User "## Other notes"
+      , User "## todo.md"
+      , FileRead "todo.md" "a stray root note, filed under neither lore/ nor chapters/"
+      ]
 
-  it "excludes the target path from chapters and other, but never from lore" $
+  it "excludes the target path from chapters, but never from lore" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/notes.md", "a hand-authored note")
-        , ("style.md", "write in past tense")
         , ("chapters/ch2.md", "chapter two prose")
-        , ("todo.md", "a stray root note, filed under neither lore/ nor chapters/")
         ]
       runDslOn (BranchName "main") (go "chapters/ch2.md"))
     `shouldBe` Right
-      ( ["lore", "chapters", "other", "style"]
-      , Map.fromList [("lore/notes.md", "a hand-authored note")]
-      , []
-      , Map.fromList [("todo.md", "a stray root note, filed under neither lore/ nor chapters/")]
-      , "write in past tense"
+      [ User "## Story background"
+      , User "## lore/notes.md"
+      , FileRead "lore/notes.md" "a hand-authored note"
+      , User "## Other notes"
+      ]
+  where
+    go path = valueDefault =<< contextWriter path
+
+-- | 'contextLore'\/'contextOther' each on their own -- self-describing
+--   *and* keeping per-file entries, both at once (see 'contextLore''s own
+--   Haddock on why: entries for @exclude@ to match against, a default for
+--   a caller referencing it bare, same as 'contextWriter' does).
+contextLoreSpec :: Spec
+contextLoreSpec = describe "contextLore/contextOther (standalone)" $ do
+  it "contextLore: a heading plus one already-framed message pair per file, in both its own default and its own entries" $
+    run (testStack $ do
+      seedBranch "main" [("lore/notes.md", "a hand-authored note")]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right
+      ( [ User "## Story background"
+        , User "## lore/notes.md"
+        , FileRead "lore/notes.md" "a hand-authored note"
+        ]
+      , Map.fromList [("lore/notes.md", "## lore/notes.md\na hand-authored note")]
       )
   where
-    bucket name v = case lookup name (valueEntries v) of
-      Just act -> act
-      Nothing  -> pure emptyValue
-    go path = do
-      v <- contextMain contextLore contextChapters contextStyle
-                        (bval (pure (leafValue [User path])))
-      loreTxt      <- entryTexts =<< bucket "lore" v
-      chaptersVal  <- bucket "chapters" v
-      chapterTexts <- mapM (\(_, act) -> messagesText <$> (valueDefault =<< act)) (valueEntries chaptersVal)
-      otherTxt     <- entryTexts =<< bucket "other" v
-      style        <- messagesText <$> (valueDefault =<< bucket "style" v)
-      pure (map fst (valueEntries v), loreTxt, chapterTexts, otherTxt, style)
+    go = do
+      v      <- contextLore
+      def    <- valueDefault v
+      texts  <- entryTexts v
+      pure (def, texts)
 
 contextMentionFilterSpec :: Spec
 contextMentionFilterSpec = describe "contextMentionFilter (the default context.mentionFilter library entry)" $

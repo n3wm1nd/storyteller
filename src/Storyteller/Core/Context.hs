@@ -9,6 +9,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | Context DSL definition storage -- 'Storyteller.Core.Prompt.PromptStorage'
 -- for the Context DSL (see @CONTEXT-DSL.md@'s own "a branch-hosted,
@@ -51,12 +52,17 @@ module Storyteller.Core.Context
   , runContextValue
   , runContextBinding0
   , runContextBinding1
+  , resolveContext0
+  , resolveContext1
+  , ContextLibrary(..)
+  , buildContextLibrary
   ) where
 
 import Control.Monad (void)
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -67,7 +73,6 @@ import Runix.Git (Git)
 
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
-import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (BranchOp, runBranchOpGit, runStorage)
 import Storyteller.Core.Runtime (Contexts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
@@ -75,14 +80,29 @@ import Storyteller.Core.Types (BranchName(..))
 
 import Storyteller.Context.DSL.AST (Definition(..), Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, runDefinition)
+import Storyteller.Context.DSL.Context (toBindingFn1)
+import Storyteller.Context.DSL.Library (defaultLibrarySource)
 import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
-import Storyteller.Context.DSL.Value (Action, Value, Message(User), emptyValue, leafValue, runAction)
+import Storyteller.Context.DSL.Value (Action, ContextLibrary(..), Value, Message(User), emptyValue, leafValue, runAction)
 
 data ContextStorage (m :: Type -> Type) a where
   -- | Look up @name@'s own override, falling back to the caller-supplied
   --   default 'Binding' when none exists (or one exists but doesn't parse,
   --   or parses with the wrong arity).
   GetContextDefinition :: Name -> Binding -> ContextStorage m Binding
+  -- | The whole library, resolved once per interpretation:
+  --   'Storyteller.Context.DSL.Library.defaultLibrarySource' parsed, then
+  --   overridden\/extended by whatever's on the 'Contexts' branch -- fixed
+  --   for the rest of the request (see 'interpretContextStorageFS'). This
+  --   is what 'Storyteller.Context.DSL.Value.currentLibrary' reads at
+  --   'runContextValue''s one call to 'runAction', which is what lets one
+  --   @[dsl| ... |]@ definition reference another by plain name
+  --   (@contextLore@'s own body calling @loreEntry f@) -- see
+  --   'Storyteller.Context.DSL.Value.ContextLibrary''s own Haddock for why
+  --   this rides on 'ContextStorage' (the same "read the whole branch
+  --   once" effect already needed here) rather than a second, parallel
+  --   channel for what's really the same resolved state.
+  GetContextLibrary :: ContextStorage m ContextLibrary
 
 makeSem ''ContextStorage
 
@@ -120,9 +140,20 @@ resolveContextOverride def@(Binding defaultArity _) (Just src) =
       | otherwise -> Binding defaultArity $ \args _scope ->
           runDefinition parsedDef (map bval args)
 
--- | Real interpreter: reads overrides from the dedicated 'Contexts' branch,
---   creating it on first use. A key resolves to @/\<dots-as-slashes\>.dsl@;
---   a missing file falls back to the caller's default 'Binding'.
+-- | Real interpreter: reads every override on the dedicated 'Contexts'
+--   branch *once* up front (creating the branch on first use), not one
+--   storage round trip per 'GetContextDefinition' call -- a single
+--   'ContextStorage' interpreter typically backs a whole WS command\/CLI
+--   action, which may resolve several dotted names in that one action
+--   (@context.main@, then @context.character@ once per active character,
+--   say), and none of them needs its own separate branch read: the whole
+--   branch is small, project-authored text, cheap to read in full, and
+--   never changes mid-action. A key resolves to @\<dots-as-slashes\>.dsl@;
+--   a missing file just never contributes an entry to the loaded map, and
+--   'interpretContextStorageMap' (the same interpreter
+--   'Storyteller.Core.ContextSpec' tests directly) is what actually
+--   answers each lookup from there -- this function's only own job is
+--   building that map.
 interpretContextStorageFS
   :: Members '[Git, StoryStorage, Fail] r
   => Sem (ContextStorage ': r) a
@@ -131,26 +162,47 @@ interpretContextStorageFS action = do
   getBranch contextsBranchName >>= \case
     Just _  -> return ()
     Nothing -> void (createBranch contextsBranchName)
-  interpret (\case
-    GetContextDefinition name def -> runBranchOpGit @Contexts contextsBranchName $ do
-      let path = T.unpack (T.replace "." "/" name) <> ".dsl"
-      runStorage @Contexts (do
-        fileExists <- Ops.exists path
-        if fileExists
-          then resolveContextOverride def . Just . TE.decodeUtf8 <$> FS.readFile path
-          else return def)
-    ) action
+  overrides <- runBranchOpGit @Contexts contextsBranchName $ runStorage @Contexts $ do
+    paths <- filter (".dsl" `T.isSuffixOf`) . map T.pack <$> FS.list
+    Map.fromList <$> mapM (\p -> (,) (pathToName p) . TE.decodeUtf8 <$> FS.readFile (T.unpack p)) paths
+  interpretContextStorageMap overrides action
+  where
+    pathToName = T.replace "/" "." . fromMaybe "" . T.stripSuffix ".dsl"
+
+-- | Parses 'Storyteller.Context.DSL.Library.defaultLibrarySource', then
+--   folds @overrides@ on top by name -- same "override, don't guess"
+--   precedence 'resolveContextOverride' already gives a single named
+--   query, just applied once, up front, to the whole table (see
+--   'ContextLibrary''s own Haddock on why this has to be one fixed table
+--   rather than a per-name decision). A source string that fails to parse
+--   -- default or override -- just never contributes an entry, the same
+--   "missing, not broken" treatment 'resolveContextOverride' already
+--   gives a single bad override.
+buildContextLibrary :: Map Name Text -> ContextLibrary
+buildContextLibrary overrides = ContextLibrary (Map.union parsedOverrides parsedDefaults)
+  where
+    parsedDefaults  = Map.fromList (mapMaybe parseNamed (Map.toList defaultLibrarySource))
+    parsedOverrides = Map.fromList (mapMaybe parseNamed (Map.toList overrides))
+    parseNamed (name, src) = case parseDefinition ("<library:" <> T.unpack name <> ">") src of
+      Left _    -> Nothing
+      Right def -> Just (name, def)
 
 -- | Test/pure interpreter: resolves from a fixed map of override source
 --   text, falling back to the caller's default on miss -- no filesystem or
 --   branch involved, mirroring
---   'Storyteller.Core.Prompt.interpretPromptStorageMap'.
+--   'Storyteller.Core.Prompt.interpretPromptStorageMap'. @library@ is a
+--   @where@-bound CAF, not recomputed per 'GetContextLibrary' call --
+--   ordinary Haskell sharing already gives "build once," no extra
+--   bookkeeping needed on top of what this closure already captures.
 interpretContextStorageMap
   :: Map Name Text
   -> Sem (ContextStorage ': r) a
   -> Sem r a
 interpretContextStorageMap overrides = interpret $ \case
   GetContextDefinition name def -> return (resolveContextOverride def (Map.lookup name overrides))
+  GetContextLibrary             -> return library
+  where
+    library = buildContextLibrary overrides
 
 -- | Resolves a query's own inline program text with priority over
 --   'getContextDefinition''s branch-override-then-default chain -- "you
@@ -191,28 +243,53 @@ resolveContextQuery _name (Binding arity _) (Just queryText) = case parseDefinit
 --   instance haddock for why 'runStorage''s type can't accept an
 --   'Action' at all: the DSL is read-only, so it never needs 'BranchOp'
 --   write-buffering).
-runContextValue :: forall branch r a. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Action a -> Sem r a
+runContextValue :: forall branch r a. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r => Action a -> Sem r a
 runContextValue act = do
-  h <- runStorage @branch Core.headHash
-  fst <$> Core.runStoreT h (runAction act)
+  h   <- runStorage @branch Core.headHash
+  lib <- getContextLibrary
+  fst <$> Core.runStoreT h (runAction act lib)
 
--- | 'runContextValue' for a 0-arity 'Binding' specifically -- every real
---   context-program call site resolves to one of these (the scope
---   argument a 'Binding'\'s own function takes is always ignored for a
---   top-level definition, per 'resolveContextOverride'\/'resolveContextQuery'
---   both routing through 'runDefinition' -- see their own haddocks), so
---   this is what every caller actually wants rather than pattern-matching
---   'Binding' by hand at each site.
-runContextBinding0 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Binding -> Sem r Value
+-- | 'runContextValue' for a 0-arity 'Binding' -- what a resolved
+--   @context.lore@\/@context.chapters@\/@context.style@-shaped definition
+--   needs, since none of them take a real argument.
+runContextBinding0 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r => Binding -> Sem r Value
 runContextBinding0 (Binding 0 fn) = runContextValue @branch (fn [] emptyValue)
 runContextBinding0 (Binding n _)  = fail ("expected a 0-arity context definition, got arity " <> show n)
 
--- | 'runContextBinding0' for a 1-arity 'Binding' -- what a resolved
---   @context.character@-shaped definition (@charname: ...@) needs, since
---   unlike @context.main@ it always takes one real argument, never just
---   an ignored scope. @arg@ is always plain text at every real call site
---   (a bare character identifier), so this wraps it as a leaf 'Value'
---   itself rather than making every caller do that by hand.
-runContextBinding1 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, Fail] r => Binding -> Text -> Sem r Value
+-- | 'runContextValue' for a 1-arity 'Binding' -- what a resolved
+--   @context.character@\/@context.other@\/@context.writer@-shaped
+--   definition needs, since each always takes one real argument, never
+--   just an ignored scope. @arg@ is always plain text at every real call
+--   site (a bare character identifier, or a target file path), so this
+--   wraps it as a leaf 'Value' itself rather than making every caller do
+--   that by hand.
+runContextBinding1 :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r => Binding -> Text -> Sem r Value
 runContextBinding1 (Binding 1 fn) arg = runContextValue @branch (fn [pure (leafValue [User arg])] emptyValue)
 runContextBinding1 (Binding n _)  _   = fail ("expected a 1-arity context definition, got arity " <> show n)
+
+-- | 'resolveContextQuery' immediately followed by 'runContextBinding0',
+--   with the wire-level inline-override parameter fixed to 'Nothing' --
+--   what every real 0-arity @context.*@ call site wants (@context.lore@,
+--   @context.chapters@, @context.style@ -- none of these ever receive a
+--   client-supplied override; only 'Server.Writer.File.chatWriter''s own
+--   @context.main@-successor call, if it ever needs one again, would
+--   compose 'resolveContextQuery'\/'runContextBinding0' directly instead
+--   of this).
+resolveContext0
+  :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r
+  => Name -> Action Value -> Sem r Value
+resolveContext0 name def =
+  resolveContextQuery name (bval def) Nothing >>= runContextBinding0 @branch
+
+-- | 'resolveContext0''s 1-arity counterpart -- what every real
+--   @context.character@\/@context.other@\/@context.writer@ call site
+--   wants. @def@ is the plain compiled-in definition itself
+--   (@Text -> Action Value@), not a 'Binding' --
+--   'Storyteller.Context.DSL.Context.toBindingFn1' is what builds the
+--   arity-tagged 'Binding' 'resolveContextQuery' needs internally, so a
+--   call site never has to.
+resolveContext1
+  :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r
+  => Name -> (Text -> Action Value) -> Text -> Sem r Value
+resolveContext1 name def arg =
+  resolveContextQuery name (toBindingFn1 def) Nothing >>= \b -> runContextBinding1 @branch b arg

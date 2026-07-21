@@ -55,7 +55,7 @@ runDefaultZeroAry :: BranchName -> Binding -> Sem (StoryStorage : TestEffects '[
 runDefaultZeroAry bname (Binding 0 fn) = resolveBranch bname >>= \case
   Nothing -> pure (Left ("branch not found: " <> T.unpack (unBranchName bname)))
   Just h  -> do
-    (msgs, _) <- Core.runStoreT h (runAction (fn [] emptyValue >>= valueDefault))
+    (msgs, _) <- Core.runStoreT h (runAction (fn [] emptyValue >>= valueDefault) (ContextLibrary Map.empty))
     pure (Right (messagesText msgs))
 runDefaultZeroAry _ (Binding n _) = pure (Left ("expected arity 0, got " <> show n))
 

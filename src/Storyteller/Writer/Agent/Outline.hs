@@ -69,7 +69,6 @@ import Storyteller.Writer.Agent
   , ExistingContent(..), WordCount(..) )
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, getConfigWithPrompt)
-import qualified Storyteller.Context.DSL.Value as DSL
 
 -- | A coarse planning document — the source of an expansion. Usually the
 --   contents of @outline.md@ (whole story) or the slice of it covering one
@@ -460,7 +459,7 @@ chapterProse
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
-  -> [DSL.Message]
+  -> [Message ProseModel]
   -> ExistingContent       -- ^ prose already written for this chapter (empty for a fresh chapter)
   -> BeatSheet
   -> Sem r Prose
@@ -486,7 +485,7 @@ chapterProseByBeat
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount       -- ^ approximate length hint, per beat
   -> [CharContextBlock]
-  -> [DSL.Message]
+  -> [Message ProseModel]
   -> ExistingContent       -- ^ prose already written for this chapter
   -> BeatSheet
   -> Int                   -- ^ maxBeats: hard cap on iterations
@@ -534,7 +533,7 @@ reconcileChapter
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
-  -> [DSL.Message]
+  -> [Message ProseModel]
   -> CurrentProse          -- ^ the chapter's current prose (reference, to be revised)
   -> Instruction           -- ^ the user's additional steer
   -> BeatSheet
@@ -554,7 +553,7 @@ reconcileChapterByBeat
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
   -> [CharContextBlock]
-  -> [DSL.Message]
+  -> [Message ProseModel]
   -> CurrentProse
   -> Instruction
   -> BeatSheet
