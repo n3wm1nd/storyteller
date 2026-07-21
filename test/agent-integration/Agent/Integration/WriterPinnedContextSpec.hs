@@ -29,20 +29,28 @@ import Polysemy (embed)
 import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
-import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prose(..))
+import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..))
+import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Writer.Agent (Instruction(..), Prose(..))
+import Storyteller.Writer.Agent.Context (PinnedContext(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyStyleContext, emptyWorldContext, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
-pinned :: [ContextBlock]
-pinned =
-  [ ContextBlock $ T.unwords
+-- | The user's own short-term selection -- built directly as a
+--   'PinnedContext', not through any DSL 'Storyteller.Context.DSL.Value.Value'
+--   at all, the same way 'Server.Writer.File.pinnedContext' builds a real
+--   client's pinned selection: it's already just data, never assembled.
+pinned :: PinnedContext
+pinned = PinnedContext $ Node
+  [ ContextItem (DSL.User (T.unwords
       [ "Current scene conditions: a power outage has just plunged the"
       , "entire building into total darkness -- every light, everywhere,"
       , "is out, with no sign of coming back on soon."
-      ]
+      ])) DSL.defaultMeta
   ]
+  []
 
 instruction :: Instruction
 instruction = Instruction $ T.unwords
@@ -66,7 +74,7 @@ spec
 spec runner = describe "pinned/short-term context reaching the writer (real LLM, cached)" $
   it "reflects a planted pinned scene-state fact that the instruction never repeats" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [] pinned [] [] instruction
+      Prose text <- writeAgent emptyWorldContext emptyStyleContext [] pinned [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

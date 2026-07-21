@@ -38,7 +38,7 @@ import Storyteller.Writer.Agent (CharLabel(..), Instruction(..), Prose(..))
 import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 data Char_
@@ -94,7 +94,7 @@ spec runner = describe "tasks.md reaching generation as ordinary character conte
       lenaSummary <- runBranchAndFS @Char_ lenaBranch $
         runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
 
-      Prose text <- writeAgent [] [] [(CharLabel "Lena", lenaSummary)] [] [] [] instruction
+      Prose text <- writeAgent emptyWorldContext emptyStyleContext [(CharLabel "Lena", lenaSummary)] emptyPinnedContext [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       Verdict pass reason <- judge @judgeModel text judgeQuestion

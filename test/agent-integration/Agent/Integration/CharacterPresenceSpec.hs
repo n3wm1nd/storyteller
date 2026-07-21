@@ -41,7 +41,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (activeCharactersFor, recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | Phantom tag for opening one character branch's filesystem at a time --
@@ -126,7 +126,7 @@ spec runner = describe "characters present in a scene (real LLM, cached)" $
       embed $ length active `shouldBe` 2
 
       chars <- mapM summarize active
-      Prose text <- writeAgent [] [] chars [] [] [] instruction
+      Prose text <- writeAgent emptyWorldContext emptyStyleContext chars emptyPinnedContext [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

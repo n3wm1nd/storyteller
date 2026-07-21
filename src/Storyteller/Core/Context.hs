@@ -44,11 +44,11 @@
 module Storyteller.Core.Context
   ( ContextStorage(..)
   , getContextDefinition
+  , setContextOverride
   , interpretContextStorageFS
   , interpretContextStorageMap
   , contextsBranchName
   , resolveContextOverride
-  , resolveContextQuery
   , runContextValue
   , runContextBinding0
   , runContextBinding1
@@ -69,6 +69,7 @@ import qualified Data.Text.Encoding as TE
 
 import Polysemy
 import Polysemy.Fail (Fail)
+import Polysemy.State (State, evalState, get, modify)
 import Runix.Git (Git)
 
 import qualified Storage.Core as Core
@@ -80,28 +81,48 @@ import Storyteller.Core.Types (BranchName(..))
 
 import Storyteller.Context.DSL.AST (Definition(..), Name)
 import Storyteller.Context.DSL.Compile (Binding(..), bval, runDefinition)
+import qualified Storyteller.Context.DSL.Compile as Compile
 import Storyteller.Context.DSL.Context (toBindingFn1)
-import Storyteller.Context.DSL.Library (defaultLibrarySource)
-import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
+import Storyteller.Context.DSL.Library (defaultLibrarySource, hostLibrary)
+import Storyteller.Context.DSL.Parser (parseDefinition)
 import Storyteller.Context.DSL.Value (Action, ContextLibrary(..), Value, Message(User), emptyValue, leafValue, runAction)
 
 data ContextStorage (m :: Type -> Type) a where
   -- | Look up @name@'s own override, falling back to the caller-supplied
   --   default 'Binding' when none exists (or one exists but doesn't parse,
-  --   or parses with the wrong arity).
+  --   or parses with the wrong arity). The override map this checks is the
+  --   *current* one -- whatever the branch had at interpretation start,
+  --   plus anything a prior 'SetContextOverride' this same request already
+  --   staged (see its own Haddock) -- so a client-submitted program and a
+  --   project's committed one are genuinely indistinguishable from here.
   GetContextDefinition :: Name -> Binding -> ContextStorage m Binding
+  -- | Stages @name@'s override for the rest of *this* interpretation only
+  --   -- never written to the 'Contexts' branch, never visible to any
+  --   other request. What a WS handler calls once, before running the
+  --   command proper, when a request carries its own context program: "the
+  --   client sent this for @context.writer@" becomes exactly "treat this
+  --   request as if @context.writer@ had this override," through the
+  --   *same* lookup 'GetContextDefinition' already does for a committed
+  --   one -- no separate wire-override code path anywhere else. A parse\/
+  --   arity failure is still only discovered (and still only silently
+  --   falls back) the next time something actually looks @name@ up, same
+  --   as a bad branch commit.
+  SetContextOverride :: Name -> Text -> ContextStorage m ()
   -- | The whole library, resolved once per interpretation:
-  --   'Storyteller.Context.DSL.Library.defaultLibrarySource' parsed, then
-  --   overridden\/extended by whatever's on the 'Contexts' branch -- fixed
-  --   for the rest of the request (see 'interpretContextStorageFS'). This
-  --   is what 'Storyteller.Context.DSL.Value.currentLibrary' reads at
+  --   'Storyteller.Context.DSL.Library.defaultLibrarySource', overridden\/
+  --   extended by whatever's currently staged (branch, then any
+  --   'SetContextOverride') -- fixed for the rest of the request only in
+  --   the sense that nothing re-reads the branch, but reflects a
+  --   'SetContextOverride' the moment it's called, same as
+  --   'GetContextDefinition' does. This is what
+  --   'Storyteller.Context.DSL.Value.currentLibrary' reads at
   --   'runContextValue''s one call to 'runAction', which is what lets one
   --   @[dsl| ... |]@ definition reference another by plain name
-  --   (@contextLore@'s own body calling @loreEntry f@) -- see
+  --   (@contextWriter@'s own body calling @lore@) -- see
   --   'Storyteller.Context.DSL.Value.ContextLibrary''s own Haddock for why
-  --   this rides on 'ContextStorage' (the same "read the whole branch
-  --   once" effect already needed here) rather than a second, parallel
-  --   channel for what's really the same resolved state.
+  --   this rides on 'ContextStorage' (the same store 'GetContextDefinition'
+  --   already reads) rather than a second, parallel channel for what's
+  --   really the same resolved state.
   GetContextLibrary :: ContextStorage m ContextLibrary
 
 makeSem ''ContextStorage
@@ -169,70 +190,61 @@ interpretContextStorageFS action = do
   where
     pathToName = T.replace "/" "." . fromMaybe "" . T.stripSuffix ".dsl"
 
--- | Parses 'Storyteller.Context.DSL.Library.defaultLibrarySource', then
---   folds @overrides@ on top by name -- same "override, don't guess"
+-- | 'Storyteller.Context.DSL.Library.defaultLibrarySource', with
+--   @overrides@ folded on top by name -- same "override, don't guess"
 --   precedence 'resolveContextOverride' already gives a single named
 --   query, just applied once, up front, to the whole table (see
 --   'ContextLibrary''s own Haddock on why this has to be one fixed table
---   rather than a per-name decision). A source string that fails to parse
---   -- default or override -- just never contributes an entry, the same
---   "missing, not broken" treatment 'resolveContextOverride' already
---   gives a single bad override.
+--   rather than a per-name decision) -- plus
+--   'Storyteller.Context.DSL.Library.hostLibrary', not override-
+--   addressable at all (real Haskell closures, nothing to replace them
+--   with). Three cases for a pure-DSL name, matching
+--   'resolveContextOverride''s own: a name already in the default library
+--   only accepts an override whose arity matches the default it would
+--   replace (a parse failure or an arity mismatch both just keep the
+--   default -- "missing, not broken"); a name with *no* compiled-in
+--   default (and not a 'hostLibrary' one) is a project genuinely adding a
+--   new one, accepted at whatever arity it parses to; a name that
+--   collides with a 'hostLibrary' entry is simply ignored -- the host
+--   entry always wins.
 buildContextLibrary :: Map Name Text -> ContextLibrary
-buildContextLibrary overrides = ContextLibrary (Map.union parsedOverrides parsedDefaults)
+buildContextLibrary overrides = ContextLibrary (Map.unions [compiledKnown, compiledNew, hostLibrary])
   where
-    parsedDefaults  = Map.fromList (mapMaybe parseNamed (Map.toList defaultLibrarySource))
-    parsedOverrides = Map.fromList (mapMaybe parseNamed (Map.toList overrides))
+    compiledKnown = Compile.definitionBinding <$> Map.mapWithKey applyOverride defaultLibrarySource
+    compiledNew   = Compile.definitionBinding <$> Map.fromList (mapMaybe parseNamed (Map.toList newSource))
+    newSource     = overrides `Map.difference` defaultLibrarySource `Map.difference` hostLibrary
+    applyOverride name defaultDef = case Map.lookup name overrides of
+      Nothing  -> defaultDef
+      Just src -> case parseDefinition ("<library:" <> T.unpack name <> ">") src of
+        Left _ -> defaultDef
+        Right overrideDef
+          | length (defParams overrideDef) /= length (defParams defaultDef) -> defaultDef
+          | otherwise -> overrideDef
     parseNamed (name, src) = case parseDefinition ("<library:" <> T.unpack name <> ">") src of
       Left _    -> Nothing
       Right def -> Just (name, def)
 
 -- | Test/pure interpreter: resolves from a fixed map of override source
---   text, falling back to the caller's default on miss -- no filesystem or
---   branch involved, mirroring
---   'Storyteller.Core.Prompt.interpretPromptStorageMap'. @library@ is a
---   @where@-bound CAF, not recomputed per 'GetContextLibrary' call --
---   ordinary Haskell sharing already gives "build once," no extra
---   bookkeeping needed on top of what this closure already captures.
+--   text as the starting point, falling back to the caller's default on
+--   miss -- no filesystem or branch involved, mirroring
+--   'Storyteller.Core.Prompt.interpretPromptStorageMap'. Threads a
+--   'Polysemy.State.State' seeded from @overrides@ underneath so
+--   'SetContextOverride' has somewhere to stage into, same as
+--   'interpretContextStorageFS'.
 interpretContextStorageMap
   :: Map Name Text
   -> Sem (ContextStorage ': r) a
   -> Sem r a
-interpretContextStorageMap overrides = interpret $ \case
-  GetContextDefinition name def -> return (resolveContextOverride def (Map.lookup name overrides))
-  GetContextLibrary             -> return library
-  where
-    library = buildContextLibrary overrides
-
--- | Resolves a query's own inline program text with priority over
---   'getContextDefinition''s branch-override-then-default chain -- "you
---   send it with the query, but a persistent branch exists for
---   subfunctions and settings; the sent-with-the-query one is
---   authoritative" (the project chat that settled this). Unlike
---   'resolveContextOverride', a malformed or wrong-arity query fails
---   loudly rather than silently downgrading: a client just submitted this
---   text this call, so silently falling back to some other definition
---   would look like the edit did nothing, where a stored branch override
---   failing quietly (still reachable, still fixable, not something a user
---   is actively watching the result of) is the right call.
---
---   Takes @Maybe Text@, not @Text@ defaulting to @\"\"@: 'Nothing' (the
---   wire field genuinely absent) is what falls through to
---   'getContextDefinition'; @Just \"\"@ is a real, if degenerate, program
---   (parses to an empty definition -- "include nothing", a completely
---   different thing from "no override was sent") and gets parsed and run
---   like any other query text, not silently reinterpreted as "use the
---   default".
-resolveContextQuery :: (Member ContextStorage r, Member Fail r) => Name -> Binding -> Maybe Text -> Sem r Binding
-resolveContextQuery name def Nothing = getContextDefinition name def
-resolveContextQuery _name (Binding arity _) (Just queryText) = case parseDefinition "<query context>" queryText of
-  Left err -> fail (T.unpack (renderParseErr err))
-  Right parsedDef
-    | length (defParams parsedDef) /= arity -> fail $
-        "context program: expected arity " <> show arity
-          <> ", got " <> show (length (defParams parsedDef))
-    | otherwise -> pure $ Binding arity $ \args _scope ->
-        runDefinition parsedDef (map bval args)
+interpretContextStorageMap overrides action =
+  evalState overrides $ reinterpret
+    (\case
+      GetContextDefinition name def -> do
+        current <- get
+        return (resolveContextOverride def (Map.lookup name current))
+      SetContextOverride name src -> modify (Map.insert name src)
+      GetContextLibrary -> buildContextLibrary <$> get
+    )
+    action
 
 -- | Runs a Context DSL 'Action' positioned at whatever commit @branch@'s
 --   own 'Storyteller.Core.Git.BranchOp' scope is currently ambient at
@@ -267,29 +279,30 @@ runContextBinding1 :: forall branch r. Members '[BranchOp branch, Git, StoryStor
 runContextBinding1 (Binding 1 fn) arg = runContextValue @branch (fn [pure (leafValue [User arg])] emptyValue)
 runContextBinding1 (Binding n _)  _   = fail ("expected a 1-arity context definition, got arity " <> show n)
 
--- | 'resolveContextQuery' immediately followed by 'runContextBinding0',
---   with the wire-level inline-override parameter fixed to 'Nothing' --
---   what every real 0-arity @context.*@ call site wants (@context.lore@,
---   @context.chapters@, @context.style@ -- none of these ever receive a
---   client-supplied override; only 'Server.Writer.File.chatWriter''s own
---   @context.main@-successor call, if it ever needs one again, would
---   compose 'resolveContextQuery'\/'runContextBinding0' directly instead
---   of this).
+-- | 'getContextDefinition' immediately followed by 'runContextBinding0' --
+--   mirrors 'Storyteller.Core.Prompt.getPrompt' exactly: @name@ and its own
+--   readable, compiled-in @def@ travel together, at the call site, the same
+--   way @getPrompt "agent.writer" defaultWriterSystemPrompt@ does. No
+--   central "every context and its default" registry -- there's no more a
+--   'Storyteller.Context.DSL.Library.defaultLibrarySource'-shaped list for
+--   0-\/1-arity externally-resolved definitions than 'Storyteller.Core.Prompt'
+--   has one for prompts. Whether @name@'s override came from the 'Contexts'
+--   branch or a same-request 'SetContextOverride' is invisible here -- both
+--   already landed in the same store by the time this looks.
 resolveContext0
   :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r
   => Name -> Action Value -> Sem r Value
 resolveContext0 name def =
-  resolveContextQuery name (bval def) Nothing >>= runContextBinding0 @branch
+  getContextDefinition name (bval def) >>= runContextBinding0 @branch
 
 -- | 'resolveContext0''s 1-arity counterpart -- what every real
---   @context.character@\/@context.other@\/@context.writer@ call site
---   wants. @def@ is the plain compiled-in definition itself
---   (@Text -> Action Value@), not a 'Binding' --
---   'Storyteller.Context.DSL.Context.toBindingFn1' is what builds the
---   arity-tagged 'Binding' 'resolveContextQuery' needs internally, so a
+--   @context.character@\/@context.writer@ call site wants. @def@ is the
+--   plain compiled-in definition itself (@Text -> Action Value@), not a
+--   'Binding' -- 'Storyteller.Context.DSL.Context.toBindingFn1' is what
+--   builds the arity-tagged 'Binding' 'getContextDefinition' needs, so a
 --   call site never has to.
 resolveContext1
   :: forall branch r. Members '[BranchOp branch, Git, StoryStorage, ContextStorage, Fail] r
   => Name -> (Text -> Action Value) -> Text -> Sem r Value
 resolveContext1 name def arg =
-  resolveContextQuery name (toBindingFn1 def) Nothing >>= \b -> runContextBinding1 @branch b arg
+  getContextDefinition name (toBindingFn1 def) >>= \b -> runContextBinding1 @branch b arg

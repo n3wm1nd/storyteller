@@ -41,9 +41,10 @@ import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Context.DSL.Compile (bval)
+import Storyteller.Context.DSL.AST (Name)
+import Storyteller.Context.DSL.Compile (bval, journalDelta)
 import Storyteller.Context.DSL.Library
-  (contextLore, contextMentionFilter, contextWriter)
+  (contextCharacter, contextLore, contextMentionFilter, contextWriter)
 import Storyteller.Context.DSL.Value
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
@@ -62,6 +63,15 @@ runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
   Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
 
+-- | 'runDslOn', but against a library assembled with the given committed
+--   overrides -- what 'contextCharacterBlurbOverrideSpec' uses to prove an
+--   override actually reaches 'contextCharacter''s own composition,
+--   instead of just compiling.
+runDslOnWith :: Map Name Text -> BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
+runDslOnWith overrides bname act = resolveBranch bname >>= \case
+  Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
+  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary overrides))
+
 entryTexts :: Value -> Action (Map Text Text)
 entryTexts v = Map.fromList <$>
   mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
@@ -71,6 +81,38 @@ spec = do
   contextWriterSpec
   contextLoreSpec
   contextMentionFilterSpec
+  contextCharacterBlurbOverrideSpec
+
+-- | The regression test for the bug that started this whole redesign:
+--   'contextCharacter' used to take @blurb@ as a typed 'Binding'
+--   parameter, wired in Haskell by 'Storyteller.Context.DSL.Library.contextCharacterDefault'
+--   -- so a project's own override of @character.blurb@, however
+--   correctly committed to the Contexts branch, was silently never seen
+--   by 'contextCharacter''s composition, because nothing about that
+--   composition ever asked the library about the name @character.blurb@
+--   at all. Now that 'contextCharacter''s own body references
+--   @character.blurb@ by its dotted name directly, an override committed
+--   under that exact key has to reach the @"blurb"@ bucket -- this test
+--   is what would have caught the bug, not just a compile-time check that
+--   the wiring typechecks.
+contextCharacterBlurbOverrideSpec :: Spec
+contextCharacterBlurbOverrideSpec =
+  describe "contextCharacter honors a committed override of character.blurb" $
+    it "uses the overridden blurb definition, not the compiled-in default, in the \"blurb\" bucket" $
+      run (testStack $ do
+        seedBranch "main" []
+        _ <- createBranch (BranchName "character/aria")
+        runBranchOpGit @Main (BranchName "character/aria")
+          (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
+        runDslOnWith overrides (BranchName "main") go)
+      `shouldBe` Right "this is a project-committed override, not the default"
+  where
+    overrides = Map.fromList
+      [ ("character.blurb", "charname:\n  \"this is a project-committed override, not the default\"") ]
+    go = do
+      v <- contextCharacter "aria" (journalDelta 30 10 2)
+      Just blurbAction <- pure (lookup "blurb" (valueEntries v))
+      messagesText <$> (valueDefault =<< blurbAction)
 
 contextWriterSpec :: Spec
 contextWriterSpec = describe "contextWriter (the default context.writer library entry)" $ do
@@ -149,6 +191,7 @@ contextMentionFilterSpec = describe "contextMentionFilter (the default context.m
     aliases = pure Value
       { valueDefault = pure []
       , valueEntries = [("Aria", pure (leafValue [User "Aria is a wandering rogue."]))]
+      , valueMeta = defaultMeta
       }
     go = do
       v <- contextMentionFilter (bval aliases)

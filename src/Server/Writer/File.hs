@@ -50,7 +50,7 @@ import Server.Writer.File.Protocol (ContextItem(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), ContextBlock(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
@@ -83,11 +83,13 @@ import qualified Storyteller.Common.Swipe as Swipe
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, atGeneric)
 
-import Storyteller.Context.DSL.Value (valueDefault, messagesText)
+import Storyteller.Context.DSL.Value (valueDefault, defaultMeta)
 import qualified Storyteller.Context.DSL.Value as DSL
 import qualified Storyteller.Context.DSL.Render as Render
+import qualified Storyteller.Context.DSL.Rendering as Rendering
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Context (resolveContext0, resolveContext1, runContextValue)
+import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+import Storyteller.Core.Context (resolveContext0, resolveContext1, setContextOverride, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -138,29 +140,20 @@ activeCharacterContext path = do
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Writer.Agent.FlowWrite'). World lore, style, and earlier
---   chapters now come from four independently resolved Context DSL
---   definitions (see "Storyteller.Context.DSL.Library") -- @context.lore@,
---   @context.other@, @context.chapters@, @context.style@ -- picked apart
---   here rather than through one bundled @context.main@\/@context.writer@:
---   this is the one caller that genuinely needs lore\/other combined,
---   chapters kept in their own cache-stable slot, and style out of the
---   message stream entirely (see 'Storyteller.Context.DSL.Library.contextWriter'
---   own Haddock on why there's no single "main" context for every caller
---   to share). Each piece's own @valueDefault@ is already the complete,
---   self-describing thing (see 'Storyteller.Context.DSL.Library.contextLore'
---   own Haddock) -- read directly, never 'Storyteller.Context.DSL.Render.valueBlocks'
---   \/'valueAllMessages', which would double-count by also walking the
---   same content again through 'valueEntries'.
---
---   @contextProgram@ (a client-sent context program for this one call) is
---   accepted on the wire but not honored here yet -- see the project chat
---   that settled this: a client-submitted context only means anything
---   once whatever it writes is used as-is, and this caller genuinely
---   needs several differently-treated pieces, not one opaque stream, so
---   reintroducing that contract needs its own design, not a bundled
---   @context.main@ revival. Character summaries run through the DSL too
---   ('activeCharacterContext', backed by
+--   'Storyteller.Writer.Agent.FlowWrite'). World context comes from one
+--   resolution of @context.writer@ (see "Storyteller.Context.DSL.Library").
+--   @contextProgram@ (a client-sent context program for this one call), if
+--   present, is staged via 'Storyteller.Core.Context.setContextOverride'
+--   *before* that resolution runs -- so it's indistinguishable from a
+--   project's own committed 'Contexts'-branch override by the time
+--   @context.writer@ actually gets looked up: no separate wire-override
+--   code path, no bypass around the normal lookup. Whatever the resolved
+--   definition writes, default or override, *is* the context 'writeAgent'
+--   sees, verbatim (see the project chat that settled this). Style is
+--   resolved separately (@context.style@ is never "context" -- see
+--   'Storyteller.Context.DSL.Library.contextWriter''s own Haddock) and is
+--   never affected by @contextProgram@. Character summaries run through
+--   the DSL too ('activeCharacterContext', backed by
 --   'Storyteller.Context.DSL.Library.contextCharacterDefault'); only
 --   pinned/short-term context is still gathered outside it (no DSL
 --   equivalent of "whatever the client explicitly pinned this turn" is
@@ -170,21 +163,16 @@ activeCharacterContext path = do
 --   flattened string. Agents append nothing themselves, so appending the
 --   result is done here too.
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
-chatWriter path prompt pinnedItems _contextProgram mFlowTid = do
-  loreV     <- resolveContext0 @Main "context.lore" CtxLibrary.contextLore
-  otherV    <- resolveContext1 @Main "context.other" CtxLibrary.contextOther (T.pack path)
-  chaptersV <- resolveContext0 @Main "context.chapters" CtxLibrary.contextChapters
-  styleV    <- resolveContext0 @Main "context.style" CtxLibrary.contextStyle
-  (loreBlocks, styleBlocks, earlierChapters) <- runContextValue @Main $ do
-    loreMsgs     <- valueDefault loreV
-    otherMsgs    <- valueDefault otherV
-    chaptersMsgs <- valueDefault chaptersV
-    styleTxt     <- messagesText <$> valueDefault styleV
-    let lore    = map Render.messageToBlock (loreMsgs <> otherMsgs)
-        earlier = map Render.dslMessageToLLM chaptersMsgs
-    pure (lore, [ContextBlock styleTxt | not (T.null styleTxt)], earlier)
+chatWriter path prompt pinnedItems contextProgram mFlowTid = do
+  mapM_ (setContextOverride "context.writer") contextProgram
+  writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  styleV  <- resolveContext0 @Main "context.style" CtxLibrary.contextStyle
+  (worldCtx, styleCtx) <- runContextValue @Main $ do
+    w <- Rendering.renderContext writerV
+    s <- Rendering.renderContext styleV
+    pure (WorldContext w, StyleContext s)
   charBlocks <- activeCharacterContext path
-  let pinned      = toContextBlocks pinnedItems
+  let pinned      = PinnedContext (pinnedContext pinnedItems)
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
       -- below has already read whatever tick history it needs -- both
@@ -201,14 +189,14 @@ chatWriter path prompt pinnedItems _contextProgram mFlowTid = do
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid loreBlocks styleBlocks charBlocks pinned earlierChapters instruction
+      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid worldCtx styleCtx charBlocks pinned instruction
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
       currentTicks <- runStorage @Main (Tick.fileTicksOf path)
-      Prose generated <- writeAgent loreBlocks styleBlocks charBlocks pinned earlierChapters currentTicks instruction
+      Prose generated <- writeAgent worldCtx styleCtx charBlocks pinned currentTicks instruction
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
@@ -233,6 +221,22 @@ flatMainMessages :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [DSL.Mes
 flatMainMessages path = do
   writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
   runContextValue @Main (valueDefault writerV)
+
+-- | 'flatMainMessages', but rendered into a
+--   'Storyteller.Context.DSL.Rendering.Context' via
+--   'Storyteller.Context.DSL.Rendering.renderContext' rather than flattened
+--   into '[DSL.Message]' -- what 'roleplayWriter' wraps as a
+--   'Storyteller.Writer.Agent.Context.WorldContext' now, so
+--   'Storyteller.Writer.Agent.Roleplay.roleplayAgent' renders it itself, at
+--   the point it actually builds each of its own 'Runix.LLM.queryLLM'
+--   calls, rather than receiving it pre-flattened. A separate function
+--   from 'flatMainMessages', not a replacement -- 'chatChapterRegen'\/
+--   'chatSplitOutline' still want the flattened '[DSL.Message]' shape and
+--   aren't part of this pass.
+flatMainContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r Rendering.Context
+flatMainContext path = do
+  writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  runContextValue @Main (Rendering.renderContext writerV)
 
 -- | The roleplay writer: rather than one call producing the scene directly
 --   (the shape 'chatWriter' uses), every character present is interrogated
@@ -275,7 +279,7 @@ flatMainMessages path = do
 --   than running against nothing.
 roleplayWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 roleplayWriter path prompt = do
-  sceneContext <- flatMainMessages path
+  sceneContext <- WorldContext <$> flatMainContext path
   active <- activeCharactersFor @Main path
   let characters    = [ (CharLabel (characterLabel c), c) | c <- active ]
   info $ "roleplay agent starting: " <> T.pack path
@@ -551,8 +555,19 @@ beatSheetPathFor path
   | ".md" `isSuffixOf` path = take (length path - length (".md" :: String)) path <> ".outline.md"
   | otherwise               = path <> ".outline.md"
 
-toContextBlocks :: [ContextItem] -> [ContextBlock]
-toContextBlocks = map (ContextBlock . ciContent)
+-- | The client's own pinned/short-term selection, as a
+--   'Storyteller.Context.DSL.Rendering.Context' -- built directly, not
+--   through any DSL 'Storyteller.Context.DSL.Value.Value'\/'Storyteller.Context.DSL.Value.Action'
+--   at all, since a pinned item is already just data (see 'chatWriter's own
+--   Haddock: "it's already just data, not something to assemble"). One
+--   'Rendering.ContextItem' per pinned item, no named entries -- there's no
+--   structure here for 'Storyteller.Context.DSL.Rendering.namedChild' to
+--   reach into.
+pinnedContext :: [ContextItem] -> Rendering.Context
+pinnedContext items = Rendering.Node
+  { Rendering.rcContent = [ Rendering.ContextItem (DSL.User (ciContent i)) defaultMeta | i <- items ]
+  , Rendering.rcEntries = []
+  }
 
 -- | Record a character entering or leaving the scene on @path@ — presence
 --   is scoped to the file (the scene), not the whole branch, see

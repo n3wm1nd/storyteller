@@ -34,6 +34,8 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
+import Storyteller.Core.Context (buildContextLibrary)
+
 import Storyteller.Context.DSL.Context (Context, toContext, user, assistant, runContext)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
@@ -47,7 +49,7 @@ seedBranch name files = do
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> show bname)
-  Just h  -> fst <$> Core.runStoreT h (runAction act (ContextLibrary Map.empty))
+  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
 
 spec :: Spec
 spec = do

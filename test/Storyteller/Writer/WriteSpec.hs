@@ -32,9 +32,17 @@ noSummary :: CharSummary
 noSummary = CharSummary [] [] []
 
 build
-  :: [ContextBlock] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [Message ProseModel] -> [FileTick] -> Instruction
+  :: [Message ProseModel] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [FileTick] -> Instruction
   -> [Message ProseModel]
 build = buildChapterMessages
+
+-- | A single lore file, as the one @UserText@ message it'd arrive as once
+--   flattened by whatever assembled the caller's own context (in
+--   production, 'Storyteller.Context.DSL.Library.loreEntry''s own
+--   default) -- kept local to this test so the existing cases below barely
+--   change.
+loreMsg :: T.Text -> Message ProseModel
+loreMsg = UserText
 
 -- | The pairing 'buildChapterMessages' used to construct itself from
 --   @(path, content)@ pairs -- now built by the caller (in production, a
@@ -49,17 +57,17 @@ spec :: Spec
 spec = describe "buildChapterMessages" $ do
 
   it "with nothing else gathered, is just the raw instruction, unwrapped" $ do
-    build [] [] [] [] [] (Instruction "continue the scene")
+    build [] [] [] [] (Instruction "continue the scene")
       `shouldBe` [UserText "continue the scene"]
 
   it "puts world lore first, ahead of everything else" $ do
-    let msgs = build [ContextBlock "### notes/tavern.md\n\nA tavern."] [] [] [] [] (Instruction "go")
+    let msgs = build [loreMsg "### notes/tavern.md\n\nA tavern."] [] [] [] (Instruction "go")
     case msgs of
       (m : _) -> m `shouldBe` UserText "### notes/tavern.md\n\nA tavern."
       []      -> expectationFailure "expected at least one message"
 
   it "puts earlier chapters right after world lore, oldest first, each as a naming user message plus its prose as an assistant message" $ do
-    let msgs = build [] [] [] (earlierChapterMsgs "chapters/ch1.md" "chapter one prose" ++ earlierChapterMsgs "chapters/ch2.md" "chapter two prose") [] (Instruction "go")
+    let msgs = build (earlierChapterMsgs "chapters/ch1.md" "chapter one prose" ++ earlierChapterMsgs "chapters/ch2.md" "chapter two prose") [] [] [] (Instruction "go")
     take 4 msgs `shouldBe`
       [ UserText "## Chapter: chapters/ch1.md", AssistantText "chapter one prose"
       , UserText "## Chapter: chapters/ch2.md", AssistantText "chapter two prose"
@@ -71,7 +79,7 @@ spec = describe "buildChapterMessages" $ do
           , csContext = [CharContextBlock "### notes.md\n\nsome context"]
           , csJournal = [CharContextBlock "### journal excerpt\n\nsecret diary entry"]
           }
-        msgs = build [] [(CharLabel "Alice", alice)] [] [] [] (Instruction "go")
+        msgs = build [] [(CharLabel "Alice", alice)] [] [] (Instruction "go")
     case msgs of
       (UserText t : _) -> do
         t `shouldSatisfy` (\txt -> "## Character: Alice" `isInfixOfText` txt)
@@ -82,7 +90,7 @@ spec = describe "buildChapterMessages" $ do
 
   it "reconstructs the current chapter's own history as alternating turns, in order" $ do
     let ticks = [promptTick "write the opening", atomTick "Once upon a time...", promptTick "now the twist", atomTick "...and then everything changed."]
-        msgs  = build [] [] [] [] ticks (Instruction "go")
+        msgs  = build [] [] [] ticks (Instruction "go")
     take 4 msgs `shouldBe`
       [ UserText "write the opening"
       , AssistantText "Once upon a time..."
@@ -92,7 +100,7 @@ spec = describe "buildChapterMessages" $ do
 
   it "places the journal excerpt in its own shallow splice message, directly before the instruction -- not inside it, not at chapter-start" $ do
     let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nshe remembers the storm"] }
-        msgs  = build [] [(CharLabel "Alice", alice)] [] [] [] (Instruction "continue")
+        msgs  = build [] [(CharLabel "Alice", alice)] [] [] (Instruction "continue")
     msgs `shouldBe`
       [ UserText "## Character: Alice\n\n### journal\n\nshe remembers the storm"
       , UserText "continue"
@@ -100,7 +108,7 @@ spec = describe "buildChapterMessages" $ do
 
   it "merges pinned context and journal excerpts into the same single splice message" $ do
     let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nshe remembers the storm"] }
-        msgs  = build [] [(CharLabel "Alice", alice)] [ContextBlock "### pinned.md\n\nuser-pinned note"] [] [] (Instruction "continue")
+        msgs  = build [] [(CharLabel "Alice", alice)] [ContextBlock "### pinned.md\n\nuser-pinned note"] [] (Instruction "continue")
     length msgs `shouldBe` 2
     case msgs of
       (UserText t : _) -> do
@@ -112,10 +120,9 @@ spec = describe "buildChapterMessages" $ do
     let alice = CharSummary
           { csSheet = [CharContextBlock "### sheet.md\n\n# Alice"], csContext = [], csJournal = [CharContextBlock "### journal\n\nnote"] }
         msgs = build
-          [ContextBlock "### lore.md\n\nlore"]
+          ([loreMsg "### lore.md\n\nlore"] ++ earlierChapterMsgs "chapters/ch1.md" "earlier chapter")
           [(CharLabel "Alice", alice)]
           [ContextBlock "### pinned.md\n\npinned"]
-          (earlierChapterMsgs "chapters/ch1.md" "earlier chapter")
           [atomTick "existing prose"]
           (Instruction "finish the scene")
     case reverse msgs of
@@ -123,12 +130,12 @@ spec = describe "buildChapterMessages" $ do
       other             -> expectationFailure ("expected the instruction as the last message, got " <> show (reverse other))
 
   it "drops empty sections instead of emitting empty messages" $ do
-    build [] [(CharLabel "Alice", noSummary)] [] [] [] (Instruction "go")
+    build [] [(CharLabel "Alice", noSummary)] [] [] (Instruction "go")
       `shouldBe` [UserText "go"]
 
   it "with no splice, the instruction is exactly the raw prompt appended after full history -- no split point introduced for nothing" $ do
     let ticks = [promptTick "write the opening", atomTick "Once upon a time..."]
-        msgs  = build [] [] [] [] ticks (Instruction "continue")
+        msgs  = build [] [] [] ticks (Instruction "continue")
     msgs `shouldBe`
       [ UserText "write the opening"
       , AssistantText "Once upon a time..."
@@ -144,7 +151,7 @@ spec = describe "buildChapterMessages" $ do
           [ [promptTick ("prompt " <> T.pack (show n)), atomTick ("reply " <> T.pack (show n))]
           | n <- [1 :: Int .. 5]
           ]
-        msgs = build [] [(CharLabel "Alice", alice)] [] [] ticks (Instruction "continue")
+        msgs = build [] [(CharLabel "Alice", alice)] [] ticks (Instruction "continue")
         splice = UserText "## Character: Alice\n\n### journal\n\nnote"
     case break (== splice) msgs of
       (before, _ : after) -> do
@@ -158,7 +165,7 @@ spec = describe "buildChapterMessages" $ do
           [ [promptTick ("prompt " <> T.pack (show n)), atomTick ("reply " <> T.pack (show n))]
           | n <- [1 :: Int .. 5]
           ]
-        msgs = build [] [(CharLabel "Alice", alice)] [] [] ticks (Instruction "continue")
+        msgs = build [] [(CharLabel "Alice", alice)] [] ticks (Instruction "continue")
         splice = UserText "## Character: Alice\n\n### journal\n\nnote"
     case break (== splice) msgs of
       (_, _ : after) -> init after `shouldSatisfy` any isConversationTurn
@@ -174,7 +181,7 @@ spec = describe "buildChapterMessages" $ do
           | i <- [1 .. n]
           ]
         splice = UserText "## Character: Alice\n\n### journal\n\nnote"
-        olderCount n = length (fst (break (== splice) (build [] [(CharLabel "Alice", alice)] [] [] (ticksThrough n) (Instruction "go"))))
+        olderCount n = length (fst (break (== splice) (build [] [(CharLabel "Alice", alice)] [] (ticksThrough n) (Instruction "go"))))
     mapM_ (\n -> olderCount n `shouldBe` 0) [2, 3, 4 :: Int]
     olderCount 5 `shouldSatisfy` (> 0)
 
@@ -193,7 +200,7 @@ spec = describe "buildChapterMessages" $ do
           [ [promptTick ("prompt " <> T.pack (show i)), atomTick ("reply " <> T.pack (show i))]
           | i <- [1 .. n]
           ]
-        requestForTurn n = build [] [(CharLabel "Alice", alice)] [] []
+        requestForTurn n = build [] [(CharLabel "Alice", alice)] []
           (ticksThrough n) (Instruction ("prompt " <> T.pack (show (n + 1))))
         -- everything sent to generate turn 3, plus the reply it got back
         merged  = requestForTurn 2 ++ [AssistantText "reply 3"]

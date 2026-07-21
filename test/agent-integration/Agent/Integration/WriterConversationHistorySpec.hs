@@ -41,7 +41,7 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Writer.Agent (Instruction(..), Prompt(..), Prose(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 scenePath :: FilePath
@@ -84,7 +84,7 @@ spec runner = describe "same-file conversation history reaching the writer (real
       -- would make 'writeAgent' see this turn's own instruction twice (once
       -- via history, once as its trailing instruction message).
       historySoFar1 <- runStorage @Main (Tick.fileTicksOf scenePath)
-      Prose turnOneText <- writeAgent [] [] [] [] [] historySoFar1 (Instruction turnOneInstruction)
+      Prose turnOneText <- writeAgent emptyWorldContext emptyStyleContext [] emptyPinnedContext historySoFar1 (Instruction turnOneInstruction)
       info ("turn one output:\n" <> turnOneText)
       embed $ turnOneText `shouldNotBe` ""
       _ <- runStorage @Main (Tick.storeAs (Prompt scenePath turnOneInstruction))
@@ -97,7 +97,7 @@ spec runner = describe "same-file conversation history reaching the writer (real
       info $ "history ticks for turn two: " <> T.pack (show (length historySoFar2))
       embed $ length historySoFar2 `shouldSatisfy` (> length historySoFar1)
 
-      Prose turnTwoText <- writeAgent [] [] [] [] [] historySoFar2 (Instruction turnTwoInstruction)
+      Prose turnTwoText <- writeAgent emptyWorldContext emptyStyleContext [] emptyPinnedContext historySoFar2 (Instruction turnTwoInstruction)
       info ("turn two output:\n" <> turnTwoText)
       embed $ turnTwoText `shouldNotBe` ""
       judgeOrFail @judgeModel turnTwoText judgeQuestion

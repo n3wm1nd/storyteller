@@ -55,6 +55,7 @@ module Storyteller.Context.DSL.Compile
   , coreFilters
   , errorValue
   , compileDefinition
+  , definitionBinding
   , runStmts
   , evalExpr
   , treeValueOfCommit
@@ -62,15 +63,19 @@ module Storyteller.Context.DSL.Compile
   , runDefinition
 
     -- * Branch resolution -- injected, not hardcoded
-  , fBranch
+  , branchBinding
+  , charactersInBinding
   , treeValueOfBranch
   , journalDelta
+  , readConversation
+  , embedShallow
   ) where
 
 import Control.Monad (foldM, when)
 import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -85,67 +90,21 @@ import Storyteller.Context.DSL.AST
 import Storyteller.Context.DSL.Value
 
 import Storyteller.Core.Types (BranchName(..))
+import qualified Storyteller.Writer.Agent.MessageWindow as MessageWindow
+import qualified Storyteller.Writer.Branches as Branches
 import Storyteller.Writer.Library (naturalKey)
+import qualified Storyteller.Writer.Presence as Presence
+import Storyteller.Writer.Types (Character(..))
 
 -- ---------------------------------------------------------------------------
 -- Bindings and environment
 -- ---------------------------------------------------------------------------
 
--- | What a local name (a @let@\/parameter\/loop variable) resolves to --
---   one constructor, since the DSL itself draws no line between "a
---   value" and "a function": a plain @x = body@ is exactly a 0-arity
---   'Binding' (per rule 1, "a file with no head is a 0-ary function --
---   i.e. an ordinary value"). The @[Action Value] -> Value -> Action
---   Value@ shape takes the *caller's* current ambient scope as an
---   explicit argument rather than closing over whatever scope was
---   active at definition time -- this is the whole of "Reader scope is
---   resolved entirely dynamically, at the point code actually runs": a
---   bound function is a Haskell closure over 'Env' (its lexical
---   bindings, fixed at definition time, exactly as @let@ should behave)
---   but *not* over 'Value' (its dynamic scope, supplied fresh on every
---   call). A 0-arity binding's own closure simply never looks at the
---   scope argument it's handed -- it already captured whatever it needed
---   eagerly, at the point @x = ...@ itself ran (see 'runStmts'\'s @SLet@
---   case) -- which is what makes the capture-before-narrowing pattern
---   (@root = **/*@, used later via @in root: ...@ regardless of what's
---   ambient by then) work at all.
---
---   'Binding' isn't only for local @let@s -- it's also the currency
---   'compileDefinition'\/'runDefinition' take *external* arguments as
---   (see 'defParams'), which is what makes a host-implemented function
---   (the invented-calendar example's @dateMath@: "math operations that
---   only make sense for this particular call", not a general-vocabulary
---   filter) a legitimate argument, not just a leaf 'Value' -- "values are
---   just 0-arity functions, otherwise no different." 'bval'\/'fn1'\/'fn2'
---   are the two ways to build one from the outside.
-data Binding = Binding Int ([Action Value] -> Value -> Action Value)
-
--- | Wraps an already-scoped 'Action' as a 0-arity 'Binding' -- the
---   ordinary "just a value" case, and by far the common one.
-bval :: Action Value -> Binding
-bval action = Binding 0 (\_ _ -> action)
-
--- | Wraps a plain, scope-blind Haskell function as a 1-arity 'Binding'
---   -- what a host passes a real function (@dateMath@-style: a pure
---   transform over its own argument, no reason to see the caller's
---   ambient scope) in as. The wrong-length-@args@ case can't actually
---   happen ('evalExpr'\'s @EApp@\/@EIdent@ cases already check arity
---   before ever calling into a 'Binding'\'s own function), but 'Binding'
---   itself carries no type-level guarantee of that, so this fails loudly
---   rather than via an incomplete pattern match.
-fn1 :: (Action Value -> Action Value) -> Binding
-fn1 f = Binding 1 go
-  where
-    go [a] _    = f a
-    go args _   = fail $ "fn1: expected exactly 1 argument, got " <> show (length args)
-
--- | 'fn1', two arguments.
-fn2 :: (Action Value -> Action Value -> Action Value) -> Binding
-fn2 f = Binding 2 go
-  where
-    go [a, b] _ = f a b
-    go args _   = fail $ "fn2: expected exactly 2 arguments, got " <> show (length args)
-
+-- | 'Binding'\/'bval'\/'fn1'\/'fn2' now live in
+--   "Storyteller.Context.DSL.Value" (re-exported here for every existing
+--   caller) -- moved so 'Storyteller.Context.DSL.Value.ContextLibrary' can
+--   hold compiled 'Binding's directly without a module cycle; see that
+--   module's own Haddock on 'Binding'.
 type Env = Map Name Binding
 
 -- ---------------------------------------------------------------------------
@@ -184,9 +143,10 @@ treeValueOfCommit commit = do
   pure Value
     { valueDefault = pure []
     , valueEntries =
-        [ (T.pack path, leafValue . (: []) . FileRead path . TE.decodeUtf8 <$> readBlob h)
+        [ (T.pack path, withProvenance path commit . leafValue . (: []) . FileRead path . TE.decodeUtf8 <$> readBlob h)
         | (path, h) <- files
         ]
+    , valueMeta = defaultMeta
     }
   where
     readBlob h = liftStore $ Core.readObject h >>= \case
@@ -215,7 +175,18 @@ compileDefinition def scope args
       mkValue <$> runStmts env scope (defBody def)
 
 mkValue :: ([Message], [(Name, Action Value)]) -> Value
-mkValue (msgs, entries) = Value (pure msgs) entries
+mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
+
+-- | Compiles a parsed 'Definition' into a 'Binding' that runs against
+--   whatever scope its *caller* hands it (via 'compileDefinition' directly,
+--   not 'runDefinition''s own fresh 'currentScope') -- what
+--   'Storyteller.Core.Context.buildContextLibrary' uses to turn each
+--   pure-DSL entry (branch-committed or compiled-in) into the same
+--   'Binding' shape a host-backed library entry already is, so
+--   'Storyteller.Context.DSL.Value.ContextLibrary' can hold both
+--   uniformly -- see that type's own Haddock.
+definitionBinding :: Definition -> Binding
+definitionBinding def = Binding (length (defParams def)) (\args scope -> compileDefinition def scope (map bval args))
 
 -- | Combines a newly-produced entry list with what's already
 --   accumulated -- @new@'s own values win on a key collision (matching
@@ -284,20 +255,18 @@ bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env 
 --   'Env' first (parameters, @let@s, @for@-loop variables), falling back
 --   to the shared library table ('lookupLibrary') only on a local miss --
 --   the same shadowing a local variable would give a same-named library
---   entry in any ordinary language. A library hit gets wrapped as an
---   ordinary 'Binding' whose call takes the *caller's own* ambient scope
---   (never a fresh 'currentScope') -- see 'ContextLibrary's own Haddock
---   for why that's what makes a library reference behave indistinguishably
---   from a local one.
+--   entry in any ordinary language. A library 'Binding' -- pure-DSL or
+--   host-backed alike -- already takes the *caller's own* ambient scope
+--   (never a fresh 'currentScope') when it's pure-DSL, by construction of
+--   however 'Storyteller.Core.Context.buildContextLibrary' compiled it --
+--   see 'ContextLibrary's own Haddock for why that's what makes a library
+--   reference behave indistinguishably from a local one.
 resolveIdent :: Env -> Name -> Action Binding
 resolveIdent env name = case Map.lookup name env of
   Just b  -> pure b
   Nothing -> lookupLibrary name >>= \case
-    Just def -> pure (libraryBinding def)
-    Nothing  -> fail $ "unknown identifier: " <> T.unpack name
-
-libraryBinding :: Definition -> Binding
-libraryBinding def = Binding (length (defParams def)) (\args scope -> compileDefinition def scope (map bval args))
+    Just b  -> pure b
+    Nothing -> fail $ "unknown identifier: " <> T.unpack name
 
 nameOf :: Env -> Value -> Expr -> Action Name
 nameOf env scope e = do
@@ -311,7 +280,7 @@ evalExpr env scope e = case e of
     pat     <- interpText env scope parts
     matches <- globMatchPat scope pat
     entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
-    pure (Value (pure []) entries)
+    pure (Value (pure []) entries defaultMeta)
   EAssistant inner -> do
     v    <- evalExpr env scope inner
     msgs <- valueDefault v
@@ -338,13 +307,6 @@ evalExpr env scope e = case e of
           T.unpack name <> ": expected " <> show arity <> " argument(s), got " <> show (length args)
         fn args scope
       _ -> fail "application head must be a plain identifier"
-  -- @branch@ isn't a filter (see the "Filters" section haddock) -- its
-  -- call syntax is identical, but it's dispatched here by name, straight
-  -- to 'fBranch', rather than through 'applyFilter'\/'FilterRegistry'.
-  EFilter inner "branch" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
-    fBranch v args
   -- @without@\/@only@\/@exclude@\/@latest@ all decide *which keys
   -- survive* -- genuinely shrinking 'valueEntries', "like [a dropped key]
   -- was never there" (not just neutering a kept key's own content to
@@ -383,10 +345,28 @@ evalExpr env scope e = case e of
             let latestKeys = take n (List.sortBy (flip compare) (map fst (valueEntries v)))
             pure v { valueEntries = filter (\(k, _) -> k `elem` latestKeys) (valueEntries v) }
       _ -> fail $ "latest: expected exactly 1 argument, got " <> show (length args)
+  -- Every other filter name: the pure registry first (the common,
+  -- zero-capability case), then the shared library, exactly like an
+  -- ordinary identifier ('resolveIdent') -- @expr | name(args...)@ is
+  -- just @name expr args...@ with the piped value moved to the front, so
+  -- a filter needing real capability (@branch@, @charactersin@) is a
+  -- 'Storyteller.Context.DSL.Value.Binding' like any other library entry,
+  -- not a case hardcoded into this interpreter -- adding a new one only
+  -- ever touches "Storyteller.Context.DSL.Library" now, never this
+  -- module. 'EIdent'\/'EApp' already resolve a bare name the identical
+  -- way; this is that same fallback, just called with the piped value
+  -- prepended to whatever explicit arguments followed the pipe.
   EFilter inner name argEs -> do
     v    <- evalExpr env scope inner
     args <- mapM (evalExpr env scope) argEs
-    pure (applyFilter name v args)
+    case Map.lookup name coreFilters of
+      Just impl -> impl v args
+      Nothing   -> resolveIdent env name >>= \case
+        Binding arity fn
+          | arity /= 1 + length args -> fail $
+              T.unpack name <> ": expected " <> show (arity - 1)
+                <> " argument(s) after the pipe, got " <> show (length args)
+          | otherwise -> fn (pure v : map pure args) scope
 
 -- | What a single @without@\/@only@\/@exclude@ argument contributes to the
 --   match set: another already-computed 'Value' with its own entries
@@ -504,9 +484,26 @@ forceAt scope path = maybe emptyValue id <$> resolveRead scope path
 -- 'evalExpr' and 'shrinkEntries'.
 -- ---------------------------------------------------------------------------
 
--- | A filter's implementation: the piped 'Value', its call arguments,
---   the resulting 'Value' -- constructed immediately, no 'Action' wrapper.
-type DSLFilter = Value -> [Value] -> Value
+-- | A filter's implementation: the piped 'Value', its call arguments, an
+--   'Action' of the resulting 'Value' -- effectful at the same ceiling as
+--   everything else in the DSL ('Core.StoreM'\/'MonadBranch', no LLM, no
+--   mutation), not the pure @Value -> [Value] -> Value@ this used to be.
+--   That restriction was a consequence of the type picked, not a
+--   principle worth protecting -- see @CONTEXT-DSL.md@'s "Filters"
+--   section. "Fully applied, a filter still produces a Value" remains
+--   true in exactly the sense it's true everywhere else in this
+--   interpreter: 'Action' 'Value' *is* "a Value" the moment something
+--   forces it, and nothing changes at the surface syntax
+--   (@expr | filterName(args)@ still just denotes another 'Value').
+--
+--   @branch@\/@without@\/@only@\/@exclude@\/@latest@ still aren't part of
+--   this registry -- not because they need effects a plain 'DSLFilter'
+--   now lacks (that reason is gone), but because they either need a
+--   capability 'Binding' already owns (@branch@) or need to shrink
+--   'valueEntries' after forcing each argument's own criteria first
+--   ('shrinkEntries'), which is still simplest left as 'evalExpr's own
+--   dispatch rather than folded into this registry's uniform shape.
+type DSLFilter = Value -> [Value] -> Action Value
 
 type FilterRegistry = Map Name DSLFilter
 
@@ -514,24 +511,27 @@ type FilterRegistry = Map Name DSLFilter
 --   filter reports a problem (an arity mismatch, an unimplemented
 --   filter) without itself needing to run anything.
 errorValue :: String -> Value
-errorValue msg = Value { valueDefault = fail msg, valueEntries = [] }
+errorValue msg = Value { valueDefault = fail msg, valueEntries = [], valueMeta = defaultMeta }
 
--- | Every filter except @branch@ (see the section haddock) and the
---   content-\/LLM-backed ones, deliberately left as loud failures rather
---   than silent no-ops: they need a real LLM effect this module doesn't
---   yet take, and pretending otherwise would be worse than not having
---   them.
+-- | @summarize@\/@draftDefinition@\/@extractProperNouns@\/@whereType@\/
+--   @whereTag@ are still left as loud failures -- not because a filter
+--   can't reach storage any more (it can), but because real semantics
+--   for these need a tagging convention this pass doesn't decide, or (for
+--   @summarize@) an LLM effect still genuinely outside 'Action's own
+--   ceiling. Pretending otherwise would be worse than not having them.
 coreFilters :: FilterRegistry
 coreFilters = Map.fromList
-  [ ("orifempty",    fOrIfEmpty)
-  , ("pinned",       fPassthrough)   -- v1 forces every leaf eagerly regardless (see spec's "Interpretation" section) -- 'pinned' only matters to a future budget-aware interpreter.
-  , ("filewithname", fFileWithName)
-  , ("charname",     fPassthrough)   -- stub: no character-display-name registry to resolve against yet: passes the identifier's own text through unchanged.
-  , ("truncate",     fTruncate)
-  , ("join",         fJoin)
-  , ("sortBy",       fSortBy)
-  , ("name",         fName)
-  , ("abstract",     fAbstract)
+  [ ("orifempty",     fOrIfEmpty)
+  , ("pinned",        fPinned)
+  , ("priority",      fPriority)
+  , ("summarizable",  fSummarizable)
+  , ("filewithname",  fFileWithName)
+  , ("charname",      fPassthrough)   -- stub: no character-display-name registry to resolve against yet: passes the identifier's own text through unchanged.
+  , ("truncate",       fTruncate)
+  , ("join",           fJoin)
+  , ("sortBy",         fSortBy)
+  , ("name",           fName)
+  , ("abstract",       fAbstract)
   , ("summarize",          fNotImplemented "summarize")
   , ("draftDefinition",    fNotImplemented "draftDefinition")
   , ("extractProperNouns", fNotImplemented "extractProperNouns")
@@ -539,17 +539,37 @@ coreFilters = Map.fromList
   , ("whereTag",     fNotImplemented "whereTag")
   ]
 
-applyFilter :: Name -> Value -> [Value] -> Value
-applyFilter name v args = case Map.lookup name coreFilters of
-  Nothing   -> errorValue ("unknown filter: " <> T.unpack name)
-  Just impl -> impl v args
-
 fNotImplemented :: String -> DSLFilter
-fNotImplemented label _ _ = errorValue $
+fNotImplemented label _ _ = pure $ errorValue $
   "filter `" <> label <> "` is not yet implemented (needs a real LLM/content-analysis effect)"
 
 fPassthrough :: DSLFilter
-fPassthrough v _ = v
+fPassthrough v _ = pure v
+
+-- | Sets 'Pinned' in 'metaFlags' -- what a budget-aware renderer (outside
+--   this module) treats as "never drop this."
+fPinned :: DSLFilter
+fPinned v [] = pure v { valueMeta = addFlag Pinned (valueMeta v) }
+fPinned _ args = pure $ errorValue $ "pinned: expected no arguments, got " <> show (length args)
+
+-- | Sets 'Summarizable' in 'metaFlags' -- what a budget-aware renderer may
+--   replace with an LLM summary of the same text under pressure, rather
+--   than dropping outright.
+fSummarizable :: DSLFilter
+fSummarizable v [] = pure v { valueMeta = addFlag Summarizable (valueMeta v) }
+fSummarizable _ args = pure $ errorValue $ "summarizable: expected no arguments, got " <> show (length args)
+
+-- | Sets 'metaPriority' -- higher survives longer under budget pressure
+--   (see 'Priority's own haddock).
+fPriority :: DSLFilter
+fPriority v [nArg] = do
+  nMsgs <- valueDefault nArg
+  let n = maybe 0 id (readMaybeInt (messagesText nMsgs))
+  pure v { valueMeta = (valueMeta v) { metaPriority = Priority n } }
+fPriority _ args = pure $ errorValue $ "priority: expected exactly 1 argument, got " <> show (length args)
+
+addFlag :: ItemFlag -> Meta -> Meta
+addFlag flag m = m { metaFlags = Set.insert flag (metaFlags m) }
 
 -- | Picks the fallback's own default text\/entries only when @v@'s own
 --   default turns out empty once forced -- deferred into the result's
@@ -558,34 +578,34 @@ fPassthrough v _ = v
 --   plain string literal as the fallback (a leaf, no entries of its
 --   own), so this never actually discards anything observable.
 fOrIfEmpty :: DSLFilter
-fOrIfEmpty v [fallback] = v
+fOrIfEmpty v [fallback] = pure v
   { valueDefault = do
       msgs <- valueDefault v
       if null msgs then valueDefault fallback else pure msgs
   }
-fOrIfEmpty _ args = errorValue $ "orifempty: expected exactly 1 argument, got " <> show (length args)
+fOrIfEmpty _ args = pure $ errorValue $ "orifempty: expected exactly 1 argument, got " <> show (length args)
 
 fFileWithName :: DSLFilter
-fFileWithName v [] = leafValueA $ do
+fFileWithName v [] = pure $ leafValueA $ do
   msgs <- valueDefault v
   pure [User (T.pack (FP.takeBaseName (T.unpack (messagesText msgs))))]
-fFileWithName _ args = errorValue $ "filewithname: expected no arguments, got " <> show (length args)
+fFileWithName _ args = pure $ errorValue $ "filewithname: expected no arguments, got " <> show (length args)
 
 fTruncate :: DSLFilter
-fTruncate v [nArg] = leafValueA $ do
+fTruncate v [nArg] = pure $ leafValueA $ do
   nMsgs <- valueDefault nArg
   let n = maybe (T.length (messagesText nMsgs)) id (readMaybeInt (messagesText nMsgs))
   msgs <- valueDefault v
   pure [User (T.take n (messagesText msgs))]
-fTruncate _ args = errorValue $ "truncate: expected exactly 1 argument, got " <> show (length args)
+fTruncate _ args = pure $ errorValue $ "truncate: expected exactly 1 argument, got " <> show (length args)
 
 fJoin :: DSLFilter
-fJoin v [sepArg] = leafValueA $ do
+fJoin v [sepArg] = pure $ leafValueA $ do
   sepMsgs <- valueDefault sepArg
   let sep = messagesText sepMsgs
   entryTexts <- mapM (\act -> messagesText <$> (valueDefault =<< act)) (map snd (valueEntries v))
   pure [User (T.intercalate sep entryTexts)]
-fJoin _ args = errorValue $ "join: expected exactly 1 argument, got " <> show (length args)
+fJoin _ args = pure $ errorValue $ "join: expected exactly 1 argument, got " <> show (length args)
 
 -- | Reorders 'valueEntries' by 'naturalKey' on each entry's own key text
 --   (@\"ch2\"@ before @\"ch11\"@) -- decidable purely from the key set
@@ -596,8 +616,8 @@ fJoin _ args = errorValue $ "join: expected exactly 1 argument, got " <> show (l
 --   list of exactly zero, since the ordering itself is fixed (there's only
 --   one @naturalKey@), not a piped-in comparator.
 fSortBy :: DSLFilter
-fSortBy v [] = v { valueEntries = List.sortBy (\a b -> compare (naturalKey (fst a)) (naturalKey (fst b))) (valueEntries v) }
-fSortBy _ args = errorValue $ "sortBy: expected no arguments, got " <> show (length args)
+fSortBy v [] = pure v { valueEntries = List.sortBy (\a b -> compare (naturalKey (fst a)) (naturalKey (fst b))) (valueEntries v) }
+fSortBy _ args = pure $ errorValue $ "sortBy: expected no arguments, got " <> show (length args)
 
 -- | Extracts a Markdown document's @# Title@ -- the one structural
 --   convention @sheet.md@ is actually required to follow (see
@@ -606,20 +626,20 @@ fSortBy _ args = errorValue $ "sortBy: expected no arguments, got " <> show (len
 --   content analysis -- no LLM effect needed, so it's a plain filter
 --   rather than something deferred to a render-time pass.
 fName :: DSLFilter
-fName v [] = leafValueA $ do
+fName v [] = pure $ leafValueA $ do
   msgs <- valueDefault v
   pure [User (mdHeading (messagesText msgs))]
-fName _ args = errorValue $ "name: expected no arguments, got " <> show (length args)
+fName _ args = pure $ errorValue $ "name: expected no arguments, got " <> show (length args)
 
 -- | Extracts the paragraph immediately following a Markdown document's
 --   leading @# Title@ -- the "acquaintance blurb" convention: whatever
 --   prose a sheet opens with, up to the next blank line or heading.
 --   Same non-LLM rationale as 'fName'.
 fAbstract :: DSLFilter
-fAbstract v [] = leafValueA $ do
+fAbstract v [] = pure $ leafValueA $ do
   msgs <- valueDefault v
   pure [User (mdLeadParagraph (messagesText msgs))]
-fAbstract _ args = errorValue $ "abstract: expected no arguments, got " <> show (length args)
+fAbstract _ args = pure $ errorValue $ "abstract: expected no arguments, got " <> show (length args)
 
 mdHeading :: Text -> Text
 mdHeading = go . T.lines
@@ -639,7 +659,7 @@ mdLeadParagraph txt =
     isBoundary l = T.null l || isHeading l
 
 leafValueA :: Action [Message] -> Value
-leafValueA action = Value { valueDefault = action, valueEntries = [] }
+leafValueA action = Value { valueDefault = action, valueEntries = [], valueMeta = defaultMeta }
 
 readMaybeInt :: Text -> Maybe Int
 readMaybeInt t = case reads (T.unpack t) of
@@ -650,20 +670,48 @@ readMaybeInt t = case reads (T.unpack t) of
 -- Branch resolution -- injected, not hardcoded
 -- ---------------------------------------------------------------------------
 
--- | @branch@'s own implementation -- not part of 'coreFilters' (see the
---   "Filters" section haddock: this is the one filter-shaped operation
---   that needs a real capability, not just forcing values it was
---   already handed), so it's dispatched by name in 'evalExpr' rather
---   than living in the pure registry. Resolves its argument's text as a
---   character branch name via 'askBranch', then hands off to
---   'treeValueOfCommit' exactly like the initial scope was built.
-fBranch :: Value -> [Value] -> Action Value
-fBranch v [] = do
-  ident <- messagesText <$> valueDefault v
-  askBranch (BranchName ("character/" <> ident)) >>= \case
-    Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
-    Just commit -> treeValueOfCommit commit
-fBranch _ args = fail $ "branch: expected no arguments, got " <> show (length args)
+-- | @branch@'s own implementation, as an ordinary 'Binding' -- not part
+--   of 'coreFilters' (see the "Filters" section haddock: this is a
+--   filter-shaped operation that needs a real capability, not just
+--   forcing values it was already handed), but not hardcoded into
+--   'evalExpr' either: it's registered in
+--   'Storyteller.Context.DSL.Library.hostLibrary' like any other
+--   host-backed name, resolved the same way whether it's called bare
+--   (@branch charname@) or piped (@charname | branch@ -- see 'EFilter'\'s
+--   own fallthrough case, which is exactly "the piped value becomes the
+--   first argument"). Resolves its argument's text as a character branch
+--   name via 'askBranch', then hands off to 'treeValueOfCommit' exactly
+--   like the initial scope was built.
+branchBinding :: Binding
+branchBinding = fn1 go
+  where
+    go vArg = do
+      ident <- messagesText <$> (valueDefault =<< vArg)
+      askBranch (BranchName ("character/" <> ident)) >>= \case
+        Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
+        Just commit -> treeValueOfCommit commit
+
+-- | @charactersin@'s own implementation, as an ordinary 'Binding' -- same
+--   reasoning as 'branchBinding': it needs real 'Core.StoreM' access
+--   (presence-tick data isn't glob-derivable, the same reason tick
+--   history needs 'readConversation' to be host-backed), but that's a
+--   reason to register it in the library, not to hardcode a case into
+--   this interpreter. @v@'s own forced text is the file path whose
+--   presence ticks decide who's active, via
+--   'Storyteller.Writer.Presence.activeCharacters' (the same pure fold
+--   'Storyteller.Writer.Presence.activeCharactersFor' already wraps for
+--   ordinary Haskell callers). No content sits at each entry -- the value
+--   *is* the key (the identifier); a caller narrows further with @in
+--   (charname | branch): ...@\/@describechar charname@, same as any other
+--   character identifier this DSL already hands around.
+charactersInBinding :: Binding
+charactersInBinding = fn1 go
+  where
+    go vArg = do
+      path  <- T.unpack . messagesText <$> (valueDefault =<< vArg)
+      ticks <- Action (\_lib -> Tick.fileTicksOf path)
+      let idents = [ Branches.branchDisplayName name | Character (BranchName name) <- Set.toList (Presence.activeCharacters ticks) ]
+      pure (Value (pure []) [ (ident, pure (leafValue [User ident])) | ident <- idents ] defaultMeta)
 
 -- | 'treeValueOfCommit' for a named branch -- resolves the name via
 --   'askBranch', then delegates. The one case a Reader-scope switch
@@ -727,6 +775,66 @@ renderJournalTicks ticks =
       "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
       <> T.intercalate "\n\n---\n\n" (map Tick.ftMessage ticks)
   ]
+
+-- | A file's own tick history, reconstructed as real, role-preserving
+--   'Message's -- the DSL-level counterpart to
+--   'Storyteller.Writer.Agent.Chat.historyFromFileTicks' (same source
+--   data, same @"prompt"@\/@"atom"@\/hidden-tick rules), just producing
+--   this module's own model-agnostic 'Message' instead of a
+--   'UniversalLLM.Message' bound to one role. A host-supplied 'Binding'
+--   for the same reason 'journalDelta' is one: tick history isn't
+--   glob\/@read@-expressible, so there's real Haskell logic underneath,
+--   but the DSL still decides *where* the result lands (@conv =
+--   readconversation curchapter@, then composed with whatever else the
+--   calling definition builds).
+readConversation :: Binding
+readConversation = fn1 go
+  where
+    go pathArg = do
+      path  <- T.unpack . messagesText <$> (valueDefault =<< pathArg)
+      ticks <- Action (\_lib -> Tick.fileTicksOf path)
+      pure (leafValue (historyFromTicks ticks))
+
+historyFromTicks :: [Tick.FileTick] -> [Message]
+historyFromTicks = concatMap toMessage . filter (not . isHidden)
+  where
+    isHidden ft = lookup "hide" (Tick.ftFields ft) == Just "true"
+    toMessage ft = case Tick.ftKind ft of
+      "prompt" -> [User (Tick.ftMessage ft)]
+      "atom"   -> [Assistant (maybe (Tick.ftMessage ft) id (Tick.ftContent ft))]
+      _        -> []
+
+-- | Splices @toInsert@ into @conv@ at a bounded depth from the end (2 to 4
+--   turns, a project's own cache-vs-freshness tuning, baked in here the
+--   same way 'journalDelta''s own curation numbers are rather than being
+--   DSL-tunable) -- the DSL-level counterpart to
+--   'Storyteller.Writer.Agent.MessageWindow.injectAtWindow', reusing its
+--   own turn-boundary arithmetic ('Storyteller.Writer.Agent.MessageWindow.windowBoundary',
+--   which is already generic over plain 'Int's, not tied to
+--   'UniversalLLM.Message') against this module's own 'Message' instead.
+--   See that function's own Haddock for why a *bounded* depth, not either
+--   end, is what actually buys back prompt-cache hits across consecutive
+--   turns.
+embedShallow :: Binding
+embedShallow = fn2 go
+  where
+    go convArg extraArg = do
+      conv  <- valueDefault =<< convArg
+      extra <- valueDefault =<< extraArg
+      pure (leafValue (injectShallow isUserTurn 2 4 extra conv))
+    isUserTurn (User _) = True
+    isUserTurn _         = False
+
+injectShallow :: (Message -> Bool) -> Int -> Int -> [Message] -> [Message] -> [Message]
+injectShallow _ _ _ [] history = history
+injectShallow isTurnStart lo hi toInsert history
+  | boundary == 0 = toInsert ++ history
+  | otherwise     = before ++ toInsert ++ after
+  where
+    turnIdxs = [ i | (i, m) <- zip [0 :: Int ..] history, isTurnStart m ]
+    total    = length turnIdxs
+    boundary = MessageWindow.windowBoundary lo hi total
+    (before, after) = splitAt (turnIdxs !! boundary) history
 
 -- | The Reader scope for wherever this 'Action' is actually run --
 --   'Storyteller.Context.DSL.Value.currentHead', read straight off the

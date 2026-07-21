@@ -23,6 +23,7 @@ library
                   , Storyteller
                   , Storyteller.Core.Types
                   , Storyteller.Writer.Agent
+                  , Storyteller.Writer.Agent.Context
                   , Storyteller.Core.Storage
                   , Storyteller.Core.Branch
                   , Storyteller.Core.Undo
@@ -76,6 +77,7 @@ library
                   , Storyteller.Context.DSL.Context
                   , Storyteller.Context.DSL.Library
                   , Storyteller.Context.DSL.Render
+                  , Storyteller.Context.DSL.Rendering
                   , Storyteller.Context.DSL.QQ
                   , Server.Core.Protocol
                   , Server.Core.Util
@@ -287,6 +289,7 @@ test-suite storyteller-test
                   , Storyteller.Context.DSL.ContextSpec
                   , Storyteller.Context.DSL.LibrarySpec
                   , Storyteller.Context.DSL.RenderSpec
+                  , Storyteller.Context.DSL.RenderingSpec
                   , Storyteller.Core.ContextSpec
                   , Storyteller.Context.DSL.QQSpec
                   , Storyteller.OutlineSpec

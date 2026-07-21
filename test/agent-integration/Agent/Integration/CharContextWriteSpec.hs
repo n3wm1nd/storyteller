@@ -46,7 +46,7 @@ import Storyteller.Writer.Agent (CharContextBlock, CharLabel(..), CharSummary(..
 import Storyteller.Writer.Agent.CharContext (readCharFiles, renderCharContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, resolveFixture, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, resolveFixture, runExpect, worldContextFromMessages)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 -- | Chroot marker for the character-branch fixture directory, used only
@@ -106,7 +106,7 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
         charSummary = CharSummary { csSheet = [], csContext = charBlocks, csJournal = [] }
 
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [(CharLabel "Mira", charSummary)] [] [UserText "## Chapter: scene.md", AssistantText existingText] [] instruction
+      Prose text <- writeAgent (worldContextFromMessages [UserText "## Chapter: scene.md", AssistantText existingText]) emptyStyleContext [(CharLabel "Mira", charSummary)] emptyPinnedContext [] instruction
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

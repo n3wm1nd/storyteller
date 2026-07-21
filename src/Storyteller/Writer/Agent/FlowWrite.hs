@@ -29,10 +29,9 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import Runix.Logging (Logging)
 
-import UniversalLLM (Message)
-
-import Storyteller.Core.LLM.Role (LLMs, ProseModel)
-import Storyteller.Writer.Agent (Instruction(..), Prose, CharLabel, CharSummary, ContextBlock)
+import Storyteller.Core.LLM.Role (LLMs)
+import Storyteller.Writer.Agent (Instruction(..), Prose, CharLabel, CharSummary)
+import Storyteller.Writer.Agent.Context (WorldContext, StyleContext, PinnedContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -53,14 +52,13 @@ flowWriteAgent
   .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
   => FilePath                                       -- ^ file being continued
   -> TickId                                          -- ^ flowTid: HEAD when the user started typing
-  -> [ContextBlock]                                  -- ^ world lore
-  -> [ContextBlock]                                  -- ^ standing style guide
+  -> WorldContext                                    -- ^ world context -- see 'writeAgent's own Haddock
+  -> StyleContext                                    -- ^ standing style guide
   -> [(CharLabel, CharSummary)]                       -- ^ every active character's summary
-  -> [ContextBlock]                                  -- ^ pinned/short-term context
-  -> [Message ProseModel]                            -- ^ earlier chapters, already built as alternating User\/Assistant pairs -- see 'writeAgent's own Haddock
+  -> PinnedContext                                    -- ^ pinned/short-term context
   -> Instruction
   -> Sem r ([TickId], Prose)
-flowWriteAgent path flowTid lore style chars pinned earlierChapters instruction = do
+flowWriteAgent path flowTid context style chars pinned instruction = do
   allTicks <- runStorage @branch (fileTicksOf path)
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
@@ -73,7 +71,7 @@ flowWriteAgent path flowTid lore style chars pinned earlierChapters instruction 
   -- actually changed.
   currentTicks <- if inFlightCount == 0 then return allTicks else runStorage @branch (fileTicksOf path)
 
-  generated <- writeAgent lore style chars pinned earlierChapters currentTicks instruction
+  generated <- writeAgent context style chars pinned currentTicks instruction
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

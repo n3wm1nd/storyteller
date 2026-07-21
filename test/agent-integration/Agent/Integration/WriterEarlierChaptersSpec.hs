@@ -32,7 +32,7 @@ import Runix.Logging (info)
 import Storyteller.Writer.Agent (Instruction(..), Prose(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, runExpect, worldContextFromMessages)
 import Agent.Integration.Judge (judgeOrFail)
 
 earlierChapter :: T.Text
@@ -69,7 +69,7 @@ spec
 spec runner = describe "earlier-chapter continuity reaching the writer (real LLM, cached)" $
   it "keeps a new chapter consistent with a fact only an earlier chapter established" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent [] [] [] [] [UserText "## Chapter: chapters/ch1.md", AssistantText earlierChapter] [] instruction
+      Prose text <- writeAgent (worldContextFromMessages [UserText "## Chapter: chapters/ch1.md", AssistantText earlierChapter]) emptyStyleContext [] emptyPinnedContext [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

@@ -38,7 +38,7 @@ import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..)
 import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 -- | Phantom tag for opening the one character branch this scenario uses.
@@ -92,10 +92,10 @@ spec runner = describe "a private journal resolve shaping the next scene (real L
       let baseline = withJournal { csJournal = [] }
           label    = CharLabel "Marisol"
 
-      Prose baselineText <- writeAgent [] [] [(label, baseline)] [] [] [] instruction
+      Prose baselineText <- writeAgent emptyWorldContext emptyStyleContext [(label, baseline)] emptyPinnedContext [] instruction
       info ("baseline (no journal) output:\n" <> baselineText)
 
-      Prose text <- writeAgent [] [] [(label, withJournal)] [] [] [] instruction
+      Prose text <- writeAgent emptyWorldContext emptyStyleContext [(label, withJournal)] emptyPinnedContext [] instruction
       info ("with-journal output:\n" <> text)
       embed $ text `shouldNotBe` ""
 

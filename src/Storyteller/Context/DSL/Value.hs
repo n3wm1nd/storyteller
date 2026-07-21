@@ -27,6 +27,10 @@ module Storyteller.Context.DSL.Value
   ( Message(..)
   , messageText
   , MonadBranch(..)
+  , Binding(..)
+  , bval
+  , fn1
+  , fn2
   , ContextLibrary(..)
   , Action(..)
   , liftStore
@@ -34,6 +38,13 @@ module Storyteller.Context.DSL.Value
   , currentLibrary
   , lookupLibrary
   , currentHead
+  , Provenance(..)
+  , Priority(..)
+  , defaultPriority
+  , ItemFlag(..)
+  , Meta(..)
+  , defaultMeta
+  , withProvenance
   , Value(..)
   , emptyValue
   , leafValue
@@ -46,12 +57,14 @@ module Storyteller.Context.DSL.Value
 import Control.Monad.Trans.Class (lift)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
 import qualified Storage.Core as Core
 
-import Storyteller.Context.DSL.AST (Definition, Name)
+import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Core.Types (BranchName)
 
 -- | The three, and only three, ways a message gets constructed (see
@@ -76,19 +89,65 @@ messageText (Assistant t)  = t
 class Monad m => MonadBranch m where
   resolveBranch :: BranchName -> m (Maybe Core.ObjectHash)
 
+-- | What a local name (a @let@\/parameter\/loop variable) resolves to --
+--   one constructor, since the DSL itself draws no line between "a
+--   value" and "a function": a plain @x = body@ is exactly a 0-arity
+--   'Binding' (rule 1, "a file with no head is a 0-ary function -- an
+--   ordinary value"). The @[Action Value] -> Value -> Action Value@
+--   shape takes the *caller's* current ambient scope as an explicit
+--   argument rather than closing over whatever scope was active at
+--   definition time -- see "Storyteller.Context.DSL.Compile"'s own
+--   Haddock on why. Moved here (rather than living in
+--   "Storyteller.Context.DSL.Compile", which imports this module) purely
+--   so 'ContextLibrary' -- which needs to hold compiled 'Binding's, not
+--   just parsed source -- can be defined in the same module a 'Binding'
+--   is, without a cycle.
+data Binding = Binding Int ([Action Value] -> Value -> Action Value)
+
+-- | Wraps an already-scoped 'Action' as a 0-arity 'Binding' -- the
+--   ordinary "just a value" case, and by far the common one.
+bval :: Action Value -> Binding
+bval action = Binding 0 (\_ _ -> action)
+
+-- | Wraps a plain, scope-blind Haskell function as a 1-arity 'Binding' --
+--   what a host passes a real function in as (the invented-calendar
+--   example's own @dateMath@, or a new host-backed primitive like
+--   @readconversation@).
+fn1 :: (Action Value -> Action Value) -> Binding
+fn1 f = Binding 1 go
+  where
+    go [a] _  = f a
+    go args _ = fail $ "fn1: expected exactly 1 argument, got " <> show (length args)
+
+-- | 'fn1', two arguments.
+fn2 :: (Action Value -> Action Value -> Action Value) -> Binding
+fn2 f = Binding 2 go
+  where
+    go [a, b] _ = f a b
+    go args _   = fail $ "fn2: expected exactly 2 arguments, got " <> show (length args)
+
 -- | The shared, once-built library table -- every named definition this
 --   application knows about (compiled-in defaults, then whatever the
 --   current 'Storyteller.Core.Storage.Contexts' branch overrides or adds
 --   on top), fixed for the lifetime of one request/action, resolved by
 --   dotted name. This is what makes cross-definition reference by plain
---   identifier possible at all (@contextLore@'s own body calling
---   @loreEntry f@, say): 'Storyteller.Context.DSL.Compile's @EIdent@\/
---   @EApp@ fall back here once a name misses the current definition's own
---   local 'Env'. A found 'Definition' gets compiled and run against the
---   *caller's* own ambient scope (never a fresh one) -- the exact same
---   calling convention an ordinary local 'Storyteller.Context.DSL.Compile.Binding'
---   already has, so a library reference behaves indistinguishably from a
---   parameter or a @let@.
+--   identifier possible at all (@contextWriter@'s own body calling @lore@,
+--   say): 'Storyteller.Context.DSL.Compile's @EIdent@\/@EApp@ fall back
+--   here once a name misses the current definition's own local 'Env'. A
+--   found 'Binding' runs against the *caller's* own ambient scope (never
+--   a fresh one) -- the exact same calling convention an ordinary local
+--   one already has, so a library reference behaves indistinguishably
+--   from a parameter or a @let@.
+--
+--   Holds compiled 'Binding's, not raw 'Storyteller.Context.DSL.AST.Definition's
+--   -- deliberately, so a host-backed primitive (@readconversation@,
+--   @embedshallow@ -- real Haskell closures, never expressible as parsed
+--   DSL text) can sit in the *same* table as a pure-DSL one
+--   (@lore@, @chapters@), both resolved by 'Storyteller.Context.DSL.Compile's
+--   'EIdent'\/'EApp' the identical way. A host-backed entry just isn't
+--   branch-overridable -- there's no text that could meaningfully replace
+--   real Haskell logic, so an override attempt against one has no effect,
+--   same treatment a bad arity already gets.
 --
 --   Deliberately *not* a 'MonadBranch'-shaped typeclass constraint on
 --   'Action'\'s own @m@: unlike branch resolution, this is one plain,
@@ -96,7 +155,7 @@ class Monad m => MonadBranch m where
 --   looked up effectfully mid-computation -- so it travels as an ordinary
 --   'Action'-level Reader parameter (see 'runAction'\'s own type) rather
 --   than needing a capability 'Action'\'s abstract backend has to satisfy.
-newtype ContextLibrary = ContextLibrary (Map Name Definition)
+newtype ContextLibrary = ContextLibrary (Map Name Binding)
 
 -- | A deferred storage transaction, generic over any backend that can
 --   satisfy 'Core.StoreM' and 'MonadBranch', plus one plain Reader
@@ -140,7 +199,7 @@ currentLibrary = Action (\lib -> pure lib)
 -- | 'currentLibrary', narrowed to one name -- what
 --   'Storyteller.Context.DSL.Compile's cross-definition 'EIdent'\/'EApp'
 --   fallback actually calls.
-lookupLibrary :: Name -> Action (Maybe Definition)
+lookupLibrary :: Name -> Action (Maybe Binding)
 lookupLibrary name = do
   ContextLibrary m <- currentLibrary
   pure (Map.lookup name m)
@@ -151,7 +210,47 @@ lookupLibrary name = do
 currentHead :: Action Core.ObjectHash
 currentHead = Action (\_lib -> Core.headHash)
 
--- | @Value = { default :: Thunk [Message], entries :: [(Name, Value)] }@.
+-- | Where a 'Value' came from -- stamped by @read@ itself (see
+--   'withProvenance'), never invented by a filter. Structural: knowing it
+--   never requires forcing 'valueDefault'.
+data Provenance = Provenance
+  { provPath :: FilePath
+  , provTick :: Core.ObjectHash
+  } deriving (Eq, Show)
+
+-- | Higher survives longer under budget pressure. Ordinary 'Int' wrapped
+--   only so a stray positional argument can't be mistaken for one --
+--   see "Newtype wrapping threshold" project convention.
+newtype Priority = Priority Int deriving (Eq, Ord, Show)
+
+defaultPriority :: Priority
+defaultPriority = Priority 0
+
+-- | What a budget-aware renderer (not this module -- see
+--   'Storyteller.Context.DSL.Rendering') is allowed to do to a node under
+--   pressure. Set by a filter (@pinned@, @summarizable@), never inferred.
+data ItemFlag = Droppable | Summarizable | Pinned deriving (Eq, Ord, Show)
+
+-- | Orthogonal to everything else a 'Value' carries -- most code never
+--   touches this field. The one channel a rendering step (outside this
+--   module) learns anything beyond content and structure through.
+data Meta = Meta
+  { metaProvenance :: Maybe Provenance
+  , metaPriority   :: Priority
+  , metaFlags      :: Set ItemFlag
+  } deriving (Eq, Show)
+
+defaultMeta :: Meta
+defaultMeta = Meta Nothing defaultPriority Set.empty
+
+-- | Stamps a 'Value' with where it came from -- what @read@'s own
+--   resolution (see "Storyteller.Context.DSL.Compile") calls on every
+--   entry it builds from a commit's tree, never something a filter
+--   invents for itself.
+withProvenance :: FilePath -> Core.ObjectHash -> Value -> Value
+withProvenance path tick v = v { valueMeta = (valueMeta v) { metaProvenance = Just (Provenance path tick) } }
+
+-- | @Value = { default :: Thunk [Message], entries :: [(Name, Value)], meta :: Meta }@.
 --   An ordered association list, not a 'Data.Map.Strict.Map' -- order is
 --   a real, preserved, and freely reassignable property of a 'Value'
 --   (construction order by default: @as@-export declaration order,
@@ -165,14 +264,15 @@ currentHead = Action (\_lib -> Core.headHash)
 data Value = Value
   { valueDefault :: Action [Message]
   , valueEntries :: [(Name, Action Value)]
+  , valueMeta    :: Meta
   }
 
 emptyValue :: Value
-emptyValue = Value (pure []) []
+emptyValue = Value (pure []) [] defaultMeta
 
 -- | A leaf with no children -- "there is no separate leaf type."
 leafValue :: [Message] -> Value
-leafValue msgs = Value (pure msgs) []
+leafValue msgs = Value (pure msgs) [] defaultMeta
 
 -- | Flattens a message list to plain text, ignoring role -- what
 --   filters and interpolation operate on (see "Value model": "Filters

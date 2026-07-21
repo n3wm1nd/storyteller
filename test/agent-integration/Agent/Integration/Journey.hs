@@ -45,7 +45,7 @@ import Runix.Git (Git)
 import Runix.LLM (Message)
 import Runix.Logging (Logging, info)
 
-import Agent.Integration.Harness (assertToolCallBudget)
+import Agent.Integration.Harness (assertToolCallBudget, emptyPinnedContext, emptyStyleContext)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
@@ -55,11 +55,13 @@ import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prompt(..), Prose(..))
+import Storyteller.Writer.Agent.Context (WorldContext(..))
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), OutlineDoc(..), splitOutlineAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
 import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
+import Storyteller.Context.DSL.Rendering (renderContext)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 
@@ -178,9 +180,10 @@ writeChat
   .  JourneyEffects r
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
-  fileCtx <- flatMainContext path
+  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  worldCtx <- WorldContext <$> runContextValue @Main (renderContext writerVal)
   currentTicks <- runStorage @Main (Tick.fileTicksOf path)
-  Prose generated <- writeAgent [] [] [] fileCtx [] currentTicks (Instruction prompt)
+  Prose generated <- writeAgent worldCtx emptyStyleContext [] emptyPinnedContext currentTicks (Instruction prompt)
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   appendGenerated path generated
   return generated

@@ -9,12 +9,18 @@ import Test.Hspec
 import UniversalLLM (Message(..))
 
 import Storyteller.Core.LLM.Role (AgentModel)
-import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Context.DSL.Rendering (RenderedContext(..))
 import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
+import Storyteller.Writer.Agent.Context (WorldContext(..))
 import Storyteller.Writer.Agent.Roleplay (characterOpeningMessages, reflectOpeningMessages)
 
-opening :: CharSummary -> [DSL.Message] -> [FilePath] -> T.Text -> [Message AgentModel]
+opening :: CharSummary -> WorldContext -> [FilePath] -> T.Text -> [Message AgentModel]
 opening = characterOpeningMessages "Ren"
+
+-- | No scene context at all -- the empty tree, same as a caller with
+--   nothing gathered yet would render.
+noContext :: WorldContext
+noContext = WorldContext (Node [] [])
 
 reflect :: CharSummary -> T.Text -> [FilePath] -> T.Text -> [Message AgentModel]
 reflect = reflectOpeningMessages "Ren"
@@ -47,7 +53,7 @@ spec = do
   describe "characterOpeningMessages" $ do
 
     it "with no own-branch context, still opens with the identity note and closes with the question" $ do
-      let msgs = opening noSummary [] [] "what do you do?"
+      let msgs = opening noSummary noContext [] "what do you do?"
       case msgs of
         (UserText identity : _) -> identity `shouldSatisfy` ("Ren" `T.isInfixOf`)
         other                    -> expectationFailure ("expected identity note first, got " <> show other)
@@ -61,7 +67,7 @@ spec = do
             , csContext = [CharContextBlock "### tasks.md\n\nkeep Elias distracted"]
             , csJournal = [CharContextBlock "### journal.md\n\nI keep thinking about the mark."]
             }
-          msgs = opening cs [] [] "what do you ask Iskra?"
+          msgs = opening cs noContext [] "what do you ask Iskra?"
       occurrences "I keep thinking about the mark." msgs `shouldBe` 1
       occurrences "keep Elias distracted" msgs `shouldBe` 1
       occurrences "# Ren" msgs `shouldBe` 1
@@ -72,7 +78,7 @@ spec = do
             , csContext = [CharContextBlock "### tasks.md\n\nsome tasks"]
             , csJournal = [CharContextBlock "### journal.md\n\nsome journal entry"]
             }
-          msgs = opening cs [] [] "what do you ask?"
+          msgs = opening cs noContext [] "what do you ask?"
       case reverse msgs of
         (finalMsg : AssistantText journalContent : UserText _label : _rest) -> do
           finalMsg `shouldSatisfy` (== UserText "You're being asked: what do you ask?")
@@ -81,7 +87,7 @@ spec = do
 
     it "drops an empty journal section instead of emitting an empty pair" $ do
       let cs = CharSummary { csSheet = [CharContextBlock "### sheet.md\n\n# Ren"], csContext = [], csJournal = [] }
-          msgs = opening cs [] [] "go"
+          msgs = opening cs noContext [] "go"
       occurrences "## My own journal so far" msgs `shouldBe` 0
 
     it "survives a provider that concatenates adjacent same-role messages: the journal never ends up merged with stable content" $ do
@@ -90,7 +96,7 @@ spec = do
             , csContext = [CharContextBlock "### tasks.md\n\nsome tasks"]
             , csJournal = [CharContextBlock "### journal.md\n\nsome journal entry"]
             }
-          msgs      = opening cs [] [] "what happens next?"
+          msgs      = opening cs noContext [] "what happens next?"
           flattened = mergeSameRole msgs
           journalMsg = [ t | m <- flattened, t <- allText [m], "some journal entry" `T.isInfixOf` t ]
       case journalMsg of

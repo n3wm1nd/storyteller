@@ -45,6 +45,10 @@ module Agent.Integration.Harness
   , resolveKnownAgentModel
   , runExpect
   , withKnownModel
+  , emptyWorldContext
+  , emptyStyleContext
+  , emptyPinnedContext
+  , worldContextFromMessages
   ) where
 
 import Data.List (intercalate)
@@ -65,6 +69,8 @@ import UniversalLLM (ToolCall(..))
 import Agent.Integration.ToolCallQuality
   (TurnReport(..), invalidCallsSinceLastUser, reportTurn)
 import Storyteller.Common.Splitter (Splitter)
+import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..))
+import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.LLM.Registry
   ( KnownModel(..), KnownAgentModel(..), LLMRunner(..), ModelID(..)
@@ -75,6 +81,34 @@ import Storyteller.Core.Context (ContextStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+
+-- | The empty tree, wrapped for each of 'Storyteller.Writer.Agent.Write.writeAgent'\'s
+--   three DSL-context parameters -- what a spec that doesn't care about
+--   world\/style\/pinned context at all passes, the same as an empty list
+--   used to before those parameters were newtype-wrapped
+--   'Storyteller.Context.DSL.Rendering.Context' trees.
+emptyWorldContext :: WorldContext
+emptyWorldContext = WorldContext (Node [] [])
+
+emptyStyleContext :: StyleContext
+emptyStyleContext = StyleContext (Node [] [])
+
+emptyPinnedContext :: PinnedContext
+emptyPinnedContext = PinnedContext (Node [] [])
+
+-- | Builds a 'WorldContext' directly from plain 'Message's -- what a spec
+--   asserting on 'Storyteller.Writer.Agent.Write.writeAgent's own message
+--   ordering used to pass as a bare @['Message' m]@ before world context
+--   became a newtype-wrapped tree. @'UserText'@\/@'AssistantText'@ map onto
+--   the DSL's own role tags directly; anything else this harness doesn't
+--   otherwise construct is given no sensible DSL equivalent and is dropped.
+worldContextFromMessages :: [Message m] -> WorldContext
+worldContextFromMessages msgs = WorldContext (Node [ ContextItem dm DSL.defaultMeta | Just dm <- map toDSLMessage msgs ] [])
+  where
+    toDSLMessage (UserText t)      = Just (DSL.User t)
+    toDSLMessage (AssistantText t) = Just (DSL.Assistant t)
+    toDSLMessage _                  = Nothing
 
 -- | Chroot marker for the shared on-disk response cache. A plain
 --   'FilePath' isn't reused directly (unlike 'Runix.FileSystem.HasProjectPath's

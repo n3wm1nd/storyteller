@@ -60,10 +60,12 @@ import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storage.Tick (FileTick)
 
-import Storyteller.Core.LLM.Role (LLMs, ProseModel)
+import Storyteller.Context.DSL.Rendering (renderMessages, renderText)
+import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), CharSummary(..)
   , ContextBlock(..) )
+import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
 import Storyteller.Writer.Agent.Chat (historyFromFileTicks)
 import Storyteller.Writer.Agent.MessageWindow (injectAtWindow)
 import Storyteller.Writer.Agent.Continuation (defaultWriterSystemPrompt, defaultWriterConfig)
@@ -77,21 +79,20 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --
 --   Message order (each a real list entry, not a section of one string):
 --
---     1. World lore (if any) -- one message, stable across an entire
---        story.
---     2. Earlier chapters, oldest first -- passed in already built as one
---        @('UserText', 'AssistantText')@ pair per chapter (a short
---        'UserText' naming the chapter's path, then its full current prose
---        as 'AssistantText' -- framed as something the assistant already
---        wrote, not reference material the user is presenting, which is
---        both the more accurate framing and what keeps a run of several
---        chapters from reading as one undifferentiated 'UserText' blob if a
---        provider concatenates adjacent same-role messages). This module no
---        longer constructs that pairing itself -- it's built by whatever
---        assembled the caller's own context (typically a Context DSL
---        definition, e.g. @Storyteller.Context.DSL.Library.contextChapters@,
---        via its own @> read f@ -- see 'Storyteller.Context.DSL.AST.Expr'\'s
+--     1. World context -- lore, earlier chapters (each as a short
+--        'UserText' naming the chapter's path, then its full current
+--        prose as 'AssistantText' -- framed as something the assistant
+--        already wrote, not reference material the user is presenting),
+--        everything else -- already ordered and already built as real
+--        messages by whatever assembled the caller's own context
+--        (typically @'Storyteller.Context.DSL.Library.contextWriter'@,
+--        composing @'Storyteller.Context.DSL.Library.contextChapters'@'s
+--        own @> read f@ pairing -- see 'Storyteller.Context.DSL.AST.Expr'\'s
 --        @EAssistant@ haddock) and spliced straight through unchanged.
+--        This module no longer knows or cares which part of it is "lore"
+--        versus "a chapter" -- that distinction lived here only because
+--        this module used to reassemble the two from separate parameters;
+--        now it's exactly one already-ordered stream.
 --     3. This chapter's "identity" block -- every active character's
 --        'csSheet'\/'csContext', under a @"## Character: {name}"@ header
 --        each (see 'flattenCharBlocks') -- mostly stable for the whole
@@ -115,21 +116,22 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 writeAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock]              -- ^ world lore, already rendered (see 'Storyteller.Writer.Agent.WorldContext.WorldLore')
-  -> [ContextBlock]              -- ^ standing style guide, already rendered (see 'Storyteller.Writer.Agent.WorldContext.SystemContext') -- appended to the system prompt, not a message
+  => WorldContext                -- ^ world context -- lore, earlier chapters, everything else, already ordered by whatever assembled it (typically @'Storyteller.Context.DSL.Library.contextWriter'@) -- rendered here, via 'renderMessages', at the point the model is actually known, not upstream (see 'buildChapterMessages's own Haddock)
+  -> StyleContext                -- ^ standing style guide -- rendered via 'renderText', appended to the system prompt, not a message
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
-  -> [ContextBlock]              -- ^ pinned/short-term context (e.g. the user's own selection)
-  -> [Message ProseModel]        -- ^ earlier chapters, oldest-first, already built as alternating User\/Assistant pairs -- see 'buildChapterMessages's own Haddock on why this is pre-built rather than @[(FilePath, Text)]@ constructed here
+  -> PinnedContext                -- ^ pinned/short-term context (e.g. the user's own selection)
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> Sem r Prose
-writeAgent lore style chars pinned earlierChapters currentTicks instruction = do
+writeAgent (WorldContext context) (StyleContext style) chars (PinnedContext pinned) currentTicks instruction = do
   Prompt sysPrompt <- getPrompt "agent.writer" defaultWriterSystemPrompt
   configs          <- getConfig "agent.writer" defaultWriterConfig
-  let styleText        = renderContextBlocks style
+  let contextMsgs      = renderMessages context
+      styleText        = renderText style
+      pinnedBlocks      = [ContextBlock (renderText pinned) | not (T.null (renderText pinned))]
       sysText           = T.intercalate "\n\n" (filter (not . T.null) [sysPrompt, styleText, chapterContinuationNote])
       configsWithPrompt = SystemPrompt sysText : configs
-      messages          = buildChapterMessages lore chars pinned earlierChapters currentTicks instruction
+      messages          = buildChapterMessages contextMsgs chars pinnedBlocks currentTicks instruction
 
   info "writeAgent: querying model..."
   response <- queryLLM configsWithPrompt messages
@@ -155,18 +157,15 @@ chapterContinuationNote =
 --   directly rather than only observed through a real model call.
 buildChapterMessages
   :: forall m
-  .  [ContextBlock]              -- ^ world lore, already rendered
+  .  [Message m]                 -- ^ world context -- lore, earlier chapters, everything else, already ordered and already built as real messages -- see 'writeAgent's own Haddock: this used to be two separate parameters (flattened lore text, plus a pre-built earlier-chapters list) reassembled here; now it's whatever assembled the caller's own context (typically @'Storyteller.Context.DSL.Library.contextWriter'@) handed through as one already-ordered stream
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
   -> [ContextBlock]              -- ^ pinned/short-term context
-  -> [Message m]                 -- ^ earlier chapters, oldest-first, already built as alternating User\/Assistant pairs -- see 'writeAgent's own Haddock: this used to be constructed here from @[(FilePath, Text)]@, now built by whatever assembled the caller's own context (typically a Context DSL definition, e.g. @Storyteller.Context.DSL.Library.contextChapters@'s own @> read f@ pairing) and spliced straight through
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> [Message m]
-buildChapterMessages lore chars pinned earlierMsgs currentTicks (Instruction instr) =
-  loreMsgs ++ earlierMsgs ++ chapterStartMsgs ++ conversationMsgs ++ [instructionMsg]
+buildChapterMessages context chars pinned currentTicks (Instruction instr) =
+  context ++ chapterStartMsgs ++ conversationMsgs ++ [instructionMsg]
   where
-    loreMsgs = [ UserText (renderContextBlocks lore) | not (null lore) ]
-
     -- 'flattenCharBlocks' always prepends a header per entry, so a
     -- character with nothing under 'csSheet'\/'csContext' has to be
     -- dropped here -- not passed through with an empty blocks list -- or

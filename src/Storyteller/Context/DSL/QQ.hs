@@ -36,7 +36,7 @@
 --   'Storyteller.Context.DSL.Parser.parseDefinition' and
 --   'Storyteller.Context.DSL.Compile.compileDefinition' directly, same as
 --   before quasiquotes existed.
-module Storyteller.Context.DSL.QQ (dsl) where
+module Storyteller.Context.DSL.QQ (dsl, defQuote) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -93,6 +93,31 @@ curriedRunner def = do
   let toBindingArg n = AppE (VarE 'toBinding) (VarE n)
       call = AppE (AppE (VarE 'runDefinition) defExpr) (ListE (map toBindingArg argNames))
   pure $ if null argNames then call else LamE (map VarP argNames) call
+
+-- | Parses at GHC compile time exactly like 'dsl', but splices the parsed
+--   'Definition' itself, plain data, rather than 'curriedRunner''s curried
+--   'Storyteller.Context.DSL.Value.Action' function. What a definition
+--   meant to be *both* directly callable from Haskell *and*
+--   cross-referenceable by name from another definition's own body wants
+--   (see "Storyteller.Context.DSL.Value".@ContextLibrary@) -- one source,
+--   quoted once here, with the ordinary Haskell-callable form built from
+--   it via 'runDefinition' rather than typed out a second time as a
+--   runtime-parsed string.
+defQuote :: QuasiQuoter
+defQuote = QuasiQuoter
+  { quoteExp  = compileDefQuote
+  , quotePat  = const (fail "[defQuote| ... |] can only be used as an expression")
+  , quoteType = const (fail "[defQuote| ... |] can only be used as an expression")
+  , quoteDec  = const (fail "[defQuote| ... |] can only be used as an expression")
+  }
+
+compileDefQuote :: String -> Q Exp
+compileDefQuote src = do
+  loc <- location
+  let label = loc_filename loc <> ":" <> show (fst (loc_start loc))
+  case parseDefinition label (dropLeadingNewline (T.pack src)) of
+    Left err  -> fail (T.unpack (renderParseErr err))
+    Right def -> lift def
 
 -- | Drops exactly one leading @\\n@, the one every @[dsl|@ opened on its
 --   own line (the natural way to write a multi-statement definition)

@@ -50,7 +50,7 @@ import Storyteller.Core.Context (ContextStorage, getContextDefinition, runContex
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Context.DSL.Compile (Binding(..))
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Context.DSL.Value (Value(..), leafValue)
+import Storyteller.Context.DSL.Value (Value(..), defaultMeta, leafValue)
 import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 import Storyteller.Writer.Agent.ContextPreview (blurb)
 import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree, parseAliases)
@@ -86,6 +86,7 @@ activeMentionAliases aliasNames = do
   let candidate = Value
         { valueDefault = pure []
         , valueEntries = [ (name, pure (leafValue [])) | name <- aliasNames ]
+        , valueMeta = defaultMeta
         }
       defaultBinding = CtxLibrary.toBinding1 CtxLibrary.contextMentionFilter
   binding <- getContextDefinition "context.mentionFilter" defaultBinding
@@ -100,4 +101,4 @@ activeMentionAliases aliasNames = do
     -- 's own haddocks: both route through 'runDefinition', which bootstraps
     -- its own scope from whatever commit is ambient) -- this is never
     -- forced.
-    emptyValueUnused = Value { valueDefault = pure [], valueEntries = [] }
+    emptyValueUnused = Value { valueDefault = pure [], valueEntries = [], valueMeta = defaultMeta }

@@ -29,12 +29,14 @@ import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
 import Runix.Git (Git)
+import qualified UniversalLLM as LLM
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import Storyteller.Core.LLM.Role (ProseModel)
 import Storyteller.Core.Context
-  ( contextsBranchName, getContextDefinition, interpretContextStorageFS, interpretContextStorageMap
-  , resolveContextOverride, resolveContextQuery, runContextBinding1, runContextValue )
+  ( contextsBranchName, getContextDefinition, setContextOverride, interpretContextStorageFS, interpretContextStorageMap
+  , resolveContextOverride, resolveContext1, runContextBinding1, runContextValue )
 import Storyteller.Core.Git (runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
@@ -43,6 +45,8 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Context.DSL.Compile (Binding(..), bval, fn1)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Context.DSL.Rendering (renderContext, renderText, renderMessages)
 import Storyteller.Context.DSL.Value
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
@@ -62,10 +66,61 @@ runDefaultZeroAry _ (Binding n _) = pure (Left ("expected arity 0, got " <> show
 spec :: Spec
 spec = do
   resolveContextOverrideSpec
-  resolveContextQuerySpec
+  setContextOverrideSpec
   interpretContextStorageMapSpec
   interpretContextStorageFSSpec
   runContextBinding1Spec
+  clientSubmittedContextProgramSpec
+
+-- | The actual point of the whole override mechanism, end to end, against
+--   the real production definition and the real rendering pipeline --
+--   every other test in this module proves the *mechanism* works against a
+--   toy @context.greeting@ 'Binding'; this is what a client sending a DSL
+--   program with its own request (@fcContext@ on
+--   'Server.Writer.File.Protocol.ChatWriter', staged via
+--   'setContextOverride' exactly the way
+--   'Server.Writer.File.chatWriter' does) actually changes: not just "some
+--   binding resolves to different text," but the literal messages
+--   'Storyteller.Writer.Agent.Write.writeAgent' would receive, once
+--   rendered ('Storyteller.Context.DSL.Rendering.renderContext' ->
+--   'Storyteller.Context.DSL.Rendering.renderText'\/'Storyteller.Context.DSL.Rendering.renderMessages').
+--   Without a client program, resolving @context.writer@ against seeded
+--   lore falls through to the compiled-in default
+--   ('Storyteller.Context.DSL.Library.contextWriter'); with one staged,
+--   the client's own program wins completely, discarding that lore.
+clientSubmittedContextProgramSpec :: Spec
+clientSubmittedContextProgramSpec = describe "a client-submitted context.writer program, end to end" $ do
+  it "with no client program, resolves to the compiled-in default (real lore included)" $
+    run (testStack $ do
+      seedBranch "main" [("lore/notes.md", "a hand-authored note")]
+      runBranchOpGit @Main (BranchName "main") $ do
+        ctx <- interpretContextStorageMap Map.empty $ do
+          writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter "target.md"
+          runContextValue @Main (renderContext writerV)
+        pure (renderText ctx))
+    `shouldBe` Right "## Story background\n\n## lore/notes.md\n\na hand-authored note\n\n## Other notes"
+
+  it "a client program staged via setContextOverride replaces the default completely, seeded lore included" $
+    run (testStack $ do
+      seedBranch "main" [("lore/notes.md", "a hand-authored note")]
+      runBranchOpGit @Main (BranchName "main") $ do
+        ctx <- interpretContextStorageMap Map.empty $ do
+          setContextOverride "context.writer" "path:\n  \"a client-submitted override, replacing everything\"\n"
+          writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter "target.md"
+          runContextValue @Main (renderContext writerV)
+        pure (renderText ctx, map describeMessage (renderMessages ctx :: [LLM.Message ProseModel])))
+    `shouldBe` Right
+      ( "a client-submitted override, replacing everything"
+      , [(LLM.User, "a client-submitted override, replacing everything")]
+      )
+
+-- | 'LLM.Message' has no 'Eq' -- compare on 'LLM.messageDirection' plus
+--   the rendered text, same pattern
+--   "Storyteller.Context.DSL.RenderingSpec" already uses.
+describeMessage :: LLM.Message m -> (LLM.MessageDirection, Text)
+describeMessage msg@(LLM.UserText t)      = (LLM.messageDirection msg, t)
+describeMessage msg@(LLM.AssistantText t) = (LLM.messageDirection msg, t)
+describeMessage msg                       = (LLM.messageDirection msg, "<unsupported in this test>")
 
 defaultGreeting :: Binding
 defaultGreeting = bval (pure (leafValue [User "default text"]))
@@ -95,31 +150,53 @@ resolveContextOverrideSpec = describe "resolveContextOverride" $ do
     let Binding arity _ = resolveContextOverride defaultGreeting (Just "charname:\n  charname\n")
     in arity `shouldBe` 0
 
--- | @Maybe Text@, not @Text@ defaulting to @""@: 'Nothing' (wire-absent) is
---   the sentinel for "no query-level override"; @Just ""@ is a real,
---   distinct DSL program -- a valid, 0-arity, "produces nothing" one (see
---   'Storyteller.Context.DSL.Parser.pTopBlock's own haddock: an empty
---   top-level program is meaningful, not an error), genuinely different
---   from @Nothing@'s "fall through to the default". Collapsing the two
---   (as an earlier version of this code did, treating "" as a stand-in
---   for absence) would make a deliberately-empty override indistinguishable
---   from "nothing was sent" and silently reinterpret it as "use the
---   default" instead.
-resolveContextQuerySpec :: Spec
-resolveContextQuerySpec = describe "resolveContextQuery" $ do
-  it "Nothing (wire-absent) falls through to the branch/compiled default" $
-    run (testStack $ interpretContextStorageMap Map.empty $ do
-      Binding arity _ <- resolveContextQuery "context.greeting" defaultGreeting Nothing
-      pure arity)
-    `shouldBe` Right 0
-
-  it "Just \"\" is a distinct, real (if empty) program -- produces nothing, not the default's own text" $
+-- | 'setContextOverride' stages an override for the rest of *this*
+--   interpretation only -- never written anywhere durable, but otherwise
+--   indistinguishable from a branch-committed one once staged: the same
+--   'getContextDefinition' lookup finds it, with the same
+--   'resolveContextOverride' arity check applied. This is what lets a WS
+--   handler turn "the client sent this program for @context.writer@" into
+--   exactly "treat this request as if @context.writer@ had this override"
+--   with no separate wire-override code path anywhere else (see
+--   'Server.Writer.File.chatWriter''s own use).
+setContextOverrideSpec :: Spec
+setContextOverrideSpec = describe "setContextOverride" $ do
+  it "a name with nothing staged falls through to the branch/compiled default, same as before" $
     run (testStack $ do
       _ <- createBranch (BranchName "empty")
-      binding <- interpretContextStorageMap Map.empty $
-        resolveContextQuery "context.greeting" defaultGreeting (Just "")
+      binding <- interpretContextStorageMap Map.empty
+                   (getContextDefinition "context.greeting" defaultGreeting)
       runDefaultZeroAry (BranchName "empty") binding)
-    `shouldBe` Right (Right "")
+    `shouldBe` Right (Right "default text")
+
+  it "a staged override is visible to a lookup later in the same interpretation" $
+    run (testStack $ do
+      _ <- createBranch (BranchName "empty")
+      binding <- interpretContextStorageMap Map.empty $ do
+        setContextOverride "context.greeting" "\"staged text\"\n"
+        getContextDefinition "context.greeting" defaultGreeting
+      runDefaultZeroAry (BranchName "empty") binding)
+    `shouldBe` Right (Right "staged text")
+
+  it "a staged override still only wins when its arity matches -- same silent-fallback rule as a branch commit" $
+    run (testStack $ do
+      _ <- createBranch (BranchName "empty")
+      binding <- interpretContextStorageMap Map.empty $ do
+        setContextOverride "context.greeting" "charname:\n  charname\n"
+        getContextDefinition "context.greeting" defaultGreeting
+      runDefaultZeroAry (BranchName "empty") binding)
+    `shouldBe` Right (Right "default text")
+
+  it "a staged override takes priority over a same-named branch commit" $
+    run (testStack $ do
+      seedBranch "main" []
+      seedBranch (unBranchName contextsBranchName)
+        [("context/greeting.dsl", "\"from the branch\"\n")]
+      binding <- interpretContextStorageFS $ do
+        setContextOverride "context.greeting" "\"staged text\"\n"
+        getContextDefinition "context.greeting" defaultGreeting
+      runDefaultZeroAry (BranchName "main") binding)
+    `shouldBe` Right (Right "staged text")
 
 interpretContextStorageMapSpec :: Spec
 interpretContextStorageMapSpec = describe "interpretContextStorageMap" $ do

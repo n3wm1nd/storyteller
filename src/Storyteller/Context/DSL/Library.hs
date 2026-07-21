@@ -20,18 +20,23 @@
 --
 --   Every definition here is named the same way
 --   'Storyteller.Core.Prompt.PromptKey' names a prompt override --
---   dotted, namespaced -- and is meant to be looked up on a future
---   Contexts branch (still unbuilt; see @CONTEXT-DSL.md@'s own "a
---   branch-hosted, override-with-fallback function library" deferral)
---   before falling back to the compiled-in 'Binding' here. Composition
---   between these pieces ('contextMain' pulling in 'contextLore'\/
---   'contextChapters'\/'contextStyle') is ordinary Haskell parameter
---   passing, the same pattern the spec's own invented-calendar example
---   uses for a host-supplied function -- there's no cross-definition name
---   resolution inside the interpreter itself yet, so a project overriding
---   just @context.lore@ still gets its result threaded into the
---   (unmodified, or also-overridden) @context.main@ the same way either
---   way.
+--   dotted, namespaced -- and is looked up on the Contexts branch
+--   ('Storyteller.Core.Context') before falling back to the compiled-in
+--   'Storyteller.Context.DSL.AST.Definition' registered here
+--   ('defaultLibrarySource'). Composition between these pieces
+--   ('contextWriter' pulling in 'contextLore'\/'contextChapters'\/
+--   'contextOther') is *cross-definition name resolution*, not Haskell
+--   parameter passing -- a body referencing @contextLore@ by bare name
+--   resolves against the shared 'Storyteller.Context.DSL.Value.ContextLibrary'
+--   (see 'Storyteller.Context.DSL.Compile.resolveIdent'), the identical
+--   way whether the current name means the compiled-in default or a
+--   project's own committed override. Only a genuinely host-backed
+--   capability (@journalDelta@'s Haskell-level curried tuning, say) still
+--   needs Haskell-side parameter passing -- see 'contextCharacter''s own
+--   @journal@ parameter -- because that's real per-caller parametricity,
+--   not a shared default a project should be able to replace by name (see
+--   'characterBlurb''s own haddock for the case that used to be
+--   parameter-passed for no good reason, and the bug that came from it).
 module Storyteller.Context.DSL.Library
   ( defaultLibrary
   , contextStyle
@@ -49,49 +54,72 @@ module Storyteller.Context.DSL.Library
   , toBinding1
   , identity
   , defaultLibrarySource
+  , hostLibrary
   ) where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 
-import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (Binding(..), bval, journalDelta)
-import Storyteller.Context.DSL.Context (toBindingFn1)
-import Storyteller.Context.DSL.QQ (dsl)
+import Storyteller.Context.DSL.AST (Definition, Name)
+import Storyteller.Context.DSL.Compile (Binding(..), branchBinding, bval, charactersInBinding, embedShallow, journalDelta, readConversation, runDefinition)
+import Storyteller.Context.DSL.Context (toBinding)
+import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Writer.Agent (CharSummary(..))
+
+-- | Host-backed library entries -- real Haskell closures, never
+--   expressible as parsed DSL text, so they can never be branch-
+--   overridden (see 'Storyteller.Context.DSL.Value.ContextLibrary''s own
+--   Haddock). Merged into the shared library alongside
+--   'defaultLibrarySource' by 'Storyteller.Core.Context.buildContextLibrary',
+--   resolved the identical way by 'Storyteller.Context.DSL.Compile's
+--   'EIdent'\/'EApp' -- a DSL body referencing @readconversation@ can't
+--   tell it apart from a bare reference to @lore@.
+hostLibrary :: Map Name Binding
+hostLibrary = Map.fromList
+  [ ("readconversation", readConversation)
+  , ("embedshallow",     embedShallow)
+  , ("branch",           branchBinding)
+  , ("charactersin",     charactersInBinding)
+  ]
 
 -- | The one reserved standing-instruction file, if a project has one --
 --   mirrors 'Storyteller.Writer.Agent.WorldContext.isSystemContextPath',
 --   but as a plain glob, not a predicate: a project keeping its style
 --   guide somewhere else just overrides this one definition.
-contextStyle :: Action Value
-contextStyle = [dsl|
+--
+--   Quoted via 'defQuote' rather than 'dsl' -- like every other
+--   library-registered definition below -- so the same parsed
+--   'Definition' backs both this ordinary Haskell value (via
+--   'runDefinition') and 'defaultLibrarySource''s entry, with no second,
+--   runtime-parsed copy of the source text.
+contextStyleDef :: Definition
+contextStyleDef = [defQuote|
 read "style.md" | orifempty ""
 |]
+
+contextStyle :: Action Value
+contextStyle = runDefinition contextStyleDef []
 
 -- | Describes one lore (or "other") entry -- a header naming it, then its
 --   content, still role-undecided (see 'read''s own convention).
 --   Referenced by plain name from 'contextLore''s\/'contextOther''s own
 --   bodies (@loreEntry f@), not threaded in as a parameter: that only
---   works because 'loreEntry' is *also* registered as plain source in
+--   works because 'loreEntryDef' is *also* registered in
 --   'defaultLibrarySource', so the shared library table
 --   ('Storyteller.Context.DSL.Value.ContextLibrary') resolves the name at
---   runtime the same way it would resolve a project's own override. The
---   two copies of this definition's source (this one, GHC-checked and
---   directly callable from Haskell; 'defaultLibrarySource''s,
---   runtime-parsed and library-resolvable) are a real, acknowledged
---   duplication -- unifying them needs surfacing the quasiquoter's own
---   already-parsed 'Storyteller.Context.DSL.AST.Definition' as a value in
---   its own right, not yet done.
-loreEntry :: Action Value -> Action Value
-loreEntry = [dsl|
+--   runtime the same way it would resolve a project's own override.
+loreEntryDef :: Definition
+loreEntryDef = [defQuote|
 f:
   "## %f%"
   read f
 |]
+
+loreEntry :: Action Value -> Action Value
+loreEntry a = runDefinition loreEntryDef [toBinding a]
 
 -- | Hand-authored lore -- a plain positive convention (@lore\/**@), not
 --   "everything except chapters/style/scratch": 'exclude'\/'without'\/
@@ -119,14 +147,17 @@ f:
 --   nothing. @x = loreEntry f@ binds each entry's own recipe once and
 --   reuses the same reference for both the @as@-export and the bare
 --   re-emit, rather than writing @loreEntry f@ twice.
-contextLore :: Action Value
-contextLore = [dsl|
+contextLoreDef :: Definition
+contextLoreDef = [defQuote|
 "## Story background"
 for f in lore/**/*:
   x = loreEntry f
   as f: x
   x
 |]
+
+contextLore :: Action Value
+contextLore = runDefinition contextLoreDef []
 
 -- | Describes one chapter -- a @User@ header immediately followed by its
 --   content re-tagged @Assistant@ (@> read f@, per
@@ -139,12 +170,15 @@ for f in lore/**/*:
 --   own named unit rather than inlined, so a project can override "how
 --   one chapter is described" independently of 'contextChapters' as a
 --   whole).
-chapterEntry :: Action Value -> Action Value
-chapterEntry = [dsl|
+chapterEntryDef :: Definition
+chapterEntryDef = [defQuote|
 f:
   "## Chapter: %f%"
   > read f
 |]
+
+chapterEntry :: Action Value -> Action Value
+chapterEntry a = runDefinition chapterEntryDef [toBinding a]
 
 -- | Chapter prose, in natural reading order (@ch2@ before @ch11@, not
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
@@ -152,8 +186,8 @@ f:
 --   'Storyteller.Context.DSL.Compile.globMatchPat''s own haddock for why
 --   that used to silently undo it). Self-describing and entry-keeping,
 --   same reasoning and same @x = ...; as f: x; x@ shape as 'contextLore'.
-contextChapters :: Action Value
-contextChapters = [dsl|
+contextChaptersDef :: Definition
+contextChaptersDef = [defQuote|
 x =
   for f in chapters/**/*:
     as f: chapterEntry f
@@ -164,6 +198,9 @@ in (x | sortBy):
     as f: y
     y
 |]
+
+contextChapters :: Action Value
+contextChapters = runDefinition contextChaptersDef []
 
 -- | The catch-all: any file that isn't under @lore@\/@chapters@' own
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
@@ -182,8 +219,8 @@ in (x | sortBy):
 --   needs (@contextLore@, @contextChapters@) it resolves itself, through
 --   the shared library, the same way it would honor an override of
 --   either.
-contextOther :: Text -> Action Value
-contextOther = [dsl|
+contextOtherDef :: Definition
+contextOtherDef = [defQuote|
 path:
   "## Other notes"
   in (**/* | exclude(contextLore, contextChapters, "style.md") | exclude("chat/**/*") | exclude(path)):
@@ -192,6 +229,9 @@ path:
       as f: x
       x
 |]
+
+contextOther :: Text -> Action Value
+contextOther p = runDefinition contextOtherDef [toBinding p]
 
 -- | The writer agent's own default background context -- what
 --   'Server.Writer.File.chatWriter' resolves (branch-override-then-this)
@@ -226,8 +266,8 @@ path:
 --   exactly the drift risk this whole module exists to avoid. The
 --   transition from @contextLore@'s own heading into each chapter's own
 --   @"## Chapter: %f%"@ header is enough structure on its own.
-contextWriter :: Text -> Action Value
-contextWriter = [dsl|
+contextWriterDef :: Definition
+contextWriterDef = [defQuote|
 path:
   contextLore
   in (contextChapters | exclude(path)):
@@ -235,36 +275,69 @@ path:
   contextOther path
 |]
 
+contextWriter :: Text -> Action Value
+contextWriter p = runDefinition contextWriterDef [toBinding p]
+
 -- | The "and this is the character" acquaintance-level line -- the
 --   header @sheet.md@ is required to open with (its display name, see
 --   @WRITER.md@), plus whatever paragraph follows it, by convention
 --   rather than an LLM call (see the project chat that designed this,
 --   2026-07-20: "already stored data", not content analysis). Its own
---   named definition (@character.blurb@), not folded straight into
---   'contextCharacter', so a project can override just this one
---   definition (what "acquaintance summary" ought to include)
---   independently of the richer buckets around it.
+--   named definition (@character.blurb@), registered in
+--   'defaultLibrarySource' under both a bare name (what 'contextCharacter'
+--   itself calls) and the dotted @character.blurb@ (what a project
+--   override addresses), so a project can override just this one
+--   definition independently of the richer buckets around it.
+--
+--   This used to be threaded into 'contextCharacter' as a typed
+--   'Binding' parameter instead of referenced by name -- which meant a
+--   project's own @character.blurb@ override, however correctly
+--   committed, was never actually seen by 'contextCharacter''s
+--   composition: the override machinery updated
+--   'Storyteller.Context.DSL.Value.ContextLibrary''s entry for the name
+--   @character.blurb@, but 'contextCharacterDefault' wired in the
+--   compiled-in Haskell closure directly, so nothing ever asked the
+--   library about it.
+--
+--   Registered under *only* the dotted name @character.blurb@ -- not
+--   also a separate bare alias the way @loreEntry@\/@contextLore@ are --
+--   and 'contextCharacter''s own body below references it by that exact
+--   dotted identifier (identifiers may contain interior dots, precisely
+--   for this: see "Storyteller.Context.DSL.Parser"'s own concrete-syntax
+--   notes). One key, not two aliasing the same 'Definition', is what
+--   actually closes the bug: a project's override is committed under the
+--   dotted path-derived name (@contexts/character/blurb.dsl@ ->
+--   @character.blurb@), and a bare alias pointing at the same
+--   'Definition' would only receive an override committed under *that*
+--   separate key -- 'Storyteller.Core.Context.buildContextLibrary'\'s
+--   'Data.Map.Strict.mapWithKey'-based override application checks each
+--   key in 'defaultLibrarySource' independently, so two keys for one
+--   definition do not move together under a single override. (This is a
+--   real, separate gap worth knowing about: @contextWriter@'s own body
+--   still references @contextLore@ by its bare alias rather than
+--   @context.lore@, so an override of @context.lore@ today does *not*
+--   reach @contextWriter@'s composition either -- out of scope for this
+--   fix, but the same shape of bug, sitting right next to it.)
 --
 --   Takes @charname@ and crosses to that branch itself (@in (charname |
 --   branch): ...@), the same as 'contextCharacter''s own @"sheet"@
 --   bucket -- it can't rely on a caller's enclosing @in@ instead, for
 --   the same reason 'Storyteller.Context.DSL.Compile.journalDelta'
---   can't: 'bval' (what a 0-arity 'Binding' parameter is built from)
---   wraps an *already-scoped* 'Action', not one that re-resolves the
---   caller's own ambient Reader scope on every call (see its own
---   haddock) -- there's no dynamic-scope crossing between two
---   separately compiled 'Storyteller.Context.DSL.AST.Definition's, only
---   within one definition's own body. A definition invoked as a
---   cross-definition parameter has to be self-contained about which
---   branch it reads from, exactly like 'journalDelta'.
-characterBlurb :: Binding -> Action Value
-characterBlurb = [dsl|
+--   can't: there's no dynamic-scope crossing between two separately
+--   compiled 'Storyteller.Context.DSL.AST.Definition's, only within one
+--   definition's own body. A definition invoked from another's body has
+--   to be self-contained about which branch it reads from.
+characterBlurbDef :: Definition
+characterBlurbDef = [defQuote|
 charname:
   in (charname | branch):
     n = read "sheet.md" | name
     a = read "sheet.md" | abstract
     "%n%: %a%"
 |]
+
+characterBlurb :: Text -> Action Value
+characterBlurb charname = runDefinition characterBlurbDef [toBinding charname]
 
 -- | A named character's rich context, as five independently reachable
 --   buckets rather than one flattened blob -- every consumer
@@ -278,13 +351,10 @@ charname:
 --   per call site (see the project chat that designed this, 2026-07-20).
 --
 --   * @"sheet"@ -- @sheet.md@ verbatim.
---   * @"blurb"@ -- 'characterBlurb', threaded in as a parameter rather
---     than referenced by name, so an override of just @character.blurb@
---     still reaches every caller of this definition (see the module
---     haddock: no cross-definition name resolution inside the
---     interpreter itself). Called with @charname@ explicitly (see
---     'characterBlurb''s own haddock for why it has to cross branches
---     itself rather than inheriting this definition's own @in@).
+--   * @"blurb"@ -- @character.blurb charname@, referenced by its own
+--     dotted name directly (see 'characterBlurb''s own haddock for why
+--     this, not a typed parameter or a separate bare alias, is what makes
+--     a project's override actually reach every caller).
 --   * @"full"@ -- every other file on the character's branch.
 --   * @"journal"@ -- 'Storyteller.Context.DSL.Compile.journalDelta',
 --     also threaded in as a parameter (a host-supplied 'Binding', not
@@ -309,11 +379,11 @@ charname:
 --   access without narrowing further) still gets a reasonable
 --   "and this is the character" line, per the project chat's own framing
 --   ("read \"blurb\" is probably a good default").
-contextCharacter :: Text -> Binding -> Binding -> Action Value
+contextCharacter :: Text -> Binding -> Action Value
 contextCharacter = [dsl|
-charname: blurb: journal:
+charname: journal:
   as "sheet": in (charname | branch): read "sheet.md" | orifempty ""
-  as "blurb": blurb charname
+  as "blurb": character.blurb charname
   as "full":
     in (charname | branch):
       in (**/* | exclude("sheet.md", "journal.md")):
@@ -321,21 +391,25 @@ charname: blurb: journal:
           as f: read f
   as "journal": journal charname
   as "journalFull": in (charname | branch): read "journal.md" | orifempty ""
-  blurb charname
+  character.blurb charname
 |]
 
 -- | 'contextCharacter', fully applied to the compiled-in
---   'characterBlurb' and 'Storyteller.Context.DSL.Compile.journalDelta'
---   defaults -- the actual 1-arity function (just @charname@) registered
---   as @context.character@, matching the arity a wire-level "which
---   character" call site actually has to supply. The curation numbers
---   here are 'Server.Writer.File.activeCharacterContext''s own prior
---   @journalLookback@\/@journalMaxOut@\/@journalPadding@ constants,
---   moved to this definition's own default rather than duplicated at
---   every future call site.
+--   'Storyteller.Context.DSL.Compile.journalDelta' default -- the actual
+--   1-arity function (just @charname@) registered as @context.character@,
+--   matching the arity a wire-level "which character" call site actually
+--   has to supply. @journalDelta@'s curation numbers are
+--   'Server.Writer.File.activeCharacterContext''s own prior
+--   @journalLookback@\/@journalMaxOut@\/@journalPadding@ constants, moved
+--   to this definition's own default rather than duplicated at every
+--   future call site -- still Haskell-level parameter passing,
+--   deliberately, since different callers legitimately wanting different
+--   curation tuning is genuine per-call parametricity, not a shared
+--   default a project should replace by name (contrast 'characterBlurb',
+--   which is exactly that, and is referenced by name instead).
 contextCharacterDefault :: Text -> Action Value
 contextCharacterDefault charname =
-  contextCharacter charname (toBinding1 characterBlurb) (journalDelta 30 10 2)
+  contextCharacter charname (journalDelta 30 10 2)
 
 -- | Reshapes an already-resolved @context.character@-shaped 'Value' into
 --   a 'CharSummary' -- the shared piece every consumer wanting that exact
@@ -387,26 +461,30 @@ aliases:
       as f: read f
 |]
 
--- | Every default definition this application ships, keyed by the dotted
---   name a client\/project override addresses -- 'Binding' already
---   carries its own arity (see its own haddock: "values are just 0-arity
---   functions, otherwise no different"), so a uniform @[(Name, Binding)]@
---   is exactly the right shape regardless. @context.writer@ names
---   'contextWriter' (1-arity, ready to run once given @path@) -- the
---   replacement for what used to be a bundled @context.main@ (@lore@\/
---   @chapters@\/@other@\/@style@ as one caller-agnostic record); see
---   'contextWriter''s own Haddock for why there's no such single "main"
---   context, only this agent's own default.
+-- | The definitions that genuinely can't live as pure DSL source in
+--   'defaultLibrarySource', keyed by the dotted name a client\/project
+--   override addresses -- 'Binding' already carries its own arity (see
+--   its own haddock: "values are just 0-arity functions, otherwise no
+--   different"), so a uniform @[(Name, Binding)]@ is exactly the right
+--   shape regardless. @context.mentionFilter@ is the one remaining entry
+--   that needs a real Haskell-supplied fallback
+--   ('Storyteller.Core.Context.resolveContextQuery''s own @def@
+--   parameter): it's resolved directly via
+--   'Storyteller.Core.Context.getContextDefinition' by its one caller
+--   ("Server.Writer.Lore"), which supplies a live per-call @aliases@
+--   argument no static registration could hold. @context.character@ used
+--   to belong here too (it closed over
+--   'Storyteller.Context.DSL.Compile.journalDelta', a host function), but
+--   'contextCharacterDefault' now has the plain @Text -> Action Value@
+--   shape 'Storyteller.Core.Context.resolveContext1' already expects, the
+--   same as @context.writer@\/'contextWriter' -- see
+--   'Server.Writer.File.activeCharacterContext'. Every other definition
+--   this application ships lives in 'defaultLibrarySource', resolved
+--   with no Haskell-side fallback at all (see
+--   'Storyteller.Core.Context.resolveContext0'\/'resolveContext1').
 defaultLibrary :: [(Name, Binding)]
 defaultLibrary =
-  [ ("context.style",         bval contextStyle)
-  , ("context.lore",          bval contextLore)
-  , ("context.chapters",      bval contextChapters)
-  , ("context.other",         toBindingFn1 contextOther)
-  , ("context.writer",        toBindingFn1 contextWriter)
-  , ("character.blurb",       toBinding1 characterBlurb)
-  , ("context.character",     toBindingFn1 contextCharacterDefault)
-  , ("context.mentionFilter", toBinding1 contextMentionFilter)
+  [ ("context.mentionFilter", toBinding1 contextMentionFilter)
   ]
 
 -- | Re-curries a QQ-spliced 1-arity definition (@'Binding' ->
@@ -430,66 +508,40 @@ toBinding1 f = Binding 1 go
 identity :: Text -> Action Value
 identity = [dsl| a: a |]
 
--- | Plain DSL source for every library-internal definition meant to be
---   cross-referenceable by name from *another* definition's own body --
---   what 'Storyteller.Core.Context.buildContextLibrary' parses once (then
+-- | Every pure-DSL definition this application ships, as already-parsed
+--   'Definition's -- what 'Storyteller.Core.Context.buildContextLibrary'
 --   folds a project's own 'Storyteller.Core.Context.contextsBranchName'
---   overrides on top) into the shared table
---   'Storyteller.Context.DSL.Value.ContextLibrary' resolves cross-references
---   against. Distinct from 'defaultLibrary': that one holds *compiled*
---   'Binding's for the wire-\/branch-override boundary
---   ('Storyteller.Core.Context.resolveContextQuery'), keyed by the dotted
---   name a client\/project addresses; this one holds *source text*, keyed
---   by whatever bare identifier a sibling definition's own body actually
---   writes (@loreEntry@, not @context.lore.entry@ -- there's no dotted
---   namespacing for a name that's never addressed from outside the DSL).
---   Every entry here is a literal transcription of the same-named
---   @[dsl| ... |]@-quoted definition above -- a real, acknowledged
---   duplication (see 'loreEntry''s own Haddock on why), not yet unified.
-defaultLibrarySource :: Map Name Text
+--   overrides on top of, once, into the shared table
+--   'Storyteller.Context.DSL.Value.ContextLibrary' resolves both
+--   cross-definition reference *and* 'Storyteller.Core.Context.resolveContext0'\/
+--   'resolveContext1''s own external lookups against -- one map serves
+--   both, since they're really the same question ("what does this name
+--   mean right now"), just asked from inside a definition's own body or
+--   from a plain @Sem@-level caller.
+--
+--   Two keys per definition, both pointing at the identical parsed value
+--   (no second copy of the source, unlike this map's own predecessor --
+--   see 'loreEntryDef''s Haddock on why a bare 'Definition' rather than
+--   text is what makes that possible): a bare name (@loreEntry@,
+--   @contextLore@, ...) for what a sibling definition's own body
+--   actually writes when it references this one, and a dotted name
+--   (@context.lore@, ...) for what a client\/project override addresses
+--   and what 'resolveContext0'\/'resolveContext1' callers pass. Every
+--   definition that *can't* live here -- needs a real Haskell-supplied
+--   fallback -- is in 'defaultLibrary' instead; see that list's own
+--   Haddock for exactly which two and why.
+defaultLibrarySource :: Map Name Definition
 defaultLibrarySource = Map.fromList
-  [ ( "loreEntry"
-    , "f:\n\
-      \  \"## %f%\"\n\
-      \  read f\n"
-    )
-  , ( "contextLore"
-    , "\"## Story background\"\n\
-      \for f in lore/**/*:\n\
-      \  x = loreEntry f\n\
-      \  as f: x\n\
-      \  x\n"
-    )
-  , ( "chapterEntry"
-    , "f:\n\
-      \  \"## Chapter: %f%\"\n\
-      \  > read f\n"
-    )
-  , ( "contextChapters"
-    , "x =\n\
-      \  for f in chapters/**/*:\n\
-      \    as f: chapterEntry f\n\
-      \\"## Chapters written so far\"\n\
-      \in (x | sortBy):\n\
-      \  for f in **/*:\n\
-      \    y = read f\n\
-      \    as f: y\n\
-      \    y\n"
-    )
-  , ( "contextOther"
-    , "path:\n\
-      \  \"## Other notes\"\n\
-      \  in (**/* | exclude(contextLore, contextChapters, \"style.md\") | exclude(\"chat/**/*\") | exclude(path)):\n\
-      \    for f in **/*:\n\
-      \      x = loreEntry f\n\
-      \      as f: x\n\
-      \      x\n"
-    )
-  , ( "contextWriter"
-    , "path:\n\
-      \  contextLore\n\
-      \  in (contextChapters | exclude(path)):\n\
-      \    for f in **/*: read f\n\
-      \  contextOther path\n"
-    )
+  [ ("loreEntry",       loreEntryDef)
+  , ("contextLore",     contextLoreDef)
+  , ("context.lore",    contextLoreDef)
+  , ("chapterEntry",    chapterEntryDef)
+  , ("contextChapters", contextChaptersDef)
+  , ("context.chapters", contextChaptersDef)
+  , ("contextOther",    contextOtherDef)
+  , ("context.other",   contextOtherDef)
+  , ("contextWriter",   contextWriterDef)
+  , ("context.writer",  contextWriterDef)
+  , ("context.style",   contextStyleDef)
+  , ("character.blurb", characterBlurbDef)
   ]

@@ -36,7 +36,7 @@ import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..)
 import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | Phantom tag for opening either character branch this scenario uses, one
@@ -108,7 +108,7 @@ spec runner = describe "an edited journal entry creating dramatic irony (real LL
         runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
 
       let chars = [(CharLabel "Rosa", rosaSummary), (CharLabel "Sam", samSummary)]
-      Prose text <- writeAgent [] [] chars [] [] [] instruction
+      Prose text <- writeAgent emptyWorldContext emptyStyleContext chars emptyPinnedContext [] instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

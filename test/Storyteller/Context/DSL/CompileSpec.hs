@@ -50,6 +50,8 @@ import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
+import Storyteller.Core.Context (buildContextLibrary)
+
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding, bval, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
@@ -83,7 +85,7 @@ seedBranch name files = do
 runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = resolveBranch bname >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act (ContextLibrary Map.empty))
+  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
 
 -- | A plain-text leaf, ready to apply to a @['dsl'| ... |]@-spliced
 --   function's own parameters -- 'bval' baked in, so passing a leaf
@@ -572,7 +574,7 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
       )
   where
     go = do
-      v <- CtxLibrary.contextCharacter "jenny" (CtxLibrary.toBinding1 CtxLibrary.characterBlurb) (journalDelta 30 10 0)
+      v <- CtxLibrary.contextCharacter "jenny" (journalDelta 30 10 0)
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

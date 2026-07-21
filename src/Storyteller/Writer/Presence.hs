@@ -12,6 +12,7 @@
 -- 'Storyteller.Common.Annotation' has to 'Storyteller.Common.Types'.
 module Storyteller.Writer.Presence
   ( recordPresence
+  , activeCharacters
   , activeCharactersFor
   , presentOn
   , presentAt
