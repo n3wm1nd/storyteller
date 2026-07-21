@@ -155,7 +155,7 @@ roleplayAgent sceneContext characters prompt = do
 
 -- | Read @character@'s own full context via the Context DSL --
 --   @context.character@ (a branch override on the @contexts@ branch, then
---   'Storyteller.Context.DSL.Library.contextCharacterDefault' as fallback
+--   'Storyteller.Context.DSL.Library.contextCharacter' as fallback
 --   -- see 'Storyteller.Core.Context.resolveContextQuery'), its
 --   @"journalFull"@ bucket -- everything, uncurated, same as this always
 --   wanted -- then open their branch just for 'characterIntentAgent''s own
@@ -177,7 +177,7 @@ askCharacter
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
-  charVal    <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacterDefault ident
+  charVal    <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacter ident
   ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
   answer <- runBranchAndFS @RoleplayChar (BranchName branchName) $
     characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question

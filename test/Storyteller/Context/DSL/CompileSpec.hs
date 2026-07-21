@@ -117,6 +117,7 @@ spec = do
   journalDeltaSpec
   contextCharacterSpec
   forOverBindingResultSpec
+  charactersinIgnoresBranchRedirectionSpec
   multiMatchReadSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
@@ -294,6 +295,40 @@ for c in (charactersin "scene.md"):
 |]
     go = do
       v <- forCharsDsl
+      pure (map fst (valueEntries v))
+
+-- | @charactersin@ reads presence-tick history off the *ambient*
+--   'Storage.Core.StoreT' position (@Tick.fileTicksOf@, keyed by
+--   @headHash@), not the Reader-scope 'Value' @in@\/@branch@ redirect --
+--   the same "@in@\/@branch@ only ever reposition what @read@\/@for@ glob
+--   against, never 'Core.StoreT' itself" caveat
+--   'Storyteller.Context.DSL.Compile.journalDelta' already has (see its
+--   own haddock). Proven here, not just asserted: @character\/aria@'s own
+--   branch never gets a @scene.md@ presence tick at all in this fixture
+--   (only @sheet.md@) -- so if @charactersin@ mistakenly read off
+--   whatever branch the surrounding @in (aria | branch): ...@ redirected
+--   to, this would come back empty, not @["aria"]@.
+charactersinIgnoresBranchRedirectionSpec :: Spec
+charactersinIgnoresBranchRedirectionSpec =
+  describe "charactersin ignores in/branch redirection (reads the ambient branch's own presence ticks)" $
+    it "still returns the calling branch's own active characters, even from inside in (charname | branch): ..." $
+      run (testStack $ do
+        seedBranch "main" [("scene.md", "")]
+        _ <- createBranch (BranchName "character/aria")
+        runBranchOpGit @Main (BranchName "main") $
+          void (recordPresence @Main "scene.md" (Character (BranchName "character/aria")) Enter)
+        runDslOn (BranchName "main") go)
+      `shouldBe` Right ["aria"]
+  where
+    redirectedDsl :: Binding -> Action Value
+    redirectedDsl = [dsl|
+charname:
+  in (charname | branch):
+    for c in (charactersin "scene.md"):
+      as c: c
+|]
+    go = do
+      v <- redirectedDsl (textArg "aria")
       pure (map fst (valueEntries v))
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
@@ -620,7 +655,7 @@ journalDeltaSpec = describe "journalDelta (host-supplied Binding wrapping recent
       )
 
 -- | End-to-end: 'CtxLibrary.contextCharacter', fully applied the same
---   way 'CtxLibrary.contextCharacterDefault' composes it in production,
+--   way 'CtxLibrary.contextCharacter' composes it in production,
 --   exercised against a real character branch -- checks all five
 --   buckets plus the "default is the blurb" behaviour the project chat
 --   that designed this settled on. @"journalFull"@ vs. @"journal"@ is the
@@ -641,13 +676,20 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
       , exampleSheet
       , "Jenny: Jenny is a girl who likes to read."
       , ["extra.md"]
+      -- "journal" now goes through 'CtxLibrary.contextCharacter''s own
+      -- fixed @characterJournal@ config (padding 2, not this test's old
+      -- ad-hoc 0 -- see 'Storyteller.Context.DSL.Library.hostLibrary''s
+      -- own haddock on why the config moved there), so @s1@'s otherwise-
+      -- dropped entry is padded back in as a neighbour of the genuinely-
+      -- diverged @s2@ -- 'journalDeltaSpec' below is what still exercises
+      -- the padding=0 case directly, against 'journalDelta' itself.
       , "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
-        <> "s2 content, but Jenny remembers it differently"
+        <> "s1 content\n\n---\n\ns2 content, but Jenny remembers it differently"
       , "s1 contents2 content, but Jenny remembers it differently"
       )
   where
     go = do
-      v <- CtxLibrary.contextCharacter "jenny" (journalDelta 30 10 0)
+      v <- CtxLibrary.contextCharacter "jenny"
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

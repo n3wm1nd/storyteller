@@ -237,7 +237,7 @@ interpretContextStorageFSSpec = describe "interpretContextStorageFS" $ do
 
   -- | Regression for the real gap the project chat found: every real
   --   character-context caller used to call
-  --   'Storyteller.Context.DSL.Library.contextCharacterDefault' directly,
+  --   'Storyteller.Context.DSL.Library.contextCharacter' directly,
   --   never through 'getContextDefinition', so a project committing an
   --   override for @context.character@ (a 1-arity key, unlike every other
   --   registered definition tested above) was silently ignored even

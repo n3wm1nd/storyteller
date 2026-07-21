@@ -20,6 +20,7 @@
 --   resolves them at runtime, not just at the type level.
 module Storyteller.Context.DSL.LibrarySpec (spec) where
 
+import Control.Monad (void)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -42,10 +43,12 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (bval, journalDelta)
+import Storyteller.Context.DSL.Compile (bval)
 import Storyteller.Context.DSL.Library
   (contextCharacter, contextLore, contextMentionFilter, contextWriter)
 import Storyteller.Context.DSL.Value
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
 seedBranch name files = do
@@ -85,8 +88,8 @@ spec = do
 
 -- | The regression test for the bug that started this whole redesign:
 --   'contextCharacter' used to take @blurb@ as a typed 'Binding'
---   parameter, wired in Haskell by 'Storyteller.Context.DSL.Library.contextCharacterDefault'
---   -- so a project's own override of @character.blurb@, however
+--   parameter, wired in Haskell by a separate @contextCharacterDefault@
+--   wrapper -- so a project's own override of @character.blurb@, however
 --   correctly committed to the Contexts branch, was silently never seen
 --   by 'contextCharacter''s composition, because nothing about that
 --   composition ever asked the library about the name @character.blurb@
@@ -110,7 +113,7 @@ contextCharacterBlurbOverrideSpec =
     overrides = Map.fromList
       [ ("character.blurb", "charname:\n  \"this is a project-committed override, not the default\"") ]
     go = do
-      v <- contextCharacter "aria" (journalDelta 30 10 2)
+      v <- contextCharacter "aria"
       Just blurbAction <- pure (lookup "blurb" (valueEntries v))
       messagesText <$> (valueDefault =<< blurbAction)
 
@@ -153,8 +156,43 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       , FileRead "lore/notes.md" "a hand-authored note"
       , User "## Other notes"
       ]
+
+  -- | The case this section's own module exists to prove: an active
+  --   character reaches 'contextWriter''s own result as a named entry
+  --   (@as c: context.character c@ in 'Storyteller.Context.DSL.Library
+  --   .contextWriterDef'), without changing the flat default stream
+  --   above at all -- structural, additive access, not a fold. Presence
+  --   is keyed off the same @path@ 'contextWriter' itself takes, exactly
+  --   like 'Storyteller.Context.DSL.CompileSpec.forOverBindingResultSpec'
+  --   proved @charactersin@ resolves it.
+  it "exposes each active character as a named entry, carrying their own context.character bucket, alongside the unchanged flat default" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("lore/notes.md", "a hand-authored note")
+        , ("chapters/ch2.md", "chapter two prose")
+        ]
+      _ <- createBranch (BranchName "character/aria")
+      runBranchOpGit @Main (BranchName "character/aria")
+        (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
+      runBranchOpGit @Main (BranchName "main") $
+        void (recordPresence @Main "chapters/ch2.md" (Character (BranchName "character/aria")) Enter)
+      runDslOn (BranchName "main") goWithCharacter)
+    `shouldBe` Right
+      ( [ User "## Story background"
+        , User "## lore/notes.md"
+        , FileRead "lore/notes.md" "a hand-authored note"
+        , User "## Other notes"
+        ]
+      , ["Aria: A wandering rogue."]
+      )
   where
     go path = valueDefault =<< contextWriter path
+    goWithCharacter = do
+      v         <- contextWriter "chapters/ch2.md"
+      def       <- valueDefault v
+      Just aria <- pure (lookup "aria" (valueEntries v))
+      ariaTexts <- messagesText <$> (valueDefault =<< aria)
+      pure (def, [ariaTexts])
 
 -- | 'contextLore'\/'contextOther' each on their own -- self-describing
 --   *and* keeping per-file entries, both at once (see 'contextLore''s own

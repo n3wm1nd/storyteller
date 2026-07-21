@@ -38,8 +38,7 @@
 --   'characterBlurb''s own haddock for the case that used to be
 --   parameter-passed for no good reason, and the bug that came from it).
 module Storyteller.Context.DSL.Library
-  ( defaultLibrary
-  , contextStyle
+  ( contextStyle
   , loreEntry
   , contextLore
   , chapterEntry
@@ -47,7 +46,6 @@ module Storyteller.Context.DSL.Library
   , contextOther
   , contextWriter
   , contextCharacter
-  , contextCharacterDefault
   , characterBlurb
   , characterSummaryOf
   , contextMentionFilter
@@ -83,6 +81,16 @@ hostLibrary = Map.fromList
   , ("embedshallow",     embedShallow)
   , ("branch",           branchBinding)
   , ("charactersin",     charactersInBinding)
+  -- | The ambient character-context journal curation, pre-configured --
+  --   'Storyteller.Context.DSL.Compile.journalDelta''s own Haskell-level
+  --   @lookback@\/@maxOut@\/@padding@ tuning is genuine per-caller
+  --   parametricity (see its own haddock), so it stays a host 'Binding',
+  --   never expressible as parsed DSL text -- but the *numbers themselves*
+  --   are this application's one shared default (formerly
+  --   'Server.Writer.File.activeCharacterContext''s own constants), not
+  --   something 'contextCharacterDef' should have to take as a parameter
+  --   just to reference it by name.
+  , ("characterJournal", journalDelta 30 10 2)
   ]
 
 -- | The one reserved standing-instruction file, if a project has one --
@@ -249,20 +257,41 @@ contextOther p = runDefinition contextOtherDef [toBinding p]
 --   'chatChapterRegen'\/'chatSplitOutline' and the CLI tools always use
 --   (they never take a per-request override). One flat, ordered,
 --   self-describing stream -- lore, then whatever's already been written
---   (minus the file about to be written), then everything else -- not a
---   record of separately-picked buckets: forcing this @Value@'s own
---   default *is* "the context for this call," honestly, whether this
---   compiled-in body answered it or a project's\/client's own override
---   did (see the project chat that settled this: a context a caller
---   submits has to mean "whatever this writes is what the LLM sees," not
---   something this module quietly reinterprets by picking named entries
---   apart).
+--   (minus the file about to be written), then everything else, then
+--   who's actually here -- not a record of separately-picked buckets:
+--   forcing this @Value@'s own default *is* "the context for this call,"
+--   honestly, whether this compiled-in body answered it or a project's\/
+--   client's own override did (see the project chat that settled this: a
+--   context a caller submits has to mean "whatever this writes is what
+--   the LLM sees," not something this module quietly reinterprets by
+--   picking named entries apart).
 --
 --   Style is deliberately absent -- it was never "context" (facts about
 --   the story) at all, only an instruction about voice, so it stays its
 --   own separate lookup (@context.style@) wherever an agent wants it,
 --   completely independent of whether this definition or a client's own
 --   program produced the stream above.
+--
+--   The trailing @for c in (charactersin path): as c: context.character
+--   c@ is what used to be 'Server.Writer.File.activeCharacterContext' -- a
+--   Haskell-side loop splicing @[(CharLabel, CharSummary)]@ into
+--   'writeAgent''s own parameter list after this definition had already
+--   been resolved. That was exactly the shape this whole redesign was
+--   for: context the DSL couldn't see or override, folded in one layer up
+--   instead of being *part of* "the context for this call." @as@, not a
+--   bare re-emit -- so each active character's whole 'context.character'
+--   'Value' (@"sheet"@\/@"blurb"@\/@"full"@\/@"journal"@\/@"journalFull"@,
+--   see its own haddock) becomes reachable by name off @context.writer@'s
+--   own result, without folding anything into the flat default stream
+--   ('SFor's own entries never contribute to the enclosing block's
+--   default, only its own re-emitted messages would -- see
+--   'runStmts''s @SFor@ case). Deliberately additive rather than replacing
+--   'activeCharacterContext' outright: 'Server.Writer.File.chatWriter'
+--   still builds @[(CharLabel, CharSummary)]@ itself for now, so this
+--   structural bucket and that Haskell-side one currently describe the
+--   same characters twice, by two different paths, until a later pass
+--   retires the Haskell one in favor of reading these named entries
+--   instead.
 --
 --   @path@ is this definition's only real parameter, for the same reason
 --   it's 'contextOther''s: everything else is a fact about the branch,
@@ -282,6 +311,8 @@ path:
   in (contextChapters | exclude(path)):
     for f in **/*: read f
   contextOther path
+  for c in (charactersin path):
+    as c: context.character c
 |]
 
 contextWriter :: Text -> Action Value
@@ -388,9 +419,23 @@ characterBlurb charname = runDefinition characterBlurbDef [toBinding charname]
 --   access without narrowing further) still gets a reasonable
 --   "and this is the character" line, per the project chat's own framing
 --   ("read \"blurb\" is probably a good default").
-contextCharacter :: Text -> Binding -> Action Value
-contextCharacter = [dsl|
-charname: journal:
+--
+--   Registered under the dotted name @context.character@ in
+--   'defaultLibrarySource' (like @context.writer@\/@context.lore@, not
+--   like the old, Haskell-parameter-threaded shape) -- @journal@ used to
+--   be a typed 'Binding' parameter (baked in by a separate
+--   @contextCharacterDefault@ wrapper), the exact same shape that made
+--   @character.blurb@'s own override silently invisible to this
+--   definition's composition. It's now @characterJournal@, a bare-name
+--   reference to the pre-configured host binding in 'hostLibrary' -- the
+--   same fix @character.blurb@ already got, one level up. There is no
+--   separate @contextCharacterDefault@ any more: this *is* the
+--   1-arity, @Text -> Action Value@ shape a wire-level "which character"
+--   call site wants, resolved through 'Storyteller.Core.Context.resolveContext1'
+--   exactly like @context.writer@ is.
+contextCharacterDef :: Definition
+contextCharacterDef = [defQuote|
+charname:
   as "sheet": in (charname | branch): read "sheet.md" | orifempty ""
   as "blurb": character.blurb charname
   as "full":
@@ -398,27 +443,13 @@ charname: journal:
       in (**/* | exclude("sheet.md", "journal.md")):
         for f in **/*:
           as f: read f
-  as "journal": journal charname
+  as "journal": characterJournal charname
   as "journalFull": in (charname | branch): read "journal.md" | orifempty ""
   character.blurb charname
 |]
 
--- | 'contextCharacter', fully applied to the compiled-in
---   'Storyteller.Context.DSL.Compile.journalDelta' default -- the actual
---   1-arity function (just @charname@) registered as @context.character@,
---   matching the arity a wire-level "which character" call site actually
---   has to supply. @journalDelta@'s curation numbers are
---   'Server.Writer.File.activeCharacterContext''s own prior
---   @journalLookback@\/@journalMaxOut@\/@journalPadding@ constants, moved
---   to this definition's own default rather than duplicated at every
---   future call site -- still Haskell-level parameter passing,
---   deliberately, since different callers legitimately wanting different
---   curation tuning is genuine per-call parametricity, not a shared
---   default a project should replace by name (contrast 'characterBlurb',
---   which is exactly that, and is referenced by name instead).
-contextCharacterDefault :: Text -> Action Value
-contextCharacterDefault charname =
-  contextCharacter charname (journalDelta 30 10 2)
+contextCharacter :: Text -> Action Value
+contextCharacter charname = runDefinition contextCharacterDef [toBinding charname]
 
 -- | Reshapes an already-resolved @context.character@-shaped 'Value' into
 --   a 'CharSummary' -- the shared piece every consumer wanting that exact
@@ -434,7 +465,7 @@ contextCharacterDefault charname =
 --
 --   Deliberately takes the resolved 'Value', not a @charname@ to resolve
 --   itself -- resolving @context.character@ (branch override, then this
---   module's own 'contextCharacterDefault' as fallback) is the caller's
+--   module's own 'contextCharacter' as fallback) is the caller's
 --   job, via 'Storyteller.Core.Context.resolveContextQuery'\/
 --   'Storyteller.Core.Context.runContextBinding1'. This function used to
 --   call 'contextCharacterDefault' directly, which meant a project
@@ -470,38 +501,20 @@ aliases:
       as f: read f
 |]
 
--- | The definitions that genuinely can't live as pure DSL source in
---   'defaultLibrarySource', keyed by the dotted name a client\/project
---   override addresses -- 'Binding' already carries its own arity (see
---   its own haddock: "values are just 0-arity functions, otherwise no
---   different"), so a uniform @[(Name, Binding)]@ is exactly the right
---   shape regardless. @context.mentionFilter@ is the one remaining entry
---   that needs a real Haskell-supplied fallback
---   ('Storyteller.Core.Context.resolveContextQuery''s own @def@
---   parameter): it's resolved directly via
---   'Storyteller.Core.Context.getContextDefinition' by its one caller
---   ("Server.Writer.Lore"), which supplies a live per-call @aliases@
---   argument no static registration could hold. @context.character@ used
---   to belong here too (it closed over
---   'Storyteller.Context.DSL.Compile.journalDelta', a host function), but
---   'contextCharacterDefault' now has the plain @Text -> Action Value@
---   shape 'Storyteller.Core.Context.resolveContext1' already expects, the
---   same as @context.writer@\/'contextWriter' -- see
---   'Server.Writer.File.activeCharacterContext'. Every other definition
---   this application ships lives in 'defaultLibrarySource', resolved
---   with no Haskell-side fallback at all (see
---   'Storyteller.Core.Context.resolveContext0'\/'resolveContext1').
-defaultLibrary :: [(Name, Binding)]
-defaultLibrary =
-  [ ("context.mentionFilter", toBinding1 contextMentionFilter)
-  ]
-
 -- | Re-curries a QQ-spliced 1-arity definition (@'Binding' ->
 --   'Action' 'Value'@, per "Storyteller.Context.DSL.QQ") back into the
 --   'Binding' shape 'Storyteller.Context.DSL.Compile.EApp' actually calls
 --   -- the inverse of what applying a 'Binding' to a QQ-spliced function
---   normally does, needed here only because 'defaultLibrary' wants one
---   uniform list rather than a fixed-arity field per entry.
+--   normally does. @context.mentionFilter@ is the one remaining caller
+--   ("Server.Writer.Lore"'s own inline default), resolved directly via
+--   'Storyteller.Core.Context.getContextDefinition' rather than through
+--   'defaultLibrarySource', since it needs a live per-call @aliases@
+--   argument no static registration could hold. Every other definition
+--   this application ships lives in 'defaultLibrarySource' now, including
+--   @context.character@ (it used to need a similar Haskell-side fallback,
+--   closing over 'Storyteller.Context.DSL.Compile.journalDelta', but that
+--   moved to a pre-configured 'hostLibrary' entry instead -- see
+--   'contextCharacterDef''s own haddock).
 toBinding1 :: (Binding -> Action Value) -> Binding
 toBinding1 f = Binding 1 go
   where
@@ -553,4 +566,5 @@ defaultLibrarySource = Map.fromList
   , ("context.writer",  contextWriterDef)
   , ("context.style",   contextStyleDef)
   , ("character.blurb", characterBlurbDef)
+  , ("context.character", contextCharacterDef)
   ]

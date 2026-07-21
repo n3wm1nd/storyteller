@@ -107,7 +107,7 @@ data ActiveChar
 --   an agent sees.
 --
 --   Resolves @context.character@ (a branch override on the @contexts@
---   branch, then 'Storyteller.Context.DSL.Library.contextCharacterDefault'
+--   branch, then 'Storyteller.Context.DSL.Library.contextCharacter'
 --   as fallback -- see 'Storyteller.Core.Context.resolveContextQuery')
 --   per active character, then reshapes it via
 --   'Storyteller.Context.DSL.Library.characterSummaryOf' (curated
@@ -134,7 +134,7 @@ activeCharacterContext path = do
   where
     summarize (Character (BranchName name)) = do
       let ident = branchDisplayName name
-      charVal <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacterDefault ident
+      charVal <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacter ident
       summary <- runContextValue @Main (CtxLibrary.characterSummaryOf "journal" charVal)
       pure (CharLabel ident, summary)
 
@@ -154,7 +154,7 @@ activeCharacterContext path = do
 --   'Storyteller.Context.DSL.Library.contextWriter''s own Haddock) and is
 --   never affected by @contextProgram@. Character summaries run through
 --   the DSL too ('activeCharacterContext', backed by
---   'Storyteller.Context.DSL.Library.contextCharacterDefault'); only
+--   'Storyteller.Context.DSL.Library.contextCharacter'); only
 --   pinned/short-term context is still gathered outside it (no DSL
 --   equivalent of "whatever the client explicitly pinned this turn" is
 --   needed -- it's already just data, not something to assemble). Handed
@@ -308,7 +308,7 @@ roleplayWriter path prompt = do
       -- the same override-aware way 'activeCharacterContext' does.
     reflectFor narrative sceneRef character@(Character (BranchName name)) = do
       let ident = branchDisplayName name
-      charVal    <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacterDefault ident
+      charVal    <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacter ident
       ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
       runBranchAndFS @ActiveChar (BranchName name) $ do
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative

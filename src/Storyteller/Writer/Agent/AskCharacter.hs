@@ -38,7 +38,7 @@ import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 --   'Storyteller.Writer.Agent.Continuation.proseAgent' otherwise: no
 --   world-lore lookup (deferred -- see the design conversation). Resolves
 --   @context.character@ (a branch override on the @contexts@ branch, then
---   'Storyteller.Context.DSL.Library.contextCharacterDefault' as fallback
+--   'Storyteller.Context.DSL.Library.contextCharacter' as fallback
 --   -- see 'Storyteller.Core.Context.resolveContextQuery') and reads its
 --   @"journalFull"@ bucket -- everything, uncurated, same as this agent
 --   always wanted -- which crosses to @charname@'s own branch itself --
@@ -50,7 +50,7 @@ askCharacterAgent
   .  (LLMs r, Members '[BranchOp branch, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
-  charVal <- resolveContext1 @branch "context.character" CtxLibrary.contextCharacterDefault charname
+  charVal <- resolveContext1 @branch "context.character" CtxLibrary.contextCharacter charname
   summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journalFull" charVal)
   let blocks = flattenCharSummary summary
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig
