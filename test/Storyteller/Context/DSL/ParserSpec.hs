@@ -130,8 +130,13 @@ shapeSpec = describe "AST shape" $ do
     parseDefinition "<test>" "\"**/*\"\nfor f in **/*:\n  f\n"
       `shouldBe` Right (Definition []
         [ Located (Pos 1 1) (SExpr (EString Quoted [Lit "**/*"]))
-        , Located (Pos 2 1) (SFor "f" (PathLit Bare [Lit "**/*"]) [Located (Pos 3 3) (SExpr (EIdent "f"))])
+        , Located (Pos 2 1) (SFor "f" (EString Bare [Lit "**/*"]) [Located (Pos 3 3) (SExpr (EIdent "f"))])
         ])
+
+  it "accepts any expression as a for-loop source, not just a literal glob -- a filtered call, here" $
+    parseDefinition "<test>" "for f in (a | b):\n  f\n"
+      `shouldBe` Right (Definition []
+        [ Located (Pos 1 1) (SFor "f" (EFilter (EIdent "a") "b" []) [Located (Pos 2 3) (SExpr (EIdent "f"))]) ])
 
   it "splits %name% interpolation out of a bare path" $
     parseDefinition "<test>" "read presence/%chapterPath%/*.md\n"
@@ -164,5 +169,3 @@ errorSpec = describe "parse errors" $ do
     \read foo\n"
       `shouldFailAt` (2, 1)
 
-  it "rejects a for-loop source that isn't a literal glob" $
-    "for f in (a | b):\n  f\n" `shouldFailAt` (1, 10)

@@ -234,8 +234,9 @@ runStmts env0 scope0 = go env0 scope0 [] []
       newScope <- evalExpr env scope e
       (m, es) <- runStmts env newScope body
       go env scope (m : msgs) (unionEntries es entries) rest
-    go env scope msgs entries (Located pos (SFor var pathLit body) : rest) = do
-      matches <- globMatch env scope pathLit
+    go env scope msgs entries (Located pos (SFor var srcExpr body) : rest) = do
+      srcVal <- evalExpr env scope srcExpr
+      let matches = map fst (valueEntries srcVal)
       (m, es) <- foldM (runOneIteration pos var body) ([], entries) matches
       go env scope (m : msgs) es rest
       where
@@ -446,10 +447,6 @@ globMatchPat scope pat = do
   allPaths <- listPaths scope
   let compiled = Glob.compile (T.unpack pat)
   pure (filter (Glob.match compiled . T.unpack) allPaths)
-
-globMatch :: Env -> Value -> PathLit -> Action [Text]
-globMatch env scope (PathLit _ parts) =
-  interpText env scope parts >>= globMatchPat scope
 
 forceAt :: Value -> Text -> Action Value
 forceAt scope path = maybe emptyValue id <$> resolveRead scope path

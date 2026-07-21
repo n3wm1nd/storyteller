@@ -485,15 +485,23 @@ instead.
 Unchanged in spirit from the original design:
 
 - **Not Turing-complete, provably.** No `if`, no recursion, no `while`.
-  `for` only ranges over an already-finite, already-materialized glob match.
+  `for`'s source is a general expression (see AST/Grammar above — a glob
+  was never structurally special), but whatever it evaluates to is always
+  an already-finite, already-materialized `Value`'s own entries — a glob
+  match, a filtered expression, a fully-applied function's result. There
+  is still no way to iterate something open-ended or self-referential.
   This is load-bearing for Verification above, not incidental.
 - **No user-defined filters.** The vocabulary is closed and host-provided —
   filters gaining `Action` capability doesn't change who gets to define one.
 - **No direct story mutation.** The only effect is read access (`read`, a
   filter, a `Binding`) — never writing a tick. Enforced by `Action`'s own
   type, not convention.
-- **No query-predicate syntax** in `read`/`for` — filters over a glob's
-  output, not primitive grammar.
+- **No query-predicate syntax** in `read`/`for` — filters over an
+  expression's output, not primitive grammar. `for`'s source being general
+  now (any `Value`-producing expression, not just a glob) doesn't reopen
+  this: selection criteria still only ever enter through the closed filter
+  vocabulary applied to that expression, never through new grammar in
+  `for`'s own clause.
 
 ## Open questions
 

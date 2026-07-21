@@ -184,8 +184,18 @@ chapterEntry a = runDefinition chapterEntryDef [toBinding a]
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
 --   re-export through a second glob (see
 --   'Storyteller.Context.DSL.Compile.globMatchPat''s own haddock for why
---   that used to silently undo it). Self-describing and entry-keeping,
---   same reasoning and same @x = ...; as f: x; x@ shape as 'contextLore'.
+--   that used to silently undo it). The @in (x | sortBy): for f in
+--   **/*@ shape stays, deliberately, even though @for@ can now iterate
+--   any expression directly (see
+--   'Storyteller.Context.DSL.AST.SFor''s own haddock) -- unlike
+--   'contextOther''s filtered @**/*@ (whose surviving entries are the
+--   *same* underlying tree reads either way, just narrowed), @x@'s own
+--   entries are @chapterEntry f@'s already-synthesized result, not raw
+--   file content -- @read f@ inside the loop has to resolve against @x@
+--   itself to see that synthesized entry, so @in@'s scope-repositioning
+--   is load-bearing here, not just a source of iteration keys. Self-
+--   describing and entry-keeping, same reasoning and same @x = ...; as f:
+--   x; x@ shape as 'contextLore'.
 contextChaptersDef :: Definition
 contextChaptersDef = [defQuote|
 x =
@@ -223,11 +233,10 @@ contextOtherDef :: Definition
 contextOtherDef = [defQuote|
 path:
   "## Other notes"
-  in (**/* | exclude(contextLore, contextChapters, "style.md") | exclude("chat/**/*") | exclude(path)):
-    for f in **/*:
-      x = loreEntry f
-      as f: x
-      x
+  for f in (**/* | exclude(contextLore, contextChapters, "style.md") | exclude("chat/**/*") | exclude(path)):
+    x = loreEntry f
+    as f: x
+    x
 |]
 
 contextOther :: Text -> Action Value

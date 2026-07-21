@@ -423,7 +423,7 @@ pForStmt = do
   keyword "for"
   var <- identifier
   keyword "in"
-  src <- pPathLit
+  src <- pExpr
   _   <- symbol ":"
   SFor var src <$> pBody col
 

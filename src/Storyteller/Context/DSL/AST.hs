@@ -21,12 +21,21 @@
 --   * Rule 8 (@< expr@) is 'EUser'.
 --   * @for@ is deliberately not its own primitive in the AST beyond
 --     'SFor' -- the spec treats it as sugar over a builtin @each@ filter,
---     but it gets a dedicated constructor here (rather than being
---     desugared during parsing) so the parser can enforce, structurally,
---     that its source is always a literal glob/path -- never an arbitrary
---     filtered expression (see the spec's "Iteration and glob" section).
---     The same restriction is why 'ERead's argument and 'SFor's source
---     both carry a 'PathLit' rather than a general 'Expr'.
+--     but it gets a dedicated constructor here rather than being
+--     desugared during parsing. Its source is a general 'Expr', not a
+--     'PathLit' — a glob was never structurally special; a bare glob
+--     token is just one more expression that happens to evaluate to a
+--     'Storyteller.Context.DSL.Value.Value' with entries (see
+--     'EString'\'s own haddock), exactly like a local variable, a
+--     fully-applied function call, or a filtered expression. 'SFor'
+--     evaluates its source to a 'Storyteller.Context.DSL.Value.Value' and
+--     iterates its own entries' keys, whatever produced them. An
+--     *unapplied* function reference can never end up here: 'EIdent'\/'EApp'
+--     already fail before producing a 'Value' at all when a name's
+--     'Storyteller.Context.DSL.Value.Binding' still needs arguments, the
+--     same failure any other expression position hits. 'ERead's argument
+--     stays a 'PathLit', a separate, narrower restriction unrelated to
+--     this one (see its own haddock).
 module Storyteller.Context.DSL.AST
   ( Name
   , Pos(..)
@@ -158,9 +167,10 @@ data Stmt
     --   ...@).
   | SIn !Expr !Block
     -- ^ Primitive 6.
-  | SFor !Name !PathLit !Block
-    -- ^ Sugar over @each@ applied to a glob (see the module haddock for
-    --   why the source is a 'PathLit', not an 'Expr').
+  | SFor !Name !Expr !Block
+    -- ^ Sugar over @each@ applied to whatever 'Value' the source
+    --   expression evaluates to (see the module haddock for why this is
+    --   a general 'Expr', not a 'PathLit').
   deriving (Eq, Show, Lift)
 
 type Block = [Located Stmt]

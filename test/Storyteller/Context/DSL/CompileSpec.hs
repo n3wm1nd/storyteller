@@ -28,6 +28,7 @@
 --   code anywhere in this file's use of the DSL.
 module Storyteller.Context.DSL.CompileSpec (spec) where
 
+import Control.Monad (void)
 import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -57,6 +58,8 @@ import Storyteller.Context.DSL.Compile (Binding, bval, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 -- | The real, production 'MonadBranch' instance now lives in
 --   "Storyteller.Core.Git" (closing over 'getBranch', same as this file's
@@ -113,6 +116,7 @@ spec = do
   nameAbstractFilterSpec
   journalDeltaSpec
   contextCharacterSpec
+  forOverBindingResultSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -222,6 +226,36 @@ forLoopEntriesSpec = describe "for/as nested entries" $
       openVal <- openAction
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
       pure (Map.fromList entryText)
+
+-- | The case that actually motivated widening @for@'s source from a
+--   literal 'Storyteller.Context.DSL.AST.PathLit' to a general
+--   'Storyteller.Context.DSL.AST.Expr' (see
+--   'Storyteller.Context.DSL.AST.SFor''s own haddock): @charactersin path@
+--   is an ordinary host 'Binding' call, not a glob match against the
+--   Reader-scope tree at all -- its entries come from presence ticks, not
+--   file paths. Proving @for@ can iterate it directly, with zero special
+--   casing beyond what a filtered glob already needed, is the actual
+--   point; 'excludeFilterSpec'\/'sortByFilterSpec' already cover the
+--   "iterate a filtered expression" half of the same generalization.
+forOverBindingResultSpec :: Spec
+forOverBindingResultSpec = describe "for iterates a Binding call's result directly (charactersin), not just a glob" $
+  it "iterates the active character identifiers from presence ticks, not any file path" $
+    run (testStack $ do
+      seedBranch "main" [("scene.md", "")]
+      _ <- createBranch (BranchName "character/aria")
+      runBranchOpGit @Main (BranchName "main") $
+        void (recordPresence @Main "scene.md" (Character (BranchName "character/aria")) Enter)
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right ["aria"]
+  where
+    forCharsDsl :: Action Value
+    forCharsDsl = [dsl|
+for c in (charactersin "scene.md"):
+  as c: c
+|]
+    go = do
+      v <- forCharsDsl
+      pure (map fst (valueEntries v))
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
 --   'FileRead'; @<@ forces it to read as ordinary authored text instead.
