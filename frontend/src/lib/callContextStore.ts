@@ -170,6 +170,7 @@ export const useCallContext = create<CallContextState>((set) => ({
 // site (fileview.actions.ts) can read without reasoning about modes.
 // Returns null when nothing should be sent (omit the wire field).
 export function getCallContext(path: string): {
+  path: string;
   edits: ContextEdits;
   namedName: string | null;
   mentionCharacterIds: string[];
@@ -177,6 +178,7 @@ export function getCallContext(path: string): {
   const s = useCallContext.getState();
   const f = s.files[path];
   return {
+    path,
     edits: f?.edits ?? DEFAULT_EDITS,
     namedName: f?.mode === "named" ? f.namedName : null,
     mentionCharacterIds: s.mentions[path] ?? [],

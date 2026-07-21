@@ -15,7 +15,7 @@
 //   - "default" — no edits anywhere. The store's `mode` is "default" and
 //     there are no per-call mention overlays. The wire's `context` field
 //     is omitted entirely so the server's compiled-in default
-//     (`Storyteller.Context.DSL.Library.contextQuery`, see that module's
+//     (`Storyteller.Context.DSL.Library.contextWriter`, see that module's
 //     own haddock) runs -- the casual user has expressed nothing, so
 //     nothing custom should be sent.
 //
@@ -37,11 +37,31 @@
 //     to send it inline -- the name *is* the program.
 //
 // The default template mirrors what the compiled-in default produces
-// (lore/**, chapters/**, style.md as separate named buckets) so a casual
-// user toggling things off sees the same shape they'd have gotten for
-// free, just minus what they removed -- never a surprise rewrite of the
-// prompt's structure. See CONTEXT-DSL.md's "Worked examples" for the
-// patterns this composes from.
+// (lore/**, chapters/**, style.md as separate named buckets, plus
+// whoever presence ticks say is active) so a casual user toggling things
+// off sees the same shape they'd have gotten for free, just minus what
+// they removed -- never a surprise rewrite of the prompt's structure.
+// See CONTEXT-DSL.md's "Worked examples" for the patterns this composes
+// from.
+//
+// Each bucket is synthesized as a bare call to the server's own named
+// definition (`context.lore`, `context.chapters`, `context.style`), not
+// a hand-copied re-derivation of its DSL body. The backend went through
+// exactly this bug once already (`Storyteller.Context.DSL.Library`'s own
+// module haddock, and the fix history in `contextWriterDef`'s haddock):
+// a second, drifting copy of "what counts as lore" is worse than no
+// copy at all, and it also means a project's own committed override of
+// `context.lore` etc. reaches a casual send the same way it reaches the
+// server's own default -- a hand-inlined shape here could never see
+// that override at all.
+//
+// Every program sent this way is wrapped in `context.writer`'s own
+// `path:` parameter frame (see `synthesizeProgram`/`composeSendProgram`
+// below) -- required, not cosmetic: an override whose declared arity
+// doesn't match the definition it replaces is silently discarded server-
+// side, no error anywhere, in favor of the compiled-in default
+// (`Storyteller.Core.Context.resolveContextOverride`). A 0-arity program
+// here would look like it worked and just quietly never take effect.
 
 // ─── Structured state ─────────────────────────────────────────────────────
 
@@ -135,17 +155,6 @@ function block(lines: Lines, indent = "  "): Lines {
   return lines.flatMap((l) => l.split("\n").map((ll) => indent + ll));
 }
 
-// `for f in GLOB: as f: read f` -- the canonical "include every file
-// under GLOB, each labelled by its own path" fragment, what the default
-// `contextLore`/`contextChapters` definitions both expand to. Returns
-// null for an empty list (caller skips emitting the bucket entirely).
-function globBucketLines(glob: string): Lines {
-  return [
-    `for f in ${glob}:`,
-      "as f: read f",
-  ];
-}
-
 // `context.character(id)` produces a five-bucket character Value
 // (sheet, blurb, full, journal, journalFull). Inlining the full
 // definition here would duplicate the host-side curation
@@ -155,105 +164,173 @@ function globBucketLines(glob: string): Lines {
 // and rely on the compiled-in `context.character` being callable. The
 // bare call works in any contexts-branch override or wire query (the
 // interpreter's free-identifier fallback covers it); depth selection
-// happens via the named-entry read on the call's result.
+// happens via named-entry reads on the call's result -- `read "x"`
+// resolves a *named entry*, not a file, once repositioned into the
+// call's own result via `in (...): ...` (see
+// `Storyteller.Context.DSL.Compile.resolveRead`).
 //
-// The `depth` toggle maps to which bucket the call's *default* emits:
-// "blurb" forces blurb via re-export, "full" emits the full character
-// (the call's own default -- see contextCharacter's last line,
-// `blurb charname`, which we override here).
+// `context.character`'s own bare/default statement is just
+// `character.blurb charname` (its last line -- see that definition's
+// own haddock), the same acquaintance-level line the "blurb" depth
+// wants -- so both toggles read named entries explicitly rather than
+// one of them leaning on the call's bare default, which would silently
+// break if that default line ever changed.
+//
+// `x = ...; as "label": x; x` -- not just `as "label": ...` -- because a
+// bare `as` block only ever contributes an *entry*, never the enclosing
+// block's own default (see `Storyteller.Context.DSL.Compile.runStmts`'s
+// `SAs` case); `renderText`/`renderMessages` (what actually reaches the
+// LLM) read only that default (`rcContent`), never `rcEntries`. A user
+// who explicitly picked "include Alice" needs Alice's content to be part
+// of what the model sees, not just structurally reachable by name for
+// nothing to ever read -- so this follows the same `x = ...; as f: x; x`
+// idiom `contextLoreDef`'s own per-file loop already uses (Library.hs),
+// to be both bare-emitted and named at once.
 function characterLines(c: CharacterAdd): Lines {
   const label = c.id;
   if (c.depth === "blurb") {
     return [
-      `as "${label}":`,
-      `  in (context.character("${c.id}")):`,
-      `    read "blurb"`,
+      `x = in (context.character("${c.id}")): read "blurb"`,
+      `as "${label}": x`,
+      `x`,
     ];
   }
-  // full -- emit the character's whole sheet/journal/full buckets as
-  // one block, letting the consumer see everything the call produced.
+  // full -- sheet, everything else, and the curated journal, in the same
+  // order `Storyteller.Context.DSL.Library.characterSummaryOf` reads
+  // them in for every other consumer of a "full" character view.
   return [
-    `as "${label}":`,
-    `  context.character("${c.id}")`,
+    `x =`,
+    `  in (context.character("${c.id}")):`,
+    `    read "sheet"`,
+    `    read "full"`,
+    `    read "journal"`,
+    `as "${label}": x`,
+    `x`,
   ];
 }
 
-// `as "name": read "path" | orifempty ""` -- a single extra file,
-// tolerant of being absent (the `orifempty ""` makes a missing file a
-// no-op rather than a runtime failure, matching `contextStyle`'s own
-// pattern).
+// `x = read "path" | orifempty ""; as "name": x; x` -- a single extra
+// file, tolerant of being absent (the `orifempty ""` makes a missing
+// file a no-op rather than a runtime failure, matching `contextStyle`'s
+// own pattern) and, like `characterLines` above, both bare-emitted (so
+// it actually reaches the model) and named (so it stays individually
+// addressable).
 function fileAddLines(f: FileAdd): Lines {
   const name = f.asName ?? f.path.split("/").pop()!.replace(/\.md$/, "");
   return [
-    `as "${name}":`,
-    `  read "${f.path}" | orifempty ""`,
+    `x = read "${f.path}" | orifempty ""`,
+    `as "${name}": x`,
+    `x`,
   ];
 }
 
-// Composes the structured edits into a full 0-arity DSL program.
+// The auto-active-character fragment -- exactly `contextWriterDef`'s own
+// trailing `for c in (charactersin path): as c: context.character c`
+// (Library.hs), which folds in whoever presence ticks say is actually in
+// this scene. Emitted only when the casual cast list is untouched (see
+// `bodyLines`'s own comment): the moment a user picks characters by hand,
+// their list becomes the sole source of truth, replacing this, rather
+// than the two being merged and risking a same-name collision (`for c
+// in ...: as c: ...` and a hand-added `as "<id>": ...` for the same
+// present character would both try to bind the identical entry name,
+// which the interpreter rejects as a duplicate `as` at runtime).
+const activeCharacterLines: Lines = [
+  `for c in (charactersin path):`,
+  `  as c: context.character c`,
+];
+
+// Composes the structured edits into a full 1-arity DSL program body --
+// everything `context.writer` itself needs *after* its own leading
+// `path:` parameter line, unindented (the caller wraps and indents once,
+// via `synthesizeProgram`\/`composeSendProgram`, rather than every
+// fragment re-indenting itself relative to a frame it doesn't know
+// about).
 //
 // Returns null when `edits` is structurally identical to the server's
 // default -- a caller who has done nothing should send nothing. Any
-// deviation, no matter how small, produces a full program (the
-// synthesizer doesn't try to emit a diff; it re-emits the whole
-// baseline-plus-edits shape). This matches the wire's "the program
-// replaces the default" semantics (CONTEXT-DSL.md / Context.hs:174):
-// there's no concept of "default plus additions" at the protocol level,
-// so the frontend composes them client-side and sends the result.
-export function synthesizeProgram(edits: ContextEdits): string | null {
+// deviation, no matter how small, produces a full body (the synthesizer
+// doesn't try to emit a diff; it re-emits the whole baseline-plus-edits
+// shape). This matches the wire's "the program replaces the default"
+// semantics (CONTEXT-DSL.md / Context.hs:174): there's no concept of
+// "default plus additions" at the protocol level, so the frontend
+// composes them client-side and sends the result.
+function bodyLines(edits: ContextEdits): Lines | null {
   if (!isDirty(edits)) return null;
 
   const chunks: Lines = [];
 
+  // Bare, not `as "lore": ...` -- these three mirror `contextWriterDef`'s
+  // own real shape exactly (Library.hs: bare `context.lore`, bare `in
+  // (context.chapters | exclude(path)): ...`, bare `context.other path`).
+  // Nothing downstream ever reads a "lore"/"chapters"/"style" named entry
+  // off `context.writer`'s own result, so wrapping these in `as` would
+  // only give each bucket an entry nothing looks at while *also* failing
+  // to reach the model at all (a bare `as` block doesn't feed the
+  // enclosing default -- see `characterLines`'s own comment on that same
+  // trap, which the casual "cast"/"extra files" additions genuinely need
+  // to avoid, unlike these three).
   if (edits.baseline.lore) {
-    chunks.push(`as "lore":`);
     // Excluded paths under lore/** aren't synthesized here -- the DSL's
     // `exclude` filter can only neuter content to empty, never shrink a
-    // key set (Library.hs:66-79 documents the same gotcha for the
-    // default's own `exclude` use), so an "everything except these"
-    // glob can't be expressed without enumerating the kept paths, which
-    // would require the lore tree at synthesis time. Phase-1 exposes
-    // exclusions only via the power-user DSL editor (where the user
-    // writes the real `exclude` themselves); the casual panel sticks to
-    // positive additions. The field stays in `ContextEdits` so a future
-    // Phase-2 synthesizer that does enumerate can fill it in.
+    // key set (`context.other`'s own haddock documents the same gotcha
+    // for the default's own `exclude` use), so an "everything except
+    // these" glob can't be expressed without enumerating the kept paths,
+    // which would require the lore tree at synthesis time, and
+    // `context.lore` itself takes no filtering parameter at all. Phase-1
+    // exposes exclusions only via the power-user DSL editor (where the
+    // user writes the real `exclude` themselves); the casual panel
+    // sticks to positive additions. The field stays in `ContextEdits` so
+    // a future Phase-2 synthesizer that does enumerate can fill it in.
     void edits.excludedLorePaths;
-    chunks.push(...block(globBucketLines("lore/**/*")));
+    chunks.push(`context.lore`);
   }
 
   if (edits.baseline.chapters) {
-    chunks.push(`as "chapters":`);
-    // contextChapters' shape: a sortBy'd list with chapter headers
-    // (Library.hs:100-110). Inlined here so the casual toggle produces
-    // the same shape the default would.
-    chunks.push(...block([
-      `x =`,
-      `  for f in chapters/**/*:`,
-      `    as f:`,
-      `      "## Chapter: %f%"`,
-      `      > read f`,
-      `in (x | sortBy):`,
-      `  for f in **/*:`,
-      `    as f: read f`,
-    ]));
+    // Excludes `path` itself -- mirrors `contextWriterDef`'s own `in
+    // (context.chapters | exclude(path)): for f in **/*: read f`
+    // (Library.hs), so a chapter already being written doesn't show up
+    // as if it were prior content.
+    chunks.push(`in (context.chapters | exclude(path)):`);
+    chunks.push(...block([`for f in **/*: read f`]));
   }
 
   if (edits.baseline.style) {
-    chunks.push(`as "style":`);
-    chunks.push(...block([
-      `read "style.md" | orifempty ""`,
-    ]));
+    chunks.push(`context.style`);
   }
 
-  for (const c of edits.characters) {
-    chunks.push(...characterLines(c));
+  // Cast list wins outright, presence auto-fill only when it's untouched
+  // -- see `activeCharacterLines`'s own comment on why these two don't
+  // merge.
+  if (edits.characters.length === 0) {
+    chunks.push(...activeCharacterLines);
+  } else {
+    for (const c of edits.characters) {
+      chunks.push(...characterLines(c));
+    }
   }
 
   for (const f of edits.extraFiles) {
     chunks.push(...fileAddLines(f));
   }
 
-  return chunks.join("\n") + "\n";
+  return chunks;
+}
+
+// `bodyLines`, wrapped in the `path:` parameter frame every
+// `context.writer` override needs. `Storyteller.Core.Context.
+// resolveContextOverride` checks a staged override's own declared arity
+// against the default's before accepting it -- silently, with no error
+// surfaced anywhere -- and falls back to the compiled-in default on any
+// mismatch (Context.hs:33-43, and the real end-to-end test at
+// `Storyteller.Core.ContextSpec`'s `clientSubmittedContextProgramSpec`,
+// which stages exactly this `"path:\n  ...\n"` shape). A 0-arity program
+// here wouldn't error either -- it would just never take effect, which
+// is worse: every "transient" edit sent without this frame was silently
+// discarded server-side, indistinguishable from working.
+export function synthesizeProgram(edits: ContextEdits): string | null {
+  const lines = bodyLines(edits);
+  if (lines === null) return null;
+  return "path:\n" + block(lines).join("\n") + "\n";
 }
 
 // ─── Send-time composition ─────────────────────────────────────────────────
@@ -263,36 +340,44 @@ export function synthesizeProgram(edits: ContextEdits): string | null {
 // the program text to put in the field. One function so the wire site
 // (fileview.actions.ts) doesn't have to reason about layers.
 export interface CallContext {
+  path: string;
   edits: ContextEdits;
   // The composer's current parsed mentions (character ids). Driven
   // live from the textarea by mention-autocomplete.tsx.
   mentionCharacterIds: string[];
   // When non-null, the user has loaded a named function from the
   // contexts branch; its name overrides `edits` entirely -- the wire
-  // carries just the name as program text.
+  // calls it, passing `path` through (see below).
   namedName: string | null;
 }
 
 export function composeSendProgram(ctx: CallContext): string | null {
-  // Mention overlay lines are appended to whatever base program runs.
+  // Mention overlay lines sit in the same `path:`-scoped body as
+  // whatever else runs, not appended as a second top-level program --
+  // there's only one parameter frame per wire program.
   const overlayLines: Lines = ctx.mentionCharacterIds.flatMap((id) => [
     `as "@${id}":`,
     `  in (context.character("${id}")):`,
     `    read "blurb"`,
   ]);
-  const hasOverlay = overlayLines.length > 0;
 
+  let body: Lines;
   if (ctx.namedName !== null) {
-    // A bare-name program (a one-line call). If there's a mention
-    // overlay, it becomes a multi-line program: the call on line one,
-    // then the overlay statements. Still ordinary DSL -- a bare
-    // identifier statement followed by `as` statements.
-    if (!hasOverlay) return ctx.namedName;
-    return ctx.namedName + "\n" + overlayLines.join("\n") + "\n";
+    // A saved function on the `contexts` branch, called with `path`
+    // exactly the way any other `context.*` definition needing it would
+    // be -- see `Storyteller.Context.DSL.Library.contextWriter`'s own
+    // Haddock on cross-definition reference being plain application, not
+    // a special call form. The saved function itself has to be authored
+    // as 1-arity (the same starter shape `dsl-editor.tsx`'s
+    // `defaultStarter` provides) for this call to resolve to anything
+    // useful; that's a property of what got saved, not of this call
+    // site.
+    body = [`${ctx.namedName} path`, ...overlayLines];
+  } else {
+    const edited = bodyLines(ctx.edits);
+    if (edited === null && overlayLines.length === 0) return null;
+    body = [...(edited ?? []), ...overlayLines];
   }
 
-  const base = synthesizeProgram(ctx.edits);
-  if (!hasOverlay) return base;
-  if (base === null) return overlayLines.join("\n") + "\n";
-  return base + "\n" + overlayLines.join("\n") + "\n";
+  return "path:\n" + block(body).join("\n") + "\n";
 }

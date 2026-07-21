@@ -252,27 +252,47 @@ const btnStyle: React.CSSProperties = {
   color: "var(--text-dim)", cursor: "pointer",
 };
 
-// A starter for a brand-new function -- mirrors the default's shape
-// (lore/chapters/style as separate buckets) so the power-user's blank
-// canvas isn't actually blank, just editable. They can delete what they
-// don't want and write the rest by hand.
+// A starter for a brand-new function -- mirrors `contextWriterDef`'s own
+// real shape (Library.hs) as closely as a casual starting point should,
+// so the power-user's blank canvas isn't actually blank, just editable.
+// They can delete what they don't want and write the rest by hand.
+//
+// 1-arity, not 0 -- `path:` is `context.writer`'s own declared parameter,
+// and a project's override has to match that arity exactly or it's
+// silently discarded in favor of the compiled-in default
+// (`Storyteller.Core.Context.resolveContextOverride`, Context.hs:33-43).
+// A starter missing this line would produce a function that looks fine,
+// saves fine, and does nothing the moment it's ever used to override
+// `context.writer` -- so this isn't a style choice, it's the one thing
+// this starter cannot omit.
+//
+// Calls the server's own named definitions (`context.lore`,
+// `context.chapters`, `context.style`, `context.character`) rather than
+// re-deriving their DSL bodies here -- the same fix `lib/dslCompose.ts`'s
+// `synthesizeProgram` got, for the same reason: a second, hand-copied
+// shape drifts from the real one, and can never see a project's own
+// committed override of `context.lore` etc. the way a bare call does. A
+// power-user who wants to see or borrow the real glob/sortBy machinery
+// underneath can load that definition itself from the library below, or
+// read CONTEXT-DSL.md's own worked examples -- this starter's job is
+// just to not hand someone a blank textarea.
+//
+// Bare statements, not `as "lore": ...` -- an `as` block only ever
+// contributes a *named entry*, never the enclosing block's own default
+// (`renderText`/`renderMessages`, what actually reaches the model, read
+// only the default). A starter that wrapped these in `as` would parse,
+// save, and resolve without error, yet send the model nothing -- exactly
+// mirrors `contextWriterDef`'s own real shape instead (Library.hs).
 function defaultStarter(): string {
   return [
     `# Default-shape starter -- edit freely. See CONTEXT-DSL.md.`,
-    `as "lore":`,
-    `  for f in lore/**/*:`,
-    `    as f: read f`,
-    `as "chapters":`,
-    `  x =`,
-    `    for f in chapters/**/*:`,
-    `      as f:`,
-    `        "## Chapter: %f%"`,
-    `        > read f`,
-    `  in (x | sortBy):`,
-    `    for f in **/*:`,
-    `      as f: read f`,
-    `as "style":`,
-    `  read "style.md" | orifempty ""`,
+    `path:`,
+    `  context.lore`,
+    `  in (context.chapters | exclude(path)):`,
+    `    for f in **/*: read f`,
+    `  context.style`,
+    `  for c in (charactersin path):`,
+    `    as c: context.character c`,
     ``,
   ].join("\n");
 }

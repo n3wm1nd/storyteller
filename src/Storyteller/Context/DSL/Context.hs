@@ -161,16 +161,14 @@ instance FromArg Text where
   fromArg act = messagesText <$> (valueDefault =<< act)
 
 -- | Re-curries a plain, concretely-typed 1-arity Haskell function (e.g.
---   @'Storyteller.Context.DSL.Library.contextQuery' :: Text -> Action
+--   @'Storyteller.Context.DSL.Library.contextWriter' :: Text -> Action
 --   Value@) back into the interpreter's own runtime-dispatched 'Binding'
 --   shape -- the inverse of 'toBinding'. Needed wherever a compiled-in
 --   definition, already as plainly typed as 'ToBinding' lets a *caller*
 --   write it, still has to cross into something fundamentally
---   'Binding'-shaped: the wire-override registry
---   ("Storyteller.Context.DSL.Library"'s @defaultLibrary@) or
---   'Storyteller.Core.Context.resolveContextQuery', which needs the
---   arity tag *before* it knows whether an override even replaces this
---   definition.
+--   'Binding'-shaped: 'Storyteller.Core.Context.resolveContext1', which
+--   needs the arity tag *before* it knows whether an override even
+--   replaces this definition.
 toBindingFn1 :: FromArg a => (a -> Action Value) -> Binding
 toBindingFn1 f = Binding 1 go
   where

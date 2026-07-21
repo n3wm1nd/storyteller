@@ -20,6 +20,7 @@
 --   already in" contract every other Context DSL definition gets.
 module Storyteller.Core.ContextSpec (spec) where
 
+import Control.Monad (void)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -46,8 +47,10 @@ import Server.TestStack
 
 import Storyteller.Context.DSL.Compile (Binding(..), bval, fn1)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Context.DSL.Rendering (renderContext, renderText, renderMessages)
+import Storyteller.Context.DSL.Rendering (renderContext, renderText, renderMessages, namedChild)
 import Storyteller.Context.DSL.Value
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
 seedBranch name files = do
@@ -71,6 +74,7 @@ spec = do
   interpretContextStorageFSSpec
   runContextBinding1Spec
   clientSubmittedContextProgramSpec
+  frontendSynthesizedProgramShapeSpec
 
 -- | The actual point of the whole override mechanism, end to end, against
 --   the real production definition and the real rendering pipeline --
@@ -113,6 +117,57 @@ clientSubmittedContextProgramSpec = describe "a client-submitted context.writer 
       ( "a client-submitted override, replacing everything"
       , [(LLM.User, "a client-submitted override, replacing everything")]
       )
+
+-- | The frontend's own half of this contract, pinned from the backend
+--   side: @frontend\/src\/lib\/dslCompose.ts@'s @synthesizeProgram@\/
+--   @composeSendProgram@ produce exactly this shape (a leading @path:@
+--   parameter line, everything else indented under it) for the same
+--   reason 'clientSubmittedContextProgramSpec' stages one by hand --
+--   'resolveContextOverride' silently discards any override whose
+--   parsed arity doesn't match @context.writer@'s own (1), falling back
+--   to the compiled-in default with no error surfaced anywhere. A drift
+--   between what the frontend actually emits and what this test embeds
+--   is a real risk (two independent renderings of the same contract, in
+--   two different languages) -- this is the guard against that drift
+--   silently regressing, the same way 'contextCharacterBlurbOverrideSpec'
+--   guards @character.blurb@'s own composition path.
+frontendSynthesizedProgramShapeSpec :: Spec
+frontendSynthesizedProgramShapeSpec =
+  describe "the frontend's own synthesized context.writer override, staged verbatim" $
+    it "parses at arity 1 and actually overrides context.writer, excluding path from chapters and including an active character" $
+      run (testStack $ do
+        seedBranch "main"
+          [ ("lore/notes.md", "a hand-authored note")
+          , ("chapters/ch2.md", "chapter two prose")
+          ]
+        _ <- createBranch (BranchName "character/aria")
+        runBranchOpGit @Main (BranchName "character/aria")
+          (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
+        runBranchOpGit @Main (BranchName "main") $ do
+          void (recordPresence @Main "chapters/ch2.md" (Character (BranchName "character/aria")) Enter)
+          ctx <- interpretContextStorageMap Map.empty $ do
+            setContextOverride "context.writer" frontendProgram
+            writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter "chapters/ch2.md"
+            runContextValue @Main $ do
+              rc <- renderContext writerV
+              pure (renderText rc, renderText <$> namedChild "aria" rc)
+          pure ctx)
+      `shouldBe` Right
+        ( "## Story background\n\n## lore/notes.md\n\na hand-authored note"
+        , Just "Aria: A wandering rogue."
+        )
+  where
+    -- Exactly `synthesizeProgram`'s own output shape for
+    -- `{ baseline: { lore: true, chapters: true, style: false },
+    --    characters: [], extraFiles: [] }` -- see dslCompose.ts.
+    frontendProgram = T.unlines
+      [ "path:"
+      , "  context.lore"
+      , "  in (context.chapters | exclude(path)):"
+      , "    for f in **/*: read f"
+      , "  for c in (charactersin path):"
+      , "    as c: context.character c"
+      ]
 
 -- | 'LLM.Message' has no 'Eq' -- compare on 'LLM.messageDirection' plus
 --   the rendered text, same pattern
