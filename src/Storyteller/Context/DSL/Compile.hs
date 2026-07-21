@@ -240,8 +240,18 @@ runStmts env0 scope0 = go env0 scope0 [] []
       (m, es) <- foldM (runOneIteration pos var body) ([], entries) matches
       go env scope (m : msgs) es rest
       where
+        -- The loop variable's own default is still just the matched
+        -- key's text (so @f | filewithname@\/bare @f@ stay as cheap as
+        -- ever, never forcing content) -- but it now also carries a
+        -- single self-keyed entry holding the real, lazy resolution at
+        -- that key (the same 'forceAt' a glob match's own entries
+        -- already use), so @read f@ can resolve it via the identical
+        -- "force this Value's own entries" rule any other @read@
+        -- argument uses, with no identifier-specific case needed at all
+        -- (see 'ERead's own haddock).
         runOneIteration p var' body' (msgsAcc, entriesAcc) matchedPath = do
-          let env' = Map.insert var' (bval (pure (leafValue [User matchedPath]))) env
+          let loopVar = Value (pure [User matchedPath]) [(matchedPath, forceAt scope matchedPath)] defaultMeta
+              env'    = Map.insert var' (bval (pure loopVar)) env
           (m1, es1) <- runStmts env' scope body'
           case filter ((`elem` map fst entriesAcc) . fst) es1 of
             ((dup, _) : _) -> fail $ "duplicate 'as' name " <> show dup
@@ -269,6 +279,21 @@ resolveIdent env name = case Map.lookup name env of
     Just b  -> pure b
     Nothing -> fail $ "unknown identifier: " <> T.unpack name
 
+-- | 'resolveIdent', but reporting a miss as 'Nothing' rather than
+--   failing -- what 'ERead' needs to tell "this identifier is bound
+--   locally or in the library" apart from "this bare token was never
+--   bound anywhere, so read's own fallback (treat its own text as a
+--   literal path) applies instead." Nowhere else needs this: an
+--   unresolved identifier is a hard failure everywhere else in the
+--   language (see the Grammar section of @CONTEXT-DSL.md@) -- @read@ is
+--   the one primitive whose argument has no other sensible meaning than
+--   a path, so an unbound bare token there still means something, rather
+--   than being definitely a mistake.
+tryResolveIdent :: Env -> Name -> Action (Maybe Binding)
+tryResolveIdent env name = case Map.lookup name env of
+  Just b  -> pure (Just b)
+  Nothing -> lookupLibrary name
+
 nameOf :: Env -> Value -> Expr -> Action Name
 nameOf env scope e = do
   v <- evalExpr env scope e
@@ -277,11 +302,7 @@ nameOf env scope e = do
 evalExpr :: Env -> Value -> Expr -> Action Value
 evalExpr env scope e = case e of
   EString Quoted parts -> leafValue . (: []) . User <$> interpText env scope parts
-  EString Bare   parts -> do
-    pat     <- interpText env scope parts
-    matches <- globMatchPat scope pat
-    entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
-    pure (Value (pure []) entries defaultMeta)
+  EString Bare   parts -> interpText env scope parts >>= globResolve scope
   EAssistant inner -> do
     v    <- evalExpr env scope inner
     msgs <- valueDefault v
@@ -294,11 +315,42 @@ evalExpr env scope e = case e of
     Binding 0 fn    -> fn [] scope
     Binding arity _ -> fail $
       T.unpack name <> " needs " <> show arity <> " argument(s), used with none"
-  ERead pathLit -> do
-    path <- pathLitText env scope pathLit
-    resolveRead scope path >>= \case
-      Nothing -> pure emptyValue
-      Just v  -> pure v
+  -- | @read@'s argument is a general 'Expr' now, with two of its shapes
+  -- given @read@'s own reading rather than the ordinary one:
+  --
+  --   * A string literal (quoted or bare alike -- quoting always means
+  --     "definitely a path/glob, never a variable" here, deconflicting a
+  --     literal filename from a same-named local) resolves via the
+  --     identical glob machinery a bare expression-position glob already
+  --     uses, so @read *.md@ genuinely can match more than one file.
+  --   * A bare identifier that isn't bound *anywhere* (not a local, not
+  --     in the library -- see 'tryResolveIdent') still means a literal
+  --     path, the one place in the language an unresolved name isn't a
+  --     hard failure (see the Grammar section of @CONTEXT-DSL.md@): a
+  --     bound identifier (a parameter, a @let@, a @for@-loop variable --
+  --     whose own 'valueEntries' now carries its real content, see
+  --     'runStmts'\'s @SFor@ case -- or a library function) evaluates
+  --     normally instead.
+  --
+  -- Anything else (an application, a filter chain) evaluates normally
+  -- too. Whichever path produced it, if the resulting 'Value' has
+  -- entries, @read@ forces each one in order and folds their own content
+  -- into the result's own default, keeping 'valueEntries' itself intact;
+  -- a 'Value' with none (an already-resolved single leaf) is returned
+  -- unchanged.
+  ERead argExpr -> do
+    v <- case argExpr of
+      EString _ parts -> interpText env scope parts >>= globResolve scope
+      EIdent name -> tryResolveIdent env name >>= \case
+        Just _  -> evalExpr env scope argExpr
+        Nothing -> globResolve scope name
+      _ -> evalExpr env scope argExpr
+    if null (valueEntries v)
+      then pure v
+      else do
+        forced   <- mapM snd (valueEntries v)
+        combined <- concat <$> mapM valueDefault forced
+        pure v { valueDefault = pure combined }
   EApp headE argEs -> do
     let args = map (evalExpr env scope) argEs
     case headE of
@@ -402,25 +454,6 @@ interpText env scope = fmap T.concat . mapM part
     part (Lit t)    = pure t
     part (Interp n) = messagesText <$> (valueDefault =<< evalExpr env scope (EIdent n))
 
--- | @read@'s argument text -- almost 'interpText', with one addition the
---   worked examples need and the bare-token lexeme alone can't resolve:
---   a *single-segment bare* token (@read f@, @read term@ -- no @/@, no
---   @%...%@ span) is lexically identical whether the author meant "the
---   literal filename @f@" or "whatever path is bound to the loop
---   variable @f@" (see the Chekhov's-gun and living-glossary examples,
---   both of which rely on the latter). Since a real filename can't
---   simultaneously be a bound local name, preferring the variable when
---   one exists is unambiguous, and falls straight through to plain
---   literal-text lookup otherwise -- covering both without new syntax.
---   Quoted tokens are deliberately excluded from this: quoting is
---   meaningful, not stylistic (see "Value model"), and a quoted
---   @read "injury"@ must always mean the literal text @injury@, never a
---   same-named local variable.
-pathLitText :: Env -> Value -> PathLit -> Action Text
-pathLitText env scope (PathLit Bare [Lit name])
-  | Map.member name env = messagesText <$> (valueDefault =<< evalExpr env scope (EIdent name))
-pathLitText env scope (PathLit _ parts) = interpText env scope parts
-
 -- | @read@'s own path resolution: a flat scope (a branch tree or a glob
 --   result -- see 'treeValueOfCommit') stores full paths as its own
 --   entries' keys, so the whole literal text is tried as one key first.
@@ -450,6 +483,19 @@ globMatchPat scope pat = do
 
 forceAt :: Value -> Text -> Action Value
 forceAt scope path = maybe emptyValue id <$> resolveRead scope path
+
+-- | Matches @pat@ against @scope@ (a glob if it has metacharacters, an
+--   exact match otherwise -- 'Glob.compile' treats a plain string
+--   literally) and builds a container 'Value' keyed by each match, its
+--   own entry the real, lazy resolution at that path -- exactly what a
+--   bare glob expression already builds (see 'EString'\'s own
+--   @Bare@ case), reused here by 'ERead' for both a literal string
+--   argument and an otherwise-unresolved bare identifier.
+globResolve :: Value -> Text -> Action Value
+globResolve scope pat = do
+  matches <- globMatchPat scope pat
+  entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
+  pure (Value (pure []) entries defaultMeta)
 
 -- ---------------------------------------------------------------------------
 -- Filters -- all of them pure, no exceptions. Applying a filter is a

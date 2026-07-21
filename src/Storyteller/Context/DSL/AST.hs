@@ -34,8 +34,9 @@
 --     already fail before producing a 'Value' at all when a name's
 --     'Storyteller.Context.DSL.Value.Binding' still needs arguments, the
 --     same failure any other expression position hits. 'ERead's argument
---     stays a 'PathLit', a separate, narrower restriction unrelated to
---     this one (see its own haddock).
+--     is a general 'Expr' too now, the same generalization -- see its own
+--     haddock for the one wrinkle (a quoted string literal) that still
+--     needs special handling in the compiler, unrelated to the parser.
 module Storyteller.Context.DSL.AST
   ( Name
   , Pos(..)
@@ -43,7 +44,6 @@ module Storyteller.Context.DSL.AST
   , Quoting(..)
   , InterpPart(..)
   , InterpText
-  , PathLit(..)
   , Expr(..)
   , Stmt(..)
   , Block
@@ -94,17 +94,6 @@ data InterpPart
 
 type InterpText = [InterpPart]
 
--- | The argument position both @read@ and @for@'s source take: always a
---   literal path or glob token (quoted or bare), interpolation allowed,
---   never a general 'Expr' -- this is what makes "read never takes a
---   glob or a predicate query" and "for's source is always a literal
---   glob expression" structural parser guarantees rather than compiler
---   checks.
-data PathLit = PathLit
-  { pathQuoting :: !Quoting
-  , pathText    :: !InterpText
-  } deriving (Eq, Show, Lift)
-
 data Expr
   = EString !Quoting !InterpText
     -- ^ A bare statement's plain string/glob literal. Per the Value
@@ -148,8 +137,12 @@ data Expr
     -- ^ @expr | filterName(args...)@. The filter vocabulary is closed
     --   and host-provided (see the spec's "Filters" section); this node
     --   only records the call, never what the filter does.
-  | ERead !PathLit
-    -- ^ Primitive 3.
+  | ERead !Expr
+    -- ^ Primitive 3. A general 'Expr', not a dedicated path-literal type
+    --   -- see this module's own haddock and
+    --   "Storyteller.Context.DSL.Compile"'s @ERead@ case for the one
+    --   compiler-level wrinkle (a quoted string literal) this
+    --   generalization still needs.
   deriving (Eq, Show, Lift)
 
 data Stmt

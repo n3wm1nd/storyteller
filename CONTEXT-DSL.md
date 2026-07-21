@@ -111,21 +111,43 @@ something asks.
 
 Unchanged from the original eight (function definitions, bare-statement
 emit, `read`, `x = ...`, `as "name": ...`, `in <expr>: ...`, `> <string>`,
-`< <expr>`), plus `for`, not a separate ninth case, **except that `read` is
-now a generalization, not a special case restricted to one literal path.**
-A bare glob (wildcarded or not — `*.md` and `test.md` are the same kind of
-expression, one just happens to match at most one entry) is itself a
-complete, meaningful expression: it gathers matching entries into content
-but, on its own, **writes nothing** to the enclosing writer target — the
-same "build structure, don't emit" behavior `for`'s own body already has.
-`read <expr>` is what adds emission: it forces `<expr>` (a glob, a literal
-path, a variable, whatever it evaluates to) and additionally appends its
-content to the current default stream. So `read *.md` and `read test.md`
-are both just `read` applied to a glob expression — one multi-match, one
-degenerate single-match — not two different primitives. `read` always
-stamps `metaProvenance` on the `Value` it produces (path + the tick it was
-read at) — free, since the path and ambient commit are already known before
-anything is forced.
+`< <expr>`), plus `for`.
+
+**`read`'s generalization is narrower than an earlier draft of this section
+claimed — worth being precise about, since it's a real gap, not just
+phrasing.** `Storyteller.Context.DSL.AST.ERead` still takes a `PathLit`
+(quoted or bare, `%interp%` allowed), not a general `Expr` — `read
+(charactersin path)` or `read (**/* | exclude("style.md"))` do not parse
+today. The one case that *does* work beyond a literal path is
+`pathLitText`'s own special rule: a single-segment bare token (`read f`,
+inside a `for f in ...:` body) prefers a bound local variable of that exact
+name over literal-text lookup, since a real filename can never
+simultaneously be one. That covers every worked example that needs it, but
+it is not the same claim as "`read` accepts any expression" — fully
+generalizing `read`'s argument to an arbitrary `Expr` (matching what `for`
+just gained) hasn't been done. A bare glob token (`*.md`, `test.md` —
+wildcarded or not, the same kind of expression either way) is still itself
+a complete, meaningful expression on its own, gathering matching entries
+into content but, on its own, **writing nothing** to the enclosing writer
+target — the same "build structure, don't emit" behavior `for`'s own body
+has. `read` always stamps `metaProvenance` on the `Value` it produces (path
++ the tick it was read at) — free, since the path and ambient commit are
+already known before anything is forced.
+
+**`for`'s source is a general `Expr`, confirmed and implemented** (see
+`Storyteller.Context.DSL.AST.SFor`) — a glob was never structurally
+special; a bare glob token is just one more expression that happens to
+evaluate to a `Value` with entries (see `EString`'s own case above),
+exactly like a local variable, a fully-applied function call (`for c in
+(charactersin path): ...`), or a filtered expression (`for f in (**/* |
+exclude(...)): ...`). `for` evaluates its source to a `Value` and iterates
+its own `valueEntries`' keys, binding the loop variable to each key's text
+exactly as before — whatever produced those entries. The one thing that
+still can't appear there is an *unapplied* function reference, and that
+falls out for free: `EIdent`/`EApp` already fail before producing a `Value`
+at all when a name's `Binding` still needs arguments, the same failure any
+other expression position hits — there was never a separate check to add
+for `for` specifically.
 
 ## Grammar: bare tokens are disambiguated lexically, at parse time — no runtime fallback
 
@@ -505,6 +527,14 @@ Unchanged in spirit from the original design:
 
 ## Open questions
 
+- **`read`'s own argument stays a `PathLit`, not a general `Expr`** — `for`
+  got widened (see AST/Primitives above); `read` didn't, even though the
+  original design's ambition was to unify them. Doing so would need
+  `ERead`'s field to change the same way `SFor`'s did, plus deciding what
+  `read` does when its expression evaluates to something with *multiple*
+  entries (a multi-match glob, say) — concatenate them in order, the way a
+  `for`-plus-`join` gives today, or something else? Not yet decided, and
+  not yet built.
 - **`branch`**: it was pulled out of `coreFilters` specifically because
   resolving a branch name needed storage access a pure filter couldn't
   express. That reason is gone now that filters are `Action`-typed — does
@@ -581,20 +611,33 @@ as "injury": x
 x | orifempty "not injured"
 ```
 
-**`read` applied directly to a glob** — the payoff of unifying `read` and
-glob-matching rather than treating `read` as "one literal path" only. When
-per-file structure isn't needed, `read` over a multi-match glob replaces
-what used to require an explicit `for`:
+**`read` does *not* take a multi-match glob today** — a corrected example,
+not a worked one: an earlier draft of this section showed `read
+tracking/**/*.md` as a shorthand for "read every matching file, flattened,
+no per-file structure," reasoning that `read` had been unified with glob
+evaluation the same way `for` just was. That was aspirational, not built —
+`Storyteller.Context.DSL.AST.ERead` still takes a `PathLit`
+(`Storyteller.Context.DSL.Compile.resolveRead` does an exact-key or
+segment-path lookup, no `Glob.match` anywhere in it), so `read
+tracking/**/*.md` resolves to an empty `Value` today, silently — there is
+no file literally named `tracking/**/*.md`. The one way to get "every
+matching file's content, flattened, no per-file structure" today is still
+via `for` plus `join` — `for` now being able to iterate any expression
+doesn't change what `read` itself accepts:
 
 ```
--- when you need each file addressable by name (a bucket per file):
 for f in tracking/**/*.md:
   as f: read f
 
--- when you only want the flattened content, nothing per-file to address:
-"## Everything currently tracked"
-read tracking/**/*.md
+-- flattened, if a single joined string (not per-file structure) is wanted:
+x =
+  for f in tracking/**/*.md:
+    as f: read f
+x | join("\n\n")
 ```
+
+Fully generalizing `read`'s own argument to an arbitrary `Expr` — matching
+what `for` gained — remains open; see Open questions.
 
 **Bare-token resolution, both outcomes side by side** — illustrating the
 Grammar rule directly: the first line is an application-free name lookup

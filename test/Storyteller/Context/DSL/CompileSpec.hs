@@ -117,6 +117,7 @@ spec = do
   journalDeltaSpec
   contextCharacterSpec
   forOverBindingResultSpec
+  multiMatchReadSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -226,6 +227,44 @@ forLoopEntriesSpec = describe "for/as nested entries" $
       openVal <- openAction
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
       pure (Map.fromList entryText)
+
+-- | @read@'s own argument is a general expression too now (see
+--   'Storyteller.Context.DSL.AST.Expr''s @ERead@ case) -- @read *.md@
+--   really does read every match, in order, concatenated, not just one
+--   file. Quoting a multi-match pattern behaves identically (quoting only
+--   ever meant "definitely a path, never a variable" to @read@, never
+--   "no glob-matching") -- checked here too, alongside the bare form.
+multiMatchReadSpec :: Spec
+multiMatchReadSpec = describe "read *.md (a multi-match glob argument, not just one literal path)" $ do
+  it "reads every matching file's own content, in order, concatenated" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("tracking/gun.md", "a gun on the mantelpiece")
+        , ("tracking/letter.md", "an unopened letter")
+        , ("other/unrelated.md", "should not be matched")
+        ]
+      runDslOn (BranchName "main") (valueDefault =<< multiMatchDsl))
+    `shouldBe` Right
+      [ FileRead "tracking/gun.md" "a gun on the mantelpiece"
+      , FileRead "tracking/letter.md" "an unopened letter"
+      ]
+
+  it "quoting a multi-match pattern behaves identically -- quoting never meant 'no glob-matching' to read" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("tracking/gun.md", "a gun on the mantelpiece")
+        , ("tracking/letter.md", "an unopened letter")
+        ]
+      runDslOn (BranchName "main") (valueDefault =<< quotedMultiMatchDsl))
+    `shouldBe` Right
+      [ FileRead "tracking/gun.md" "a gun on the mantelpiece"
+      , FileRead "tracking/letter.md" "an unopened letter"
+      ]
+  where
+    multiMatchDsl :: Action Value
+    multiMatchDsl = [dsl| read tracking/*.md |]
+    quotedMultiMatchDsl :: Action Value
+    quotedMultiMatchDsl = [dsl| read "tracking/*.md" |]
 
 -- | The case that actually motivated widening @for@'s source from a
 --   literal 'Storyteller.Context.DSL.AST.PathLit' to a general

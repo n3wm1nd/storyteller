@@ -236,17 +236,6 @@ pBareExpr = classify <$> bareWord
       | isPathLike t = EString Bare (parseInterp t)
       | otherwise    = EIdent t
 
-pQuotedPathLit :: Parser PathLit
-pQuotedPathLit = PathLit Quoted . parseInterp <$> pQuotedText
-
-pBarePathLit :: Parser PathLit
-pBarePathLit = PathLit Bare . parseInterp <$> bareWord
-
--- | The argument of @read@ or @for@'s source -- always a literal
---   path/glob token, never a general expression (see 'PathLit'').
-pPathLit :: Parser PathLit
-pPathLit = pQuotedPathLit <|> pBarePathLit
-
 -- ---------------------------------------------------------------------------
 -- Expressions
 -- ---------------------------------------------------------------------------
@@ -254,10 +243,16 @@ pPathLit = pQuotedPathLit <|> pBarePathLit
 pParenExpr :: Parser Expr
 pParenExpr = between (symbol "(") (symbol ")") pExpr
 
+-- | @read@'s own argument is a general expression now (see
+--   'Storyteller.Context.DSL.AST.Expr'\'s own haddock on 'ERead') --
+--   'pApp', not 'pExpr', for the same reason 'pAssistantExpr' uses 'pApp'
+--   for @>@'s own argument: a trailing @| filter@ has to apply to
+--   @read@'s own result (@read a | b@ means "filter what @read a@
+--   produced"), not get swallowed into its argument.
 pReadExpr :: Parser Expr
 pReadExpr = do
   keyword "read"
-  ERead <$> pPathLit
+  ERead <$> pApp
 
 -- | @< expr@ -- rule 8. Unlike @>@ (a statement-only literal
 --   constructor, see 'pAssistantExpr'), this wraps a general expression

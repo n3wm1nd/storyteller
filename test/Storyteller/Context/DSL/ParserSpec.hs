@@ -119,12 +119,15 @@ shapeSpec = describe "AST shape" $ do
 
   it "wraps a general expression (not just a literal) for '>'" $
     parseDefinition "<test>" "> read f\n"
-      `shouldBe` Right (Definition [] [Located (Pos 1 1) (SExpr (EAssistant (ERead (PathLit Bare [Lit "f"]))))])
+      `shouldBe` Right (Definition [] [Located (Pos 1 1) (SExpr (EAssistant (ERead (EIdent "f"))))])
+      -- "f" has no '/' or '*', so it's an identifier reference now that
+      -- read's own argument is a general Expr -- see the module's own
+      -- Grammar note (shape, not read-vs-general-position, decides).
 
   it "wraps a general expression (not just a literal) for '<'" $
     parseDefinition "<test>" "< read notes.md\n"
       `shouldBe` Right (Definition []
-        [ Located (Pos 1 1) (SExpr (EUser (ERead (PathLit Bare [Lit "notes.md"])))) ])
+        [ Located (Pos 1 1) (SExpr (EUser (ERead (EIdent "notes.md")))) ])
 
   it "distinguishes quoted (inert) from bare (glob) tokens" $
     parseDefinition "<test>" "\"**/*\"\nfor f in **/*:\n  f\n"
@@ -141,7 +144,7 @@ shapeSpec = describe "AST shape" $ do
   it "splits %name% interpolation out of a bare path" $
     parseDefinition "<test>" "read presence/%chapterPath%/*.md\n"
       `shouldBe` Right (Definition []
-        [ Located (Pos 1 1) (SExpr (ERead (PathLit Bare
+        [ Located (Pos 1 1) (SExpr (ERead (EString Bare
             [Lit "presence/", Interp "chapterPath", Lit "/*.md"]))) ])
 
   it "parses a curried function head with a multi-statement body" $
