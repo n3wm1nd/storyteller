@@ -18,13 +18,10 @@ What isn't solved is the structural problem: over a long story, things go wrong 
 
 - A character drifts from who they were established to be
 - Alice references something she couldn't have known yet
-- A detail from chapter 2 quietly contradicts chapter 8
+- Bob magically knows something he shouldn't
 - You fix it in the moment, but the root cause is still there, and it happens again
 
-These aren't quality problems. They're structural problems. A better LLM doesn't fix them — a better framework does.
-
-Storyteller is that framework.
-
+Storyteller attempts to solve that by keeping track of knowledge as it evolves, and how it relates to each other.
 ---
 
 ## Who it's for
@@ -41,7 +38,7 @@ What it's probably not for: serious authors who already hold complex plot struct
 
 ## How it works
 
-At its core, Storyteller is a **structured workspace** for long-form narrative — one that understands the difference between a story and a wiki.
+At its core, Storyteller is a **structured workspace** for long-form or structured narrative — one that understands the difference between a story and a wiki.
 
 ### The story is a log, not a document
 
@@ -65,7 +62,7 @@ What counts as "lore," a "chapter," or a given character's context isn't hardcod
 
 ### Fixes are permanent
 
-When a character drifts, you fix it at the root — amend their branch at the point where the wrong belief or constraint entered, and regenerate. The fix propagates forward automatically. You're not patching around the problem every session; you're correcting it once.
+When a character drifts, you fix it at the root — amend their branch at the point where the wrong belief or constraint entered, and regenerate. You're not just prompting with additional instructions, or adding some standing authors notes, you're correcting them. The fix propagates forward automatically. You're not patching around the problem every session; you're correcting it once.
 
 ---
 
@@ -73,11 +70,15 @@ When a character drifts, you fix it at the root — amend their branch at the po
 
 Open a project: file tree on the left, prose in the center, an instruction field at the bottom. It looks like a text editor. For most workflows, that's all you interact with.
 
-The structure reveals itself as you need it. The character sidebar, the codex, the undo timeline — they're one interaction away, not in your face on day one.
-
-The **Writer** surface is built and working today: a file tree, per-file prose/chat views, a character sidebar with live presence, a codex for lore, and an agent selector (write, fix, append, note, regenerate, roleplay) behind the input bar instead of a prose/agent/discussion mode switch. The **roleplay** mode is a real cooperative-character mechanism already, not a placeholder: every character present in the scene is interrogated in turn (a tool-calling subagent scoped to their own branch), a scene gets composed from their answers, and every present character then writes their own post-scene journal reaction — but it's one more mode inside Writer's existing input bar, not a standalone surface. A dedicated **RP** surface (its own view, tuned for turn-by-turn SillyTavern-adjacent interaction rather than prose-file editing) and a **Wiki** surface (encyclopedia-style cross-referenced reference) are the other two surfaces this architecture is meant to support — same storage backend, same character branches, same context assembly underneath — but neither exists yet; Writer is where the design gets proven out first.
+The **Writer** surface is built and working today: a file tree, per-file prose/chat views, a character sidebar with live presence, a codex for lore, and an agent selector (write, fix, append, note, regenerate, roleplay) behind the input bar instead of a prose/agent/discussion mode switch. The **roleplay** mode is a real cooperative-character mechanism already, not a placeholder: every character present in the scene is interrogated in turn (a tool-calling subagent scoped to their own branch), a scene gets composed from their answers, and every present character then writes their own post-scene journal reaction — but it's one more mode inside Writer's existing input bar, not a standalone surface. 
 
 The backend is frontend-agnostic: a WebSocket server exposes the full agent and storage layer, and any frontend can connect to it. The WebSocket model is a natural fit — each window opens a connection scoped to a branch, receives a full snapshot on connect, and stays live for the duration of the session. Multiple windows on the same branch all receive updates as they happen.
+
+A few screenshots, mostly placeholder UI but better than nothing:
+
+![Writer view](docs/screenshot_clean.png)
+![Undo timeline](docs/screenshot_timetravel.png)
+![Context DSL editor](docs/screenshot_contextdsl.png)
 
 ---
 
@@ -92,6 +93,7 @@ The LLM is still the one writing. Storyteller is the framework that makes what i
 ## Status
 
 Working, not finished. The data model and design are documented in `DESIGN.md` and `DATA-MODEL.md`; the wire protocol in `WS-PROTOCOL.md`; frontend/backend conventions in `WRITER.md`; the context-assembly DSL in `CONTEXT-DSL.md`. The backend is Haskell (`runix` effect system, git-backed storage); `story-server` is a live WebSocket server with a working Next.js frontend (`frontend/`) connected to it — this isn't a mockup-only stage anymore, though `mockup/` still exists for UI exploration ahead of building something for real.
+Some builds might break functionality, documentation might drift at times.
 
 Built and working: character branches (`sheet.md`/`journal.md`) with scene-scoped presence tracking; full context assembly for prose generation (world lore, a style guide, per-character sheet/blurb/full-context/journal, pinned short-term context, earlier-chapter continuity, and the current file's own conversation history, assembled into a real per-call message list rather than one flattened prompt) driven by a small Context DSL that's overridable per-project (a dedicated `contexts` branch) and per-request (a client-submitted program), with both a casual toggle panel and a power-user DSL editor in the frontend; the outline → beat-sheet → chapter pipeline; a fixer agent that can target one atom with either a full rewrite or an exact-match span replacement; a flow-aware writer that revises in-flight prose before continuing; a roleplay mode that interrogates every character present in a scene (each via their own tool-calling subagent, scoped to their own branch) before composing the scene and having each character write their own post-scene journal reaction; a read-only discuss-the-story chat agent; image attachments (upload or drag-reference onto a file's timeline, author-facing only — not yet passed to any agent as vision input); SillyTavern character card import (V1/V2/V3 JSON or PNG, mapped onto a new character branch in one atomic command); undo; and an agent-integration test suite that runs these agents against real models (cached, replayable) rather than only mocked unit tests.
 
