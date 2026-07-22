@@ -37,6 +37,7 @@ module Server.Writer.Lore
   ( loreTree
   ) where
 
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Text as T
@@ -46,9 +47,10 @@ import Runix.FileSystem (listAllFiles, readFile)
 import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
-import Storyteller.Core.Context (ContextStorage, getContextDefinition, runContextValue)
+import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Core.Context (ContextStorage, getContextOverrides, resolveOverrideDefinition, runContextValue)
 import Storyteller.Core.Git (BranchTag)
-import Storyteller.Context.DSL.Compile (Binding(..))
+import Storyteller.Context.DSL.Compile (bval, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value (Value(..), defaultMeta, leafValue)
 import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
@@ -61,7 +63,7 @@ import Prelude hiding (readFile)
 --   'Storyteller.Writer.Lore.isLoreEligible'), paired with the first
 --   non-blank line and the parsed, mention-filtered aliases of its own
 --   content, built into a tree.
-loreTree :: (BranchOpen r, Members '[ContextStorage, Git] r) => Sem r [LoreNode]
+loreTree :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r) => Sem r [LoreNode]
 loreTree = hideBinaryFiles @(BranchTag Main) @Main $ do
   paths  <- filter isLoreEligible <$> listAllFiles @(BranchTag Main) "/"
   files  <- mapM readWithBlurb paths
@@ -80,7 +82,7 @@ loreTree = hideBinaryFiles @(BranchTag Main) @Main $ do
 --   second time for just to populate a field no default or override
 --   actually looks at yet.
 activeMentionAliases
-  :: (BranchOpen r, Members '[ContextStorage, Git] r)
+  :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r)
   => [T.Text] -> Sem r (Set T.Text)
 activeMentionAliases aliasNames = do
   let candidate = Value
@@ -88,17 +90,9 @@ activeMentionAliases aliasNames = do
         , valueEntries = [ (name, pure (leafValue [])) | name <- aliasNames ]
         , valueMeta = defaultMeta
         }
-      defaultBinding = CtxLibrary.toBinding1 CtxLibrary.contextMentionFilter
-  binding <- getContextDefinition "context.mentionFilter" defaultBinding
-  case binding of
-    Binding 1 fn -> Set.fromList . map fst . valueEntries
-      <$> runContextValue @Main (fn [pure candidate] emptyValueUnused)
-    Binding n _  -> fail ("context.mentionFilter: expected arity 1, got " <> show n)
-  where
-    -- The scope argument a 'Binding'\'s own function takes is always
-    -- ignored for a top-level definition (see
-    -- 'Storyteller.Core.Context.resolveContextOverride'\/'resolveContextQuery'
-    -- 's own haddocks: both route through 'runDefinition', which bootstraps
-    -- its own scope from whatever commit is ambient) -- this is never
-    -- forced.
-    emptyValueUnused = Value { valueDefault = pure [], valueEntries = [], valueMeta = defaultMeta }
+  overrides <- getContextOverrides
+  result <- runContextValue @Main $
+    case resolveOverrideDefinition 1 (Map.lookup "context.mentionFilter" overrides) of
+      Just overrideDef -> runDefinition @Main overrideDef [bval (pure candidate)]
+      Nothing          -> CtxLibrary.contextMentionFilter @Main (bval (pure candidate))
+  pure (Set.fromList (map fst (valueEntries result)))

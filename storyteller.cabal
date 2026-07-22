@@ -26,6 +26,7 @@ library
                   , Storyteller.Writer.Agent.Context
                   , Storyteller.Core.Storage
                   , Storyteller.Core.Branch
+                  , Storyteller.Core.ContentEffects
                   , Storyteller.Core.Undo
                   , Storyteller.Core.Git
                   , Storyteller.Core.Runtime

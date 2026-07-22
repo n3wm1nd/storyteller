@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -18,14 +19,12 @@
 --   ever inspects the AST, never runs it).
 --
 --   "Storyteller.Context.DSL.Compile" itself has no Polysemy dependency
---   and no type parameter anywhere -- 'Value' is monomorphic, and every
---   deferred computation is an 'Action', generic over any backend that
---   can satisfy 'Core.StoreM' and 'MonadBranch'. The one thing that can't
---   be expressed via 'Core.StoreM' alone (resolving a 'BranchName' to a
---   commit) is exactly 'MonadBranch'. This module is exactly where a
---   *real* instance gets supplied: the @instance MonadBranch (Sem r)@
---   below, closing over 'getBranch', is the *only* Polysemy-specific
---   code anywhere in this file's use of the DSL.
+--   of its own beyond the generic effect row 'Storyteller.Context.DSL.Value.Action'
+--   carries -- every deferred computation names exactly the
+--   "Storyteller.Core.ContentEffects" vocabulary it needs
+--   (@\@branch@-phantomed, see that module's own Haddock), never a
+--   concrete backend. 'runDslOn' below is where a *real* git-backed
+--   instance of that vocabulary gets supplied, via 'runContextValue'.
 module Storyteller.Context.DSL.CompileSpec (spec) where
 
 import Control.Monad (void)
@@ -39,19 +38,16 @@ import Test.Hspec
 import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
-import Runix.Git (Git)
-
-import qualified Storage.Core as Core
-
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Git (runBranchOpGit, runStorage)
-import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
+import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Core.Context (buildContextLibrary)
+import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
+import Storyteller.Core.ContentEffects (BranchResolve, Presence, TreeAccess)
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding, bval, fn1, journalDelta)
@@ -61,11 +57,7 @@ import Storyteller.Context.DSL.Value
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
--- | The real, production 'MonadBranch' instance now lives in
---   "Storyteller.Core.Git" (closing over 'getBranch', same as this file's
---   own removed orphan used to) -- everything else here is 'Action' code
---   that has no idea this is how branches get resolved, it only ever
---   reaches for it via 'askBranch'. Creates a branch and seeds it with files, all in one short-lived
+-- | Creates a branch and seeds it with files, all in one short-lived
 --   'BranchOp' scope -- setup only, the DSL interpreter itself never
 --   touches this. Deliberately commits each file as a real 'Ops.addAtom'
 --   tick (via 'runStorage', not 'Runix.FileSystem.writeFile') -- plain
@@ -80,22 +72,30 @@ seedBranch name files = do
   runBranchOpGit @Main (BranchName name)
     (mapM_ (\(path, content) -> runStorage @Main (Ops.addAtom path content)) files)
 
--- | Resolves @bname@ to its current head and runs @act@'s 'StoreT'
---   computation from there -- the ambient position every
---   'Storyteller.Context.DSL.Compile.currentScope'-derived call in this
---   file relies on, established here rather than threaded through the
---   DSL's own API.
-runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
-runDslOn bname act = resolveBranch bname >>= \case
-  Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
+-- | Opens @bname@'s own 'BranchOp' scope (tagged @\@Main@, matching every
+--   other test in this suite) and runs @act@ through 'runContextValue' --
+--   the ambient position every 'Storyteller.Context.DSL.Compile.currentScope'-
+--   derived call in this file relies on, established here rather than
+--   threaded through the DSL's own API.
+-- | The exact 'Members' every @go@ helper below needs -- named once so
+--   each @where@-bound @go@ can carry an explicit signature (needed:
+--   without one, a plain @go = do ...@ gets a monomorphic inferred type
+--   that can't unify with 'runDslOn's own rank-2 argument).
+type DslR r = Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r
+
+runDslOn
+  :: forall a
+  .  BranchName
+  -> (forall r. DslR r => Action (ContextRow Main r) a)
+  -> Sem (StoryStorage : TestEffects '[]) a
+runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 -- | A plain-text leaf, ready to apply to a @['dsl'| ... |]@-spliced
 --   function's own parameters -- 'bval' baked in, so passing a leaf
 --   value stays exactly as terse as it was before 'Binding' became the
 --   parameter currency (see 'Storyteller.Context.DSL.Compile.Binding'\'s
 --   own haddock).
-textArg :: Text -> Binding
+textArg :: Text -> Binding r
 textArg = bval . pure . leafValue . (: []) . User
 
 spec :: Spec
@@ -133,12 +133,12 @@ spec = do
 --   implemented yet -- see "Storyteller.Context.DSL.Compile"'s module
 --   haddock); compiling it directly here and passing the result in
 --   stands in for that.
-ctxDsl :: Action Value
+ctxDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 ctxDsl = [dsl|
 as "injury": read status/injury.md
 |]
 
-callerDsl :: Binding -> Action Value
+callerDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
 callerDsl = [dsl|
 ctx:
   in ctx: read "injury" | orifempty "not injured"
@@ -147,7 +147,7 @@ ctx:
 runInjuryCase :: Text -> [(FilePath, Text)] -> Either String Text
 runInjuryCase bname files = run $ testStack $ do
   seedBranch bname files
-  runDslOn (BranchName bname) (messagesText <$> (valueDefault =<< callerDsl (bval ctxDsl)))
+  runDslOn (BranchName bname) (messagesText <$> (valueDefault =<< callerDsl @Main (bval (ctxDsl @Main))))
 
 injuryExampleSpec :: Spec
 injuryExampleSpec = describe "injury/status continuity example" $
@@ -161,7 +161,7 @@ absenceSpec = describe "absence, not an error (Non-goals)" $
     runInjuryCase "main" []
       `shouldBe` Right "not injured"
 
-crossBranchDsl :: Binding -> Action Value
+crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Binding r -> Action r (Value r)
 crossBranchDsl = [dsl|
 charname:
   in (charname | branch): read "sheet.md"
@@ -174,13 +174,13 @@ crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $
          seedBranch "main" []
          seedBranch "character/aria" [("sheet.md", "Aria is a wandering rogue.")]
          runDslOn (BranchName "main")
-           (messagesText <$> (valueDefault =<< crossBranchDsl (textArg "aria"))))
+           (messagesText <$> (valueDefault =<< crossBranchDsl @Main (textArg "aria"))))
        `shouldBe` Right "Aria is a wandering rogue."
 
 -- | Shared by 'forLoopSpec' (checks the container's own default text)
 --   and 'forLoopEntriesSpec' (checks what's inside each entry) -- both
 --   exercise the same definition.
-openTrackingDsl :: Action Value
+openTrackingDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 openTrackingDsl = [dsl|
 as "open":
   for f in tracking/**.md:
@@ -202,8 +202,9 @@ forLoopSpec = describe "for/as over a glob (Chekhov's-gun list example)" $
       -- named exports) -- see the follow-up test below for what's
       -- actually inside it.
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Text, Map Name Text)
     go = do
-      v         <- openTrackingDsl
+      v         <- openTrackingDsl @Main
       defMsgs   <- valueDefault v
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
       pure (messagesText defMsgs, Map.fromList entryText :: Map Name Text)
@@ -222,8 +223,9 @@ forLoopEntriesSpec = describe "for/as nested entries" $
       , ("tracking/letter.md", "an unopened letter")
       ])
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
     go = do
-      v       <- openTrackingDsl
+      v       <- openTrackingDsl @Main
       Just openAction <- pure (lookup "open" (valueEntries v))
       openVal <- openAction
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries openVal)
@@ -244,7 +246,7 @@ multiMatchReadSpec = describe "read *.md (a multi-match glob argument, not just 
         , ("tracking/letter.md", "an unopened letter")
         , ("other/unrelated.md", "should not be matched")
         ]
-      runDslOn (BranchName "main") (valueDefault =<< multiMatchDsl))
+      runDslOn (BranchName "main") (valueDefault =<< multiMatchDsl @Main))
     `shouldBe` Right
       [ FileRead "tracking/gun.md" "a gun on the mantelpiece"
       , FileRead "tracking/letter.md" "an unopened letter"
@@ -256,15 +258,15 @@ multiMatchReadSpec = describe "read *.md (a multi-match glob argument, not just 
         [ ("tracking/gun.md", "a gun on the mantelpiece")
         , ("tracking/letter.md", "an unopened letter")
         ]
-      runDslOn (BranchName "main") (valueDefault =<< quotedMultiMatchDsl))
+      runDslOn (BranchName "main") (valueDefault =<< quotedMultiMatchDsl @Main))
     `shouldBe` Right
       [ FileRead "tracking/gun.md" "a gun on the mantelpiece"
       , FileRead "tracking/letter.md" "an unopened letter"
       ]
   where
-    multiMatchDsl :: Action Value
+    multiMatchDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
     multiMatchDsl = [dsl| read tracking/*.md |]
-    quotedMultiMatchDsl :: Action Value
+    quotedMultiMatchDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
     quotedMultiMatchDsl = [dsl| read "tracking/*.md" |]
 
 -- | The case that actually motivated widening @for@'s source from a
@@ -288,13 +290,14 @@ forOverBindingResultSpec = describe "for iterates a Binding call's result direct
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["aria"]
   where
-    forCharsDsl :: Action Value
+    forCharsDsl :: forall branch r. Members '[TreeAccess branch, Presence branch, Fail] r => Action r (Value r)
     forCharsDsl = [dsl|
 for c in (charactersin "scene.md"):
   as c: c
 |]
+    go :: forall r. DslR r => Action (ContextRow Main r) [Name]
     go = do
-      v <- forCharsDsl
+      v <- forCharsDsl @Main
       pure (map fst (valueEntries v))
 
 -- | @charactersin@ reads presence-tick history off the *ambient*
@@ -320,20 +323,21 @@ charactersinIgnoresBranchRedirectionSpec =
         runDslOn (BranchName "main") go)
       `shouldBe` Right ["aria"]
   where
-    redirectedDsl :: Binding -> Action Value
+    redirectedDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Presence branch, Fail] r => Binding r -> Action r (Value r)
     redirectedDsl = [dsl|
 charname:
   in (charname | branch):
     for c in (charactersin "scene.md"):
       as c: c
 |]
+    go :: forall r. DslR r => Action (ContextRow Main r) [Name]
     go = do
-      v <- redirectedDsl (textArg "aria")
+      v <- redirectedDsl @Main (textArg "aria")
       pure (map fst (valueEntries v))
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
 --   'FileRead'; @<@ forces it to read as ordinary authored text instead.
-forceUserRoleDsl :: Action Value
+forceUserRoleDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 forceUserRoleDsl = [dsl|
 < read notes.md
 |]
@@ -343,7 +347,7 @@ forceUserRoleSpec = describe "< <expr> (force User role)" $
   it "re-tags a read's FileRead messages as User, leaving the text itself unchanged" $
     run (testStack $ do
       seedBranch "main" [("notes.md", "the door was left ajar")]
-      runDslOn (BranchName "main") (valueDefault =<< forceUserRoleDsl))
+      runDslOn (BranchName "main") (valueDefault =<< forceUserRoleDsl @Main))
     `shouldBe` Right [User "the door was left ajar"]
 
 -- | A local function isn't a different kind of thing from a plain value
@@ -355,7 +359,7 @@ forceUserRoleSpec = describe "< <expr> (force User role)" $
 --   unable to actually be called -- and checks the *content*, not just
 --   the shape, so a function silently ignoring its argument (always
 --   resolving the same loop iteration) wouldn't slip through.
-localFunctionInForLoopDsl :: Action Value
+localFunctionInForLoopDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 localFunctionInForLoopDsl = [dsl|
 as "results":
   for f in tracking/**.md:
@@ -374,8 +378,9 @@ localFunctionInForLoopSpec = describe "a local function bound fresh each for-loo
       runDslOn (BranchName "main") go)
     `shouldBe` Right (Map.fromList [("tracking/gun.md", "gun"), ("tracking/letter.md", "letter")])
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
     go = do
-      v       <- localFunctionInForLoopDsl
+      v       <- localFunctionInForLoopDsl @Main
       Just resultsAction <- pure (lookup "results" (valueEntries v))
       results <- resultsAction
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries results)
@@ -389,13 +394,13 @@ localFunctionInForLoopSpec = describe "a local function bound fresh each for-loo
 --   compile-tested until now). 'shout' here stands in for that: a pure
 --   transform over its own argument, with no reason to see the caller's
 --   ambient scope, wrapped via 'fn1' rather than a leaf 'bval'.
-shout :: Action Value -> Action Value
+shout :: Action r (Value r) -> Action r (Value r)
 shout av = do
   v    <- av
   msgs <- valueDefault v
   pure (leafValue [User (T.toUpper (messagesText msgs))])
 
-hostFunctionDsl :: Binding -> Action Value
+hostFunctionDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
 hostFunctionDsl = [dsl|
 transform:
   transform (read notes.md)
@@ -406,7 +411,7 @@ hostFunctionParamSpec = describe "a parameter can be a real Haskell function, no
   it "applies a host-supplied fn1 the same way it'd apply any other callable" $
     run (testStack $ do
       seedBranch "main" [("notes.md", "quietly written")]
-      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< hostFunctionDsl (fn1 shout))))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< hostFunctionDsl @Main (fn1 shout))))
     `shouldBe` Right "QUIETLY WRITTEN"
 
 -- | 'without'\/'only' only ever match a full path *exactly* -- 'exclude'
@@ -414,7 +419,7 @@ hostFunctionParamSpec = describe "a parameter can be a real Haskell function, no
 --   context-selection design's own @"lore"@ scope to drop a whole
 --   subtree (@exclude("secrets\/**")@) without enumerating every file in
 --   it individually.
-excludeFilterDsl :: Action Value
+excludeFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 excludeFilterDsl = [dsl|
 as "kept":
   in (**/* | exclude("secrets/**")):
@@ -438,8 +443,9 @@ excludeFilterSpec = describe "expr | exclude(pattern...) (glob-pattern exclusion
       , ("other.md", "also kept")
       ])
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
     go = do
-      v       <- excludeFilterDsl
+      v       <- excludeFilterDsl @Main
       Just keptAction <- pure (lookup "kept" (valueEntries v))
       kept <- keptAction
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries kept)
@@ -457,7 +463,7 @@ excludeFilterSpec = describe "expr | exclude(pattern...) (glob-pattern exclusion
 --   'valueEntries' directly, in whatever order they're already in)
 --   rather than a second @for@, since re-globbing would just re-sort
 --   lexically and silently undo 'sortBy's own reordering.
-sortByFilterDsl :: Action Value
+sortByFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 sortByFilterDsl = [dsl|
 x =
   for f in *.md:
@@ -474,7 +480,7 @@ sortByFilterSpec = describe "expr | sortBy (natural-key reordering)" $
         , ("ch2.md", "two")
         , ("ch1.md", "one")
         ]
-      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< sortByFilterDsl)))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< sortByFilterDsl @Main)))
     `shouldBe` Right "ch1.md,ch2.md,ch11.md"
 
 -- | The realistic shape a stored "chapters" definition actually needs:
@@ -484,7 +490,7 @@ sortByFilterSpec = describe "expr | sortBy (natural-key reordering)" $
 --   matches lexically (see its own haddock) -- before that fix, this
 --   second @for@ would have silently re-alphabetized @x@'s already-sorted
 --   entries right back to @ch1, ch11, ch2@.
-sortByThenReexportDsl :: Action Value
+sortByThenReexportDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 sortByThenReexportDsl = [dsl|
 x =
   for f in *.md:
@@ -506,8 +512,9 @@ sortByThenReexportSpec = describe "sortBy's reordering survives a subsequent for
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["ch1.md", "ch2.md", "ch11.md"]
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) [Name]
     go = do
-      v <- sortByThenReexportDsl
+      v <- sortByThenReexportDsl @Main
       pure (map fst (valueEntries v))
 
 -- | @exclude@ can take another already-computed definition's own result
@@ -519,13 +526,13 @@ sortByThenReexportSpec = describe "sortBy's reordering survives a subsequent for
 --   own definition, no pattern duplicated between the two, and the
 --   removal survives the second @for@ re-export instead of resurrecting
 --   the excluded paths as empty stubs.
-loreDsl :: Action Value
+loreDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 loreDsl = [dsl|
 for f in lore/**/*:
   as f: read f
 |]
 
-excludeByAnotherDefinitionDsl :: Binding -> Action Value
+excludeByAnotherDefinitionDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
 excludeByAnotherDefinitionDsl = [dsl|
 lore:
   in (**/* | exclude(lore)):
@@ -548,8 +555,9 @@ excludeByAnotherDefinitionSpec = describe "expr | exclude(anotherDefinition)" $
       , ("chapters/ch1.md", "chapter one prose")
       ])
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
     go = do
-      v <- excludeByAnotherDefinitionDsl (bval loreDsl)
+      v <- excludeByAnotherDefinitionDsl @Main (bval (loreDsl @Main))
       entryTexts <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
       pure (Map.fromList entryTexts)
 
@@ -558,7 +566,7 @@ excludeByAnotherDefinitionSpec = describe "expr | exclude(anotherDefinition)" $
 --   own message assembly would otherwise have to construct in Haskell --
 --   see 'Storyteller.Writer.Agent.Write.buildChapterMessages''s own
 --   earlier-chapters framing, the case that motivated widening @>@.
-assistantWrapsExprDsl :: Action Value
+assistantWrapsExprDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 assistantWrapsExprDsl = [dsl|
 as "chapter":
   "## Chapter: ch1.md"
@@ -573,8 +581,9 @@ assistantWrapsExprSpec = describe "> <expr> (Assistant-tag a general expression,
       runDslOn (BranchName "main") go)
     `shouldBe` Right [User "## Chapter: ch1.md", Assistant "chapter one prose"]
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) [Message]
     go = do
-      v <- assistantWrapsExprDsl
+      v <- assistantWrapsExprDsl @Main
       Just chapterAction <- pure (lookup "chapter" (valueEntries v))
       chapter <- chapterAction
       valueDefault chapter
@@ -592,12 +601,12 @@ exampleSheet = T.unlines
   , "Tags: Student, Human"
   ]
 
-nameFilterDsl :: Action Value
+nameFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 nameFilterDsl = [dsl|
 read "sheet.md" | name
 |]
 
-abstractFilterDsl :: Action Value
+abstractFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
 abstractFilterDsl = [dsl|
 read "sheet.md" | abstract
 |]
@@ -607,12 +616,12 @@ nameAbstractFilterSpec = describe "expr | name / expr | abstract (Markdown conve
   it "name extracts the leading # heading" $
     run (testStack $ do
       seedBranch "main" [("sheet.md", exampleSheet)]
-      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< nameFilterDsl)))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< nameFilterDsl @Main)))
     `shouldBe` Right "Jenny"
   it "abstract extracts the paragraph immediately following the heading" $
     run (testStack $ do
       seedBranch "main" [("sheet.md", exampleSheet)]
-      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< abstractFilterDsl)))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< abstractFilterDsl @Main)))
     `shouldBe` Right "Jenny is a girl who likes to read."
 
 -- | Seeds a character branch with a sheet, an unrelated file (for
@@ -635,7 +644,7 @@ seedCharacterJournalBranch name = do
     _  <- runStorage @Main (Ops.addAtomWithRefs [s2] "journal.md" "s2 content, but Jenny remembers it differently")
     pure ()
 
-journalDeltaDsl :: Binding -> Action Value
+journalDeltaDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
 journalDeltaDsl = [dsl|
 journal:
   journal "jenny"
@@ -648,7 +657,7 @@ journalDeltaSpec = describe "journalDelta (host-supplied Binding wrapping recent
       seedBranch "main" []
       seedCharacterJournalBranch "character/jenny"
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< journalDeltaDsl (journalDelta 30 10 0))))
+        (messagesText <$> (valueDefault =<< journalDeltaDsl @Main (journalDelta @Main 30 10 0))))
     `shouldBe` Right
       ( "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
         <> "s2 content, but Jenny remembers it differently"
@@ -688,8 +697,9 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
       , "s1 contents2 content, but Jenny remembers it differently"
       )
   where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Text, Text, Text, [Name], Text, Text)
     go = do
-      v <- CtxLibrary.contextCharacter "jenny"
+      v <- CtxLibrary.contextCharacter @Main "jenny"
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

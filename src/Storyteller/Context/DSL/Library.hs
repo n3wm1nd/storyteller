@@ -1,5 +1,10 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | The application's own default context-selection policy, expressed as
 --   ordinary DSL definitions rather than Haskell logic -- see the project
@@ -59,12 +64,17 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 
+import Polysemy (Member, Members)
+import Polysemy.Fail (Fail)
+
 import Storyteller.Context.DSL.AST (Definition, Name)
 import Storyteller.Context.DSL.Compile (Binding(..), branchBinding, bval, charactersInBinding, embedShallow, journalDelta, readConversation, runDefinition)
 import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
+import Storyteller.Core.ContentEffects
+  (TreeAccess, Presence, JournalAccess, ConversationAccess, BranchResolve)
 import Storyteller.Writer.Agent (CharSummary(..))
 
 -- | Host-backed library entries -- real Haskell closures, never
@@ -75,12 +85,12 @@ import Storyteller.Writer.Agent (CharSummary(..))
 --   resolved the identical way by 'Storyteller.Context.DSL.Compile's
 --   'EIdent'\/'EApp' -- a DSL body referencing @readconversation@ can't
 --   tell it apart from a bare reference to @lore@.
-hostLibrary :: Map Name Binding
+hostLibrary :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r => Map Name (Binding r)
 hostLibrary = Map.fromList
-  [ ("readconversation", readConversation)
+  [ ("readconversation", readConversation @branch)
   , ("embedshallow",     embedShallow)
-  , ("branch",           branchBinding)
-  , ("charactersin",     charactersInBinding)
+  , ("branch",           branchBinding @branch)
+  , ("charactersin",     charactersInBinding @branch)
   -- | The ambient character-context journal curation, pre-configured --
   --   'Storyteller.Context.DSL.Compile.journalDelta''s own Haskell-level
   --   @lookback@\/@maxOut@\/@padding@ tuning is genuine per-caller
@@ -90,7 +100,7 @@ hostLibrary = Map.fromList
   --   'Server.Writer.File.activeCharacterContext''s own constants), not
   --   something 'contextCharacterDef' should have to take as a parameter
   --   just to reference it by name.
-  , ("characterJournal", journalDelta 30 10 2)
+  , ("characterJournal", journalDelta @branch 30 10 2)
   ]
 
 -- | The one reserved standing-instruction file, if a project has one --
@@ -108,8 +118,8 @@ contextStyleDef = [defQuote|
 read "style.md" | orifempty ""
 |]
 
-contextStyle :: Action Value
-contextStyle = runDefinition contextStyleDef []
+contextStyle :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+contextStyle = runDefinition @branch contextStyleDef []
 
 -- | Describes one lore (or "other") entry -- a header naming it, then its
 --   content, still role-undecided (see 'read''s own convention).
@@ -126,8 +136,8 @@ f:
   read f
 |]
 
-loreEntry :: Action Value -> Action Value
-loreEntry a = runDefinition loreEntryDef [toBinding a]
+loreEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r) -> Action r (Value r)
+loreEntry a = runDefinition @branch loreEntryDef [toBinding a]
 
 -- | Hand-authored lore -- a plain positive convention (@lore\/**@), not
 --   "everything except chapters/style/scratch": 'exclude'\/'without'\/
@@ -172,8 +182,8 @@ for f in lore/**/*:
   x
 |]
 
-contextLore :: Action Value
-contextLore = runDefinition contextLoreDef []
+contextLore :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+contextLore = runDefinition @branch contextLoreDef []
 
 -- | Describes one chapter -- a @User@ header immediately followed by its
 --   content re-tagged @Assistant@ (@> read f@, per
@@ -193,8 +203,8 @@ f:
   > read f
 |]
 
-chapterEntry :: Action Value -> Action Value
-chapterEntry a = runDefinition chapterEntryDef [toBinding a]
+chapterEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r) -> Action r (Value r)
+chapterEntry a = runDefinition @branch chapterEntryDef [toBinding a]
 
 -- | Chapter prose, in natural reading order (@ch2@ before @ch11@, not
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
@@ -225,8 +235,8 @@ in (x | sortBy):
     y
 |]
 
-contextChapters :: Action Value
-contextChapters = runDefinition contextChaptersDef []
+contextChapters :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+contextChapters = runDefinition @branch contextChaptersDef []
 
 -- | The catch-all: any file that isn't under @lore@\/@chapters@' own
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
@@ -259,8 +269,8 @@ path:
     x
 |]
 
-contextOther :: Text -> Action Value
-contextOther p = runDefinition contextOtherDef [toBinding p]
+contextOther :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
+contextOther p = runDefinition @branch contextOtherDef [toBinding p]
 
 -- | The writer agent's own default background context -- what
 --   'Server.Writer.File.chatWriter' resolves (branch-override-then-this)
@@ -341,8 +351,8 @@ path:
     as c: context.character c
 |]
 
-contextWriter :: Text -> Action Value
-contextWriter p = runDefinition contextWriterDef [toBinding p]
+contextWriter :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
+contextWriter p = runDefinition @branch contextWriterDef [toBinding p]
 
 -- | The "and this is the character" acquaintance-level line -- the
 --   header @sheet.md@ is required to open with (its display name, see
@@ -405,8 +415,8 @@ charname:
     "%n%: %a%"
 |]
 
-characterBlurb :: Text -> Action Value
-characterBlurb charname = runDefinition characterBlurbDef [toBinding charname]
+characterBlurb :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
+characterBlurb charname = runDefinition @branch characterBlurbDef [toBinding charname]
 
 -- | A named character's rich context, as five independently reachable
 --   buckets rather than one flattened blob -- every consumer
@@ -477,8 +487,8 @@ charname:
   character.blurb charname
 |]
 
-contextCharacter :: Text -> Action Value
-contextCharacter charname = runDefinition contextCharacterDef [toBinding charname]
+contextCharacter :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
+contextCharacter charname = runDefinition @branch contextCharacterDef [toBinding charname]
 
 -- | Reshapes an already-resolved @context.character@-shaped 'Value' into
 --   a 'CharSummary' -- the shared piece every consumer wanting that exact
@@ -509,7 +519,7 @@ contextCharacter charname = runDefinition contextCharacterDef [toBinding charnam
 --   'Storyteller.Context.DSL.Value.MonadBranch'\/'Storage.Core.StoreM'
 --   only), so the override lookup has to happen at the 'Polysemy.Sem'
 --   level, one step up from here.
-characterSummaryOf :: Text -> Value -> Action CharSummary
+characterSummaryOf :: Text -> Value r -> Action r CharSummary
 characterSummaryOf journalBucket charVal = do
   sheet   <- Render.valueCharBlocks =<< namedEntry "sheet" charVal
   full    <- Render.valueCharBlocks =<< namedEntry "full" charVal
@@ -522,7 +532,7 @@ characterSummaryOf journalBucket charVal = do
 --   designed this for why @without@\/@only@ alone are enough here and
 --   'contextLore''s @exclude@ isn't needed: alias names never nest into
 --   subtrees the way file paths do).
-contextMentionFilter :: Binding -> Action Value
+contextMentionFilter :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
 contextMentionFilter = [dsl|
 aliases:
   in aliases:
@@ -544,7 +554,7 @@ aliases:
 --   closing over 'Storyteller.Context.DSL.Compile.journalDelta', but that
 --   moved to a pre-configured 'hostLibrary' entry instead -- see
 --   'contextCharacterDef''s own haddock).
-toBinding1 :: (Binding -> Action Value) -> Binding
+toBinding1 :: Member Fail r => (Binding r -> Action r (Value r)) -> Binding r
 toBinding1 f = Binding 1 go
   where
     go [a] _  = f (bval a)
@@ -556,7 +566,7 @@ toBinding1 f = Binding 1 go
 --   'Storyteller.Context.DSL.Value.leafValue' directly) at any call site
 --   that just needed "this text, as a DSL value" -- one named, reusable
 --   definition instead.
-identity :: Text -> Action Value
+identity :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
 identity = [dsl| a: a |]
 
 -- | Every pure-DSL definition this application ships, as already-parsed

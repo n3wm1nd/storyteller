@@ -134,7 +134,7 @@ activeCharacterContext path = do
   where
     summarize (Character (BranchName name)) = do
       let ident = branchDisplayName name
-      charVal <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacter ident
+      charVal <- resolveContext1 @Main "context.character" (CtxLibrary.contextCharacter @Main) ident
       summary <- runContextValue @Main (CtxLibrary.characterSummaryOf "journal" charVal)
       pure (CharLabel ident, summary)
 
@@ -165,8 +165,8 @@ activeCharacterContext path = do
 chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems contextProgram mFlowTid = do
   mapM_ (setContextOverride "context.writer") contextProgram
-  writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
-  styleV  <- resolveContext0 @Main "context.style" CtxLibrary.contextStyle
+  writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
+  styleV  <- resolveContext0 @Main "context.style" (CtxLibrary.contextStyle @Main)
   (worldCtx, styleCtx) <- runContextValue @Main $ do
     w <- Rendering.renderContext writerV
     s <- Rendering.renderContext styleV
@@ -219,7 +219,7 @@ chatWriter path prompt pinnedItems contextProgram mFlowTid = do
 --   reads that could quietly drift from @context.writer@'s own policy.
 flatMainMessages :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [DSL.Message]
 flatMainMessages path = do
-  writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
   runContextValue @Main (valueDefault writerV)
 
 -- | 'flatMainMessages', but rendered into a
@@ -235,7 +235,7 @@ flatMainMessages path = do
 --   aren't part of this pass.
 flatMainContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r Rendering.Context
 flatMainContext path = do
-  writerV <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
   runContextValue @Main (Rendering.renderContext writerV)
 
 -- | The roleplay writer: rather than one call producing the scene directly
@@ -308,7 +308,7 @@ roleplayWriter path prompt = do
       -- the same override-aware way 'activeCharacterContext' does.
     reflectFor narrative sceneRef character@(Character (BranchName name)) = do
       let ident = branchDisplayName name
-      charVal    <- resolveContext1 @Main "context.character" CtxLibrary.contextCharacter ident
+      charVal    <- resolveContext1 @Main "context.character" (CtxLibrary.contextCharacter @Main) ident
       ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
       runBranchAndFS @ActiveChar (BranchName name) $ do
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative

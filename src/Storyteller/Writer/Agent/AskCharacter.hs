@@ -26,6 +26,7 @@ import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storyteller.Core.Git (BranchOp)
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt)
 import Storyteller.Core.Storage (StoryStorage)
@@ -47,10 +48,10 @@ import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 --   longer needs to open that branch's filesystem first.
 askCharacterAgent
   :: forall branch r
-  .  (LLMs r, Members '[BranchOp branch, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[BranchOp branch, BranchResolve, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
-  charVal <- resolveContext1 @branch "context.character" CtxLibrary.contextCharacter charname
+  charVal <- resolveContext1 @branch "context.character" (CtxLibrary.contextCharacter @branch) charname
   summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journalFull" charVal)
   let blocks = flattenCharSummary summary
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig

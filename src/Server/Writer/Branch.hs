@@ -417,8 +417,8 @@ suggestTasksOnBranch fallbackName loreSource toFile = do
 fetchLore :: SessionEffects r => BranchName -> Sem r T.Text
 fetchLore branch =
   runBranchAndFS @LoreSource branch $ do
-    loreV  <- resolveContext0 @LoreSource "context.lore" CtxLibrary.contextLore
-    otherV <- resolveContext1 @LoreSource "context.other" CtxLibrary.contextOther ""
+    loreV  <- resolveContext0 @LoreSource "context.lore" (CtxLibrary.contextLore @LoreSource)
+    otherV <- resolveContext1 @LoreSource "context.other" (CtxLibrary.contextOther @LoreSource) ""
     blocks <- runContextValue @LoreSource $ do
       loreMsgs  <- valueDefault loreV
       otherMsgs <- valueDefault otherV

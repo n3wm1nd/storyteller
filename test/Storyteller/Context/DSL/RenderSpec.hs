@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -17,28 +18,24 @@
 --   an agent call actually receives.
 module Storyteller.Context.DSL.RenderSpec (spec) where
 
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
-import Runix.Git (Git)
 import qualified UniversalLLM as LLM
 
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Git (runBranchOpGit, runStorage)
-import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
+import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Core.Context (buildContextLibrary)
-import Storyteller.Core.LLM.Role (ProseModel)
+import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Context.DSL.Library (contextChapters, contextLore)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Context.DSL.Value
@@ -54,10 +51,12 @@ seedBranch name files = do
 --   not an empty library -- 'contextChapters'\/'contextLore' only resolve
 --   at all because 'Storyteller.Context.DSL.Library.chapterEntry'\/
 --   'Storyteller.Context.DSL.Library.loreEntry' are in it.
-runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
-runDslOn bname act = resolveBranch bname >>= \case
-  Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
+runDslOn
+  :: forall a
+  .  BranchName
+  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> Sem (StoryStorage : TestEffects '[]) a
+runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 -- | 'LLM.Message' has no 'Eq' -- compare on 'LLM.messageDirection' plus
 --   the rendered text, which is everything a real caller ('writeAgent',
@@ -79,7 +78,7 @@ spec = do
 --   default already carries the full, already-framed content -- see
 --   'contextLore''s own Haddock), also walking 'valueEntries' would
 --   double-count the same messages.
-ownMessages :: Value -> Action [Message]
+ownMessages :: Value r -> Action r [Message]
 ownMessages = valueDefault
 
 valueMessagesSpec :: Spec
@@ -91,7 +90,7 @@ valueMessagesSpec = describe "valueMessages (via contextChapters' own default)" 
         , ("chapters/ch2.md", "chapter two prose")
         ]
       runDslOn (BranchName "main")
-        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters) :: Action [(LLM.MessageDirection, Text)]))
+        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters @Main)))
     `shouldBe` Right
       [ (LLM.User,      "## Chapters written so far")
       , (LLM.User,      "## Chapter: chapters/ch2.md")
@@ -108,7 +107,7 @@ valueBlocksSpec = describe "valueBlocks (via contextLore's own default)" $
         [ ("lore/places/tavern.md", "the tavern")
         , ("lore/notes.md", "a note")
         ]
-      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore)))
+      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore @Main)))
     `shouldBe` Right
       [ ContextBlock "## Story background"
       , ContextBlock "## lore/notes.md"

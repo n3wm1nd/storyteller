@@ -41,7 +41,7 @@ module Storyteller.Context.DSL.QQ (dsl, defQuote) where
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Language.Haskell.TH (Exp(..), Pat(VarP), Q, newName)
+import Language.Haskell.TH (Exp(..), Pat(VarP), Q, Type(VarT), mkName, newName)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Haskell.TH.Syntax (Lift(lift), Loc(..), location)
 
@@ -69,12 +69,21 @@ compileDsl src = do
     Left err  -> fail (T.unpack (renderParseErr err))
     Right def -> curriedRunner def
 
--- | Splices to @\\a1 ... an -> 'runDefinition' def [toBinding a1, ...,
---   toBinding an]@, with exactly as many lambda parameters as
+-- | Splices to @\\a1 ... an -> 'runDefinition' \@branch def [toBinding a1,
+--   ..., toBinding an]@, with exactly as many lambda parameters as
 --   'defParams' -- the 0-arity case (most top-level definitions) needs no
 --   lambda at all, just the call. Parameter names are reused from the
 --   source's own (so a type error at a call site names @charname@, not a
 --   generic @arg1@).
+--
+--   The spliced call always applies 'runDefinition' at a type variable
+--   literally named @branch@ -- 'runDefinition''s own @branch@-phantomed
+--   effects (see "Storyteller.Core.ContentEffects") mean this can't be
+--   left for GHC to infer; every @['dsl'| ... |]@-defined binding's own
+--   type signature must therefore declare @forall branch r. ... =>@ (with
+--   @ScopedTypeVariables@ in scope) using that exact name, the same
+--   naming convention 'Storyteller.Core.Branch.runStorage'\'s own
+--   @\@branch@ call sites already follow throughout this codebase.
 --
 --   Each argument goes through 'Storyteller.Context.DSL.Context.toBinding'
 --   rather than being used bare -- this is what makes every parameter
@@ -91,7 +100,8 @@ curriedRunner def = do
   argNames <- mapM (newName . T.unpack) (defParams def)
   defExpr  <- lift def
   let toBindingArg n = AppE (VarE 'toBinding) (VarE n)
-      call = AppE (AppE (VarE 'runDefinition) defExpr) (ListE (map toBindingArg argNames))
+      runDefinitionAtBranch = AppTypeE (VarE 'runDefinition) (VarT (mkName "branch"))
+      call = AppE (AppE runDefinitionAtBranch defExpr) (ListE (map toBindingArg argNames))
   pure $ if null argNames then call else LamE (map VarP argNames) call
 
 -- | Parses at GHC compile time exactly like 'dsl', but splices the parsed

@@ -1,4 +1,7 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | 'Context': the composable currency for assembling what a call site
 --   hands an agent, and 'ToBinding': the typeclass that lets plain Haskell
@@ -57,6 +60,9 @@ module Storyteller.Context.DSL.Context
 
 import Data.Text (Text)
 
+import Polysemy (Member)
+import Polysemy.Fail (Fail)
+
 import Storyteller.Context.DSL.Compile (Binding(..), bval, fn1)
 import Storyteller.Context.DSL.Render (valueAllMessages)
 import Storyteller.Context.DSL.Value (Action, Message(..), Value, leafValue, messagesText, valueDefault)
@@ -64,18 +70,18 @@ import Storyteller.Context.DSL.Value (Action, Message(..), Value, leafValue, mes
 -- | An ordered, composable sequence of DSL 'Message's, still deferred
 --   (each fragment's own 'Action' hasn't run yet) and still model-agnostic
 --   (no 'UniversalLLM.Message' binding). See the module Haddock.
-newtype Context = Context { unContext :: Action [Message] }
+newtype Context r = Context { unContext :: Action r [Message] }
 
-instance Semigroup Context where
+instance Semigroup (Context r) where
   Context a <> Context b = Context ((<>) <$> a <*> b)
 
-instance Monoid Context where
+instance Monoid (Context r) where
   mempty = Context (pure [])
 
 -- | Lift a not-yet-forced 'Value' straight into 'Context', forcing it
 --   (via 'Storyteller.Context.DSL.Render.valueAllMessages') only once the
 --   whole composed 'Context' is itself forced by 'runContext'.
-toContext :: Action Value -> Context
+toContext :: Action r (Value r) -> Context r
 toContext act = Context (valueAllMessages =<< act)
 
 -- | Lift an already-resolved 'Value''s own bare default into 'Context',
@@ -88,20 +94,20 @@ toContext act = Context (valueAllMessages =<< act)
 --   statements, which build exactly this on purpose), and its named
 --   entries exist for a completely different caller's own separate
 --   purpose (@chatWriter@ picking @"style"@ out on its own).
-ownContext :: Value -> Context
+ownContext :: Value r -> Context r
 ownContext v = Context (valueDefault v)
 
 -- | A literal string, in the same currency -- what lets genuinely static
 --   framing text compose with DSL-sourced fragments via the same
 --   @('<>')@, rather than needing a separate "trailing message" step.
-user, assistant :: Text -> Context
+user, assistant :: Text -> Context r
 user      t = Context (pure [User t])
 assistant t = Context (pure [Assistant t])
 
 -- | Force a composed 'Context' down to plain DSL 'Message's -- the one
 --   place anything here actually runs. Still not bound to a concrete
 --   model; see the module Haddock.
-runContext :: Context -> Action [Message]
+runContext :: Context r -> Action r [Message]
 runContext = unContext
 
 -- | Overloads what can fill one @['dsl'| ... |]@ parameter position --
@@ -109,8 +115,8 @@ runContext = unContext
 --   hand-written equivalent somewhere in this codebase before 'ToBinding'
 --   existed; this just makes the quasiquoter apply the right one
 --   automatically instead of a call site choosing by hand.
-class ToBinding a where
-  toBinding :: a -> Binding
+class ToBinding a r where
+  toBinding :: a -> Binding r
 
 -- | Already a 'Binding' -- the identity case, and what keeps every
 --   pre-existing @bval x@\/@fn1 f@\/@'Storyteller.Context.DSL.Library.toBinding1' f@
@@ -118,12 +124,12 @@ class ToBinding a where
 --   'Binding'-typed on purpose -- see the module Haddock) compiling
 --   unchanged: 'Binding' itself is just as valid an argument as anything
 --   else with a 'ToBinding' instance.
-instance ToBinding Binding where
+instance ToBinding (Binding r) r where
   toBinding = id
 
 -- | A literal string -- the common case for a simple parameter like a
 --   character name or a target path.
-instance ToBinding Text where
+instance ToBinding Text r where
   toBinding t = bval (pure (leafValue [User t]))
 
 -- | An already-composed 'Context' -- spliced in as one opaque, already-
@@ -131,7 +137,7 @@ instance ToBinding Text where
 --   -- see 'toContext' for the direction that matters, DSL 'Value' into
 --   'Context'; this is deliberately not that same isomorphism run
 --   backward for anything richer).
-instance ToBinding Context where
+instance ToBinding (Context r) r where
   toBinding ctx = bval (leafValue <$> unContext ctx)
 
 -- | A plain, not-yet-forced 'Value' -- the ordinary case for composing one
@@ -139,13 +145,13 @@ instance ToBinding Context where
 --   'Storyteller.Context.DSL.Library.contextMain', say), where the callee
 --   needs the full structure (@in lore: for f in **/*: ...@), not just
 --   'Context''s flattened message sequence.
-instance ToBinding (Action Value) where
+instance ToBinding (Action r (Value r)) r where
   toBinding = bval
 
 -- | A host function of one argument -- what a DSL definition calls
 --   through to Haskell logic too story-specific for the DSL's own
 --   primitives (see @CONTEXT-DSL.md@'s invented-calendar example).
-instance ToBinding (Action Value -> Action Value) where
+instance Member Fail r => ToBinding (Action r (Value r) -> Action r (Value r)) r where
   toBinding = fn1
 
 -- | The dual of 'ToBinding': how to turn one runtime call argument (an
@@ -154,10 +160,10 @@ instance ToBinding (Action Value -> Action Value) where
 --   real instance today -- every real 1-arity @context.*@ definition's
 --   own parameter is a plain identifier\/path -- but this stays open to
 --   more as 'toBindingFn1' grows real callers needing them.
-class FromArg a where
-  fromArg :: Action Value -> Action a
+class FromArg a r where
+  fromArg :: Action r (Value r) -> Action r a
 
-instance FromArg Text where
+instance FromArg Text r where
   fromArg act = messagesText <$> (valueDefault =<< act)
 
 -- | Re-curries a plain, concretely-typed 1-arity Haskell function (e.g.
@@ -169,7 +175,7 @@ instance FromArg Text where
 --   'Binding'-shaped: 'Storyteller.Core.Context.resolveContext1', which
 --   needs the arity tag *before* it knows whether an override even
 --   replaces this definition.
-toBindingFn1 :: FromArg a => (a -> Action Value) -> Binding
+toBindingFn1 :: (FromArg a r, Member Fail r) => (a -> Action r (Value r)) -> Binding r
 toBindingFn1 f = Binding 1 go
   where
     go [a] _  = f =<< fromArg a

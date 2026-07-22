@@ -63,6 +63,7 @@ import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Context.DSL.Rendering (renderContext)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 
 -- | Every effect one journey step needs -- exactly 'Server.Writer.File'\'s
@@ -70,7 +71,7 @@ import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValu
 --   @Error String@, neither of which any step below touches.
 type JourneyEffects r =
   ( LLMs r
-  , Members '[ PromptStorage, ContextStorage, Splitter, Logging
+  , Members '[ PromptStorage, ContextStorage, BranchResolve, Splitter, Logging
              , StoryStorage, BranchOp Main, Git
              , FileSystem      (BranchTag Main)
              , FileSystemRead  (BranchTag Main)
@@ -84,7 +85,7 @@ type JourneyEffects r =
 --   through now, instead of a local 'gatherFileContext' read.
 flatMainContext :: JourneyEffects r => FilePath -> Sem r [ContextBlock]
 flatMainContext path = do
-  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
   map Render.messageToBlock <$> runContextValue @Main (valueDefault writerVal)
 
 -- | The three requests a Writer-tab session issues, and what each produced.
@@ -180,7 +181,7 @@ writeChat
   .  JourneyEffects r
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
-  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack path)
+  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
   worldCtx <- WorldContext <$> runContextValue @Main (renderContext writerVal)
   currentTicks <- runStorage @Main (Tick.fileTicksOf path)
   Prose generated <- writeAgent worldCtx emptyStyleContext [] emptyPinnedContext currentTicks (Instruction prompt)

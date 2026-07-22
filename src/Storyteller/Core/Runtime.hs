@@ -48,6 +48,7 @@ import Runix.Time (Time, Sleep, timeIO, sleepIO)
 import Runix.Logging (Logging)
 
 import Runix.Git (Git, runGitFFIPerCall, withGitCache)
+import Storyteller.Core.ContentEffects
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Git
@@ -227,6 +228,7 @@ runStoryGit
                            , FileSystem      (BranchTag Main)
                            , FileSystemRead  (BranchTag Main)
                            , FileSystemWrite (BranchTag Main)
+                           , BranchResolve
                            , BranchOp Main
                            , StoryStorage
                            , Git
@@ -238,6 +240,7 @@ runStoryGit repoPath endpoint branch configs action =
   . runInfrastructure repoPath endpoint
   . runStoryStorageGit
   . runBranchAndFS @Main branch
+  . runBranchResolve
   . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
   . reinterpretAgent @StoryModel
   . raiseUnder

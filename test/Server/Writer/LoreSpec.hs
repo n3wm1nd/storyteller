@@ -25,6 +25,7 @@ import Git.Mock (emptyGitState, runGitMock)
 import Runix.Logging (loggingNull)
 
 import Storyteller.Core.Context (interpretContextStorageMap)
+import Storyteller.Core.ContentEffects (runBranchResolve)
 import Storyteller.Core.Git (runBranchAndFS, runStorage, runStoryStorageGit)
 import Storyteller.Core.LLM.Role (AgentModel, ProseModel)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
@@ -82,6 +83,7 @@ runLoreTestFull overrides files =
   . stubLLM @AgentModel
   . stubLLM @ProseModel
   . runStoryStorageGit
+  . runBranchResolve
   $ do
       _ <- createBranch (BranchName "story")
       runBranchAndFS @Main (BranchName "story") $ do

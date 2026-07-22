@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -19,22 +20,22 @@
 --   mock-git-backed harness "Storyteller.Context.DSL.CompileSpec" uses.
 module Storyteller.Context.DSL.ContextSpec (spec) where
 
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Test.Hspec
 
-import Polysemy (Sem, run)
+import Polysemy (Members, Sem, run)
+import Polysemy.Fail (Fail)
 
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Git (runBranchOpGit, runStorage)
+import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Core.Context (buildContextLibrary)
+import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
+import Storyteller.Core.ContentEffects (BranchResolve, TreeAccess)
 
 import Storyteller.Context.DSL.Context (Context, toContext, user, assistant, runContext)
 import Storyteller.Context.DSL.QQ (dsl)
@@ -46,10 +47,12 @@ seedBranch name files = do
   runBranchOpGit @Main (BranchName name)
     (mapM_ (\(path, content) -> runStorage @Main (Ops.addAtom path content)) files)
 
-runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
-runDslOn bname act = resolveBranch bname >>= \case
-  Nothing -> fail ("branch not found: " <> show bname)
-  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
+runDslOn
+  :: forall a
+  .  BranchName
+  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> Sem (StoryStorage : TestEffects '[]) a
+runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 spec :: Spec
 spec = do
@@ -68,20 +71,20 @@ inlineLiteralSpec = describe "inline single-expression [dsl| |] snippets" $ do
     run (testStack $ do
       seedBranch "main" []
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< identityDsl "the value as text")))
+        (messagesText <$> (valueDefault =<< identityDsl @Main "the value as text")))
     `shouldBe` Right "the value as text"
 
   it "a: b: as a: b -- a one-key Value, keyed by the first argument's own text" $
     run (testStack $ do
       seedBranch "main" []
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< (scopedDsl "key" "value" >>= namedEntry "key"))))
+        (messagesText <$> (valueDefault =<< (scopedDsl @Main "key" "value" >>= namedEntry "key"))))
     `shouldBe` Right "value"
   where
-    identityDsl :: Text -> Action Value
+    identityDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
     identityDsl = [dsl| a: a |]
 
-    scopedDsl :: Text -> Text -> Action Value
+    scopedDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Text -> Action r (Value r)
     scopedDsl = [dsl| a: b: as a: b |]
 
 contextMonoidSpec :: Spec
@@ -91,24 +94,24 @@ contextMonoidSpec = describe "Context (Semigroup/Monoid)" $ do
     run (testStack $ do
       seedBranch "main" [("lore/a.md", "lore a"), ("lore/b.md", "lore b")]
       runDslOn (BranchName "main")
-        (map messageText <$> runContext (toContext loreDsl)))
+        (map messageText <$> runContext (toContext (loreDsl @Main))))
     `shouldBe` Right ["lore a", "lore b"]
 
   it "<> concatenates two Contexts, left to right" $
     run (testStack $ do
       seedBranch "main" [("lore/a.md", "lore a")]
       runDslOn (BranchName "main")
-        (map messageText <$> runContext (user "first" <> toContext loreDsl <> assistant "last")))
+        (map messageText <$> runContext (user "first" <> toContext (loreDsl @Main) <> assistant "last")))
     `shouldBe` Right ["first", "lore a", "last"]
 
   it "mempty is the identity" $
     run (testStack $ do
       seedBranch "main" [("lore/a.md", "lore a")]
       runDslOn (BranchName "main")
-        (map messageText <$> runContext (mempty <> toContext loreDsl <> mempty)))
+        (map messageText <$> runContext (mempty <> toContext (loreDsl @Main) <> mempty)))
     `shouldBe` Right ["lore a"]
   where
-    loreDsl :: Action Value
+    loreDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
     loreDsl = [dsl|
       for f in lore/**/*:
         as f: read f
@@ -129,23 +132,23 @@ toBindingSpec = describe "ToBinding (plain values as [dsl| |] arguments)" $ do
       seedBranch "main" []
       seedBranch "character/aria" [("sheet.md", "Aria is a wandering rogue.")]
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< crossBranchDsl "aria")))
+        (messagesText <$> (valueDefault =<< crossBranchDsl @Main "aria")))
     `shouldBe` Right "Aria is a wandering rogue."
 
   it "accepts a bare Context argument, no bval wrapping" $
     run (testStack $ do
       seedBranch "main" []
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< splicesDsl (user "hello"))))
+        (messagesText <$> (valueDefault =<< splicesDsl @Main (user "hello"))))
     `shouldBe` Right "hello"
   where
-    crossBranchDsl :: Text -> Action Value
+    crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Text -> Action r (Value r)
     crossBranchDsl = [dsl|
       charname:
         in (charname | branch): read "sheet.md"
       |]
 
-    splicesDsl :: Context -> Action Value
+    splicesDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Context r -> Action r (Value r)
     splicesDsl = [dsl|
       ctx:
         < ctx

@@ -72,19 +72,19 @@ messageToCharBlock (Assistant text)     = CharContextBlock text
 --   traversal 'valueMessages'\/'valueBlocks'\/'valueCharBlocks' all share,
 --   varying only in which per-'Message' renderer they map over the
 --   result.
-valueAllMessages :: Value -> Action [Message]
+valueAllMessages :: Value r -> Action r [Message]
 valueAllMessages v = do
   own      <- valueDefault v
   children <- concat <$> mapM (\(_, act) -> valueDefault =<< act) (valueEntries v)
   pure (own <> children)
 
-valueMessages :: Value -> Action [LLM.Message m]
+valueMessages :: Value r -> Action r [LLM.Message m]
 valueMessages v = map dslMessageToLLM <$> valueAllMessages v
 
 -- | 'valueMessages', flattened into 'ContextBlock's instead.
-valueBlocks :: Value -> Action [ContextBlock]
+valueBlocks :: Value r -> Action r [ContextBlock]
 valueBlocks v = map messageToBlock <$> valueAllMessages v
 
 -- | 'valueMessages', flattened into 'CharContextBlock's instead.
-valueCharBlocks :: Value -> Action [CharContextBlock]
+valueCharBlocks :: Value r -> Action r [CharContextBlock]
 valueCharBlocks v = map messageToCharBlock <$> valueAllMessages v

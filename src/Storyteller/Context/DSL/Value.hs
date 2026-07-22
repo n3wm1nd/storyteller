@@ -1,5 +1,8 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | The Context DSL's one runtime type (see "Value model" in
 --   @CONTEXT-DSL.md@), and the "one thing that has to be preserved
@@ -8,36 +11,31 @@
 --   running one -- ordinary monadic composition, no bespoke recursive
 --   walker needed.
 --
---   'Value' itself carries no type parameter -- every deferred
---   computation an 'Action' can describe is genuinely generic over
---   *any* 'Core.StoreT' over a 'Core.StoreM' @m@, so there's no one
---   concrete monad to name. 'Action' is deliberately 'Core.StoreT'-shaped
---   (not just bare @m@): every real caller already runs the DSL from
---   inside a storage transaction that's *already positioned* at some
---   commit, so the Reader scope's own bootstrap is just reading that
---   ambient position (see 'Storyteller.Context.DSL.Compile.currentScope')
---   -- no separate lookup needed for "run in whatever I'm already in."
---   The one operation that isn't expressible via 'Core.StoreM'\/'Core.StoreT'
---   alone (resolving a branch *name* to a commit -- see
---   "Storyteller.Context.DSL.Compile"'s module haddock) is a genuinely
---   separate capability, not a storage primitive: real backends happen to
---   provide both, but nothing here assumes that, so it's its own
---   constraint, 'MonadBranch', rather than folded into 'Core.StoreM'.
+--   'Value' carries a Polysemy effect row @r@ -- what a DSL library
+--   function actually needs is named vocabulary from
+--   "Storyteller.Core.ContentEffects" (@TreeAccess@, @Presence@,
+--   @ConversationAccess@, ...), not a concrete storage monad, so 'Action'
+--   is @ContextLibrary r -> Sem r a@, not 'Core.StoreT'-shaped the way it
+--   used to be. Deliberately *not* given a closed, fixed @Members@ list
+--   here -- see @project_mcp_export_effect_boundary@: a host builds its
+--   own concrete @library :: ContextLibrary r@ at whatever @r@ its own
+--   interpreter stack provides, and a DSL library function can only be
+--   *included* in that library if it typechecks against that @r@ --
+--   there is no separate "does this backend support this DSL program"
+--   check anywhere, because the library's own construction already is
+--   that check.
 module Storyteller.Context.DSL.Value
   ( Message(..)
   , messageText
-  , MonadBranch(..)
   , Binding(..)
   , bval
   , fn1
   , fn2
   , ContextLibrary(..)
   , Action(..)
-  , liftStore
-  , askBranch
+  , liftSem
   , currentLibrary
   , lookupLibrary
-  , currentHead
   , Provenance(..)
   , Priority(..)
   , defaultPriority
@@ -54,7 +52,9 @@ module Storyteller.Context.DSL.Value
   , namedEntry
   ) where
 
-import Control.Monad.Trans.Class (lift)
+import Polysemy (Member, Sem)
+import Polysemy.Fail (Fail)
+
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -65,7 +65,6 @@ import qualified Data.Text as T
 import qualified Storage.Core as Core
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Core.Types (BranchName)
 
 -- | The three, and only three, ways a message gets constructed (see
 --   "Value model"). 'FileRead' deliberately carries no role -- what it
@@ -81,50 +80,42 @@ messageText (FileRead _ t) = t
 messageText (User t)       = t
 messageText (Assistant t)  = t
 
--- | Resolves a branch name to its current commit -- see the module
---   haddock for why this can't just be another 'Core.StoreM' operation.
---   A real git backend satisfies both this and 'Core.StoreM' at once (see
---   "Storyteller.Context.DSL.Compile"'s module haddock for the deferred
---   @Sem r@ instance), but nothing here assumes that pairing.
-class Monad m => MonadBranch m where
-  resolveBranch :: BranchName -> m (Maybe Core.ObjectHash)
-
 -- | What a local name (a @let@\/parameter\/loop variable) resolves to --
 --   one constructor, since the DSL itself draws no line between "a
 --   value" and "a function": a plain @x = body@ is exactly a 0-arity
 --   'Binding' (rule 1, "a file with no head is a 0-ary function -- an
---   ordinary value"). The @[Action Value] -> Value -> Action Value@
---   shape takes the *caller's* current ambient scope as an explicit
---   argument rather than closing over whatever scope was active at
---   definition time -- see "Storyteller.Context.DSL.Compile"'s own
+--   ordinary value"). The @[Action r (Value r)] -> Value r -> Action r
+--   (Value r)@ shape takes the *caller's* current ambient scope as an
+--   explicit argument rather than closing over whatever scope was active
+--   at definition time -- see "Storyteller.Context.DSL.Compile"'s own
 --   Haddock on why. Moved here (rather than living in
 --   "Storyteller.Context.DSL.Compile", which imports this module) purely
 --   so 'ContextLibrary' -- which needs to hold compiled 'Binding's, not
 --   just parsed source -- can be defined in the same module a 'Binding'
 --   is, without a cycle.
-data Binding = Binding Int ([Action Value] -> Value -> Action Value)
+data Binding r = Binding Int ([Action r (Value r)] -> Value r -> Action r (Value r))
 
 -- | Wraps an already-scoped 'Action' as a 0-arity 'Binding' -- the
 --   ordinary "just a value" case, and by far the common one.
-bval :: Action Value -> Binding
+bval :: Action r (Value r) -> Binding r
 bval action = Binding 0 (\_ _ -> action)
 
 -- | Wraps a plain, scope-blind Haskell function as a 1-arity 'Binding' --
 --   what a host passes a real function in as (the invented-calendar
 --   example's own @dateMath@, or a new host-backed primitive like
 --   @readconversation@).
-fn1 :: (Action Value -> Action Value) -> Binding
+fn1 :: Member Fail r => (Action r (Value r) -> Action r (Value r)) -> Binding r
 fn1 f = Binding 1 go
   where
     go [a] _  = f a
-    go args _ = fail $ "fn1: expected exactly 1 argument, got " <> show (length args)
+    go args _ = Action (\_ -> fail $ "fn1: expected exactly 1 argument, got " <> show (length args))
 
 -- | 'fn1', two arguments.
-fn2 :: (Action Value -> Action Value -> Action Value) -> Binding
+fn2 :: Member Fail r => (Action r (Value r) -> Action r (Value r) -> Action r (Value r)) -> Binding r
 fn2 f = Binding 2 go
   where
     go [a, b] _ = f a b
-    go args _   = fail $ "fn2: expected exactly 2 arguments, got " <> show (length args)
+    go args _   = Action (\_ -> fail $ "fn2: expected exactly 2 arguments, got " <> show (length args))
 
 -- | The shared, once-built library table -- every named definition this
 --   application knows about (compiled-in defaults, then whatever the
@@ -149,66 +140,58 @@ fn2 f = Binding 2 go
 --   real Haskell logic, so an override attempt against one has no effect,
 --   same treatment a bad arity already gets.
 --
---   Deliberately *not* a 'MonadBranch'-shaped typeclass constraint on
---   'Action'\'s own @m@: unlike branch resolution, this is one plain,
---   already-built, immutable value -- fixed once per request, never
---   looked up effectfully mid-computation -- so it travels as an ordinary
---   'Action'-level Reader parameter (see 'runAction'\'s own type) rather
---   than needing a capability 'Action'\'s abstract backend has to satisfy.
-newtype ContextLibrary = ContextLibrary (Map Name Binding)
+--   Parameterized by the same @r@ 'Action' is: a host builds one concrete
+--   @library :: ContextLibrary r@ at whatever @r@ its own interpreter
+--   stack provides (see @project_mcp_export_effect_boundary@) -- a
+--   'Binding' requiring an effect that host's @r@ doesn't include simply
+--   can't be listed in that host's own @Map.fromList@ literal, which is
+--   the entire portability check, done once, at construction.
+newtype ContextLibrary r = ContextLibrary (Map Name (Binding r))
 
--- | A deferred storage transaction, generic over any backend that can
---   satisfy 'Core.StoreM' and 'MonadBranch', plus one plain Reader
---   parameter for 'ContextLibrary' (see its own Haddock for why that one
---   isn't a third typeclass constraint the way 'MonadBranch' is). This is
---   @Thunk@ made concrete: constructing an 'Action' performs no effect at
---   all (it's just a function value, same as any other Haskell closure);
---   the effect only happens at 'runAction'.
-newtype Action a = Action
-  { runAction :: forall m. (Core.StoreM m, MonadBranch m) => ContextLibrary -> Core.StoreT m a }
+-- | A deferred computation against whatever Polysemy effect row @r@ the
+--   host running this DSL provides, plus one plain Reader parameter for
+--   'ContextLibrary'. This is @Thunk@ made concrete: constructing an
+--   'Action' performs no effect at all (it's just a function value, same
+--   as any other Haskell closure); the effect only happens at
+--   'runAction'.
+newtype Action r a = Action { runAction :: ContextLibrary r -> Sem r a }
 
-instance Functor Action where
+instance Functor (Action r) where
   fmap f (Action g) = Action (\lib -> f <$> g lib)
 
-instance Applicative Action where
+instance Applicative (Action r) where
   pure a = Action (\_lib -> pure a)
   Action f <*> Action g = Action (\lib -> f lib <*> g lib)
 
-instance Monad Action where
+instance Monad (Action r) where
   Action g >>= f = Action (\lib -> g lib >>= \a -> runAction (f a) lib)
 
-instance MonadFail Action where
+instance Member Fail r => MonadFail (Action r) where
   fail msg = Action (\_lib -> fail msg)
 
--- | Lifts an ordinary 'Core.StoreM' computation (one that doesn't need
---   branch resolution or the ambient position -- almost everything:
---   reading a blob, listing a tree) into 'Action'.
-liftStore :: (forall m. Core.StoreM m => m a) -> Action a
-liftStore act = Action (\_lib -> lift act)
-
--- | The one 'Action' that actually reaches for 'MonadBranch'.
-askBranch :: BranchName -> Action (Maybe Core.ObjectHash)
-askBranch name = Action (\_lib -> lift (resolveBranch name))
+-- | Lifts an arbitrary 'Sem' computation into 'Action' -- the only way in,
+--   since 'Action's own constructor is exactly @ContextLibrary r -> Sem r
+--   a@. Every DSL library function that reaches for a named effect
+--   ('Storyteller.Core.ContentEffects.treeSnapshot', 'askBranch', ...)
+--   goes through this; there is no separate "storage-specific" lift the
+--   way 'liftStore' used to be, because nothing here is storage-specific
+--   any more -- it's just entering the underlying effect monad.
+liftSem :: Sem r a -> Action r a
+liftSem act = Action (\_lib -> act)
 
 -- | The 'ContextLibrary' this 'Action' is running against -- whatever
 --   'Storyteller.Core.Context.runContextValue' was handed at the one
 --   place 'runAction' actually gets called.
-currentLibrary :: Action ContextLibrary
+currentLibrary :: Action r (ContextLibrary r)
 currentLibrary = Action (\lib -> pure lib)
 
 -- | 'currentLibrary', narrowed to one name -- what
 --   'Storyteller.Context.DSL.Compile's cross-definition 'EIdent'\/'EApp'
 --   fallback actually calls.
-lookupLibrary :: Name -> Action (Maybe Binding)
+lookupLibrary :: Name -> Action r (Maybe (Binding r))
 lookupLibrary name = do
   ContextLibrary m <- currentLibrary
   pure (Map.lookup name m)
-
--- | The commit an 'Action' is currently ambiently positioned at -- see
---   'Core.headHash'. What 'Storyteller.Context.DSL.Compile.currentScope'
---   bootstraps the Reader scope from, with no branch lookup needed.
-currentHead :: Action Core.ObjectHash
-currentHead = Action (\_lib -> Core.headHash)
 
 -- | Where a 'Value' came from -- stamped by @read@ itself (see
 --   'withProvenance'), never invented by a filter. Structural: knowing it
@@ -247,7 +230,7 @@ defaultMeta = Meta Nothing defaultPriority Set.empty
 --   resolution (see "Storyteller.Context.DSL.Compile") calls on every
 --   entry it builds from a commit's tree, never something a filter
 --   invents for itself.
-withProvenance :: FilePath -> Core.ObjectHash -> Value -> Value
+withProvenance :: FilePath -> Core.ObjectHash -> Value r -> Value r
 withProvenance path tick v = v { valueMeta = (valueMeta v) { metaProvenance = Just (Provenance path tick) } }
 
 -- | @Value = { default :: Thunk [Message], entries :: [(Name, Value)], meta :: Meta }@.
@@ -261,17 +244,17 @@ withProvenance path tick v = v { valueMeta = (valueMeta v) { metaProvenance = Ju
 --   numbering, say) expressible at all -- both are just "produce this
 --   list in a different order," ordinary list operations on already-pure
 --   data, not a capability bolted on from outside 'Value'.
-data Value = Value
-  { valueDefault :: Action [Message]
-  , valueEntries :: [(Name, Action Value)]
+data Value r = Value
+  { valueDefault :: Action r [Message]
+  , valueEntries :: [(Name, Action r (Value r))]
   , valueMeta    :: Meta
   }
 
-emptyValue :: Value
+emptyValue :: Value r
 emptyValue = Value (pure []) [] defaultMeta
 
 -- | A leaf with no children -- "there is no separate leaf type."
-leafValue :: [Message] -> Value
+leafValue :: [Message] -> Value r
 leafValue msgs = Value (pure msgs) [] defaultMeta
 
 -- | Flattens a message list to plain text, ignoring role -- what
@@ -289,7 +272,7 @@ messagesText = T.intercalate "\n" . map messageText
 --   their 'valueDefault' -- so listing a tree this size is cheap
 --   regardless of how much content sits in it, exactly the property
 --   'for'\'s own loop-variable laziness relies on downstream.
-listPaths :: Value -> Action [Text]
+listPaths :: Value r -> Action r [Text]
 listPaths v = do
   parts <- mapM childPaths (valueEntries v)
   pure (concat parts)
@@ -303,7 +286,7 @@ listPaths v = do
 --   up by key, recursively" -- rule 3). 'Nothing' on a missing segment
 --   -- callers turn that into an empty 'Value', per the spec's own
 --   "absence, not an error" rule for a @read@/glob that finds nothing.
-lookupPath :: Value -> [Name] -> Action (Maybe Value)
+lookupPath :: Value r -> [Name] -> Action r (Maybe (Value r))
 lookupPath v []           = pure (Just v)
 lookupPath v (seg : rest) = case lookup seg (valueEntries v) of
   Nothing     -> pure Nothing
@@ -318,7 +301,7 @@ lookupPath v (seg : rest) = case lookup seg (valueEntries v) of
 --   @"sheet"@\/@"blurb"@\/@"full"@\/@"journal"@\/@"journalFull"@) reaches
 --   for, instead of a bespoke @lookup name (valueEntries v)@ at every call
 --   site.
-namedEntry :: Name -> Value -> Action Value
+namedEntry :: Name -> Value r -> Action r (Value r)
 namedEntry name v = case lookup name (valueEntries v) of
   Just act -> act
   Nothing  -> pure emptyValue

@@ -1,5 +1,10 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Interpreter for the Context DSL's AST (see
 --   "Storyteller.Context.DSL.AST") into 'Value' -- an 'Action', per
@@ -82,18 +87,24 @@ import qualified Data.Text.Encoding as TE
 import qualified System.FilePath as FP
 import qualified System.FilePath.Glob as Glob
 
+import Polysemy (Member, Members)
+import Polysemy.Fail (Fail)
+
 import qualified Storage.Core as Core
-import qualified Storage.Query as Query
-import qualified Storage.Tick as Tick
 
 import Storyteller.Context.DSL.AST
 import Storyteller.Context.DSL.Value
 
+import Storyteller.Core.ContentEffects
+  ( TreeAccess, Presence, JournalAccess, ConversationAccess
+  , BranchResolve, Turn(..)
+  , currentHead, treeSnapshot, readTreeBlob, charactersPresent, journalWindow
+  , conversationTurns, resolveBranch
+  )
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Writer.Agent.MessageWindow as MessageWindow
 import qualified Storyteller.Writer.Branches as Branches
 import Storyteller.Writer.Library (naturalKey)
-import qualified Storyteller.Writer.Presence as Presence
 import Storyteller.Writer.Types (Character(..))
 
 -- ---------------------------------------------------------------------------
@@ -105,7 +116,7 @@ import Storyteller.Writer.Types (Character(..))
 --   caller) -- moved so 'Storyteller.Context.DSL.Value.ContextLibrary' can
 --   hold compiled 'Binding's directly without a module cycle; see that
 --   module's own Haddock on 'Binding'.
-type Env = Map Name Binding
+type Env r = Map Name (Binding r)
 
 -- ---------------------------------------------------------------------------
 -- Building a Reader scope from a commit
@@ -137,9 +148,9 @@ type Env = Map Name Binding
 --   'Message' to become at all, so this module -- the DSL's own
 --   interpreter -- never needs to know binary files exist in the first
 --   place, rather than filtering them out after the fact.
-treeValueOfCommit :: Core.ObjectHash -> Action Value
+treeValueOfCommit :: forall branch r. Member (TreeAccess branch) r => Core.ObjectHash -> Action r (Value r)
 treeValueOfCommit commit = do
-  files <- Action (\_lib -> Query.loadLiveWorkingTree commit)
+  files <- liftSem (treeSnapshot @branch commit)
   pure Value
     { valueDefault = pure []
     , valueEntries =
@@ -149,9 +160,7 @@ treeValueOfCommit commit = do
     , valueMeta = defaultMeta
     }
   where
-    readBlob h = liftStore $ Core.readObject h >>= \case
-      Core.BlobObject bs -> pure bs
-      Core.TreeObject _  -> fail "internal error: file path resolved to a tree object"
+    readBlob h = liftSem (readTreeBlob @branch h)
 
 -- ---------------------------------------------------------------------------
 -- Evaluation
@@ -162,10 +171,11 @@ treeValueOfCommit commit = do
 --   embeds (matching the spec's own framing: "a compiled context ends
 --   up with exactly the type shape a hand-written agent already has").
 compileDefinition
-  :: Definition
-  -> Value          -- ^ initial ambient Reader scope
-  -> [Binding]      -- ^ arguments, matched against 'defParams'
-  -> Action Value
+  :: Member Fail r
+  => Definition
+  -> Value r          -- ^ initial ambient Reader scope
+  -> [Binding r]      -- ^ arguments, matched against 'defParams'
+  -> Action r (Value r)
 compileDefinition def scope args
   | length args /= length (defParams def) = fail $
       "arity mismatch: " <> show (length (defParams def)) <> " parameter(s), "
@@ -174,7 +184,7 @@ compileDefinition def scope args
       let env = Map.fromList (zip (defParams def) args)
       mkValue <$> runStmts env scope (defBody def)
 
-mkValue :: ([Message], [(Name, Action Value)]) -> Value
+mkValue :: ([Message], [(Name, Action r (Value r))]) -> Value r
 mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
 
 -- | Compiles a parsed 'Definition' into a 'Binding' that runs against
@@ -185,7 +195,7 @@ mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
 --   'Binding' shape a host-backed library entry already is, so
 --   'Storyteller.Context.DSL.Value.ContextLibrary' can hold both
 --   uniformly -- see that type's own Haddock.
-definitionBinding :: Definition -> Binding
+definitionBinding :: Member Fail r => Definition -> Binding r
 definitionBinding def = Binding (length (defParams def)) (\args scope -> compileDefinition def scope (map bval args))
 
 -- | Combines a newly-produced entry list with what's already
@@ -209,8 +219,9 @@ unionEntries new old =
 --   fold their own nested statements into the *same* accumulator this
 --   call already threads (see their cases below).
 runStmts
-  :: Env -> Value -> Block
-  -> Action ([Message], [(Name, Action Value)])
+  :: Member Fail r
+  => Env r -> Value r -> Block
+  -> Action r ([Message], [(Name, Action r (Value r))])
 runStmts env0 scope0 = go env0 scope0 [] []
   where
     go _ _ msgs entries [] = pure (concat (reverse msgs), entries)
@@ -259,7 +270,7 @@ runStmts env0 scope0 = go env0 scope0 [] []
             []             -> pure ()
           pure (msgsAcc ++ m1, unionEntries es1 entriesAcc)
 
-bindParams :: [Name] -> [Action Value] -> Env -> Env
+bindParams :: [Name] -> [Action r (Value r)] -> Env r -> Env r
 bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env (zip ps args)
 
 -- | Resolves an identifier against the current definition's own local
@@ -272,7 +283,7 @@ bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env 
 --   however 'Storyteller.Core.Context.buildContextLibrary' compiled it --
 --   see 'ContextLibrary's own Haddock for why that's what makes a library
 --   reference behave indistinguishably from a local one.
-resolveIdent :: Env -> Name -> Action Binding
+resolveIdent :: Member Fail r => Env r -> Name -> Action r (Binding r)
 resolveIdent env name = case Map.lookup name env of
   Just b  -> pure b
   Nothing -> lookupLibrary name >>= \case
@@ -289,17 +300,17 @@ resolveIdent env name = case Map.lookup name env of
 --   the one primitive whose argument has no other sensible meaning than
 --   a path, so an unbound bare token there still means something, rather
 --   than being definitely a mistake.
-tryResolveIdent :: Env -> Name -> Action (Maybe Binding)
+tryResolveIdent :: Env r -> Name -> Action r (Maybe (Binding r))
 tryResolveIdent env name = case Map.lookup name env of
   Just b  -> pure (Just b)
   Nothing -> lookupLibrary name
 
-nameOf :: Env -> Value -> Expr -> Action Name
+nameOf :: Member Fail r => Env r -> Value r -> Expr -> Action r Name
 nameOf env scope e = do
   v <- evalExpr env scope e
   messagesText <$> valueDefault v
 
-evalExpr :: Env -> Value -> Expr -> Action Value
+evalExpr :: Member Fail r => Env r -> Value r -> Expr -> Action r (Value r)
 evalExpr env scope e = case e of
   EString Quoted parts -> leafValue . (: []) . User <$> interpText env scope parts
   EString Bare   parts -> interpText env scope parts >>= globResolve scope
@@ -427,7 +438,7 @@ evalExpr env scope e = case e of
 --   *names* directly -- always known purely, no forcing needed -- a plain
 --   leaf (an ordinary string-literal pattern\/name) contributes its own
 --   forced default text instead.
-argCriteria :: Value -> Action [Text]
+argCriteria :: Value r -> Action r [Text]
 argCriteria a
   | null (valueEntries a) = (: []) . messagesText <$> valueDefault a
   | otherwise             = pure (map fst (valueEntries a))
@@ -439,7 +450,7 @@ globMatches k pat = Glob.match (Glob.compile (T.unpack pat)) (T.unpack k)
 --   @matches@ against any criterion contributed by @args@ (see
 --   'argCriteria'). @keep = True@ retains a key some criterion matches
 --   (@only@); @keep = False@ drops it (@without@\/@exclude@).
-shrinkEntries :: (Text -> Text -> Bool) -> Bool -> Value -> [Value] -> Action Value
+shrinkEntries :: (Text -> Text -> Bool) -> Bool -> Value r -> [Value r] -> Action r (Value r)
 shrinkEntries matches keep v args = do
   criteria <- concat <$> mapM argCriteria args
   let isMatched k = any (matches k) criteria
@@ -448,7 +459,7 @@ shrinkEntries matches keep v args = do
 -- | Resolves every @%name%@ span against 'env' (a local binding's own
 --   plain text -- see 'Storyteller.Context.DSL.Value.messagesText'),
 --   leaving literal spans untouched.
-interpText :: Env -> Value -> InterpText -> Action Text
+interpText :: Member Fail r => Env r -> Value r -> InterpText -> Action r Text
 interpText env scope = fmap T.concat . mapM part
   where
     part (Lit t)    = pure t
@@ -462,7 +473,7 @@ interpText env scope = fmap T.concat . mapM part
 --   path, say) -- cheap to keep as a fallback and matches rule 3's own
 --   "looks it up by key, recursively" wording, even though nothing this
 --   interpreter builds today actually produces multi-level nesting.
-resolveRead :: Value -> Text -> Action (Maybe Value)
+resolveRead :: Value r -> Text -> Action r (Maybe (Value r))
 resolveRead scope path = case lookup path (valueEntries scope) of
   Just action -> Just <$> action
   Nothing     -> lookupPath scope (T.splitOn "/" path)
@@ -475,13 +486,13 @@ resolveRead scope path = case lookup path (valueEntries scope) of
 --   through an ordinary @in ...: for f in ...: as f: ...@ re-export, not
 --   just through 'fJoin' -- forcing a fresh lexical sort here every time
 --   would silently undo any reordering a filter upstream already did.
-globMatchPat :: Value -> Text -> Action [Text]
+globMatchPat :: Value r -> Text -> Action r [Text]
 globMatchPat scope pat = do
   allPaths <- listPaths scope
   let compiled = Glob.compile (T.unpack pat)
   pure (filter (Glob.match compiled . T.unpack) allPaths)
 
-forceAt :: Value -> Text -> Action Value
+forceAt :: Value r -> Text -> Action r (Value r)
 forceAt scope path = maybe emptyValue id <$> resolveRead scope path
 
 -- | Matches @pat@ against @scope@ (a glob if it has metacharacters, an
@@ -491,7 +502,7 @@ forceAt scope path = maybe emptyValue id <$> resolveRead scope path
 --   bare glob expression already builds (see 'EString'\'s own
 --   @Bare@ case), reused here by 'ERead' for both a literal string
 --   argument and an otherwise-unresolved bare identifier.
-globResolve :: Value -> Text -> Action Value
+globResolve :: Value r -> Text -> Action r (Value r)
 globResolve scope pat = do
   matches <- globMatchPat scope pat
   entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
@@ -546,14 +557,14 @@ globResolve scope pat = do
 --   'valueEntries' after forcing each argument's own criteria first
 --   ('shrinkEntries'), which is still simplest left as 'evalExpr's own
 --   dispatch rather than folded into this registry's uniform shape.
-type DSLFilter = Value -> [Value] -> Action Value
+type DSLFilter r = Value r -> [Value r] -> Action r (Value r)
 
-type FilterRegistry = Map Name DSLFilter
+type FilterRegistry r = Map Name (DSLFilter r)
 
 -- | A 'Value' that fails when forced, never at construction -- how a
 --   filter reports a problem (an arity mismatch, an unimplemented
 --   filter) without itself needing to run anything.
-errorValue :: String -> Value
+errorValue :: Member Fail r => String -> Value r
 errorValue msg = Value { valueDefault = fail msg, valueEntries = [], valueMeta = defaultMeta }
 
 -- | @summarize@\/@draftDefinition@\/@extractProperNouns@\/@whereType@\/
@@ -562,7 +573,7 @@ errorValue msg = Value { valueDefault = fail msg, valueEntries = [], valueMeta =
 --   for these need a tagging convention this pass doesn't decide, or (for
 --   @summarize@) an LLM effect still genuinely outside 'Action's own
 --   ceiling. Pretending otherwise would be worse than not having them.
-coreFilters :: FilterRegistry
+coreFilters :: Member Fail r => FilterRegistry r
 coreFilters = Map.fromList
   [ ("orifempty",     fOrIfEmpty)
   , ("pinned",        fPinned)
@@ -582,29 +593,29 @@ coreFilters = Map.fromList
   , ("whereTag",     fNotImplemented "whereTag")
   ]
 
-fNotImplemented :: String -> DSLFilter
+fNotImplemented :: Member Fail r => String -> DSLFilter r
 fNotImplemented label _ _ = pure $ errorValue $
   "filter `" <> label <> "` is not yet implemented (needs a real LLM/content-analysis effect)"
 
-fPassthrough :: DSLFilter
+fPassthrough :: DSLFilter r
 fPassthrough v _ = pure v
 
 -- | Sets 'Pinned' in 'metaFlags' -- what a budget-aware renderer (outside
 --   this module) treats as "never drop this."
-fPinned :: DSLFilter
+fPinned :: Member Fail r => DSLFilter r
 fPinned v [] = pure v { valueMeta = addFlag Pinned (valueMeta v) }
 fPinned _ args = pure $ errorValue $ "pinned: expected no arguments, got " <> show (length args)
 
 -- | Sets 'Summarizable' in 'metaFlags' -- what a budget-aware renderer may
 --   replace with an LLM summary of the same text under pressure, rather
 --   than dropping outright.
-fSummarizable :: DSLFilter
+fSummarizable :: Member Fail r => DSLFilter r
 fSummarizable v [] = pure v { valueMeta = addFlag Summarizable (valueMeta v) }
 fSummarizable _ args = pure $ errorValue $ "summarizable: expected no arguments, got " <> show (length args)
 
 -- | Sets 'metaPriority' -- higher survives longer under budget pressure
 --   (see 'Priority's own haddock).
-fPriority :: DSLFilter
+fPriority :: Member Fail r => DSLFilter r
 fPriority v [nArg] = do
   nMsgs <- valueDefault nArg
   let n = maybe 0 id (readMaybeInt (messagesText nMsgs))
@@ -620,7 +631,7 @@ addFlag flag m = m { metaFlags = Set.insert flag (metaFlags m) }
 --   'valueEntries' always stays @v@'s own: every real use passes a
 --   plain string literal as the fallback (a leaf, no entries of its
 --   own), so this never actually discards anything observable.
-fOrIfEmpty :: DSLFilter
+fOrIfEmpty :: Member Fail r => DSLFilter r
 fOrIfEmpty v [fallback] = pure v
   { valueDefault = do
       msgs <- valueDefault v
@@ -628,13 +639,13 @@ fOrIfEmpty v [fallback] = pure v
   }
 fOrIfEmpty _ args = pure $ errorValue $ "orifempty: expected exactly 1 argument, got " <> show (length args)
 
-fFileWithName :: DSLFilter
+fFileWithName :: Member Fail r => DSLFilter r
 fFileWithName v [] = pure $ leafValueA $ do
   msgs <- valueDefault v
   pure [User (T.pack (FP.takeBaseName (T.unpack (messagesText msgs))))]
 fFileWithName _ args = pure $ errorValue $ "filewithname: expected no arguments, got " <> show (length args)
 
-fTruncate :: DSLFilter
+fTruncate :: Member Fail r => DSLFilter r
 fTruncate v [nArg] = pure $ leafValueA $ do
   nMsgs <- valueDefault nArg
   let n = maybe (T.length (messagesText nMsgs)) id (readMaybeInt (messagesText nMsgs))
@@ -642,7 +653,7 @@ fTruncate v [nArg] = pure $ leafValueA $ do
   pure [User (T.take n (messagesText msgs))]
 fTruncate _ args = pure $ errorValue $ "truncate: expected exactly 1 argument, got " <> show (length args)
 
-fJoin :: DSLFilter
+fJoin :: Member Fail r => DSLFilter r
 fJoin v [sepArg] = pure $ leafValueA $ do
   sepMsgs <- valueDefault sepArg
   let sep = messagesText sepMsgs
@@ -658,7 +669,7 @@ fJoin _ args = pure $ errorValue $ "join: expected exactly 1 argument, got " <> 
 --   LLM/content-analysis effect at all -- unusual for wanting an argument
 --   list of exactly zero, since the ordering itself is fixed (there's only
 --   one @naturalKey@), not a piped-in comparator.
-fSortBy :: DSLFilter
+fSortBy :: Member Fail r => DSLFilter r
 fSortBy v [] = pure v { valueEntries = List.sortBy (\a b -> compare (naturalKey (fst a)) (naturalKey (fst b))) (valueEntries v) }
 fSortBy _ args = pure $ errorValue $ "sortBy: expected no arguments, got " <> show (length args)
 
@@ -668,7 +679,7 @@ fSortBy _ args = pure $ errorValue $ "sortBy: expected no arguments, got " <> sh
 --   @summarize@, this is convention over already-stored text, not
 --   content analysis -- no LLM effect needed, so it's a plain filter
 --   rather than something deferred to a render-time pass.
-fName :: DSLFilter
+fName :: Member Fail r => DSLFilter r
 fName v [] = pure $ leafValueA $ do
   msgs <- valueDefault v
   pure [User (mdHeading (messagesText msgs))]
@@ -678,7 +689,7 @@ fName _ args = pure $ errorValue $ "name: expected no arguments, got " <> show (
 --   leading @# Title@ -- the "acquaintance blurb" convention: whatever
 --   prose a sheet opens with, up to the next blank line or heading.
 --   Same non-LLM rationale as 'fName'.
-fAbstract :: DSLFilter
+fAbstract :: Member Fail r => DSLFilter r
 fAbstract v [] = pure $ leafValueA $ do
   msgs <- valueDefault v
   pure [User (mdLeadParagraph (messagesText msgs))]
@@ -701,7 +712,7 @@ mdLeadParagraph txt =
     isHeading  l = T.isPrefixOf "#" (T.stripStart l)
     isBoundary l = T.null l || isHeading l
 
-leafValueA :: Action [Message] -> Value
+leafValueA :: Action r [Message] -> Value r
 leafValueA action = Value { valueDefault = action, valueEntries = [], valueMeta = defaultMeta }
 
 readMaybeInt :: Text -> Maybe Int
@@ -725,14 +736,14 @@ readMaybeInt t = case reads (T.unpack t) of
 --   first argument"). Resolves its argument's text as a character branch
 --   name via 'askBranch', then hands off to 'treeValueOfCommit' exactly
 --   like the initial scope was built.
-branchBinding :: Binding
+branchBinding :: forall branch r. Members '[BranchResolve, TreeAccess branch, Fail] r => Binding r
 branchBinding = fn1 go
   where
     go vArg = do
       ident <- messagesText <$> (valueDefault =<< vArg)
-      askBranch (BranchName ("character/" <> ident)) >>= \case
+      liftSem (resolveBranch (BranchName ("character/" <> ident))) >>= \case
         Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
-        Just commit -> treeValueOfCommit commit
+        Just commit -> treeValueOfCommit @branch commit
 
 -- | @charactersin@'s own implementation, as an ordinary 'Binding' -- same
 --   reasoning as 'branchBinding': it needs real 'Core.StoreM' access
@@ -747,23 +758,23 @@ branchBinding = fn1 go
 --   *is* the key (the identifier); a caller narrows further with @in
 --   (charname | branch): ...@\/@describechar charname@, same as any other
 --   character identifier this DSL already hands around.
-charactersInBinding :: Binding
+charactersInBinding :: forall branch r. Members '[Presence branch, Fail] r => Binding r
 charactersInBinding = fn1 go
   where
     go vArg = do
       path  <- T.unpack . messagesText <$> (valueDefault =<< vArg)
-      ticks <- Action (\_lib -> Tick.fileTicksOf path)
-      let idents = [ Branches.branchDisplayName name | Character (BranchName name) <- Set.toList (Presence.activeCharacters ticks) ]
+      chars <- liftSem (charactersPresent @branch path)
+      let idents = [ Branches.branchDisplayName name | Character (BranchName name) <- Set.toList chars ]
       pure (Value (pure []) [ (ident, pure (leafValue [User ident])) | ident <- idents ] defaultMeta)
 
 -- | 'treeValueOfCommit' for a named branch -- resolves the name via
---   'askBranch', then delegates. The one case a Reader-scope switch
+--   'resolveBranch', then delegates. The one case a Reader-scope switch
 --   genuinely does correspond to a different commit (contrast
 --   'currentScope', which needs no name or lookup at all).
-treeValueOfBranch :: BranchName -> Action Value
-treeValueOfBranch name = askBranch name >>= \case
+treeValueOfBranch :: forall branch r. Members '[BranchResolve, TreeAccess branch, Fail] r => BranchName -> Action r (Value r)
+treeValueOfBranch name = liftSem (resolveBranch name) >>= \case
   Nothing     -> fail ("branch not found: " <> T.unpack (unBranchName name))
-  Just commit -> treeValueOfCommit commit
+  Just commit -> treeValueOfCommit @branch commit
 
 -- | A named character's own @journal.md@, curated by
 --   'Storage.Tick.recentAtomsOf': entries that are byte-identical to
@@ -792,16 +803,16 @@ treeValueOfBranch name = askBranch name >>= \case
 --   identifier as its one DSL-side argument, e.g. @journal charname@
 --   where @journal@ was threaded in as a parameter the same way
 --   'fBranch' expects @charname | branch@'s own identifier.
-journalDelta :: Int -> Int -> Int -> Binding
+journalDelta :: forall branch r. Members '[BranchResolve, JournalAccess branch, Fail] r => Int -> Int -> Int -> Binding r
 journalDelta lookback maxOut padding = fn1 go
   where
     go charnameArg = do
       ident <- messagesText <$> (valueDefault =<< charnameArg)
-      askBranch (BranchName ("character/" <> ident)) >>= \case
+      liftSem (resolveBranch (BranchName ("character/" <> ident))) >>= \case
         Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
         Just commit -> do
-          ticks <- Action (\_lib -> Core.readAt commit (Tick.recentAtomsOf "journal.md" lookback maxOut padding))
-          pure (leafValue (renderJournalTicks ticks))
+          texts <- liftSem (journalWindow @branch (Just commit) "journal.md" lookback maxOut padding)
+          pure (leafValue (renderJournalTexts texts))
 
 -- | One block per curated slice, joined by a plain divider -- entries
 --   may span real timeline gaps (unremarkable ticks in between were
@@ -811,12 +822,12 @@ journalDelta lookback maxOut padding = fn1 go
 --   for objective narration) -- kept here rather than left to the
 --   calling definition, since it's fixed framing text tied to what a
 --   curated journal slice *is*, not project-overridable policy.
-renderJournalTicks :: [Tick.FileTick] -> [Message]
-renderJournalTicks []    = []
-renderJournalTicks ticks =
+renderJournalTexts :: [Text] -> [Message]
+renderJournalTexts []    = []
+renderJournalTexts texts =
   [ User $
       "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
-      <> T.intercalate "\n\n---\n\n" (map Tick.ftMessage ticks)
+      <> T.intercalate "\n\n---\n\n" texts
   ]
 
 -- | A file's own tick history, reconstructed as real, role-preserving
@@ -830,22 +841,17 @@ renderJournalTicks ticks =
 --   but the DSL still decides *where* the result lands (@conv =
 --   readconversation curchapter@, then composed with whatever else the
 --   calling definition builds).
-readConversation :: Binding
+readConversation :: forall branch r. Members '[ConversationAccess branch, Fail] r => Binding r
 readConversation = fn1 go
   where
     go pathArg = do
       path  <- T.unpack . messagesText <$> (valueDefault =<< pathArg)
-      ticks <- Action (\_lib -> Tick.fileTicksOf path)
-      pure (leafValue (historyFromTicks ticks))
+      turns <- liftSem (conversationTurns @branch path)
+      pure (leafValue (map turnToMessage turns))
 
-historyFromTicks :: [Tick.FileTick] -> [Message]
-historyFromTicks = concatMap toMessage . filter (not . isHidden)
-  where
-    isHidden ft = lookup "hide" (Tick.ftFields ft) == Just "true"
-    toMessage ft = case Tick.ftKind ft of
-      "prompt" -> [User (Tick.ftMessage ft)]
-      "atom"   -> [Assistant (maybe (Tick.ftMessage ft) id (Tick.ftContent ft))]
-      _        -> []
+turnToMessage :: Turn -> Message
+turnToMessage (UserTurn t)      = User t
+turnToMessage (AssistantTurn t) = Assistant t
 
 -- | Splices @toInsert@ into @conv@ at a bounded depth from the end (2 to 4
 --   turns, a project's own cache-vs-freshness tuning, baked in here the
@@ -858,7 +864,7 @@ historyFromTicks = concatMap toMessage . filter (not . isHidden)
 --   See that function's own Haddock for why a *bounded* depth, not either
 --   end, is what actually buys back prompt-cache hits across consecutive
 --   turns.
-embedShallow :: Binding
+embedShallow :: Member Fail r => Binding r
 embedShallow = fn2 go
   where
     go convArg extraArg = do
@@ -880,12 +886,12 @@ injectShallow isTurnStart lo hi toInsert history
     (before, after) = splitAt (turnIdxs !! boundary) history
 
 -- | The Reader scope for wherever this 'Action' is actually run --
---   'Storyteller.Context.DSL.Value.currentHead', read straight off the
---   ambient 'Core.StoreT' position, no 'Storyteller.Core.Types.BranchName'
---   or lookup needed. This is what makes 'runDefinition' able to just say
---   "run in whatever branch/session I'm already in."
-currentScope :: Action Value
-currentScope = currentHead >>= treeValueOfCommit
+--   'Storyteller.Core.ContentEffects.currentHead', read straight off the
+--   ambient position, no 'Storyteller.Core.Types.BranchName' or lookup
+--   needed. This is what makes 'runDefinition' able to just say "run in
+--   whatever branch/session I'm already in."
+currentScope :: forall branch r. Member (TreeAccess branch) r => Action r (Value r)
+currentScope = liftSem (currentHead @branch) >>= treeValueOfCommit @branch
 
 -- | The whole pipeline as one 'Action': take whatever commit is
 --   currently ambient as the initial scope, compile @def@ against it.
@@ -893,5 +899,5 @@ currentScope = currentHead >>= treeValueOfCommit
 --   machinery this assembles. Still fully generic: the concrete backend
 --   only enters when the returned 'Action' is finally run via
 --   'Storyteller.Context.DSL.Value.runAction'.
-runDefinition :: Definition -> [Binding] -> Action Value
-runDefinition def args = currentScope >>= \scope -> compileDefinition def scope args
+runDefinition :: forall branch r. Members '[TreeAccess branch, Fail] r => Definition -> [Binding r] -> Action r (Value r)
+runDefinition def args = currentScope @branch >>= \scope -> compileDefinition def scope args

@@ -1,7 +1,11 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | The rendering layer sitting between the Context DSL's own 'Value' and
 --   an agent's actual LLM call -- see @CONTEXT-DSL.md@'s own "Rendering"
@@ -47,11 +51,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import qualified UniversalLLM as LLM
+import Polysemy (Member)
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (treeValueOfCommit)
 import Storyteller.Context.DSL.Render (dslMessageToLLM)
 import Storyteller.Context.DSL.Value
+import Storyteller.Core.ContentEffects (TreeAccess)
 
 -- | Mirrors 'Value''s own shape exactly (own content, then named
 --   children, in order), just with a leaf type @a@ chosen by whichever
@@ -94,7 +100,7 @@ type FileSystemView = RenderedContext ContextRef
 --   (rare, but the type allows it) -- all of them share that node's own
 --   'Meta', since there's only one 'Value' node's worth of provenance\/
 --   priority\/flags to go around.
-renderContext :: Value -> Action Context
+renderContext :: Value r -> Action r Context
 renderContext v = do
   msgs     <- valueDefault v
   children <- mapM (\(name, act) -> (,) name . id <$> (renderContext =<< act)) (valueEntries v)
@@ -126,7 +132,7 @@ renderContext v = do
 --   'Storyteller.Context.DSL.Compile.treeValueOfBranch') or a bare
 --   @read@ result, not on an arbitrary library definition's already-
 --   composed output.
-renderFileSystem :: Value -> Action FileSystemView
+renderFileSystem :: Value r -> Action r FileSystemView
 renderFileSystem v = do
   children <- mapM (\(name, act) -> (,) name <$> (renderFileSystem =<< act)) (valueEntries v)
   let own = case metaProvenance (valueMeta v) of
@@ -184,9 +190,9 @@ listDeferred = toList
 --   caller's own ambient position is still the right one to read from,
 --   since a 'ContextRef' may have been handed to a tool call well after
 --   'renderFileSystem' itself ran.
-readRef :: ContextRef -> Action ContextItem
+readRef :: forall branch r. Member (TreeAccess branch) r => ContextRef -> Action r ContextItem
 readRef (ContextRef (Provenance path tick) meta) = do
-  tree <- treeValueOfCommit tick
+  tree <- treeValueOfCommit @branch tick
   case lookup (T.pack path) (valueEntries tree) of
     Nothing     -> pure (ContextItem (FileRead path "") meta)
     Just action -> do

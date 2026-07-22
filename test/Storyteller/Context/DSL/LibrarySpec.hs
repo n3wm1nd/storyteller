@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -24,20 +25,17 @@ import Control.Monad (void)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Text (Text)
-import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
-import Runix.Git (Git)
-
-import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Context (buildContextLibrary)
-import Storyteller.Core.Git (runBranchOpGit, runStorage)
-import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
-import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
+import Storyteller.Core.Context (ContextRow, ContextStorage, interpretContextStorageMap, runContextValue)
+import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import Storyteller.Core.Types (BranchName(..))
 
 import Server.Core.Branch (Main)
 import Server.TestStack
@@ -61,21 +59,28 @@ seedBranch name files = do
 --   cross-references, 'contextWriter'\/'contextOther'\/'contextLore' only
 --   resolve at all because their own sibling names ('loreEntry',
 --   'Storyteller.Context.DSL.Library.chapterEntry', ...) are in it.
-runDslOn :: BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
-runDslOn bname act = resolveBranch bname >>= \case
-  Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary Map.empty))
+runDslOn
+  :: forall a
+  .  BranchName
+  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> Sem (StoryStorage : TestEffects '[]) a
+runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 -- | 'runDslOn', but against a library assembled with the given committed
 --   overrides -- what 'contextCharacterBlurbOverrideSpec' uses to prove an
 --   override actually reaches 'contextCharacter''s own composition,
---   instead of just compiling.
-runDslOnWith :: Map Name Text -> BranchName -> Action a -> Sem (StoryStorage : TestEffects '[]) a
-runDslOnWith overrides bname act = resolveBranch bname >>= \case
-  Nothing -> fail ("branch not found: " <> T.unpack (unBranchName bname))
-  Just h  -> fst <$> Core.runStoreT h (runAction act (buildContextLibrary overrides))
+--   instead of just compiling. Locally re-interprets 'ContextStorage'
+--   (shadowing "Server.TestStack"'s own empty-map one) so only calls made
+--   within @act@ itself see these overrides.
+runDslOnWith
+  :: forall a
+  .  Map Name Text -> BranchName
+  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> Sem (StoryStorage : TestEffects '[]) a
+runDslOnWith overrides bname act =
+  runBranchAndFS @Main bname (interpretContextStorageMap overrides (runContextValue @Main act))
 
-entryTexts :: Value -> Action (Map Text Text)
+entryTexts :: Value r -> Action r (Map Text Text)
 entryTexts v = Map.fromList <$>
   mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
 
@@ -122,7 +127,8 @@ contextWriterLoreOverrideSpec =
   where
     overrides = Map.fromList
       [ ("context.lore", "\"this is a project-committed override, not the default\"") ]
-    go = valueDefault =<< contextWriter ""
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) [Message]
+    go = valueDefault =<< contextWriter @Main ""
 
 -- | The regression test for the bug that started this whole redesign:
 --   'contextCharacter' used to take @blurb@ as a typed 'Binding'
@@ -150,8 +156,9 @@ contextCharacterBlurbOverrideSpec =
   where
     overrides = Map.fromList
       [ ("character.blurb", "charname:\n  \"this is a project-committed override, not the default\"") ]
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) Text
     go = do
-      v <- contextCharacter "aria"
+      v <- contextCharacter @Main "aria"
       Just blurbAction <- pure (lookup "blurb" (valueEntries v))
       messagesText <$> (valueDefault =<< blurbAction)
 
@@ -224,9 +231,11 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       , ["Aria: A wandering rogue."]
       )
   where
-    go path = valueDefault =<< contextWriter path
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Text -> Action (ContextRow Main r) [Message]
+    go path = valueDefault =<< contextWriter @Main path
+    goWithCharacter :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) ([Message], [Text])
     goWithCharacter = do
-      v         <- contextWriter "chapters/ch2.md"
+      v         <- contextWriter @Main "chapters/ch2.md"
       def       <- valueDefault v
       Just aria <- pure (lookup "aria" (valueEntries v))
       ariaTexts <- messagesText <$> (valueDefault =<< aria)
@@ -250,8 +259,9 @@ contextLoreSpec = describe "contextLore/contextOther (standalone)" $ do
       , Map.fromList [("lore/notes.md", "## lore/notes.md\na hand-authored note")]
       )
   where
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) ([Message], Map Text Text)
     go = do
-      v      <- contextLore
+      v      <- contextLore @Main
       def    <- valueDefault v
       texts  <- entryTexts v
       pure (def, texts)
@@ -264,11 +274,13 @@ contextMentionFilterSpec = describe "contextMentionFilter (the default context.m
       runDslOn (BranchName "main") go)
     `shouldBe` Right (Map.fromList [("Aria", "Aria is a wandering rogue.")])
   where
+    aliases :: Action r (Value r)
     aliases = pure Value
       { valueDefault = pure []
       , valueEntries = [("Aria", pure (leafValue [User "Aria is a wandering rogue."]))]
       , valueMeta = defaultMeta
       }
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) (Map Text Text)
     go = do
-      v <- contextMentionFilter (bval aliases)
+      v <- contextMentionFilter @Main (bval aliases)
       entryTexts v

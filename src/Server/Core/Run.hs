@@ -20,6 +20,7 @@ import Runix.Logging (Logging)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -50,5 +51,6 @@ type SessionEffects r =
              , StoryStorage
              , PromptStorage
              , ContextStorage
+             , BranchResolve
              ] r
   )

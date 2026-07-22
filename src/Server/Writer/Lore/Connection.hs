@@ -34,6 +34,7 @@ import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage)
 import Server.Writer.Lore (loreTree)
 import Server.Writer.Lore.Protocol (LoreEvent(..))
@@ -77,7 +78,7 @@ onNotify branch conn () = \case
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (LoreError (T.pack err)))
 
-push :: (BranchOpen r, Members '[ContextStorage, Git] r, Member (Embed IO) r) => WS.Connection -> Sem r ()
+push :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 push conn = do
   tree <- loreTree
   embed $ WS.sendTextData conn (encode (LoreTree tree))

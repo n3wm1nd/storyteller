@@ -49,6 +49,7 @@ import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 import Storyteller.Context.DSL.Rendering (renderContext, RenderedContext(..))
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
 -- | Phantom tag for character branches opened temporarily within the action.
@@ -77,6 +78,7 @@ main = do
 writeAction
   :: (LLMs r, Members '[ PromptStorage
               , ContextStorage
+              , BranchResolve
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -100,7 +102,7 @@ writeAction outFile instruction activeChars = do
   -- stays empty here; a CLI run has no separate "user's own selection" to
   -- distinguish from surrounding context, so there's nothing for @pinned@
   -- to hold).
-  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack outFile)
+  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack outFile)
   worldCtx <- WorldContext <$> runContextValue @Main (renderContext writerVal)
   currentTicks <- runStorage @Main (Tick.fileTicksOf outFile)
   Prose generated <- writeAgent worldCtx (StyleContext (Node [] [])) charBlocks (PinnedContext (Node [] [])) currentTicks instruction

@@ -27,6 +27,7 @@ import qualified Storage.Ops as Ops
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..))
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage)
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Context (ContextStorage)
@@ -56,7 +57,7 @@ data ActiveChar
 runRoleplayTurn
   :: forall r
   .  ( LLMs r
-     , Members '[ PromptStorage, ContextStorage, Git, StoryStorage, BranchOp Main, Splitter
+     , Members '[ PromptStorage, ContextStorage, BranchResolve, Git, StoryStorage, BranchOp Main, Splitter
                 , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)
                 , Logging, Fail] r
      )

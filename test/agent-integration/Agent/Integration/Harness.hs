@@ -72,6 +72,7 @@ import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..))
 import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Core.Git (BranchOp, BranchTag)
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Registry
   ( KnownModel(..), KnownAgentModel(..), LLMRunner(..), ModelID(..)
   , knownModels, modelInterpreter, resolveKnownModel, resolveKnownAgentModel, withKnownModel )
@@ -152,7 +153,7 @@ mainBranch = BranchName "main"
 type ScenarioEffects judgeModel r =
   ( LLMs r
   , Members
-      '[ LLM judgeModel, PromptStorage, ContextStorage, Logging
+      '[ LLM judgeModel, PromptStorage, ContextStorage, BranchResolve, Logging
        , Git, StoryStorage, BranchOp Main, Splitter
        , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), FileSystemWrite (BranchTag Main)
        , Fail, Embed IO

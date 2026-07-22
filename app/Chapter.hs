@@ -55,6 +55,7 @@ import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
 import Prelude hiding (readFile)
@@ -91,6 +92,7 @@ main = do
 chapterAction
   :: (LLMs r, Members '[ PromptStorage
               , ContextStorage
+              , BranchResolve
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
@@ -117,7 +119,7 @@ chapterAction mode sheetPath outFile activeChars = do
   -- as real, model-agnostic Context DSL messages (not flattened
   -- 'ContextBlock' text) all the way into 'chapterProse'\/'chapterProseByBeat',
   -- which now bind them to a concrete model only inside 'proseAgent'.
-  writerVal <- resolveContext1 @Main "context.writer" CtxLibrary.contextWriter (T.pack outFile)
+  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack outFile)
   fileCtx <- map Render.dslMessageToLLM <$> runContextValue @Main (valueDefault writerVal)
   existing <- fileExists @(BranchTag Main) outFile >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile
