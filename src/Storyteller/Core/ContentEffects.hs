@@ -77,6 +77,7 @@ module Storyteller.Core.ContentEffects
 
     -- * Curated journal windows (tick-history dependent)
   , JournalAccess(..)
+  , JournalCuration(..)
   , journalWindow
   , runJournalAccess
 
@@ -120,7 +121,9 @@ import Data.Kind (Type)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as T
 import Polysemy
+import Polysemy.Fail (Fail)
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
@@ -129,7 +132,7 @@ import qualified Storage.Tick as Tick
 
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
-import Storyteller.Core.Types (Branch(..), BranchName, TickId(..))
+import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import qualified Storyteller.Writer.Presence as WriterPresence
 import Storyteller.Writer.Types (Character)
 
@@ -144,6 +147,37 @@ import Storyteller.Writer.Types (Character)
 --   parent-chain walk anywhere in this effect -- a plain directory (or
 --   any other content-addressed snapshot) can back all three operations
 --   honestly.
+--
+--   NOTE (2026-07-23, discussed but not resolved further): deliberately
+--   *not* folded into @Runix.FileSystem@'s own 'Runix.FileSystem.FileSystem'
+--   \/'Runix.FileSystem.FileSystemRead' effects, even though both are
+--   "list files, read a blob" in shape. The difference is where the
+--   position comes from: 'Runix.FileSystem''s own @project@ is a
+--   *type-level* phantom, fixed once when an interpreter is wired
+--   (@runStoryFSGit \@branch@) -- right for "the one named branch I keep
+--   reading from, always its current live state" (what
+--   "Storyteller.Writer.Agent.Tasks"\/"Storyteller.Writer.Agent.CharContext"
+--   want). 'TreeSnapshot'\/'ReadTreeBlob' take their position as a
+--   *value*-level 'Core.ObjectHash' instead, because the DSL's own
+--   cross-branch reads (@in (charname | branch): ...@,
+--   'Storyteller.Context.DSL.Compile.journalDelta') only learn *which*
+--   commit to read at from a 'BranchResolve' call moments earlier in the
+--   same evaluation -- often a different commit on every loop iteration.
+--   Minting a fresh phantom-tagged 'Runix.FileSystem.FileSystem'
+--   interpreter per dynamically-resolved commit isn't expressible cleanly
+--   (a Polysemy row is fixed at compile time), so this stays its own
+--   effect rather than folding into the existing one.
+--
+--   FIXME (2026-07-23): 'BranchResolve' currently hands back a raw
+--   'Core.ObjectHash', imported directly from "Storage.Core" -- meaning
+--   this whole effect vocabulary still presupposes content-addressing
+--   exists at all ("the position of a branch is a hash of its content"),
+--   which a backend with no history (a plain directory, a SillyTavern
+--   export) genuinely doesn't have. Should own an opaque position\/ref
+--   type here instead (produced by 'BranchResolve', consumed by
+--   'TreeSnapshot'\/'ReadTreeBlob'\/'JournalWindow'), with the git-backed
+--   interpreter free to implement it *as* an 'Core.ObjectHash' internally
+--   -- not expose that choice to callers.
 data TreeAccess (branch :: k) (m :: Type -> Type) a where
   CurrentHead  :: TreeAccess branch m Core.ObjectHash
   TreeSnapshot :: Core.ObjectHash -> TreeAccess branch m [(FilePath, Core.ObjectHash)]
@@ -209,15 +243,28 @@ runPresence = interpret $ \case
 --   scope) -- the same "content-addressed, branch-agnostic" read
 --   'Storage.Core.readAt' already gives any 'Storage.Core.StoreT'
 --   computation, not something specific to this effect.
+--
+--   The three curation numbers are a named 'JournalCuration' record, not
+--   three positional 'Int's -- they're same-typed and easy to transpose by
+--   accident, and a record makes both this constructor and every call site
+--   self-documenting (@JournalCuration { lookback = ..., maxOut = ...,
+--   padding = ... }@ reads as what it means, @5 3 1@ doesn't).
 data JournalAccess (branch :: k) (m :: Type -> Type) a where
-  JournalWindow :: Maybe Core.ObjectHash -> FilePath -> Int -> Int -> Int -> JournalAccess branch m [Text]
+  JournalWindow :: Maybe Core.ObjectHash -> FilePath -> JournalCuration -> JournalAccess branch m [Text]
+
+-- | See 'Storage.Tick.recentAtomsOf' for what each field actually curates.
+data JournalCuration = JournalCuration
+  { lookback :: Int
+  , maxOut   :: Int
+  , padding  :: Int
+  } deriving (Eq, Show)
 
 makeSem ''JournalAccess
 
 runJournalAccess :: forall branch r a. Member (BranchOp branch) r => Sem (JournalAccess branch ': r) a -> Sem r a
 runJournalAccess = interpret $ \case
-  JournalWindow mCommit path lookback maxOut padding ->
-    map Tick.ftMessage <$> runStorage @branch (at mCommit (Tick.recentAtomsOf path lookback maxOut padding))
+  JournalWindow mCommit path curation ->
+    map Tick.ftMessage <$> runStorage @branch (at mCommit (Tick.recentAtomsOf path (lookback curation) (maxOut curation) (padding curation)))
   where
     at Nothing        action = action
     at (Just commit)  action = Core.readAt commit action
@@ -296,6 +343,19 @@ runTasksSyncTracking = interpret $ \case
 -- Committing content
 -- ---------------------------------------------------------------------------
 
+-- | FIXME (2026-07-23, agreed in review -- should be removed, not filled
+--   in): this ended up being exactly the anti-pattern the rest of this
+--   module argues against -- 'Storage.Ops'\'s own four write functions
+--   with a GADT constructor glued on, no folding or derivation at all,
+--   currently unused (nothing calls it yet -- the intended caller,
+--   'Storyteller.Writer.Agent.Tasks.exchangeTasksFile', was never
+--   converted this pass). When that conversion happens, it should *not*
+--   fill this effect in -- it should replace it with one coarse operation
+--   naming the actual concept @exchangeTasksFile@ wants ("record this
+--   sync pass": freeze-if-existing, replace, append the marker, as a
+--   single unit), folded into 'TasksSyncTracking' or a small sibling
+--   effect -- never four raw storage primitives re-exposed as-is.
+--
 -- | The shared "commit this content" vocabulary -- one real concept (four
 --   operations that all bottom out in writing an atom), not four
 --   accidentally-grouped operations: every real write here already goes
@@ -330,10 +390,28 @@ runAtomWrite = interpret $ \case
 --   phantom -- unlike everything else here, this resolves a *name*
 --   through 'Storyteller.Core.Storage.StoryStorage', which is already
 --   project-global, not scoped to any one already-open branch.
+--
+--   FIXME: returns a raw 'Core.ObjectHash' -- see 'TreeAccess''s own
+--   Haddock for why that leaks a content-addressing assumption this
+--   effect boundary shouldn't presuppose, and what to do about it
+--   (an opaque position type owned here instead).
 data BranchResolve (m :: Type -> Type) a where
   ResolveBranch :: BranchName -> BranchResolve m (Maybe Core.ObjectHash)
 
-makeSem ''BranchResolve
+-- | The exported call every caller actually wants: a missing branch is
+--   never something DSL/agent code has a useful next step for beyond
+--   aborting (there is no legitimate "for each branch, if it doesn't
+--   exist, do X" control flow anywhere this is used -- see
+--   'runContentEffectsGit''s Haddock for the more general kind of
+--   "iterate over branches" question, which is a different, not-yet-built
+--   operation and not this one), so this collapses the constructor's raw
+--   'Maybe' to 'Fail' by hand rather than via 'makeSem'. The raw
+--   constructor stays available (as 'ResolveBranch', via 'send') for the
+--   rare interceptor that does need to see the distinction.
+resolveBranch :: Members '[BranchResolve, Fail] r => BranchName -> Sem r Core.ObjectHash
+resolveBranch name = send (ResolveBranch name) >>= \case
+  Just commit -> pure commit
+  Nothing     -> fail ("branch not found: " <> T.unpack (unBranchName name))
 
 runBranchResolve :: Member StoryStorage r => Sem (BranchResolve ': r) a -> Sem r a
 runBranchResolve = interpret $ \case

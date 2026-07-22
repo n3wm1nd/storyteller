@@ -74,7 +74,7 @@ import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Core.ContentEffects
-  (TreeAccess, Presence, JournalAccess, ConversationAccess, BranchResolve)
+  (TreeAccess, Presence, JournalAccess, ConversationAccess, BranchResolve, JournalCuration(..))
 import Storyteller.Writer.Agent (CharSummary(..))
 
 -- | Host-backed library entries -- real Haskell closures, never
@@ -100,7 +100,7 @@ hostLibrary = Map.fromList
   --   'Server.Writer.File.activeCharacterContext''s own constants), not
   --   something 'contextCharacterDef' should have to take as a parameter
   --   just to reference it by name.
-  , ("characterJournal", journalDelta @branch 30 10 2)
+  , ("characterJournal", journalDelta @branch (JournalCuration 30 10 2))
   ]
 
 -- | The one reserved standing-instruction file, if a project has one --

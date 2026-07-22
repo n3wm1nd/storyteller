@@ -47,7 +47,7 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve, Presence, TreeAccess)
+import Storyteller.Core.ContentEffects (BranchResolve, Presence, TreeAccess, JournalCuration(..))
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding, bval, fn1, journalDelta)
@@ -657,7 +657,7 @@ journalDeltaSpec = describe "journalDelta (host-supplied Binding wrapping recent
       seedBranch "main" []
       seedCharacterJournalBranch "character/jenny"
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< journalDeltaDsl @Main (journalDelta @Main 30 10 0))))
+        (messagesText <$> (valueDefault =<< journalDeltaDsl @Main (journalDelta @Main (JournalCuration 30 10 0)))))
     `shouldBe` Right
       ( "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
         <> "s2 content, but Jenny remembers it differently"

@@ -97,7 +97,7 @@ import Storyteller.Context.DSL.Value
 
 import Storyteller.Core.ContentEffects
   ( TreeAccess, Presence, JournalAccess, ConversationAccess
-  , BranchResolve, Turn(..)
+  , BranchResolve, Turn(..), JournalCuration(..)
   , currentHead, treeSnapshot, readTreeBlob, charactersPresent, journalWindow
   , conversationTurns, resolveBranch
   )
@@ -740,10 +740,9 @@ branchBinding :: forall branch r. Members '[BranchResolve, TreeAccess branch, Fa
 branchBinding = fn1 go
   where
     go vArg = do
-      ident <- messagesText <$> (valueDefault =<< vArg)
-      liftSem (resolveBranch (BranchName ("character/" <> ident))) >>= \case
-        Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
-        Just commit -> treeValueOfCommit @branch commit
+      ident  <- messagesText <$> (valueDefault =<< vArg)
+      commit <- liftSem (resolveBranch (BranchName ("character/" <> ident)))
+      treeValueOfCommit @branch commit
 
 -- | @charactersin@'s own implementation, as an ordinary 'Binding' -- same
 --   reasoning as 'branchBinding': it needs real 'Core.StoreM' access
@@ -772,9 +771,7 @@ charactersInBinding = fn1 go
 --   genuinely does correspond to a different commit (contrast
 --   'currentScope', which needs no name or lookup at all).
 treeValueOfBranch :: forall branch r. Members '[BranchResolve, TreeAccess branch, Fail] r => BranchName -> Action r (Value r)
-treeValueOfBranch name = liftSem (resolveBranch name) >>= \case
-  Nothing     -> fail ("branch not found: " <> T.unpack (unBranchName name))
-  Just commit -> treeValueOfCommit @branch commit
+treeValueOfBranch name = liftSem (resolveBranch name) >>= treeValueOfCommit @branch
 
 -- | A named character's own @journal.md@, curated by
 --   'Storage.Tick.recentAtomsOf': entries that are byte-identical to
@@ -803,16 +800,14 @@ treeValueOfBranch name = liftSem (resolveBranch name) >>= \case
 --   identifier as its one DSL-side argument, e.g. @journal charname@
 --   where @journal@ was threaded in as a parameter the same way
 --   'fBranch' expects @charname | branch@'s own identifier.
-journalDelta :: forall branch r. Members '[BranchResolve, JournalAccess branch, Fail] r => Int -> Int -> Int -> Binding r
-journalDelta lookback maxOut padding = fn1 go
+journalDelta :: forall branch r. Members '[BranchResolve, JournalAccess branch, Fail] r => JournalCuration -> Binding r
+journalDelta curation = fn1 go
   where
     go charnameArg = do
-      ident <- messagesText <$> (valueDefault =<< charnameArg)
-      liftSem (resolveBranch (BranchName ("character/" <> ident))) >>= \case
-        Nothing     -> fail ("branch not found: character/" <> T.unpack ident)
-        Just commit -> do
-          texts <- liftSem (journalWindow @branch (Just commit) "journal.md" lookback maxOut padding)
-          pure (leafValue (renderJournalTexts texts))
+      ident  <- messagesText <$> (valueDefault =<< charnameArg)
+      commit <- liftSem (resolveBranch (BranchName ("character/" <> ident)))
+      texts  <- liftSem (journalWindow @branch (Just commit) "journal.md" curation)
+      pure (leafValue (renderJournalTexts texts))
 
 -- | One block per curated slice, joined by a plain divider -- entries
 --   may span real timeline gaps (unremarkable ticks in between were
