@@ -11,10 +11,11 @@
 --   change what gets written -- or is it inert context a model reads past?
 --   tasks.md needs no special plumbing to reach 'writeAgent' at all: it's
 --   just another file on the character branch, so it already flows into
---   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal's
---   @csContext@ the same way any hand-authored character note would (see
---   'Server.Writer.File.activeCharacterContext'). This scenario exercises
---   exactly that path, not 'Storyteller.Writer.Agent.Tasks' itself.
+--   'Storyteller.Context.DSL.Library.characterSummaryOf's @csContext@
+--   (the @"full"@ bucket) the same way any hand-authored character note
+--   would (see 'Server.Writer.File.activeCharacterContext'). This
+--   scenario exercises exactly that path, not
+--   'Storyteller.Writer.Agent.Tasks' itself.
 --
 --   The instruction deliberately never mentions the goal -- an ambiguous,
 --   "walks into a room" opening -- so a scene that happens to pursue it
@@ -31,11 +32,12 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Context (resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharLabel(..), Instruction(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
@@ -91,8 +93,9 @@ spec runner = describe "tasks.md reaching generation as ordinary character conte
         _ <- Ops.addAtom "tasks.md" lenaTasks
         pure ()
 
-      lenaSummary <- runBranchAndFS @Char_ lenaBranch $
-        runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
+      lenaSummary <- runBranchAndFS @Char_ lenaBranch $ do
+        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "lena"
+        runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
 
       Prose text <- writeAgent emptyWorldContext emptyStyleContext [(CharLabel "Lena", lenaSummary)] emptyPinnedContext [] instruction
       info ("writeAgent output:\n" <> text)

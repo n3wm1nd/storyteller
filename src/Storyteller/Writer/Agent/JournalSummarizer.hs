@@ -254,7 +254,7 @@ journalSummarizeWith forceFlush compress = do
     commitGroup acc items = do
       info $ "journalSummarize: compressing a group of " <> T.pack (show (length items)) <> " items"
       compressed <- compress items
-      (_, newAltHead) <- extendAltChain (caAltHead acc) (Ops.addAtom journalPath compressed)
+      (_, newAltHead) <- extendAltChain @() (caAltHead acc) (runStorage @() (Ops.addAtom journalPath compressed))
       newTick <- runStorage @source (Tick.storeAs (Summary journalKind newAltHead))
       return acc
         { caBuffer   = []

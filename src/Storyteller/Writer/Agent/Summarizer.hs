@@ -1,9 +1,13 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -16,10 +20,22 @@
 --   extending the alternate chain, and recording the tick lives here,
 --   once, generically.
 --
---   There is no @alt@ branch parameter: an alternate chain is never a
---   real, named branch (see "Storyteller.Common.Summary"'s module
---   Haddock for why) -- it's extended by hash, anchored either at the
---   previous 'Storyteller.Common.Summary.summaryAltHead' of the same
+--   'runSummarizer'\/'runSummarizerForPath' are, from a caller's own
+--   point of view, just two ordinary calls: "what's pending for this
+--   kind" and "record this as the new pass" (or the per-path pair of the
+--   same two questions). All the alt-chain structure -- seeding, per-file
+--   commit shape, where the new 'Summary' tick gets positioned -- lives
+--   entirely inside the internal 'Summarization' effect these two
+--   functions open and discharge for themselves (see its own Haddock);
+--   nothing about it is visible in either function's own type. A
+--   per-domain summarizer supplying @generate@ never sees a 'BranchOp'
+--   phantom, an alt-chain hash, or a 'Storage.Core.StoreT' action -- only
+--   candidate ticks in, generated text out.
+--
+--   There is no @alt@ branch parameter on the public API: an alternate
+--   chain is never a real, named branch (see "Storyteller.Common.Summary"'s
+--   module Haddock for why) -- it's extended by hash, anchored either at
+--   the previous 'Storyteller.Common.Summary.summaryAltHead' of the same
 --   kind, or at a fixed bootstrap commit on the very first pass. A
 --   hierarchical summarizer (a book-tier summarizer whose @generate@
 --   reads a chapter-tier alternate chain's own content as its input)
@@ -35,6 +51,7 @@ module Storyteller.Writer.Agent.Summarizer
 
 import Prelude hiding (writeFile)
 
+import Data.Kind (Type)
 import Control.Monad (void, when)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -55,24 +72,32 @@ import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (Tick(..), TickId(..))
 import Storyteller.Writer.Agent.SummaryAccess (rawContent, unsummarizedTailSince)
 
--- | Extend an alternate chain by one commit: seed a fresh, unnamed
---   'Core.StoreT' scope at @mPrev@ (the previous 'summaryAltHead' of this
---   kind, if any) or, on the very first pass,
+-- | Extend an alternate chain by one commit: open a fresh, unnamed
+--   'BranchOp' @chain@ scope seeded at @mPrev@ (the previous
+--   'summaryAltHead' of this kind, if any) or, on the very first pass,
 --   'Storyteller.Common.Summary.bootstrapAltHead', run @action@ against
---   it, and hand back its result plus the new head. No branch is ever
---   opened, created, or named -- the returned hash is only ever reachable
---   through whatever 'Summary' tick records it next.
+--   it, and hand back its result plus the new head. @chain@ is a fresh
+--   phantom every call (never the caller's own already-open branch scope,
+--   unlike 'extendNestedAltChain', which deliberately reuses one) --
+--   mirrors 'extendNestedAltChain's own @runBranchOpGitFrom@-based
+--   pattern, just without the "only re-mint if the head actually moved"
+--   step that's specific to re-pointing an *existing* 'Summary' tick. No
+--   real branch is ever opened, created, or named -- the returned hash is
+--   only ever reachable through whatever 'Summary' tick records it next.
 extendAltChain
-  :: Members '[Git, StoryStorage, Fail] r
+  :: forall chain r a
+  .  Members '[Git, StoryStorage, Fail] r
   => Maybe TickId
-  -> (forall n. Core.StoreM n => Core.StoreT n a)
+  -> Sem (BranchOp chain ': r) a
   -> Sem r (a, TickId)
 extendAltChain mPrev action = do
   seed <- case mPrev of
     Just (TickId h) -> return (Core.ObjectHash h)
     Nothing         -> bootstrapAltHead
-  (result, (newHead, _)) <- Core.runStoreT seed action
-  return (result, TickId (Core.unObjectHash newHead))
+  runBranchOpGitFrom @chain seed (\_ -> return ()) $ do
+    a <- action
+    h <- runStorage @chain Core.headHash
+    return (a, TickId (Core.unObjectHash h))
 
 -- | Give @tid@'s own alternate chain (currently at @seed@) one further,
 --   nested attempt at whatever @inner@ does with it -- the write-side half
@@ -134,6 +159,108 @@ withTrailingNewline t
   | "\n" `T.isSuffixOf` t = t
   | otherwise             = t <> "\n"
 
+-- ---------------------------------------------------------------------------
+-- The alt-chain structure, hidden behind one internal effect
+-- ---------------------------------------------------------------------------
+
+-- | Everything 'runSummarizer'\/'runSummarizerForPath' need from the
+--   alt-chain machinery, named as the two questions they actually ask --
+--   "what's pending" and "record this pass" -- never as the chain
+--   primitives ('extendAltChain', 'Storage.Ops.addAtom' vs.
+--   'Storage.Ops.saveFileAsNew', 'Storyteller.Core.Git.atGeneric'
+--   positioning) those questions happen to be answered with today. Not
+--   exported: this effect exists purely so 'runSummarizer'\/
+--   'runSummarizerForPath' can open and discharge it around their own
+--   body (see their Haddocks) without any of it ever appearing in a
+--   caller's own effect row -- a different backend representing "a
+--   summary of this kind" some other way entirely would only ever need
+--   to rewrite this one interpreter, never any per-domain summarizer.
+data Summarization (source :: Type) (m :: Type -> Type) a where
+  -- | Every real tick since @kind@'s last pass (or since root, if none
+  --   yet), or 'Nothing' if there's genuinely nothing new -- the
+  --   candidate material a fresh whole-branch pass should consider.
+  PendingSummary :: Text -> Summarization source m (Maybe [Tick])
+  -- | Record @content@ (one file per path) as @kind@'s new pass, given
+  --   whatever candidates justified generating it.
+  RecordSummary :: Text -> Map FilePath Text -> Summarization source m TickId
+  -- | @path@'s current full content, if its existing @kind@ compression
+  --   is stale or missing -- 'Nothing' if it's already up to date, or
+  --   @path@ isn't atom-tracked at all (nothing to summarize).
+  PendingPathSummary :: Text -> FilePath -> Summarization source m (Maybe Text)
+  -- | Record @content@ as @path@'s fresh @kind@ compression, correctly
+  --   positioned at @path@'s own last atom rather than wherever
+  --   @source@'s head happens to be (see 'runSummarizerForPath's own
+  --   Haddock for why that positioning matters).
+  RecordPathSummary :: Text -> FilePath -> Text -> Summarization source m TickId
+
+makeSem ''Summarization
+
+-- | The git-backed 'Summarization' interpreter -- moves every alt-chain
+--   detail ('extendAltChain', per-file commit shape, 'atGeneric'
+--   positioning, 'Storyteller.Common.Summary' bookkeeping) out of
+--   'runSummarizer'\/'runSummarizerForPath' and into exactly one place.
+runSummarization
+  :: forall source r a
+  .  Members '[BranchOp source, Git, StoryStorage, Fail] r
+  => Sem (Summarization source ': r) a
+  -> Sem r a
+runSummarization = interpret $ \case
+  PendingSummary kind -> do
+    candidates <- runStorage @source (ticksSinceLastSummary kind)
+    return $ if null candidates then Nothing else Just candidates
+
+  RecordSummary kind files -> do
+    mPrev <- runStorage @source (fmap (summaryAltHead . snd) <$> lastSummaryOf kind)
+    (_, newAltHead) <- extendAltChain @() mPrev $
+      runStorage @() (mapM_ (uncurry setAltFileContent) (Map.toList files))
+    newHash <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
+    return (TickId (Core.unObjectHash newHash))
+
+  PendingPathSummary kind path -> do
+    mLast <- runStorage @source (lastSummaryTouching kind path)
+    upToDate <- case mLast of
+      Nothing     -> return False
+      Just (_, s) -> T.null <$> unsummarizedTailSince @source s path
+    if upToDate
+      then return Nothing
+      else do
+        lifetime <- runStorage @source (lifetimeAtoms path)
+        case lifetime of
+          [] -> return Nothing  -- path isn't atom-tracked at all -- nothing to summarize
+          _  -> Just . fromMaybe "" <$> rawContent @source path
+
+  RecordPathSummary kind path content -> do
+    lifetime <- runStorage @source (lifetimeAtoms path)
+    case lifetime of
+      [] -> fail ("recordPathSummary: " <> path <> " is not atom-tracked")
+      _  -> do
+        let (lastAtomHash, _) = last lifetime
+        atGeneric @source (TickId (Core.unObjectHash lastAtomHash)) $ do
+          mPrev <- runStorage @source (fmap (summaryAltHead . snd) <$> lastSummaryOf kind)
+          (_, newAltHead) <- extendAltChain @() mPrev (runStorage @() (setAltFileContent path content))
+          newHash <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
+          return (TickId (Core.unObjectHash newHash))
+  where
+    -- | Commit @content@ as @path@'s current state in whichever alternate
+    --   chain @extendAltChain@ has seeded, as a real 'Storage.Ops.addAtom'
+    --   write -- or, if @path@ hasn't been written there before, seed it
+    --   fresh the same way ('Storage.Ops.saveFileAsNew' would fail
+    --   otherwise, since 'Storage.Ops.deleteFile' assumes something to
+    --   delete). Every per-domain summarizer always recomputes a file's
+    --   *whole* current compression from scratch each pass (never folds a
+    --   prior one forward -- see
+    --   'Storyteller.Writer.Agent.ChapterSummarizer.chapterSummaryGenerate's
+    --   own Haddock for why), so this deliberately replaces the file's
+    --   prior alternate-chain lifetime outright rather than appending onto
+    --   it the way 'Storyteller.Writer.Agent.JournalSummarizer' does for
+    --   its own, genuinely incremental, per-group writes.
+    setAltFileContent :: Core.StoreM m => FilePath -> Text -> Core.StoreT m ()
+    setAltFileContent path content = do
+      there <- Ops.exists path
+      if there
+        then Ops.saveFileAsNew path path content
+        else void (Ops.addAtom path content)
+
 -- | Run one summarization pass for @kind@: collect every tick on @source@
 --   since @kind@'s last summary there (or since root, if none yet),
 --   hand them to @generate@, extend the alternate chain with whatever
@@ -170,20 +297,15 @@ runSummarizer
   => Text                                  -- ^ summary kind, e.g. @"prose/chapter"@
   -> ([Tick] -> Sem r (Map FilePath Text))  -- ^ generation hook: candidate ticks -> summary files to write
   -> Sem r (Maybe TickId)
-runSummarizer kind generate = do
-  candidates <- runStorage @source (ticksSinceLastSummary kind)
-  if null candidates
-    then return Nothing
-    else do
-      files <- generate candidates
+runSummarizer kind generate = runSummarization @source $ do
+  mCandidates <- pendingSummary @source kind
+  case mCandidates of
+    Nothing         -> return Nothing
+    Just candidates -> do
+      files <- raise (generate candidates)
       if Map.null files
         then return Nothing
-        else do
-          mPrev <- runStorage @source (fmap (summaryAltHead . snd) <$> lastSummaryOf kind)
-          (_, newAltHead) <- extendAltChain mPrev $
-            mapM_ (\(path, content) -> replaceWithAtom path content) (Map.toList files)
-          newHash <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
-          return (Just (TickId (Core.unObjectHash newHash)))
+        else Just <$> recordSummary @source kind files
 
 -- | Summarize exactly @path@ -- never any other file of @kind@, even one
 --   that's also stale. There is deliberately no guarantee that calling
@@ -227,48 +349,10 @@ runSummarizerForPath
   -> FilePath
   -> (Text -> Sem r Text)      -- ^ generation hook: this path's current full content -> its summary
   -> Sem r (Maybe TickId)
-runSummarizerForPath kind path generate = do
-  -- Freshness is judged against the newest tick that actually *covers*
-  -- path ('lastSummaryTouching'), never the kind's newest tick, full stop
-  -- ('lastSummaryOf') -- the two diverge exactly when this function's own
-  -- insert-at-path's-last-atom positioning (below) has put an earlier
-  -- file's summary behind a later file's, and judging against the wrong
-  -- one would re-mint a fresh pass on every call forever.
-  mLast <- runStorage @source (lastSummaryTouching kind path)
-  upToDate <- case mLast of
-    Nothing     -> return False
-    Just (_, s) -> T.null <$> unsummarizedTailSince @source s path
-  if upToDate
-    then return Nothing
-    else do
-      lifetime <- runStorage @source (lifetimeAtoms path)
-      case lifetime of
-        [] -> return Nothing  -- path isn't atom-tracked at all -- nothing to summarize
-        _  -> do
-          let (lastAtomHash, _) = last lifetime
-          atGeneric @source (TickId (Core.unObjectHash lastAtomHash)) $ do
-            content    <- fromMaybe "" <$> rawContent @source path
-            compressed <- generate content
-            mPrev      <- runStorage @source (fmap (summaryAltHead . snd) <$> lastSummaryOf kind)
-            (_, newAltHead) <- extendAltChain mPrev (replaceWithAtom path compressed)
-            newHash    <- runStorage @source (Tick.storeAs (Summary kind newAltHead))
-            return (Just (TickId (Core.unObjectHash newHash)))
-
--- | Commit @content@ as @path@'s current state in whichever alternate
---   chain @extendAltChain@ has seeded, as a real 'Storage.Ops.addAtom'
---   write -- or, if @path@ hasn't been written there before, seed it
---   fresh the same way ('Storage.Ops.saveFileAsNew' would fail otherwise,
---   since 'Storage.Ops.deleteFile' assumes something to delete). Every
---   per-domain summarizer always recomputes a file's *whole* current
---   compression from scratch each pass (never folds a prior one forward
---   -- see 'Storyteller.Writer.Agent.ChapterSummarizer.chapterSummaryGenerate's
---   own Haddock for why), so this deliberately replaces the file's prior
---   alternate-chain lifetime outright rather than appending onto it the
---   way 'Storyteller.Writer.Agent.JournalSummarizer' does for its own,
---   genuinely incremental, per-group writes.
-replaceWithAtom :: Core.StoreM m => FilePath -> Text -> Core.StoreT m ()
-replaceWithAtom path content = do
-  there <- Ops.exists path
-  if there
-    then Ops.saveFileAsNew path path content
-    else void (Ops.addAtom path content)
+runSummarizerForPath kind path generate = runSummarization @source $ do
+  mContent <- pendingPathSummary @source kind path
+  case mContent of
+    Nothing      -> return Nothing
+    Just content -> do
+      compressed <- raise (generate content)
+      Just <$> recordPathSummary @source kind path compressed

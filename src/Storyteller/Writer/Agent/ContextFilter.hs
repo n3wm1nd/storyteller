@@ -34,14 +34,14 @@ import Data.Maybe (listToMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified System.FilePath.Glob as Glob
-import Polysemy (Members, Sem)
+import Polysemy (Members, Sem, raise)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem
   (FileSystem, FileSystemRead, PathFilter(..), filterFileSystem, filterRead, listAllFiles)
 import qualified Runix.FileSystem.Path as Path
 
-import qualified Storage.Ops as Ops
-import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.ContentEffects (atomTrackedAmong, runTrackedFiles)
+import Storyteller.Core.Git (BranchOp)
 
 -- | Wrap @action@ so every binary path in @branch@ is invisible to it.
 --   Read-only narrowing, same contract as every other 'PathFilter' in
@@ -51,20 +51,26 @@ import Storyteller.Core.Git (BranchOp, runStorage)
 --   from cwd @"/"@, the fixed cwd every branch filesystem reports -- see
 --   'Storyteller.Core.Git.runStoryFSGit'), so the snapshot taken here lines
 --   up with whatever the filter is actually asked about later.
+--
+--   Which paths are tracked is asked via
+--   'Storyteller.Core.ContentEffects.TrackedFiles', opened and discharged
+--   locally around @action@ -- never in this function's own external
+--   signature, the same "hide the effect from the caller's own row"
+--   shape 'Storyteller.Writer.Agent.Summarizer.runSummarizer' settled on.
 hideBinaryFiles
   :: forall project branch r a
   .  ( Members '[FileSystem project, FileSystemRead project, BranchOp branch, Fail] r )
   => Sem r a -> Sem r a
-hideBinaryFiles action = do
+hideBinaryFiles action = runTrackedFiles @branch $ do
   paths   <- listAllFiles @project "/"
-  tracked <- runStorage @branch (Ops.atomTrackedAmong paths)
+  tracked <- atomTrackedAmong @branch paths
   let binary = filter (`Set.notMember` tracked) paths
-  let resolved = Set.fromList (map (Path.resolveRelative "/") binary)
+      resolved = Set.fromList (map (Path.resolveRelative "/") binary)
       filt = PathFilter
         { shouldInclude = \p -> not (Set.member p resolved)
         , filterName    = "binary files are hidden"
         }
-  filterRead @project filt (filterFileSystem @project filt action)
+  filterRead @project filt (filterFileSystem @project filt (raise action))
 
 -- | One claim in a 'ContextLayout': every path matching 'prPattern' that no
 --   earlier rule in the list already claimed is assigned 'prBucket'. Glob

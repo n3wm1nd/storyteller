@@ -47,8 +47,12 @@
 --   names what it wants. The 'Core.StoreT' bodies below are moved
 --   verbatim from wherever they used to live as directly-called
 --   functions (@treeValueOfCommit@, @charactersInBinding@, @journalDelta@,
---   @readConversation@, @lastSyncedTasksRef@, and 'Storage.Ops'\'s own
---   write primitives), not rewritten.
+--   @readConversation@), not rewritten. @tasks.md@'s own sync bookkeeping
+--   went a different way -- see "Storyteller.Writer.Agent.Tasks"'s own
+--   internal @TasksSync@ effect instead, kept local to that module rather
+--   than shared here, the same way "Storyteller.Writer.Agent.Summarizer"'s
+--   internal @Summarization@ effect is: neither is something the DSL or
+--   any other agent ever needs to reach into.
 --
 --   Deliberately no dependency on "Storyteller.Core.Git"\/@Runix.Git@
 --   anywhere in this module: every interpreter below needs only
@@ -93,19 +97,6 @@ module Storyteller.Core.ContentEffects
   , atomTrackedAmong
   , runTrackedFiles
 
-    -- * tasks.md's own sync marker (tick-history dependent)
-  , TasksSyncTracking(..)
-  , lastSyncedTasksRef
-  , runTasksSyncTracking
-
-    -- * Committing content (shared write vocabulary)
-  , AtomWrite(..)
-  , checkpointFile
-  , saveFileAsNew
-  , addAtom
-  , addAtomWithRefs
-  , runAtomWrite
-
     -- * Branch name resolution
   , BranchResolve(..)
   , resolveBranch
@@ -126,7 +117,6 @@ import Polysemy
 import Polysemy.Fail (Fail)
 
 import qualified Storage.Core as Core
-import qualified Storage.Ops as Ops
 import qualified Storage.Query as Query
 import qualified Storage.Tick as Tick
 
@@ -315,70 +305,6 @@ runTrackedFiles = interpret $ \case
   AtomTrackedAmong paths -> runStorage @branch (Query.atomTrackedAmong paths)
 
 -- ---------------------------------------------------------------------------
--- Tasks sync tracking
--- ---------------------------------------------------------------------------
-
--- | @tasks.md@'s own last-synced marker (see
---   'Storyteller.Writer.Agent.Tasks' for the full sync\/suggest
---   machinery this one ref drives) -- the newest atom on @tasksPath@
---   carrying a ref, scoped to the file's current lifetime. Genuinely
---   history-dependent (walks tick history to find it), and specific
---   enough to tasks.md's own convention that it doesn't belong lumped in
---   with 'JournalAccess' or 'ConversationAccess', even though all three
---   happen to read tick history on today's git-backed interpreter.
-data TasksSyncTracking (branch :: k) (m :: Type -> Type) a where
-  LastSyncedTasksRef :: FilePath -> TasksSyncTracking branch m (Maybe Core.ObjectHash)
-
-makeSem ''TasksSyncTracking
-
-runTasksSyncTracking :: forall branch r a. Member (BranchOp branch) r => Sem (TasksSyncTracking branch ': r) a -> Sem r a
-runTasksSyncTracking = interpret $ \case
-  LastSyncedTasksRef tasksPath -> runStorage @branch $ do
-    ticks <- Tick.fileTicksOf tasksPath
-    return $ case [ Core.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ] of
-      (r : _) -> Just r
-      []      -> Nothing
-
--- ---------------------------------------------------------------------------
--- Committing content
--- ---------------------------------------------------------------------------
-
--- | FIXME (2026-07-23, agreed in review -- should be removed, not filled
---   in): this ended up being exactly the anti-pattern the rest of this
---   module argues against -- 'Storage.Ops'\'s own four write functions
---   with a GADT constructor glued on, no folding or derivation at all,
---   currently unused (nothing calls it yet -- the intended caller,
---   'Storyteller.Writer.Agent.Tasks.exchangeTasksFile', was never
---   converted this pass). When that conversion happens, it should *not*
---   fill this effect in -- it should replace it with one coarse operation
---   naming the actual concept @exchangeTasksFile@ wants ("record this
---   sync pass": freeze-if-existing, replace, append the marker, as a
---   single unit), folded into 'TasksSyncTracking' or a small sibling
---   effect -- never four raw storage primitives re-exposed as-is.
---
--- | The shared "commit this content" vocabulary -- one real concept (four
---   operations that all bottom out in writing an atom), not four
---   accidentally-grouped operations: every real write here already goes
---   through the same alternatives ("freeze behind a checkpoint," "replace
---   wholesale," "append fresh", "append fresh with a ref") a caller
---   composes explicitly, exactly the same shape
---   'Storyteller.Writer.Agent.Tasks.exchangeTasksFile' already had.
-data AtomWrite (branch :: k) (m :: Type -> Type) a where
-  CheckpointFile  :: FilePath -> AtomWrite branch m ()
-  SaveFileAsNew   :: FilePath -> FilePath -> Text -> AtomWrite branch m ()
-  AddAtom         :: FilePath -> Text -> AtomWrite branch m Core.ObjectHash
-  AddAtomWithRefs :: [Core.ObjectHash] -> FilePath -> Text -> AtomWrite branch m Core.ObjectHash
-
-makeSem ''AtomWrite
-
-runAtomWrite :: forall branch r a. Member (BranchOp branch) r => Sem (AtomWrite branch ': r) a -> Sem r a
-runAtomWrite = interpret $ \case
-  CheckpointFile path            -> runStorage @branch (Ops.checkpointFile path)
-  SaveFileAsNew old new content   -> runStorage @branch (Ops.saveFileAsNew old new content)
-  AddAtom path content           -> runStorage @branch (Ops.addAtom path content)
-  AddAtomWithRefs refs path content -> runStorage @branch (Ops.addAtomWithRefs refs path content)
-
--- ---------------------------------------------------------------------------
 -- Branch resolution
 -- ---------------------------------------------------------------------------
 
@@ -424,25 +350,23 @@ runBranchResolve = interpret $ \case
 -- | Every branch-scoped effect above, discharged at once against a single
 --   git-backed branch -- the one thing a caller composing this onto its
 --   own interpreter stack actually wants: "give me the whole vocabulary
---   for this branch," not seven individual lines to remember to keep in
+--   for this branch," not five individual lines to remember to keep in
 --   sync. Composes directly onto an existing stack (no @runM@ inside,
 --   same as every interpreter above), and can be applied more than once
 --   at different @branch@ type applications within the same stack (see
 --   the module Haddock) -- a different backend supplies its own
 --   equivalent of this function, discharging whichever subset of the
---   seven effects it can honestly back. 'BranchResolve' isn't included --
+--   five effects it can honestly back. 'BranchResolve' isn't included --
 --   it has no @branch@ of its own to be scoped to; wire it separately
 --   (once, project-wide) via 'runBranchResolve'.
 runContentEffectsGit
   :: forall branch r a
   .  Member (BranchOp branch) r
   => Sem ( TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch
-         ': TrackedFiles branch ': TasksSyncTracking branch ': AtomWrite branch ': r ) a
+         ': TrackedFiles branch ': r ) a
   -> Sem r a
 runContentEffectsGit =
-    runAtomWrite @branch
-  . runTasksSyncTracking @branch
-  . runTrackedFiles @branch
+    runTrackedFiles @branch
   . runConversationAccess @branch
   . runJournalAccess @branch
   . runPresence @branch

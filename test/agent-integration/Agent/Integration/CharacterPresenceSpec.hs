@@ -16,8 +16,9 @@
 --   'Storyteller.Writer.Presence.recordPresence'; the scene is then written
 --   with 'writeAgent' fed exactly the 'CharSummary's
 --   'Server.Writer.File.activeCharacterContext' would have built for them
---   (via 'charSummaryWithJournal', same call), not anything shortcut past
---   presence. A real LLM call, cached under
+--   (the same @resolveContext1@ + 'Storyteller.Context.DSL.Library.contextCharacter'
+--   + 'Storyteller.Context.DSL.Library.characterSummaryOf' call), not
+--   anything shortcut past presence. A real LLM call, cached under
 --   test/fixtures/llm-agent-cache/agent/.
 module Agent.Integration.CharacterPresenceSpec (spec) where
 
@@ -31,12 +32,14 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 import Runix.Git (Git)
 import Runix.Logging (info)
 import qualified Storage.Ops as Ops
+import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (activeCharactersFor, recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
@@ -76,7 +79,7 @@ judgeQuestion = T.unwords
   ]
 
 -- | Create a character branch and seed its @sheet.md@ -- the one-time setup
---   'charSummaryWithJournal' below reads back.
+--   'summarize' below reads back.
 seedCharacter
   :: forall r
   .  Members '[Git, StoryStorage, Fail] r
@@ -93,12 +96,13 @@ seedCharacter branch sheet = do
 --   'JournalIronySpec' for that).
 summarize
   :: forall r
-  .  Members '[Git, StoryStorage, Fail] r
+  .  Members '[Git, StoryStorage, ContextStorage, BranchResolve, Fail] r
   => Character -> Sem r (CharLabel, CharSummary)
 summarize (Character branch) = do
-  summary <- runBranchAndFS @Char_ branch $
-    runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
   let label = maybe (unBranchName branch) id (T.stripPrefix "character/" (unBranchName branch))
+  summary <- runBranchAndFS @Char_ branch $ do
+    charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) label
+    runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
   pure (CharLabel label, summary)
 
 spec

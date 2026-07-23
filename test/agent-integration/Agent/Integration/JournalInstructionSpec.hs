@@ -31,11 +31,12 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Context (resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
@@ -84,8 +85,9 @@ spec runner = describe "a private journal resolve shaping the next scene (real L
         _ <- Ops.append "journal.md" journalEntry
         pure ()
 
-      withJournal <- runBranchAndFS @Char_ charBranch $
-        runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
+      withJournal <- runBranchAndFS @Char_ charBranch $ do
+        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "marisol"
+        runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
       info $ "csJournal blocks (with journal): " <> T.pack (show (length (csJournal withJournal)))
       embed $ csJournal withJournal `shouldNotBe` []
 

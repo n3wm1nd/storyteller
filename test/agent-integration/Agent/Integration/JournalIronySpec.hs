@@ -29,11 +29,12 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Context (resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryWithJournal)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
@@ -99,13 +100,15 @@ spec runner = describe "an edited journal entry creating dramatic irony (real LL
         pure ()
       runBranchAndFS @Char_ samBranch $ runStorage @Char_ (Ops.saveFile "sheet.md" samSheet)
 
-      rosaSummary <- runBranchAndFS @Char_ keeperBranch $
-        runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
+      rosaSummary <- runBranchAndFS @Char_ keeperBranch $ do
+        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "rosa"
+        runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
       info $ "Rosa's csJournal blocks: " <> T.pack (show (length (csJournal rosaSummary)))
       embed $ csJournal rosaSummary `shouldNotBe` []
 
-      samSummary <- runBranchAndFS @Char_ samBranch $
-        runStorage @Char_ (charSummaryWithJournal "sheet.md" "journal.md" (const True) 30 10 2)
+      samSummary <- runBranchAndFS @Char_ samBranch $ do
+        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "sam"
+        runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
 
       let chars = [(CharLabel "Rosa", rosaSummary), (CharLabel "Sam", samSummary)]
       Prose text <- writeAgent emptyWorldContext emptyStyleContext chars emptyPinnedContext [] instruction

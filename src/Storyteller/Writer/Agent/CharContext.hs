@@ -13,11 +13,25 @@
 -- 'Storyteller.Writer.Agent.Roleplay') now reads character context through
 -- 'Storyteller.Context.DSL.Library.characterSummary' instead — see that
 -- module's Haddock for the four/five-bucket ('"sheet"'\/'"blurb"'\/
--- '"full"'\/'"journal"'\/'"journalFull"') shape this module's three
--- functions collapse to. Still exercised directly by several tests
--- (@CharContextSpec@, @agent-integration@'s own fixtures) as an
--- independent read path, which is the only reason this module still
--- exists; not yet deleted.
+-- '"full"'\/'"journal"'\/'"journalFull"') shape this module's functions
+-- collapse to. Kept anyway (2026-07-23): 'readCharFiles'\/'renderCharContext'\/
+-- 'charSummaryAgent'\/'charSummaryFull' are already written against
+-- @Runix.FileSystem@'s portable 'Runix.FileSystem.FileSystem'\/
+-- 'Runix.FileSystem.FileSystemRead' effects, not 'Storage.Core.StoreT' --
+-- @agent-integration@'s own @CharContextWriteSpec@ exercises exactly that,
+-- running 'readCharFiles' against a plain, non-git
+-- @Runix.FileSystem.System.filesystemIO@ interpreter, which is the one
+-- concrete proof anywhere in this codebase that an agent-facing read
+-- genuinely works on a non-git backend -- worth keeping for that reason
+-- alone, unused in production or not. @charSummaryWithJournal@, the one
+-- function here that stayed on raw 'Storage.Core.StoreT' (deliberately, to
+-- batch every read into one 'Storyteller.Core.Git.runStorage' call -- see
+-- its own former Haddock), was removed instead of converted: nothing calls
+-- it in production either, and the tests that did have been rewired to
+-- build a 'Storyteller.Writer.Agent.CharSummary' the same way
+-- 'Server.Writer.File.activeCharacterContext' now does (@resolveContext1@ +
+-- 'Storyteller.Context.DSL.Library.contextCharacter' +
+-- 'Storyteller.Context.DSL.Library.characterSummaryOf').
 --
 -- Exploring a character branch — listing and reading its files — is
 -- genuine work: there's no way to summarize a character without it, so
@@ -33,7 +47,6 @@ module Storyteller.Writer.Agent.CharContext
   , charSummaryFull
   , readCharFiles
   , renderCharContext
-  , charSummaryWithJournal
   ) where
 
 import qualified Data.List as List
@@ -44,9 +57,6 @@ import System.FilePath (takeFileName)
 import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
-
-import qualified Storage.FS as FS
-import qualified Storage.Tick as Tick
 
 import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
 
@@ -88,13 +98,13 @@ charSummaryAgent
 charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
 
 -- | 'readCharFiles' split into a 'CharSummary' by exact filename --
---   @sheet.md@, @journal.md@, everything else -- rather than
---   'charSummaryWithJournal's tick-windowed slice: @journal.md@ here is read
+--   @sheet.md@, @journal.md@, everything else: @journal.md@ here is read
 --   verbatim and in full, straight off the filesystem, same as any other
---   file 'readCharFiles' already reads. Built for a caller that wants a
---   character's whole, uncurated context (unlike 'charSummaryWithJournal',
---   which deliberately curates) but still split by how often each part
---   actually changes -- @csJournal@ grows every turn, @csSheet@\/@csContext@
+--   file 'readCharFiles' already reads -- unlike
+--   'Storyteller.Context.DSL.Library.characterSummaryOf's curated
+--   @"journal"@ bucket, this is for a caller that wants a character's
+--   whole, uncurated context, still split by how often each part actually
+--   changes -- @csJournal@ grows every turn, @csSheet@\/@csContext@
 --   don't -- so it can place the volatile part in its own late message
 --   rather than fuse it into an otherwise-stable one; see
 --   'Storyteller.Writer.Agent.Roleplay''s own opening-message construction
@@ -112,61 +122,3 @@ charSummaryFull keep = categorize <$> readCharFiles @project keep
       }
     named n (p, _) = takeFileName p == n
 
--- | 'charSummaryAgent's read, split into 'CharSummary's three independently
---   placeable shapes, plus a curated slice of @journalPath@'s own recent
---   atom history (see 'Storage.Tick.recentAtomsOf') -- all composed into
---   one 'FS.StoreT' computation rather than several calls a caller would
---   otherwise dispatch back-to-back: one 'Storyteller.Core.Git.runStorage'
---   pays for every read here.
---
---   Lives at the 'FS.StoreT' level directly (unlike 'charSummaryAgent',
---   which goes through the 'FileSystem' Polysemy effects) precisely so it
---   composes this way; a caller opens the branch scope once (e.g. via
---   'Storyteller.Core.Git.runBranchOpGit') and passes this straight to
---   'Storyteller.Core.Git.runStorage'.
---
---   If a caller only ever wanted 'csSheet' (see its own Haddock on
---   'CharSummary' for when that's the right call), reach for
---   'readCharFiles'\/'charSummaryAgent' directly instead of computing all
---   three shapes here and discarding two of them -- this function's whole
---   point is composing reads a caller actually needs together, not being
---   the one path in for a single file.
-charSummaryWithJournal
-  :: forall m
-  .  FS.StoreM m
-  => FilePath             -- ^ sheet path, e.g. @"sheet.md"@ -- included verbatim if present
-  -> FilePath             -- ^ journal path, e.g. @"journal.md"@
-  -> (FilePath -> Bool)   -- ^ which other files to include (caller's layout policy; never sheet or journal, regardless of what it answers for either)
-  -> Int                  -- ^ lookback: max journal atoms to examine (see 'Tick.recentAtomsOf')
-  -> Int                  -- ^ maxOut: max journal atoms to include
-  -> Int                  -- ^ padding: journal atoms kept on each side of a kept one
-  -> FS.StoreT m CharSummary
-charSummaryWithJournal sheetPath journalPath keep lookback maxOut padding = do
-  files <- List.sort <$> FS.list
-  let otherFiles = [ p | p <- files, p /= sheetPath, p /= journalPath, keep p ]
-  sheetCtx   <- if sheetPath `elem` files
-                  then renderCharContext . (: []) <$> readPair sheetPath
-                  else return []
-  contextCtx <- renderCharContext <$> mapM readPair otherFiles
-  journal    <- Tick.recentAtomsOf journalPath lookback maxOut padding
-  return CharSummary
-    { csSheet   = sheetCtx
-    , csContext = contextCtx
-    , csJournal = renderJournalContext journal
-    }
-  where
-    readPair p = (,) p . TE.decodeUtf8 <$> FS.readFile p
-
--- | A non-empty journal slice becomes one block, not one per atom: the
---   header names what this is (so a model doesn't mistake it for
---   objective narration) once, and the kept atoms -- which may span real
---   timeline gaps, since unremarkable ones in between were dropped -- are
---   joined by a plain divider rather than left looking like one
---   continuous entry.
-renderJournalContext :: [Tick.FileTick] -> [CharContextBlock]
-renderJournalContext [] = []
-renderJournalContext ticks =
-  [ CharContextBlock $
-      "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
-      <> T.intercalate "\n\n---\n\n" (map Tick.ftMessage ticks)
-  ]

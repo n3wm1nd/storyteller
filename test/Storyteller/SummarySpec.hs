@@ -269,8 +269,8 @@ spec = do
                 -- span is empty by construction.
                 tick1 <- runStorage @Source (Tick.readTypesTick (Core.ObjectHash (unTickId tid1)))
                 s1 <- maybe (fail "not a Summary tick") return (fromTick @Summary tick1)
-                (_, editedHead) <- extendAltChain (Just (summaryAltHead s1))
-                  (Ops.saveFileAsNew "a.md" "a.md" "summary v1, hand-edited")
+                (_, editedHead) <- extendAltChain @() (Just (summaryAltHead s1))
+                  (runStorage @() (Ops.saveFileAsNew "a.md" "a.md" "summary v1, hand-edited"))
                 _ <- atGeneric @Source tid1
                   (runStorage @Source (Tick.storeAs (Summary "prose/chapter" editedHead)))
                 occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
