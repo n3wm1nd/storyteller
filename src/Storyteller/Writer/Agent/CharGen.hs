@@ -5,7 +5,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
-{-# OPTIONS_GHC -Wno-duplicate-exports #-}
 
 -- | Character generation agent.
 --
@@ -21,7 +20,6 @@ module Storyteller.Writer.Agent.CharGen
   , ScenarioTemplate(..)
   , RngSeed(..)
   , CharSheet(..)
-  , unSheet
   ) where
 
 import           Control.Monad (replicateM, when)

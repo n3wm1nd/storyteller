@@ -21,20 +21,29 @@ code today (a catch-all `DSLStore`, a catch-all `TasksStore`). That just
 relocates the "one fat interface" problem: a backend able to honestly
 support half of a bundled effect still can't get an interpreter for the
 whole thing, so it loses every function that touches *any* constructor in
-it, including ones it could actually run. `ContentEffects.hs` splits eight
+it, including ones it could actually run. `ContentEffects.hs` splits seven
 narrow effects (`TreeAccess`, `Presence`, `JournalAccess`,
-`ConversationAccess`, `TrackedFiles`, `TasksSyncTracking`, `AtomWrite`,
-`BranchResolve`) rather than one `DSLStore`, precisely so a backend can
-support, say, `ConversationAccess` (a SillyTavern-style chat log already
-*is* turn-shaped) without needing tick-history machinery for the rest.
+`ConversationAccess`, `TrackedFiles`, `FileTicks`, `BranchResolve`) rather
+than one `DSLStore`, precisely so a backend can support, say,
+`ConversationAccess` (a SillyTavern-style chat log already *is*
+turn-shaped) without needing tick-history machinery for the rest.
 
-Self-contained is the default (task tracking's `TasksSyncTracking` doesn't
-reach into journal or conversation concerns), but real interdependency is
-fine when the concept genuinely has it — `AtomWrite`'s four operations
-(`CheckpointFile`/`SaveFileAsNew`/`AddAtom`/`AddAtomWithRefs`) are one
-effect because they're one concept ("commit content," several ways),
-confirmed by the fact that every real caller already picks between them at
-one call site, not because they happen to share an implementation.
+Self-contained is the default (task tracking's `TasksSync` doesn't reach
+into journal or conversation concerns), but real interdependency is fine
+when the concept genuinely has it — `Storyteller.Writer.Agent.Summarizer`'s
+internal `Summarization` effect is this: its four operations
+(`PendingSummary`/`RecordSummary` for a whole-branch pass,
+`PendingPathSummary`/`RecordPathSummary` for one path) are one effect
+because they're one concept ("what's pending, record this pass," two
+granularities), confirmed by the fact that every real caller
+(`runSummarizer` vs. `runSummarizerForPath`) already picks between the pair
+at one call site, not because they happen to share an implementation. (A
+shared, ContentEffects-level write vocabulary analogous to the read side
+above — "commit content, several ways" — was sketched at one point but
+never built: every write path today instead calls `Storage.Ops`/
+`Storage.Tick` directly from inside whichever narrower, module-local effect
+actually needs it, `Summarization` here and `Storyteller.Writer.Agent.
+Tasks`'s `TasksSync` being the two real instances.)
 
 ## Two layers: the GADT vs. the exported library
 
@@ -48,7 +57,7 @@ An effect module has two things in it, and they are allowed to differ:
    interceptors to see, not ordinary callers.
 2. **The exported functions** — the actual library callers reach for. Some
    are literally `makeSem`'s generated sends (`ContentEffects.hs` does this
-   for all eight effects, since each GADT constructor already *is* the
+   for all seven effects, since each GADT constructor already *is* the
    natural call a caller wants — `charactersPresent`, `journalWindow`,
    etc.). Others should be hand-written on top of the raw sends: a
    convenience wrapper that collapses an `Either`/`Maybe` into `Fail`, an
@@ -68,10 +77,11 @@ it's two different situations, and they get different treatment:
   below) is enough — don't add a new effect just because a function
   happens to call two others.
 - **An operation that structurally requires several functionalities
-  together as one thing.** `AtomWrite`'s four write operations are this:
-  they're one concept because every real caller already picks between
-  them as alternatives at a single point of use, not a coincidence of
-  implementation. When it's this, name it.
+  together as one thing.** `Storyteller.Writer.Agent.Summarizer`'s
+  internal `Summarization` effect is this: its four operations are one
+  concept because every real caller already picks between the
+  whole-branch and single-path pair at a single point of use, not a
+  coincidence of implementation. When it's this, name it.
 
 Check whether an existing effect already covers it before writing a new
 one. `ContentEffects.hs`'s own design pass found that plain path-based
