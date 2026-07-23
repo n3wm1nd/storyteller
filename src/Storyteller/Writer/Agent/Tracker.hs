@@ -30,12 +30,17 @@ import Storyteller.Core.Types (Tick(..), TickId(..), fromTick, tickId, tickParen
 -- | Copy atoms from @trackeeBranch@ into a single @toFile@ on
 --   @trackerBranch@, after running each candidate tick through
 --   @atomFilter@ -- 'Nothing' drops it, 'Just' keeps it (optionally
---   changed) as what actually gets copied. Runs in the trackee branch's
---   own 'BranchOp' scope, so it can read anything about the trackee (e.g.
+--   changed) as what actually gets copied. @atomFilter@ is an ordinary
+--   'Sem' computation, not a raw 'Storage.Core.StoreT' one -- so it can
+--   read anything about the trackee (e.g.
 --   'Storyteller.Writer.Presence.presentOn', for a caller that only wants
---   to track ticks written while some character was present) without a
---   second dispatch. Each surviving tick produces exactly one tracker
---   atom referencing it. Returns the list of created tracker tick ids.
+--   to track ticks written while some character was present) via whatever
+--   effects it needs (typically 'Storyteller.Core.Git.runStorage' against
+--   @trackeeBranch@'s own already-open scope, same as everywhere else in
+--   this module), rather than being restricted to plain storage
+--   primitives the way a caller-supplied hook elsewhere in this codebase
+--   never is. Each surviving tick produces exactly one tracker atom
+--   referencing it. Returns the list of created tracker tick ids.
 --
 --   @onlyFile@ restricts to one trackee file (the shape a manual,
 --   user-triggered track wants -- limited to whatever's actually open, so
@@ -87,8 +92,8 @@ trackBranch
   .  Members '[BranchOp trackeeBranch, BranchOp trackerBranch, Logging] r
   => Maybe FilePath
      -- ^ restrict to one trackee file; 'Nothing' tracks every file
-  -> (forall m. Ops.StoreM m => Tick -> Ops.StoreT m (Maybe Tick))
-     -- ^ per-tick filter\/transform, run against the trackee branch
+  -> (Tick -> Sem r (Maybe Tick))
+     -- ^ per-tick filter\/transform
   -> FilePath   -- ^ destination file on the tracker branch
   -> Sem r [TickId]
 trackBranch onlyFile atomFilter toFile = do
@@ -123,8 +128,7 @@ trackBranch onlyFile atomFilter toFile = do
       return (filter (\(_, t) -> unTickId (tickId t) `Set.notMember` existingRefs) candidates0)
     _ -> return candidates0
 
-  kept <- runStorage @trackeeBranch
-    (catMaybes <$> mapM (\(file, t) -> fmap (file,) <$> atomFilter t) candidates)
+  kept <- catMaybes <$> mapM (\(file, t) -> fmap (file,) <$> atomFilter t) candidates
   mapM (\(file, t) -> copyAtom @trackerBranch file toFile t) kept
 
 -- | Copy one trackee atom into the tracker branch.

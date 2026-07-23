@@ -64,7 +64,7 @@ runTwoTrack action =
 --   are about the sync/dedup mechanics, not the presence-aware filtering
 --   'Server.Writer.Branch.onlyWhilePresent' adds on top for the character
 --   use case.
-keepAll :: Core.StoreM m => Tick -> Core.StoreT m (Maybe Tick)
+keepAll :: Tick -> Sem r (Maybe Tick)
 keepAll tick = pure (Just tick)
 
 spec :: Spec
@@ -203,7 +203,7 @@ spec = do
             _ <- runStorage @Source (Ops.addAtom "story.md" "she arrived.")
             _ <- recordPresence @Source "story.md" character Leave
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nmeanwhile, elsewhere.")
-            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent character) "story.md"
+            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent @Source character) "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids, content)
       case result of
@@ -216,7 +216,7 @@ spec = do
       let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "nobody's here.")
-            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent character) "story.md"
+            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent @Source character) "story.md"
             return (length tids)
       result `shouldBe` Right 0
 
@@ -226,7 +226,7 @@ spec = do
             _ <- runStorage @Source (Ops.addAtom "story.md" "absent.")
             _ <- recordPresence @Source "story.md" character Enter
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\npresent.")
-            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent character) "story.md"
+            tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent @Source character) "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
             return (length tids, content)
       case result of
@@ -250,7 +250,7 @@ spec = do
             _ <- recordPresence @Source "ch1.md" character Enter
             _ <- runStorage @Source (Ops.addAtom "ch1.md" "present in ch1.")
             _ <- runStorage @Source (Ops.addAtom "ch2.md" "not present in ch2.")
-            tids <- trackBranch @Source @Tracker Nothing (onlyWhilePresent character) "journal.md"
+            tids <- trackBranch @Source @Tracker Nothing (onlyWhilePresent @Source character) "journal.md"
             content <- readFile @(BranchTag Tracker) "journal.md"
             return (length tids, content)
       case result of

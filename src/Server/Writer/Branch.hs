@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -108,7 +109,7 @@ trackFiles target source onlyFile toFile = do
     Just _  -> return ()
   runBranchAndFS @Source source
     $ runBranchAndFS @Tracker target $ do
-        _ <- trackBranch @Source @Tracker onlyFile (onlyWhilePresent (Character target)) toFile
+        _ <- trackBranch @Source @Tracker onlyFile (onlyWhilePresent @Source (Character target)) toFile
         return toFile
 
 -- | Only copy an atom into @character@'s branch if that character was
@@ -122,11 +123,21 @@ trackFiles target source onlyFile toFile = do
 --   'Storyteller.Writer.Agent.Tracker.dropUntilAfterLastSynced'), so a
 --   later sync pass simply reconsiders it -- harmless, since presence at a
 --   fixed historical position never changes, so it drops again every time.
-onlyWhilePresent :: Ops.StoreM m => Character -> Tick -> Ops.StoreT m (Maybe Tick)
+--
+--   An ordinary 'Sem' hook (see 'Storyteller.Writer.Agent.Tracker.trackBranch's
+--   own Haddock on why) rather than a raw 'Storage.Core.StoreT' one --
+--   'presentAt' runs against @trackeeBranch@'s own already-open 'BranchOp'
+--   scope via 'runStorage', the same way every other read in this module
+--   does. Generic in @trackeeBranch@ (explicit @\@branch@ at the call
+--   site, same convention as everywhere else this codebase names a branch
+--   phantom) rather than fixed to this module's own @Source@, so any
+--   caller of 'Storyteller.Writer.Agent.Tracker.trackBranch' can reuse it
+--   against whichever phantom it opened its own trackee scope with.
+onlyWhilePresent :: forall trackeeBranch r. Member (BranchOp trackeeBranch) r => Character -> Tick -> Sem r (Maybe Tick)
 onlyWhilePresent character tick = case fromTick @Atom tick of
   Nothing -> pure Nothing
   Just (Atom file _) -> do
-    present <- presentAt (tickId tick) file character
+    present <- runStorage @trackeeBranch (presentAt (tickId tick) file character)
     pure (if present then Just tick else Nothing)
 
 -- | Run chargen and commit the result to a branch.
