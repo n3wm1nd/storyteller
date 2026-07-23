@@ -97,6 +97,12 @@ module Storyteller.Core.ContentEffects
   , atomTrackedAmong
   , runTrackedFiles
 
+    -- * A file's own tick list (tick-history dependent)
+  , FileTicks(..)
+  , FileTick(..)
+  , fileTicksOf
+  , runFileTicks
+
     -- * Branch name resolution
   , BranchResolve(..)
   , resolveBranch
@@ -119,6 +125,7 @@ import Polysemy.Fail (Fail)
 import qualified Storage.Core as Core
 import qualified Storage.Query as Query
 import qualified Storage.Tick as Tick
+import Storage.Tick (FileTick(..))
 
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
@@ -305,6 +312,34 @@ runTrackedFiles = interpret $ \case
   AtomTrackedAmong paths -> runStorage @branch (Query.atomTrackedAmong paths)
 
 -- ---------------------------------------------------------------------------
+-- A file's own tick list
+-- ---------------------------------------------------------------------------
+
+-- | @path@'s own current ticks, in 'Storage.Tick.FileTick's already-decoded
+--   shape (role, content, refs, hide flag) -- not derived or curated
+--   further the way 'Presence'\/'JournalAccess' fold the same underlying
+--   read into a narrower answer; this is the plain "what are this file's
+--   ticks" question several agents each want as their own starting point
+--   (locating a target atom by id, finding an in-flight span, re-reading
+--   before every step of a rebase-sensitive loop) rather than one already
+--   folded into "who's present" or "a curated window." Naming it once
+--   here, rather than each of
+--   'Storyteller.Writer.Agent.Fix'\/'Storyteller.Writer.Agent.FlowWrite'\/
+--   'Storyteller.Writer.Agent.ReplaceTool' independently writing
+--   @runStorage \@branch (Storage.Tick.fileTicksOf path)@, is exactly the
+--   "reuse before inventing" step this module's own design doc argues for
+--   -- discovered only once three separate agents had each already
+--   written it by hand.
+data FileTicks (branch :: k) (m :: Type -> Type) a where
+  FileTicksOf :: FilePath -> FileTicks branch m [Tick.FileTick]
+
+makeSem ''FileTicks
+
+runFileTicks :: forall branch r a. Member (BranchOp branch) r => Sem (FileTicks branch ': r) a -> Sem r a
+runFileTicks = interpret $ \case
+  FileTicksOf path -> runStorage @branch (Tick.fileTicksOf path)
+
+-- ---------------------------------------------------------------------------
 -- Branch resolution
 -- ---------------------------------------------------------------------------
 
@@ -350,23 +385,24 @@ runBranchResolve = interpret $ \case
 -- | Every branch-scoped effect above, discharged at once against a single
 --   git-backed branch -- the one thing a caller composing this onto its
 --   own interpreter stack actually wants: "give me the whole vocabulary
---   for this branch," not five individual lines to remember to keep in
+--   for this branch," not six individual lines to remember to keep in
 --   sync. Composes directly onto an existing stack (no @runM@ inside,
 --   same as every interpreter above), and can be applied more than once
 --   at different @branch@ type applications within the same stack (see
 --   the module Haddock) -- a different backend supplies its own
 --   equivalent of this function, discharging whichever subset of the
---   five effects it can honestly back. 'BranchResolve' isn't included --
+--   six effects it can honestly back. 'BranchResolve' isn't included --
 --   it has no @branch@ of its own to be scoped to; wire it separately
 --   (once, project-wide) via 'runBranchResolve'.
 runContentEffectsGit
   :: forall branch r a
   .  Member (BranchOp branch) r
   => Sem ( TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch
-         ': TrackedFiles branch ': r ) a
+         ': TrackedFiles branch ': FileTicks branch ': r ) a
   -> Sem r a
 runContentEffectsGit =
-    runTrackedFiles @branch
+    runFileTicks @branch
+  . runTrackedFiles @branch
   . runConversationAccess @branch
   . runJournalAccess @branch
   . runPresence @branch

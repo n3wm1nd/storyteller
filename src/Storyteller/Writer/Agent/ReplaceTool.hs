@@ -79,6 +79,7 @@ import UniversalLLM.Tools
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
+import Storyteller.Core.ContentEffects (fileTicksOf, runFileTicks)
 import Storyteller.Core.Git (BranchOp, runStorage)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
@@ -245,7 +246,7 @@ reworkAtomsAt
   :: forall branch r
   .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
   => FilePath -> Instruction -> [Int] -> Sem r [TickId]
-reworkAtomsAt path instruction idxs = do
+reworkAtomsAt path instruction idxs = runFileTicks @branch $ do
   info $ "fixAgent: reviewing " <> T.pack (show total) <> " atom(s) in " <> T.pack path
   changed <- catMaybes <$> mapM oneAt (zip [1 :: Int ..] idxs)
   info $ "fixAgent: done, " <> T.pack (show (length changed)) <> " of " <> T.pack (show total) <> " atom(s) changed"
@@ -253,11 +254,11 @@ reworkAtomsAt path instruction idxs = do
   where
     total = length idxs
     oneAt (n, idx) = do
-      ticks <- runStorage @branch (Tick.fileTicksOf path)
+      ticks <- fileTicksOf @branch path
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
           info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": querying model..."
-          mProposal <- reworkAtom content instruction
+          mProposal <- raise (reworkAtom content instruction)
           case mProposal of
             Nothing -> do
               info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": left unchanged"

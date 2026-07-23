@@ -35,9 +35,9 @@ import Storyteller.Writer.Agent.Context (WorldContext, StyleContext, PinnedConte
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.ContentEffects (fileTicksOf, runFileTicks)
+import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.Storage (ticksSince)
-import Storage.Tick (fileTicksOf)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. Everything besides @path@\/@flowTid@ is the same
@@ -58,20 +58,20 @@ flowWriteAgent
   -> PinnedContext                                    -- ^ pinned/short-term context
   -> Instruction
   -> Sem r ([TickId], Prose)
-flowWriteAgent path flowTid context style chars pinned instruction = do
-  allTicks <- runStorage @branch (fileTicksOf path)
+flowWriteAgent path flowTid context style chars pinned instruction = runFileTicks @branch $ do
+  allTicks <- fileTicksOf @branch path
   let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
       inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if inFlightCount == 0
     then return []
-    else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
+    else raise (reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs)
 
   -- Reworked atoms get new ids/content, so the pre-rework snapshot is
   -- stale the moment reworkAtomsAt commits -- re-read only when something
   -- actually changed.
-  currentTicks <- if inFlightCount == 0 then return allTicks else runStorage @branch (fileTicksOf path)
+  currentTicks <- if inFlightCount == 0 then return allTicks else fileTicksOf @branch path
 
-  generated <- writeAgent context style chars pinned currentTicks instruction
+  generated <- raise (writeAgent context style chars pinned currentTicks instruction)
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already
