@@ -40,7 +40,7 @@ import Polysemy (Member, Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 import Runix.Logging (info, Logging)
-import Runix.FileSystem (fileExists, readFile, writeFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, readFile, writeFile)
 
 import Server.Core.File (FileOpen, deleteFileTicks)
 import qualified Server.Core.File as Core (fileStateSince)
@@ -635,7 +635,7 @@ summaryKindsFor path
 --   current content in, its compression out", exactly the shape
 --   'runSummarizerForPath' wants.
 summarizePath
-  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail] r)
+  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)] r)
   => FilePath -> Sem r (Maybe TickId)
 summarizePath path = case summaryKindsFor path of
   [] -> return Nothing

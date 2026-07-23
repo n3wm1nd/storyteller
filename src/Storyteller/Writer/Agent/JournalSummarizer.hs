@@ -77,24 +77,26 @@ module Storyteller.Writer.Agent.JournalSummarizer
   , defaultJournalGroupSize
   ) where
 
+import Prelude hiding (readFile)
+
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Control.Monad (void)
 import Polysemy (Members, Sem, raise)
 import Polysemy.Fail (Fail)
+import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 import Runix.Git (Git)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import qualified Storage.Core as Core
-import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Summary (Summary(..), lastSummaryOf)
 import Storyteller.Core.Atom (Atom(..), contentFor)
-import Storyteller.Core.Git (BranchOp, runStorage, foldAscend)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStorage, foldAscend)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
 import Storyteller.Core.Storage (StoryStorage)
@@ -342,12 +344,12 @@ defaultInstructions = ""
 --   'sheetTurns' for why that fixed-ness is what makes it cacheable at all.
 currentSheet
   :: forall source r
-  .  Members '[BranchOp source, StoryStorage] r
+  .  Members '[FileSystem (BranchTag source), FileSystemRead (BranchTag source), Fail] r
   => Sem r Text
-currentSheet = runStorage @source $ do
-  files <- FS.list
+currentSheet = do
+  files <- listAllFiles @(BranchTag source) "/"
   if "sheet.md" `elem` files
-    then TE.decodeUtf8 <$> FS.readFile "sheet.md"
+    then TE.decodeUtf8 <$> readFile @(BranchTag source) "sheet.md"
     else return ""
 
 -- | The character sheet as its own fixed user\/assistant turn pair, ahead

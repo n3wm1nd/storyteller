@@ -38,7 +38,7 @@ import Numeric (showHex)
 import Polysemy (Member, Members, Sem)
 import Polysemy.Error (throw)
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (writeFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, writeFile)
 import Runix.Git (Git)
 import Runix.Logging (Logging)
 import Runix.Random (Random, randomInt)
@@ -348,7 +348,7 @@ saveFileAsNew branch path newPath content =
 --   'Storyteller.Writer.Agent.Summarizer.runSummarizer' itself ever needs
 --   to change.
 summarize
-  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail] r)
+  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)] r)
   => T.Text -> Sem r (Maybe TickId)
 summarize kind
   | kind == "prose/chapter" = runSummarizer @Main kind (chapterSummaryGenerate @Main kind)
