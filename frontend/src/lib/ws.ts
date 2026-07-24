@@ -5,7 +5,7 @@
 //   branchConn     (/branch/{name})                  — full branch tick chain + file tree
 //   fileConn       (/branch/{name}/{path})            — file-scoped tick chain
 //   characterConn  (/character/{name})                — sidebar-facing character state (read-only)
-//   contextViewConn (/branch/{name}/$context/{path})  — stateless context-filter preview
+//   contextViewConn (/branch/{name}/$context/{path})  — stateless Context DSL program preview
 //   libraryConn    (/library/{name})                  — writer-facing book/chapter tree (mostly read-only)
 //
 // All connections support auto-reconnect. Reconnecting is the only resync
@@ -445,61 +445,31 @@ export type CharacterEvent =
 
 // ── Context-view protocol ─────────────────────────────────────────────────────
 
-// How a slot is delivered to whichever agent/subagent consumes it — fixed by
-// the command that declares the slot (e.g. Write always injects character
-// context ambiently; Chat always exposes branch files as on-demand tool
-// reads). Not something the client picks per file.
-export type ContextMode = "ambient" | "on-demand";
-
-// One claim in a ContextLayout: every path matching `pattern` that no
-// earlier rule in the list already claimed is assigned `bucket`. Glob
-// syntax, same as the server's own file glob op. `bucket` omitted (or null)
-// means an explicit trash claim — hide this path even if a later, broader
-// rule would also match it (see Storyteller.Writer.Agent.ContextFilter).
-// Claim order (list position) and bucket order (the number itself) are
-// independent axes: a narrow pattern needs to claim ahead of a broad
-// catch-all regardless of which bucket either targets.
-export interface PickerRule {
-  pattern: string;
-  bucket?: number;
-}
-
-// An ordered picker list. Empty means "no layout configured" — falls back
-// to the server's default alphabetical order, not "claim nothing" (that's
-// what an empty layout means to buildSlotPreview/applyContextLayout
-// directly — see their own docs for why the two differ).
-export type ContextLayout = PickerRule[];
-
-// One named context slot: a label the command chose (e.g.
-// "character:alice-chen", "branch-files"), its fixed mode, and the layout
-// selecting and ordering its files — the one part the client configures.
-export interface ContextSlot {
-  label: string;
-  mode: ContextMode;
-  layout?: ContextLayout;
-}
-
-export interface ContextEntry {
-  path: string;
-  bucket: number | null;  // null for a file no rule claims — still listed, just shaded, not hidden
-  content?: string;       // full text, only present for claimed Ambient entries
-  blurb?: string;         // short teaser, only present for claimed OnDemand entries
-}
-
-export interface ContextSlotPreview {
-  label: string;
-  mode: ContextMode;
-  entries: ContextEntry[];
-}
-
-// Every request is self-contained — the full slot list, resolved fresh each
-// time, same discipline an LLM call's full history follows. Nothing about a
-// submitted filter persists across requests server-side.
+// Runs a client-submitted Context DSL program (see CONTEXT-DSL.md; same
+// convention as fileview.actions.ts's `fcContext` on chat.writer/
+// correct.group) against the branch, staged as this one request's own
+// `context.writer` override — see Storyteller.Writer.Agent.ContextPreview's
+// own Haddock — and returns exactly what it resolved to. `path` is the
+// program's own `path:` parameter, the same target file a real send would
+// pass.
+//
+// Every request is self-contained — the full (path, program) pair, resolved
+// fresh each time, same discipline an LLM call's full history follows.
+// Nothing about a submitted program persists across requests server-side.
 export type ContextViewCommand =
-  | { type: "context.preview"; id?: string; slots: ContextSlot[] };
+  | { type: "context.preview"; id?: string; path: string; program: string };
+
+// A node mirrors the DSL's own Value shape: its own text content (each
+// source Message flattened to its text, in order), then named child
+// entries (an `as "name": ...` export) — see
+// Storyteller.Context.DSL.Rendering.RenderedContext.
+export interface PreviewNode {
+  content: string[];
+  entries: { name: string; node: PreviewNode }[];
+}
 
 export type ContextViewEvent =
-  | { type: "context.preview"; id?: string; slots: ContextSlotPreview[] }
+  | { type: "context.preview"; id?: string; result: PreviewNode }
   | ErrorEvent;
 
 // ── Library protocol ──────────────────────────────────────────────────────────

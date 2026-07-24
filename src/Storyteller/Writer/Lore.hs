@@ -32,6 +32,7 @@ module Storyteller.Writer.Lore
   , isNotScratchOrCharacterFile
   , buildLoreTree
   , parseAliases
+  , blurb
   ) where
 
 import qualified Data.List as List
@@ -112,6 +113,12 @@ isNotScratchOrCharacterFile path =
   where
     isRootFile name p = takeFileName p == name && takeDirectory p == "."
 
+-- | First non-blank line, trimmed to a short teaser -- enough to recognise
+--   a file by without loading its full content.
+blurb :: T.Text -> T.Text
+blurb t = T.take 140 $ Maybe.fromMaybe "" $
+  Maybe.listToMaybe [ line | l <- T.lines t, let line = T.strip l, not (T.null line) ]
+
 -- | Build the codex forest from every eligible path paired with its
 --   already-read blurb and parsed aliases. Folders are synthesized wherever
 --   a path implies one, same trie-then-forest shape as
@@ -150,8 +157,8 @@ toNodes :: FilePath -> Map FilePath Trie -> [LoreNode]
 toNodes prefix forest = List.sortOn lnName [ mkNode name entry | (name, entry) <- Map.toList forest ]
   where
     mkNode name (Trie mLeaf children)
-      | Map.null children, Just (path, blurb, aliases) <- mLeaf =
-          LoreNode path (T.pack name) blurb aliases []
+      | Map.null children, Just (path, teaser, aliases) <- mLeaf =
+          LoreNode path (T.pack name) teaser aliases []
       | otherwise =
           let fullPath = if null prefix then name else prefix <> "/" <> name
           in LoreNode fullPath (T.pack name) "" [] (toNodes fullPath children)

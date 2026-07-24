@@ -16,11 +16,6 @@ export interface TreeNode {
   // sourced from — this flat file listing has no per-file metadata of its
   // own). Never open the prose/atom viewer for one of these.
   isBinary: boolean;
-  // Whether a context-source filter currently includes this file (see
-  // context-source.tsx) — always true for callers that don't pass
-  // 'includedPaths' (the ordinary Explorer/Library trees), which have no
-  // such concept and just ignore it.
-  included: boolean;
   // "folder" for a directory node; a leaf's own lib/library.ts classification
   // otherwise (this tab has no /library/{name} connection to ask, unlike
   // library.tsx — see that module's header) — icon selection only, no other
@@ -29,7 +24,7 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
-export function buildTree(paths: string[], binaryPaths: Set<string> = new Set(), includedPaths?: Set<string>): TreeNode[] {
+export function buildTree(paths: string[], binaryPaths: Set<string> = new Set()): TreeNode[] {
   const root: TreeNode[] = [];
   // Natural order (ch2 before ch11), same as the server-side tree at
   // /library/{name} — see lib/library.ts's naturalCompare. Sorting the full
@@ -51,7 +46,6 @@ export function buildTree(paths: string[], binaryPaths: Set<string> = new Set(),
         node = {
           name: displayName, path: builtPath, isDir: !isLast,
           isBinary: isLast && binaryPaths.has(builtPath),
-          included: !includedPaths || !isLast || includedPaths.has(builtPath),
           kind: isLast ? classifyPath(builtPath) : "folder",
           children: [],
         };

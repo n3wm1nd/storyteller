@@ -3,67 +3,39 @@
 
 -- | Protocol for @\/branch\/{name}\/$context\/{path}@ connections.
 --
--- Commands: 'PreviewContext' — a full, self-contained description of the
---           slots to preview. Every request carries everything needed to
---           answer it, the same discipline an LLM call's full history
---           follows: nothing about a submitted filter persists across
---           requests, so a client never needs to reconstruct or diff
---           against server-held state.
--- Events:   'ContextPreview' — the resolved entries per slot, pushed once
---           per command and again whenever the underlying branch changes
---           (re-resolved against the most recently submitted slots — see
+-- Commands: 'PreviewContext' — a full, self-contained Context DSL program
+--           to run against the branch, plus the @path@ it should resolve
+--           against (the same @path:@ parameter every @context.writer@
+--           call takes). Every request carries everything needed to answer
+--           it, the same discipline an LLM call's full history follows:
+--           nothing about a submitted program persists across requests, so
+--           a client never needs to reconstruct or diff against
+--           server-held state.
+-- Events:   'ContextPreviewed' — the resolved tree, pushed once per command
+--           and again whenever the underlying branch changes (re-resolved
+--           against the most recently submitted program — see
 --           'Server.Writer.ContextView.Connection').
 module Server.Writer.ContextView.Protocol
-  ( ContextMode(..)
-  , ContextSlot(..)
+  ( PreviewNode(..)
   , ContextViewCommand(..)
-  , ContextEntry(..)
-  , ContextSlotPreview(..)
   , ContextViewEvent(..)
   ) where
 
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
-import Storyteller.Writer.Agent.ContextPreview
-  ( ContextMode(..), ContextSlot(..)
-  , ContextEntry(..), ContextSlotPreview(..) )
+import Storyteller.Writer.Agent.ContextPreview (PreviewNode(..))
 
-instance FromJSON ContextMode where
-  parseJSON = withText "ContextMode" $ \case
-    "ambient"   -> pure Ambient
-    "on-demand" -> pure OnDemand
-    other       -> fail ("unknown context mode: " <> T.unpack other)
-
-instance ToJSON ContextMode where
-  toJSON Ambient  = String "ambient"
-  toJSON OnDemand = String "on-demand"
-
-instance FromJSON ContextSlot where
-  parseJSON = withObject "ContextSlot" $ \o ->
-    ContextSlot
-      <$> o .: "label"
-      <*> o .: "mode"
-      <*> (fromMaybe [] <$> o .:? "layout")
-
-instance ToJSON ContextEntry where
-  toJSON e = object $
-    [ "path" .= cePath e, "bucket" .= ceBucket e ] <>
-    maybe [] (\c -> ["content" .= c]) (ceContent e) <>
-    maybe [] (\b -> ["blurb"   .= b]) (ceBlurb   e)
-
-instance ToJSON ContextSlotPreview where
-  toJSON sp = object
-    [ "label"   .= cspLabel   sp
-    , "mode"    .= cspMode    sp
-    , "entries" .= cspEntries sp
+instance ToJSON PreviewNode where
+  toJSON n = object
+    [ "content" .= pnContent n
+    , "entries" .= [ object [ "name" .= name, "node" .= toJSON node ] | (name, node) <- pnEntries n ]
     ]
 
 -- | Commands the client may send on a context-view connection.
 data ContextViewCommand
-  = PreviewContext { cvId :: Maybe T.Text, cvSlots :: [ContextSlot] }
+  = PreviewContext { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
   deriving (Show)
 
 instance FromJSON ContextViewCommand where
@@ -71,21 +43,21 @@ instance FromJSON ContextViewCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "context.preview" -> PreviewContext i <$> o .: "slots"
+      "context.preview" -> PreviewContext i <$> o .: "path" <*> o .: "program"
       _                 -> fail ("unknown context-view command: " <> T.unpack t)
 
 -- | Events the server sends on a context-view connection.
 data ContextViewEvent
-  = ContextPreviewed { cveId :: Maybe T.Text, cveSlots :: [ContextSlotPreview] }
+  = ContextPreviewed { cveId :: Maybe T.Text, cveResult :: PreviewNode }
   | ContextViewError T.Text
   deriving (Show)
 
 instance ToJSON ContextViewEvent where
   toJSON = \case
-    ContextPreviewed mid slots ->
+    ContextPreviewed mid result ->
       object $
-        [ "type"  .= ("context.preview" :: T.Text)
-        , "slots" .= slots
+        [ "type"   .= ("context.preview" :: T.Text)
+        , "result" .= result
         ] <> maybe [] (\i -> ["id" .= i]) mid
     ContextViewError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]

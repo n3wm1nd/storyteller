@@ -8,20 +8,22 @@
 -- | @\/branch\/{name}\/$context\/{path}@ connection lifecycle.
 --
 -- A preview-only sibling of 'Server.Writer.File.Connection': it never
--- writes anything, so there is no tick chain, no ref-move mutation, no
--- presence tri-state. Same two-thread shape as
+-- durably writes anything (the DSL program it runs is staged only for the
+-- one 'buildPreview' call, via 'Storyteller.Core.Context.setContextOverride'
+-- -- see that function's own Haddock), so there is no tick chain, no
+-- ref-move mutation, no presence tri-state. Same two-thread shape as
 -- 'Server.Writer.Character.Connection' — a command thread and an
 -- independent notify thread reacting to 'RefMoved' — but with one addition
 -- Character's read-only connection doesn't need: a client-submitted
--- 'PreviewContext' carries the slots to resolve, and *that* has to be
--- remembered between requests so the notify thread has something to
+-- 'PreviewContext' carries the @(path, program)@ to resolve, and *that* has
+-- to be remembered between requests so the notify thread has something to
 -- re-resolve when the branch's files change without the client re-asking.
 --
 -- What's still true, matching 'Server.Writer.ContextView.Protocol's module
 -- header: the resolution itself
 -- ('Storyteller.Writer.Agent.ContextPreview.buildPreview') is a pure
--- function of "these slots, this branch's current files" — nothing here
--- accumulates or diffs against a prior response the way
+-- function of "this program, this path, this branch's current content" —
+-- nothing here accumulates or diffs against a prior response the way
 -- 'Server.Writer.File.Connection's tick-chain push does. The one 'TVar' is
 -- "what was I last asked to preview", not a derived cache.
 module Server.Writer.ContextView.Connection
@@ -46,41 +48,39 @@ import Server.Writer.ContextView.Protocol
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
-import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Writer.Agent.ContextPreview (buildPreview)
-import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 
--- | 'path' is accepted (mirroring 'Server.Writer.File.Connection's shape,
---   and the eventual per-file scoping this preview is meant to describe)
---   but unused today: 'buildPreview' resolves slots against the whole
---   branch, not one target file. Kept as a route parameter rather than
---   dropped entirely so wiring a real file-scoped default filter later is a
---   one-line change here, not a route change.
+-- | 'path' (the route parameter) is accepted but unused: each
+--   'PreviewContext' command carries its own @path@, since a client may
+--   want to preview against a different target file than whatever the
+--   connection was opened for without reopening the socket. Kept as a
+--   route parameter rather than dropped entirely so a real per-file
+--   default program is a one-line change here, not a route change.
 runContextView :: ServerEnv -> T.Text -> FilePath -> WS.Connection -> IO ()
 runContextView env branch _path conn = do
-  slotsVar   <- newTVarIO []
+  reqVar     <- newTVarIO Nothing
   notifyChan <- atomically $ dupTChan (envNotifyChan env)
-  notifier   <- forkIO $ runNotifier env branch conn notifyChan slotsVar
-  runCommands env branch conn slotsVar `finally` killThread notifier
+  notifier   <- forkIO $ runNotifier env branch conn notifyChan reqVar
+  runCommands env branch conn reqVar `finally` killThread notifier
 
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (ContextViewError (T.pack err)))
 
 -- | The command thread: dispatch 'PreviewContext' commands until the socket
---   closes. Each command is the sole writer of 'slotsVar' and pushes its own
+--   closes. Each command is the sole writer of 'reqVar' and pushes its own
 --   response immediately, same "reopen the branch scope per command"
 --   discipline every other connection follows.
-runCommands :: ServerEnv -> T.Text -> WS.Connection -> TVar [ContextSlot] -> IO ()
-runCommands env branch conn slotsVar = do
+runCommands :: ServerEnv -> T.Text -> WS.Connection -> TVar (Maybe (FilePath, T.Text)) -> IO ()
+runCommands env branch conn reqVar = do
   cancelFlag <- newTVarIO False
-  result <- runM $ wsAction env conn cancelFlag $ commandLoop branch conn slotsVar
+  result <- runM $ wsAction env conn cancelFlag $ commandLoop branch conn reqVar
   either (reportError conn) return result
 
 commandLoop
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> TVar [ContextSlot] -> Sem r ()
-commandLoop branch conn slotsVar = loop
+  => T.Text -> WS.Connection -> TVar (Maybe (FilePath, T.Text)) -> Sem r ()
+commandLoop branch conn reqVar = loop
   where
     loop = do
       msg <- embed (try (WS.receiveData conn) :: IO (Either SomeException LBS.ByteString))
@@ -88,36 +88,36 @@ commandLoop branch conn slotsVar = loop
         Left  _   -> return ()
         Right raw -> case decode raw of
           Nothing                    -> embed (reportError conn "invalid message") >> loop
-          Just (PreviewContext mid slots) -> do
-            embed $ atomically $ writeTVar slotsVar slots
-            pushPreview branch conn mid slots
+          Just (PreviewContext mid path program) -> do
+            embed $ atomically $ writeTVar reqVar (Just (path, program))
+            pushPreview branch conn mid path program
             loop
 
 -- | The notify thread: on every 'RefMoved' for this branch, re-resolve
---   whatever slots were last submitted (empty if the client hasn't sent a
---   first request yet, in which case there is nothing to push).
---   'TicksRemapped' carries nothing this connection tracks, since it never
---   puts a tick id on the wire.
-runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> TVar [ContextSlot] -> IO ()
-runNotifier env branch conn chan slotsVar = do
+--   whatever @(path, program)@ was last submitted (nothing to push if the
+--   client hasn't sent a first request yet). 'TicksRemapped' carries
+--   nothing this connection tracks, since it never puts a tick id on the
+--   wire.
+runNotifier :: ServerEnv -> T.Text -> WS.Connection -> TChan BranchNotification -> TVar (Maybe (FilePath, T.Text)) -> IO ()
+runNotifier env branch conn chan reqVar = do
   cancelFlag <- newTVarIO False
   result <- runM $ ignoreChunks @StreamEvent $ loggingWS conn $ actionStack env cancelFlag $
-    void $ watchBranch chan branch () (onNotify branch conn slotsVar)
+    void $ watchBranch chan branch () (onNotify branch conn reqVar)
   either (reportError conn) return result
 
 onNotify
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> TVar [ContextSlot] -> () -> BranchNotification -> Sem r ()
-onNotify branch conn slotsVar () = \case
+  => T.Text -> WS.Connection -> TVar (Maybe (FilePath, T.Text)) -> () -> BranchNotification -> Sem r ()
+onNotify branch conn reqVar () = \case
   RefMoved _ _ -> do
-    slots <- embed (readTVarIO slotsVar)
-    if null slots then return () else pushPreview branch conn Nothing slots
+    req <- embed (readTVarIO reqVar)
+    maybe (return ()) (uncurry (pushPreview branch conn Nothing)) req
   TicksRemapped _ -> return ()
-  UndoMoved       -> return ()
+  UndoMoved        -> return ()
 
 pushPreview
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> Maybe T.Text -> [ContextSlot] -> Sem r ()
-pushPreview branch conn mid slots = do
-  previews <- withBranch @Main branch (hideBinaryFiles @(BranchTag Main) @Main (buildPreview @(BranchTag Main) slots))
-  embed $ WS.sendTextData conn (encode (ContextPreviewed mid previews))
+  => T.Text -> WS.Connection -> Maybe T.Text -> FilePath -> T.Text -> Sem r ()
+pushPreview branch conn mid path program = do
+  result <- withBranch @Main branch (buildPreview @Main path program)
+  embed $ WS.sendTextData conn (encode (ContextPreviewed mid result))

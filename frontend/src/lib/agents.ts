@@ -22,21 +22,6 @@ export function isChatFile(path: string): boolean {
   return decodeURIComponent(path).split("/")[0] === "chat";
 }
 
-// A context source is one distinct FileSystem instance an agent actually
-// reads from today — not a user-inventable "slot." Its 'mode' is fixed by
-// how the agent consumes it (ambient: gathered eagerly and injected in
-// full, e.g. Continuation.hs's gatherFileContext; on-demand: exposed as a
-// tool surface the LLM may or may not call, e.g. Chat.hs's glob/read_file
-// tools) — never a user choice. Two sources both named "story" happening to
-// point at the same branch are still independent: each gets its own
-// exclude/include-only config (see context-source.tsx), because they're
-// separate FileSystem instances the agent was independently wired to.
-export interface ContextSourceDef {
-  id: string;
-  label: string;
-  mode: "ambient" | "on-demand";
-}
-
 export interface AgentDef {
   id: string;
   label: string;
@@ -62,19 +47,8 @@ export interface AgentDef {
   // ignored if written into a prose agent's override (Storyteller.Core.LLM.
   // Settings.ProseSettings has no such field to decode into).
   configRole?: "prose" | "agent";
-  // Empty means the agent genuinely has no configurable context today (e.g.
-  // Fixer's real path — 'reworkAtom' takes the selected atoms directly, no
-  // FileSystem effect at all — see Storyteller.Writer.Agent.ReplaceTool).
-  contextSources: ContextSourceDef[];
   appliesTo: (path: string) => boolean;
 }
-
-const STORY_AMBIENT: ContextSourceDef = { id: "story", label: "Story branch", mode: "ambient" };
-
-// The two settingsStore.ts ContextFilter keys real generation actually
-// consults today (see fileview.actions.ts's chatWrite) — centralized here
-// rather than duplicated per call site.
-export const WRITER_STORY_SOURCE_ID = `writer:${STORY_AMBIENT.id}`;
 
 export const AGENTS: AgentDef[] = [
   {
@@ -83,7 +57,6 @@ export const AGENTS: AgentDef[] = [
     description: "Continues prose from the selection or file end.",
     promptKeys: ["agent.writer", "agent.writer.instructions"],
     configRole: "prose",
-    contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
   },
   {
@@ -92,7 +65,6 @@ export const AGENTS: AgentDef[] = [
     description: "Rewrites the selected atoms in place per an instruction.",
     promptKeys: ["agent.fixer", "agent.fixer.template"],
     configRole: "agent",
-    contextSources: [],
     appliesTo: (path) => !isChatFile(path),
   },
   {
@@ -101,7 +73,6 @@ export const AGENTS: AgentDef[] = [
     description: "Regenerates a chapter to fit its beat sheet.",
     promptKeys: ["agent.outline.beatsheet", "agent.outline.beatsheet.template"],
     configRole: "prose",
-    contextSources: [STORY_AMBIENT],
     appliesTo: (path) => !isChatFile(path),
   },
   {
@@ -110,7 +81,6 @@ export const AGENTS: AgentDef[] = [
     description: "Splits the whole-story outline into per-chapter beat sheets.",
     promptKeys: ["agent.outline.split", "agent.outline.split.template"],
     configRole: "agent",
-    contextSources: [STORY_AMBIENT],
     appliesTo: isOutlineFile,
   },
   {
@@ -119,7 +89,6 @@ export const AGENTS: AgentDef[] = [
     description: "Conversational co-writing for chat/ files.",
     promptKeys: ["agent.chat"],
     configRole: "agent",
-    contextSources: [{ id: "story", label: "Story branch", mode: "on-demand" }],
     appliesTo: isChatFile,
   },
   {
@@ -128,15 +97,6 @@ export const AGENTS: AgentDef[] = [
     description: "Answers a question in character, using only that character's own branch (sheet, journal) — not the scene, not any other character.",
     promptKeys: ["agent.ask-character"],
     configRole: "agent",
-    // Empty, like Fixer's: not because there's no context (there plainly
-    // is — the character's whole branch), but because it isn't
-    // configurable through this per-branch include/exclude UI. Which
-    // branch gets read is chosen per call ("/ask @character=..."), not
-    // fixed like every other agent's source, and charSummaryAgent itself
-    // has no filtering to configure in the first place — it reads
-    // everything in that branch unconditionally (see Storyteller.Writer.
-    // Agent.CharContext).
-    contextSources: [],
     appliesTo: (path) => !isChatFile(path),
   },
 ];
@@ -163,14 +123,4 @@ export function configFieldsHint(role: AgentDef["configRole"]): string[] {
   if (role === "agent") return ["temperature", "maxTokens", "reasoning"];
   if (role === "prose") return ["temperature", "maxTokens"];
   return [];
-}
-
-// What a context source's mode actually means for the model, in plain
-// language — shown under the source's label in the Agents tab (see
-// agentstab.tsx) so "ambient"/"on-demand" reads as a consequence, not just
-// a badge to decode.
-export function contextModeDescription(mode: ContextSourceDef["mode"]): string {
-  return mode === "ambient"
-    ? "Every included file below is gathered up front and sent to the model in full, alongside every request this agent makes."
-    : "The model can browse and read included files from this branch itself, as tool calls, if it judges them relevant — nothing here is sent unless it asks.";
 }

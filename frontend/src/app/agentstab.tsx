@@ -5,12 +5,11 @@
 // and the appliesTo predicates — e.g. Chat only for chat/* files, Outline
 // split only for outline.md); clicking one swaps the right-hand detail pane,
 // there is no accordion/expand-collapse. Most agents have no real "settings"
-// at all (no toggles/fields) and that's expected to stay the norm — the one
-// real, functional setting today is the context filter (contextpreview.tsx /
-// ContextSourceConfig, previewed live against the server), so the detail
-// pane gives that room instead of squeezing it behind a click. Below it,
-// which of that agent's prompts currently have an override committed on the
-// "prompts" branch vs. falling back to the compiled-in default
+// at all (no toggles/fields) and that's expected to stay the norm — context
+// configuration lives in the Context DSL panel above the input bar now
+// (context-panel.tsx/dsl-editor.tsx), not here — this pane covers which of
+// an agent's prompts currently have an override committed on the "prompts"
+// branch vs. falling back to the compiled-in default
 // (Storyteller.Core.Prompt) — an overridden prompt's text is expandable and
 // editable in place (see PromptEditor); a default one isn't, because its
 // text only exists as a literal in Haskell source, unreachable over the
@@ -18,13 +17,12 @@
 
 import { useEffect, useState } from "react";
 import {
-  ChevronRight, FileText, Layers, Sliders,
+  ChevronRight, FileText, Sliders,
   PenLine, Wrench, RefreshCw, Split, MessageSquare, Bot,
 } from "lucide-react";
-import { AGENTS, promptKeyToPath, configKeyToPath, configFieldsHint, contextModeDescription, type AgentDef } from "@/lib/agents";
+import { AGENTS, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
 import { branchConn, branchFileUrl, uploadBranchFile } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { ContextSourceConfig } from "./context-source";
 
 const AGENT_ICONS: Record<string, typeof PenLine> = {
   writer: PenLine,
@@ -66,7 +64,7 @@ function usePromptFiles() {
   return files;
 }
 
-function SectionLabel({ icon: Icon, children }: { icon: typeof Layers; children: React.ReactNode }) {
+function SectionLabel({ icon: Icon, children }: { icon: typeof FileText; children: React.ReactNode }) {
   return (
     <div style={{
       padding: "10px 16px 6px", fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
@@ -413,8 +411,7 @@ function groupByCategory(agents: AgentDef[]): { category: string | null; agents:
   return groups;
 }
 
-export function AgentsTab({ activeBranch, path, onJumpToPrompt }: {
-  activeBranch: string | null;
+export function AgentsTab({ path, onJumpToPrompt }: {
   path: string;
   onJumpToPrompt: (path: string) => void;
 }) {
@@ -474,32 +471,6 @@ export function AgentsTab({ activeBranch, path, onJumpToPrompt }: {
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-heading)" }}>{selected.label}</div>
           <div style={{ fontSize: 11, color: "var(--text-ghost)", marginTop: 2 }}>{selected.description}</div>
         </div>
-
-        <SectionLabel icon={Layers}>Context</SectionLabel>
-        {selected.contextSources.length === 0 ? (
-          <div style={{ padding: "0 16px 16px", fontSize: 11, color: "var(--text-ghost)", fontStyle: "italic" }}>
-            No configurable context — reads only the selected content directly.
-          </div>
-        ) : selected.contextSources.map((source) => (
-          <div key={source.id} style={{ margin: "0 14px 14px", border: "1px solid var(--border-subtle)", borderRadius: 6, overflow: "hidden" }}>
-            <div style={{ padding: "8px 10px", background: "var(--surface-deep)", borderBottom: "1px solid var(--border-subtle)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-heading)" }}>{source.label}</span>
-                <span style={{
-                  fontSize: 9, padding: "1px 6px", borderRadius: 8,
-                  background: source.mode === "ambient" ? "var(--amber-tint)" : "var(--sky-tint)",
-                  color: source.mode === "ambient" ? "var(--amber)" : "var(--sky)",
-                }}>
-                  {source.mode === "ambient" ? "sent every time" : "available on demand"}
-                </span>
-              </div>
-              <p style={{ margin: "5px 0 0", fontSize: 10.5, color: "var(--text-muted)", lineHeight: 1.5, maxWidth: 560 }}>
-                {contextModeDescription(source.mode)}
-              </p>
-            </div>
-            <ContextSourceConfig activeBranch={activeBranch} path={path} sourceId={`${selected.id}:${source.id}`} label={source.label} mode={source.mode} />
-          </div>
-        ))}
 
         <SectionLabel icon={FileText}>Prompts</SectionLabel>
         <PromptOverrides promptKeys={selected.promptKeys} files={promptFiles} onJumpToPrompt={onJumpToPrompt} />

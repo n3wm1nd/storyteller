@@ -16,7 +16,7 @@
 -- 'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles', the same
 -- interceptor 'Server.Writer.ContextView.Connection' already wraps its own
 -- reads in), and each eligible file's blurb and
--- aliases (reusing 'Storyteller.Writer.Agent.ContextPreview.blurb' and
+-- aliases (reusing 'Storyteller.Writer.Lore.blurb' and
 -- 'Storyteller.Writer.Lore.parseAliases' off the same content read). No
 -- incremental cache like 'Server.Writer.Library.LibraryFoldCache' — a full
 -- codex re-read on every ref-move is cheap enough (short files, first-
@@ -54,8 +54,7 @@ import Storyteller.Context.DSL.Compile (bval, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value (Value(..), defaultMeta, leafValue)
 import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
-import Storyteller.Writer.Agent.ContextPreview (blurb)
-import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree, parseAliases)
+import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree, parseAliases, blurb)
 
 import Prelude hiding (readFile)
 

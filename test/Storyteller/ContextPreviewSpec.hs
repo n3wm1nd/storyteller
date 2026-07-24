@@ -5,77 +5,57 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | 'Storyteller.Writer.Agent.ContextPreview.buildSlotPreview' -- specifically
---   that an excluded file stays in the result (shaded, not removed) so the
---   Agents tab's context preview can show it in place rather than having it
---   vanish from the tree. The concrete regression this guards: an earlier
---   version filtered excluded paths out of the returned list entirely,
---   which is indistinguishable, from a client's perspective, from the file
---   never having existed.
+-- | 'Storyteller.Writer.Agent.ContextPreview.buildPreview' -- that it runs
+--   a client-submitted Context DSL program the *same* way a real
+--   @chat.writer@\/@correct.group@ call would ('Server.Writer.File.chatWriter'
+--   staging @fcContext@ via @setContextOverride@, then resolving
+--   @context.writer@), and renders the identical tree shape
+--   'Storyteller.Context.DSL.Rendering.renderContext' produces for real
+--   generation. This replaces the old bucket-picker preview spec: there is
+--   no longer a separate glob\/bucket layout to preview, so there is
+--   nothing left to test but "does the program that would actually run,
+--   actually run" -- which is also, by construction, the guarantee that a
+--   preview can never show something a real send wouldn't.
 module Storyteller.ContextPreviewSpec (spec) where
 
-import qualified Data.Text as T
 import Test.Hspec
 
-import Polysemy (Sem, run)
+import Polysemy (run)
 
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
-
-import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
-import Storyteller.Core.Storage (StoryStorage, createBranch)
+import Storyteller.Core.Git (runBranchAndFS, runStorage)
+import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storage.Ops as Ops
 
 import Server.Core.Branch (Main)
 import Server.TestStack
-import Storyteller.Writer.Agent.ContextFilter (PickerRule(..))
 import Storyteller.Writer.Agent.ContextPreview
 
-withPreviewBranch
-  :: T.Text
-  -> Sem ( FileSystemWrite (BranchTag Main)
-         : FileSystemRead  (BranchTag Main)
-         : FileSystem      (BranchTag Main)
-         : BranchOp Main
-         : StoryStorage
-         : TestEffects '[] ) a
-  -> Either String a
-withPreviewBranch name action = run $ testStack $ do
-  _ <- createBranch (BranchName name)
-  runBranchAndFS @Main (BranchName name) action
-
 spec :: Spec
-spec = describe "buildSlotPreview" $ do
+spec = describe "buildPreview" $ do
 
-  it "keeps a trashed file in the result, marked unclaimed and without content" $ do
-    let slot = ContextSlot "story" Ambient
-          [ PickerRule "secret.md" Nothing, PickerRule "**/*" (Just 1) ]
-        result = withPreviewBranch "story" $ do
-          _ <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
-          _ <- runStorage @Main (Ops.addAtom "secret.md" "shh\n")
-          buildSlotPreview @(BranchTag Main) slot
-    case result of
-      Left err -> expectationFailure err
-      Right (ContextSlotPreview _ _ entries) -> do
-        map cePath entries `shouldMatchList` ["scene.md", "secret.md"]
-        let Just secret = lookup "secret.md" [ (cePath e, e) | e <- entries ]
-            Just scene  = lookup "scene.md"  [ (cePath e, e) | e <- entries ]
-        ceBucket  secret `shouldBe` Nothing
-        ceContent secret `shouldBe` Nothing
-        ceBucket  scene  `shouldBe` Just 1
-        ceContent scene  `shouldBe` Just "p1\n"
+  it "a program that calls context.lore directly resolves against real content" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $ do
+        _ <- runStorage @Main (Ops.addAtom "lore/notes.md" "a hand-authored note")
+        buildPreview @Main "target.md" "path:\n  context.lore\n")
+    `shouldBe`
+      Right (PreviewNode ["## Story background", "## lore/notes.md", "a hand-authored note"] [])
 
-  it "an include-only layout (no catch-all) still lists everything, unmatched files unclaimed" $ do
-    let slot = ContextSlot "story" Ambient [ PickerRule "scene.md" (Just 1) ]
-        result = withPreviewBranch "story" $ do
-          _ <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
-          _ <- runStorage @Main (Ops.addAtom "other.md" "p2\n")
-          buildSlotPreview @(BranchTag Main) slot
-    case result of
-      Left err -> expectationFailure err
-      Right (ContextSlotPreview _ _ entries) -> do
-        map cePath entries `shouldMatchList` ["scene.md", "other.md"]
-        let Just scene = lookup "scene.md" [ (cePath e, e) | e <- entries ]
-            Just other = lookup "other.md" [ (cePath e, e) | e <- entries ]
-        ceBucket scene `shouldBe` Just 1
-        ceBucket other `shouldBe` Nothing
+  it "a client program replaces the default completely, producing exactly its own tree" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $ do
+        _ <- runStorage @Main (Ops.addAtom "lore/secret.md" "should not appear")
+        buildPreview @Main "target.md" "path:\n  x = \"only this\"\n  as \"custom\": x\n  x\n")
+    `shouldBe`
+      Right (PreviewNode ["only this"] [("custom", PreviewNode ["only this"] [])])
+
+  it "resolves per the submitted path, not a fixed one" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $ do
+        buildPreview @Main "chapters/ch1.md" "path:\n  path\n")
+    `shouldBe`
+      Right (PreviewNode ["chapters/ch1.md"] [])
