@@ -31,13 +31,16 @@ import Runix.Logging (info)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Context (resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
+import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..), Prose(..))
+import Storyteller.Writer.Agent (CharSummary(..), Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | Phantom tag for opening either character branch this scenario uses, one
@@ -47,6 +50,9 @@ data Char_
 keeperBranch, samBranch :: BranchName
 keeperBranch = BranchName "character/rosa"
 samBranch    = BranchName "character/sam"
+
+sceneFile :: FilePath
+sceneFile = "scene.md"
 
 keeperSheet :: T.Text
 keeperSheet = "# Rosa\n\nSam's oldest friend, generally warm and steady.\n"
@@ -100,18 +106,21 @@ spec runner = describe "an edited journal entry creating dramatic irony (real LL
         pure ()
       runBranchAndFS @Char_ samBranch $ runStorage @Char_ (Ops.saveFile "sheet.md" samSheet)
 
+      -- Sanity check on the fixture itself, independent of writeAgent: the
+      -- edited journal entry really is what characterSummaryOf's "journal"
+      -- bucket would read back, before trusting writeAgent's own internal
+      -- resolution of the same thing.
       rosaSummary <- runBranchAndFS @Char_ keeperBranch $ do
         charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "rosa"
         runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
       info $ "Rosa's csJournal blocks: " <> T.pack (show (length (csJournal rosaSummary)))
       embed $ csJournal rosaSummary `shouldNotBe` []
 
-      samSummary <- runBranchAndFS @Char_ samBranch $ do
-        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "sam"
-        runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
+      _ <- runStorage @Main (Ops.addAtom sceneFile "")
+      _ <- recordPresence @Main sceneFile (Character keeperBranch) Enter
+      _ <- recordPresence @Main sceneFile (Character samBranch) Enter
 
-      let chars = [(CharLabel "Rosa", rosaSummary), (CharLabel "Sam", samSummary)]
-      Prose text <- writeAgent emptyWorldContext emptyStyleContext chars emptyPinnedContext [] instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

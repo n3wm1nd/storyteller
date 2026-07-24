@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -21,33 +22,50 @@
 -- provider's @addConversationCacheControl@\/system-block caching, always
 -- on); nothing here manages a cache breakpoint by hand.
 --
--- No filesystem, no branch, no splitter -- everything is already-gathered
--- data. Reading it (per-character summaries, world lore, earlier chapters,
--- the current chapter's own ticks) and appending the result are the
--- caller's job, same split 'Storyteller.Writer.Agent.Continuation' already
--- draws between reading and generating.
+-- __Gathers its own agent-owned context now__ (chapters, "other" files,
+-- style, and who's present plus their own summaries) rather than
+-- receiving them pre-assembled -- see the project chat that settled this:
+-- @writeAgent@ decides both *where* each piece of content goes in the
+-- final message sequence and *what counts* as each agent-owned piece,
+-- reading @path@ and the branch directly for anything it can figure out
+-- on its own (earlier chapters from the file's own chain, who's present
+-- from presence ticks, their own context from their branches, "other"
+-- files, style). Only 'Lore' stays a real parameter -- which lore is
+-- *relevant* to this call is a judgment @writeAgent@ has no way to make
+-- on its own; a caller (typically 'Server.Writer.File.chatWriter',
+-- resolving a client's own @context.lore@ override or the compiled-in
+-- default) supplies it, already resolved. This is the same "agent does
+-- its own reading" shape 'Storyteller.Writer.Agent.Continuation.proseAgent'
+-- already has for the single-shot case; @writeAgent@ didn't need a
+-- second, LLM-only core to share with it, since the two build genuinely
+-- different message shapes (a reconstructed multi-turn chapter
+-- conversation vs. one flattened trailing message) -- it just needed to
+-- stop being handed its own gathering as parameters, and to stop
+-- bundling 'Lore' together with agent-derived content into one
+-- 'WorldContext'-shaped blob the way an earlier pass here did.
+-- 'Server.Writer.File.chatWriter' correspondingly shrank to: stage a lore
+-- override if the caller sent one, resolve it, then call this with
+-- @path@\/@lore@\/@instruction@\/the other caller-suppliable slots.
 --
--- Two things the caller ('Server.Writer.File.chatWriter') has to get right
--- for the cache-prefix discipline below to actually hold, neither enforced
--- by this module's own types:
---
---   * @currentTicks@ must be fetched /before/ this turn's own prompt is
---     stored -- otherwise the not-yet-answered prompt shows up twice, once
---     via 'historyFromFileTicks' and once as 'buildChapterMessages'\'s own
---     trailing instruction message.
---   * The instruction message is now literally @UserText instr@, the raw
---     prompt text, unwrapped -- deliberately identical to what
---     'historyFromFileTicks' will later replay a @\"prompt\"@ tick as, so a
---     turn's own final message is already exactly what a later call
---     reconstructs it to be. Per-turn boilerplate ("write ~300 words",
---     "only the new text") that used to live in that wrapper now lives in
---     the system prompt instead ('chapterContinuationNote') -- it never
---     varies, so there's no reason to pay to resend it as a user message on
---     every turn when the provider already caches the system block.
+-- One thing the caller still has to get right for the cache-prefix
+-- discipline below to actually hold, not enforced by this module's own
+-- types: this turn's own prompt must be stored /after/ this call returns
+-- -- otherwise the not-yet-answered prompt shows up twice, once via
+-- 'historyFromFileTicks' (read internally now, at call time) and once as
+-- 'buildChapterMessages'\'s own trailing instruction message. The
+-- instruction message is literally @UserText instr@, the raw prompt text,
+-- unwrapped -- deliberately identical to what 'historyFromFileTicks' will
+-- later replay a @\"prompt\"@ tick as, so a turn's own final message is
+-- already exactly what a later call reconstructs it to be. Per-turn
+-- boilerplate ("write ~300 words", "only the new text") lives in the
+-- system prompt instead ('chapterContinuationNote') -- it never varies, so
+-- there's no reason to pay to resend it as a user message on every turn
+-- when the provider already caches the system block.
 module Storyteller.Writer.Agent.Write
   ( writeAgent
   , buildChapterMessages
   , flattenCharBlocks
+  , activeCharacterContext
   ) where
 
 import qualified Data.Text as T
@@ -58,17 +76,27 @@ import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
+import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
 
-import Storyteller.Context.DSL.Rendering (renderMessages, renderText)
+import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Core.Branch (BranchOp, runStorage)
+import Storyteller.Core.Context (ContextStorage, resolveContext0, resolveContext1, runContextValue)
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
+import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), CharSummary(..)
-  , ContextBlock(..) )
-import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+  , ContextBlock(..), PastChaptersMode(..) )
+import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
 import Storyteller.Writer.Agent.Chat (historyFromFileTicks)
 import Storyteller.Writer.Agent.MessageWindow (injectAtWindow)
 import Storyteller.Writer.Agent.Continuation (defaultWriterSystemPrompt, defaultWriterConfig)
+import Storyteller.Writer.Branches (branchDisplayName)
+import Storyteller.Writer.Presence (activeCharactersFor)
+import Storyteller.Writer.Types (Character(..))
+import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 
 -- | Continue one chapter, given everything already gathered for it.
@@ -113,20 +141,52 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --     6. The new instruction -- always the last message, literally
 --        @UserText instr@ now (no per-message boilerplate -- see
 --        'chapterContinuationNote').
+--
+--   Every parameter here is one a *caller* can meaningfully supply: @path@
+--   (which file), @lore@ (already-resolved @context.lore@ -- a caller like
+--   'Server.Writer.File.chatWriter' stages any client override via
+--   'Storyteller.Core.Context.setContextOverride' and resolves it before
+--   calling this, the same "just data, not something this agent
+--   assembles" contract 'PinnedContext' already had), @pinned@ (the
+--   user's own explicit selection plus resolved pinned programs, also
+--   already-resolved), @chaptersMode@ (the one structural toggle a
+--   caller gets), and @instruction@. Everything else this function's own
+--   Haddock lists above -- earlier chapters' content, "other" files,
+--   style, which characters are present and their own summaries -- is
+--   agent-owned: resolved here, from @path@ and the branch, the same way
+--   'Storyteller.Writer.Agent.Continuation.proseAgent' already reads
+--   nothing it wasn't handed but needs no *caller* to have gathered any
+--   of this either.
 writeAgent
-  :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => WorldContext                -- ^ world context -- lore, earlier chapters, everything else, already ordered by whatever assembled it (typically @'Storyteller.Context.DSL.Library.contextWriter'@) -- rendered here, via 'renderMessages', at the point the model is actually known, not upstream (see 'buildChapterMessages's own Haddock)
-  -> StyleContext                -- ^ standing style guide -- rendered via 'renderText', appended to the system prompt, not a message
-  -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
-  -> PinnedContext                -- ^ pinned/short-term context (e.g. the user's own selection)
-  -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
+  :: forall branch r
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, StoryStorage, Fail, Logging] r)
+  => FilePath
+  -> Lore                        -- ^ already resolved (branch override or compiled-in default; see 'Server.Writer.File.chatWriter')
+  -> PastChaptersMode            -- ^ full vs. compressed chapter framing
+  -> PinnedContext                -- ^ pinned/short-term context: the user's own explicit selection plus resolved pinned programs
   -> Instruction
   -> Sem r Prose
-writeAgent (WorldContext context) (StyleContext style) chars (PinnedContext pinned) currentTicks instruction = do
+writeAgent path (Lore lore) chaptersMode (PinnedContext pinned) instruction = do
   Prompt sysPrompt <- getPrompt "agent.writer" defaultWriterSystemPrompt
   configs          <- getConfig "agent.writer" defaultWriterConfig
-  let contextMsgs      = renderMessages context
+  let pathT = T.pack path
+
+  chaptersV <- case chaptersMode of
+    FullChapters       -> resolveContext0 @branch "context.chapters" (CtxLibrary.contextChapters @branch)
+    CompressedChapters -> resolveContext0 @branch "context.chaptersCompressed" (CtxLibrary.contextChaptersCompressed @branch)
+  otherV <- resolveContext1 @branch "context.other" (CtxLibrary.contextOther @branch) pathT
+  styleV <- resolveContext0 @branch "context.style" (CtxLibrary.contextStyle @branch)
+  (chapters, other, style) <- runContextValue @branch $ do
+    c <- renderContext chaptersV
+    o <- renderContext otherV
+    s <- renderContext styleV
+    pure (c, o, s)
+
+  chars <- activeCharacterContext @branch path
+
+  currentTicks <- runStorage @branch (Tick.fileTicksOf path)
+
+  let contextMsgs      = renderMessages lore ++ renderMessages chapters ++ renderMessages other
       styleText        = renderText style
       pinnedBlocks      = [ContextBlock (renderText pinned) | not (T.null (renderText pinned))]
       sysText           = T.intercalate "\n\n" (filter (not . T.null) [sysPrompt, styleText, chapterContinuationNote])
@@ -136,6 +196,30 @@ writeAgent (WorldContext context) (StyleContext style) chars (PinnedContext pinn
   info "writeAgent: querying model..."
   response <- queryLLM configsWithPrompt messages
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
+
+-- | Every currently-active character's context, in the shape
+--   'buildChapterMessages' already accepts -- presence ticks
+--   ('Storyteller.Writer.Presence.activeCharactersFor') are the sole
+--   source of truth for "who's in this scene". Resolves @context.character@
+--   (a branch override on the @contexts@ branch, then
+--   'Storyteller.Context.DSL.Library.contextCharacter' as fallback) per
+--   active character, then reshapes it via
+--   'Storyteller.Context.DSL.Library.characterSummaryOf' (curated
+--   @"journal"@ bucket -- ambient generation wants the deduped slice, not
+--   a present character's full self-knowledge).
+activeCharacterContext
+  :: forall branch r
+  .  Members '[BranchOp branch, StoryStorage, ContextStorage, BranchResolve, Fail] r
+  => FilePath -> Sem r [(CharLabel, CharSummary)]
+activeCharacterContext path = do
+  active <- activeCharactersFor @branch path
+  mapM summarize active
+  where
+    summarize (Character (BranchName name)) = do
+      let ident = branchDisplayName name
+      charVal <- resolveContext1 @branch "context.character" (CtxLibrary.contextCharacter @branch) ident
+      summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journal" charVal)
+      pure (CharLabel ident, summary)
 
 -- | Standing per-turn instruction that used to be templated into every
 --   single instruction message ('buildChapterMessages'\'s old

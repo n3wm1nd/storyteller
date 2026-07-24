@@ -20,6 +20,7 @@ module Storyteller.Writer.Agent
   , ContextBlock(..)
   , ExistingContent(..)
   , WordCount(..)
+  , PastChaptersMode(..)
   , renderEmbeddedFile
   ) where
 
@@ -139,3 +140,19 @@ newtype ExistingContent = ExistingContent Text
 --   the continuation agent; it may be ignored if the model disregards it.
 newtype WordCount = WordCount Int
   deriving (Show, Eq, Ord, Num)
+
+-- | The one knob 'Storyteller.Writer.Agent.Write.writeAgent' exposes over
+--   past-chapters framing -- a toggle between two compiled-in shapes
+--   ('Storyteller.Context.DSL.Library.contextChapters'\/
+--   'contextChaptersCompressed'), never a client-authored program. See the
+--   project chat that settled the writer context's parameter model: "how
+--   should chapter history be framed" is the agent's own structural
+--   decision, not something a caller has special knowledge over the way
+--   lore/pinned content is -- so this is a fixed enum, not a DSL string.
+--   Canonically a domain type (this module), not a wire-protocol one --
+--   'Server.Writer.File.Protocol' imports and re-exports it for its own
+--   'Data.Aeson.FromJSON' instance, the same direction every other shared
+--   domain type here (a 'Character', a 'TickId') already flows: from
+--   'Storyteller' into 'Server', never the reverse.
+data PastChaptersMode = FullChapters | CompressedChapters
+  deriving (Show, Eq)

@@ -5,20 +5,23 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Does 'writeAgent''s @earlierChapters@ argument -- prior chapters' full
---   prose, placed as their own early messages (see its Haddock) -- actually
---   keep a *later* chapter consistent with something only an earlier one
---   established? 'Agent.Integration.JourneySpec' already exercises this
---   argument mechanically (it's how @runJourney@ threads chapters together)
---   but only checks that a chapter realizes its own beat sheet, never
---   whether it stays consistent with an earlier chapter's own established
---   fact -- this scenario isolates exactly that.
+-- | Does 'writeAgent''s own internal chapter-gathering -- prior chapters'
+--   full prose, placed as their own early messages (see its Haddock) --
+--   actually keep a *later* chapter consistent with something only an
+--   earlier one established? 'Agent.Integration.JourneySpec' already
+--   exercises this mechanically (it's how @runJourney@ threads chapters
+--   together) but only checks that a chapter realizes its own beat sheet,
+--   never whether it stays consistent with an earlier chapter's own
+--   established fact -- this scenario isolates exactly that. Unlike an
+--   earlier version of this file (which fed a synthetic "earlier chapter"
+--   message directly, since @writeAgent@ used to take earlier chapters as
+--   a parameter), the earlier chapter is now a real committed atom on the
+--   branch -- @writeAgent@ reads @chapters/**@ itself.
 --
 --   Same shape as 'Agent.Integration.CharContextWriteSpec' (a planted,
 --   checkable fact; an instruction that never repeats it; a judge that asks
 --   whether the reaction is consistent with it) but the fact lives in a
---   prior chapter's prose instead of a character sheet, so it's this
---   argument -- not @chars@ -- doing the work if the model gets it right.
+--   prior chapter's prose instead of a character sheet.
 --   A real LLM call, cached under test/fixtures/llm-agent-cache/agent/.
 module Agent.Integration.WriterEarlierChaptersSpec (spec) where
 
@@ -26,13 +29,16 @@ import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (embed)
-import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt, Message(..))
+import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
-import Storyteller.Writer.Agent (Instruction(..), Prose(..))
+import qualified Storage.Ops as Ops
+import Storyteller.Core.Git (runStorage)
+import Storyteller.Core.Runtime (Main)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, runExpect, worldContextFromMessages)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 earlierChapter :: T.Text
@@ -62,6 +68,9 @@ judgeQuestion = T.unwords
   , "all."
   ]
 
+newChapter :: FilePath
+newChapter = "chapters/ch2.md"
+
 spec
   :: forall judgeModel
   .  (HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel))
@@ -69,7 +78,9 @@ spec
 spec runner = describe "earlier-chapter continuity reaching the writer (real LLM, cached)" $
   it "keeps a new chapter consistent with a fact only an earlier chapter established" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent (worldContextFromMessages [UserText "## Chapter: chapters/ch1.md", AssistantText earlierChapter]) emptyStyleContext [] emptyPinnedContext [] instruction
+      _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" earlierChapter)
+      _ <- runStorage @Main (Ops.addAtom newChapter "")
+      Prose text <- writeAgent @Main newChapter emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

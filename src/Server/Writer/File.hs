@@ -50,7 +50,7 @@ import Server.Writer.File.Protocol (ContextItem(..), PastChaptersMode(..))
 
 import UniversalLLM (Message(..))
 
-import Storyteller.Writer.Agent (Prompt(..), Instruction(..), Prose(..), CharLabel(..), CharSummary(..), flattenCharSummary, WordCount(..))
+import Storyteller.Writer.Agent (Prompt(..), Instruction(..), Prose(..), CharLabel(..), flattenCharSummary, WordCount(..))
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storyteller.Writer.Library as Library (LibraryKind(..), classifyPath)
@@ -66,7 +66,7 @@ import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
-import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks)
+import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks, activeCharacterContext)
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
@@ -88,7 +88,7 @@ import qualified Storyteller.Context.DSL.Value as DSL
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Rendering as Rendering
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (WorldContext(..), Lore(..), PinnedContext(..))
 import Storyteller.Core.Context (resolveContext0, resolveContext1, resolveAdhoc0, setContextOverride, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
@@ -99,76 +99,24 @@ import Prelude hiding (readFile, writeFile)
 --   to name the tag.
 data ActiveChar
 
--- | Every currently-active character's context, in the shape 'writeAgent'\/
---   'flowWriteAgent' already accept -- presence ticks
---   ('Storyteller.Writer.Presence.activeCharactersFor') are the sole source
---   of truth for "who's in this scene"; there is no separate client-supplied
---   signal, so this is the one place that decides which character branches
---   an agent sees.
---
---   Resolves @context.character@ (a branch override on the @contexts@
---   branch, then 'Storyteller.Context.DSL.Library.contextCharacter'
---   as fallback -- see 'Storyteller.Core.Context.resolveContextQuery')
---   per active character, then reshapes it via
---   'Storyteller.Context.DSL.Library.characterSummaryOf' (curated
---   @"journal"@ bucket -- ambient generation wants the deduped slice, not
---   a present character's full self-knowledge) -- the same shared
---   definition ('Storyteller.Context.DSL.Library.contextCharacter''s own
---   Haddock) every character-context consumer now reads through, not a
---   bespoke read here. @sheet.md@\/@journal.md@ are never lore-gated
---   (per-branch content filtering was previously theoretical -- every
---   call site always passed an empty layout map -- and is now, if ever
---   wanted, a project's own override of @context.character@'s @"full"@
---   bucket, not a Haskell-side parameter here).
---
---   Returns the full 'CharSummary' split per character, not a flattened
---   list -- 'chatWriter', still a single-shot prompt, collapses it back via
---   'flattenCharSummary' at its own call site; a future per-chapter
---   '[Message]' assembly (see 'Storyteller.Writer.Agent.CharSummary's own
---   Haddock) is what actually wants 'csSheet'\/'csContext'\/'csJournal'
---   placed independently, and can consume this function's result directly.
-activeCharacterContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [(CharLabel, CharSummary)]
-activeCharacterContext path = do
-  active <- activeCharactersFor @Main path
-  mapM summarize active
-  where
-    summarize (Character (BranchName name)) = do
-      let ident = branchDisplayName name
-      charVal <- resolveContext1 @Main "context.character" (CtxLibrary.contextCharacter @Main) ident
-      summary <- runContextValue @Main (CtxLibrary.characterSummaryOf "journal" charVal)
-      pure (CharLabel ident, summary)
-
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Writer.Agent.FlowWrite'). World context is composed here,
---   in Haskell, from three independently-resolved slots -- @context.lore@
---   (overridable per call via 'mLore'), chapters (in @chaptersMode@'s
---   chosen framing), and @context.other@ -- rather than resolving one
---   monolithic @context.writer@ program (see the project chat that
---   retired that design: full per-call DSL control over the *entire*
---   writer context doubled every piece of assembly knowledge across two
---   hand-synced implementations, for a flexibility real users never
---   needed over slots they have no special insight into anyway). Style
---   and characters stay entirely agent-owned, with no client knob:
---   @context.style@ is resolved plain, and characters are gathered via
---   'activeCharacterContext' exactly as 'writeAgent' has always wanted
---   them (@charBlocks@), never duplicated into @worldCtx@ itself.
---
---   'mLore' is staged via 'Storyteller.Core.Context.setContextOverride'
---   *before* @context.lore@ is resolved -- so it's indistinguishable from
---   a project's own committed 'Contexts'-branch override by the time the
---   lookup runs, the same "no separate wire-override code path" contract
---   the old whole-program design had, just scoped to one slot now.
+--   'Storyteller.Writer.Agent.FlowWrite'). Only stages\/resolves the one
+--   slot a client can override (@context.lore@, via 'mLore') and folds
+--   'pinnedPrograms' into this call's pinned content -- chapters
+--   (in @chaptersMode@'s chosen framing), @context.other@, @context.style@,
+--   and every active character's summary are all agent-owned now, gathered
+--   by 'Storyteller.Writer.Agent.Write.writeAgent'\/'flowWriteAgent'
+--   themselves rather than here (see the project chat that settled this:
+--   a caller's own parameters should only be the things a *user* can
+--   meaningfully supply). 'mLore' is staged via
+--   'Storyteller.Core.Context.setContextOverride' *before* @context.lore@
+--   is resolved -- so it's indistinguishable from a project's own
+--   committed 'Contexts'-branch override by the time the lookup runs.
 --   'pinnedPrograms' are each resolved via
 --   'Storyteller.Core.Context.resolveAdhoc0' (a bare 0-arity program, no
 --   slot identity, no fallback) and folded into this call's pinned
 --   content alongside 'pinnedItems''s own plain data.
---
---   Handed to the agents as plain data -- see
---   'Storyteller.Writer.Agent.Write.writeAgent' for how it turns into a
---   real @['UniversalLLM.Message']@ rather than one flattened string.
---   Agents append nothing themselves, so appending the result is done
---   here too.
 chatWriter
   :: (FileOpen r, Member Splitter r, SessionEffects r)
   => FilePath -> T.Text -> [ContextItem]
@@ -176,28 +124,17 @@ chatWriter
   -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = do
   mapM_ (setContextOverride "context.lore") mLore
-  let pathT = T.pack path
-  loreV     <- resolveContext0 @Main "context.lore" (CtxLibrary.contextLore @Main)
-  chaptersV <- case chaptersMode of
-    FullChapters       -> resolveContext0 @Main "context.chapters" (CtxLibrary.contextChapters @Main)
-    CompressedChapters -> resolveContext0 @Main "context.chaptersCompressed" (CtxLibrary.contextChaptersCompressed @Main)
-  otherV    <- resolveContext1 @Main "context.other" (CtxLibrary.contextOther @Main) pathT
-  styleV    <- resolveContext0 @Main "context.style" (CtxLibrary.contextStyle @Main)
+  loreV               <- resolveContext0 @Main "context.lore" (CtxLibrary.contextLore @Main)
   pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
-  (worldCtx, styleCtx, pinnedProgramCtxs) <- runContextValue @Main $ do
-    lore     <- Rendering.renderContext loreV
-    chapters <- Rendering.renderContext chaptersV
-    other    <- Rendering.renderContext otherV
-    s        <- Rendering.renderContext styleV
+  (lore, pinnedProgramCtxs) <- runContextValue @Main $ do
+    l        <- Rendering.renderContext loreV
     progCtxs <- mapM Rendering.renderContext pinnedProgramValues
-    pure (WorldContext (lore <> chapters <> other), StyleContext s, progCtxs)
-  charBlocks <- activeCharacterContext path
+    pure (Lore l, progCtxs)
   let pinned      = PinnedContext (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs))
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
       -- below has already read whatever tick history it needs -- both
-      -- 'writeAgent's own 'currentTicks' fetch and 'flowWriteAgent's
-      -- internal one ('Storyteller.Writer.Agent.FlowWrite.flowWriteAgent')
+      -- 'writeAgent's own internal tick fetch and 'flowWriteAgent's own
       -- -- otherwise the not-yet-answered prompt shows up twice: once via
       -- that history, once as 'Storyteller.Writer.Agent.Write.
       -- buildChapterMessages'\'s own trailing instruction message, which
@@ -209,14 +146,13 @@ chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = 
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid worldCtx styleCtx charBlocks pinned instruction
+      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid lore chaptersMode pinned instruction
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
-      currentTicks <- runStorage @Main (Tick.fileTicksOf path)
-      Prose generated <- writeAgent worldCtx styleCtx charBlocks pinned currentTicks instruction
+      Prose generated <- writeAgent @Main path lore chaptersMode pinned instruction
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
@@ -515,7 +451,7 @@ chatChapterRegen mode path prompt context = do
       sheet   <- BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
       current <- CurrentProse . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
       fileCtx <- flatMainMessages path
-      charBlocks <- flattenCharBlocks . map (fmap flattenCharSummary) <$> activeCharacterContext path
+      charBlocks <- flattenCharBlocks . map (fmap flattenCharSummary) <$> activeCharacterContext @Main path
       let extraContext = map Render.dslMessageToLLM (map (DSL.User . ciContent) context <> fileCtx)
           instruction  = Instruction prompt
       info $ "chapter regen (" <> T.pack (show mode) <> ") starting: " <> T.pack path

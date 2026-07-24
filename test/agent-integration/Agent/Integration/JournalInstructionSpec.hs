@@ -6,18 +6,22 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | Does a manually-added journal entry actually change the character's
---   behavior in the *next* scene -- 'writeAgent' folds 'csJournal' in as a
---   curated recent slice near the end of the message history (see its own
---   Haddock), placed specifically so it reads as background for the
---   current turn. Nothing in this suite exercised @csJournal@ against a
---   real model before this.
+--   behavior in the *next* scene -- 'writeAgent' folds a present
+--   character's journal in as a curated recent slice near the end of the
+--   message history (see its own Haddock), placed specifically so it
+--   reads as background for the current turn. Nothing in this suite
+--   exercised that channel against a real model before this.
 --
---   One character branch, one private resolve appended to @journal.md@
---   ("I've decided to lie about what I saw"). Two 'writeAgent' calls, same
---   instruction and sheet, differing only in whether @csJournal@ is
---   populated -- the same positive/negative pairing
---   'Agent.Integration.ReworkAtomSpec' uses. Only the with-journal call is
---   asserted against a hard pass/fail; the baseline call exists to make the
+--   Two character branches with the *same* sheet -- one with a private
+--   journal resolve appended ("I've decided to lie about what I saw"),
+--   one without -- each entering its own separate scene file via a real
+--   presence tick, so 'writeAgent's own internal gathering reads exactly
+--   one or the other. Same positive/negative pairing
+--   'Agent.Integration.ReworkAtomSpec' uses (two branches standing in for
+--   "with" vs "without", now that a single character's own journal can't
+--   be selectively hidden per call the way a hand-built 'CharSummary'
+--   used to let this test do). Only the with-journal call is asserted
+--   against a hard pass/fail; the baseline call exists to make the
 --   contrast visible in the run's own logs, not to assert what a neutral
 --   generation "should" do. Two real LLM calls, cached under
 --   test/fixtures/llm-agent-cache/agent/.
@@ -33,23 +37,31 @@ import Runix.Logging (info)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Context (resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
+import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..), Prose(..))
+import Storyteller.Writer.Agent (CharSummary(..), Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
--- | Phantom tag for opening the one character branch this scenario uses.
+-- | Phantom tag for opening either character branch this scenario uses.
 data Char_
 
-charBranch :: BranchName
-charBranch = BranchName "character/marisol"
+charBranch, baselineBranch :: BranchName
+charBranch     = BranchName "character/marisol"
+baselineBranch = BranchName "character/marisol-baseline"
 
 charSheet :: T.Text
 charSheet = "# Marisol\n\nA dockhand, usually plainspoken and easy to read.\n"
+
+sceneFile, baselineSceneFile :: FilePath
+sceneFile         = "scene.md"
+baselineSceneFile = "scene-baseline.md"
 
 journalEntry :: T.Text
 journalEntry = T.unwords
@@ -84,20 +96,26 @@ spec runner = describe "a private journal resolve shaping the next scene (real L
         Ops.saveFile "sheet.md" charSheet
         _ <- Ops.append "journal.md" journalEntry
         pure ()
+      _ <- createBranch baselineBranch
+      runBranchAndFS @Char_ baselineBranch $ runStorage @Char_ (Ops.saveFile "sheet.md" charSheet)
 
+      -- Sanity check on the fixture itself, independent of writeAgent: the
+      -- journal entry really is what characterSummaryOf's "journal" bucket
+      -- would read back.
       withJournal <- runBranchAndFS @Char_ charBranch $ do
         charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "marisol"
         runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
       info $ "csJournal blocks (with journal): " <> T.pack (show (length (csJournal withJournal)))
       embed $ csJournal withJournal `shouldNotBe` []
 
-      let baseline = withJournal { csJournal = [] }
-          label    = CharLabel "Marisol"
-
-      Prose baselineText <- writeAgent emptyWorldContext emptyStyleContext [(label, baseline)] emptyPinnedContext [] instruction
+      _ <- runStorage @Main (Ops.addAtom baselineSceneFile "")
+      _ <- recordPresence @Main baselineSceneFile (Character baselineBranch) Enter
+      Prose baselineText <- writeAgent @Main baselineSceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("baseline (no journal) output:\n" <> baselineText)
 
-      Prose text <- writeAgent emptyWorldContext emptyStyleContext [(label, withJournal)] emptyPinnedContext [] instruction
+      _ <- runStorage @Main (Ops.addAtom sceneFile "")
+      _ <- recordPresence @Main sceneFile (Character charBranch) Enter
+      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("with-journal output:\n" <> text)
       embed $ text `shouldNotBe` ""
 

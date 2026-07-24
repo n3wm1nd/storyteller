@@ -45,7 +45,7 @@ import Runix.Git (Git)
 import Runix.LLM (Message)
 import Runix.Logging (Logging, info)
 
-import Agent.Integration.Harness (assertToolCallBudget, emptyPinnedContext, emptyStyleContext)
+import Agent.Integration.Harness (assertToolCallBudget, emptyPinnedContext, emptyLore)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
@@ -54,8 +54,7 @@ import Storyteller.Core.LLM.Role (AgentModel, LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prompt(..), Prose(..))
-import Storyteller.Writer.Agent.Context (WorldContext(..))
+import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prompt(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), OutlineDoc(..), splitOutlineAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
@@ -166,25 +165,22 @@ logFileTree = do
   return paths
 
 -- | Replica of 'Server.Writer.File.chatWriter'\'s no-flow-tick branch:
---   store the prompt as a tick, gather the target file's existing content
---   plus every other branch file as context (binary files hidden, same as
---   production), run 'writeAgent', then split and append the result. No
---   pinned character branches or extra context items -- neither journey
---   step here has any.
---   History has to be read *before* this turn's own prompt is stored -- see
---   'Server.Writer.File.chatWriter''s own Haddock: storing first would make
---   'writeAgent' see this turn's own instruction twice, once via that
---   history and once as 'Storyteller.Writer.Agent.Write.buildChapterMessages'\'s
---   own trailing instruction message.
+--   run 'writeAgent' (which now gathers surrounding context, earlier
+--   chapters, and characters for itself -- see its own Haddock), store
+--   the prompt as a tick, then split and append the result. No lore
+--   override or pinned content -- neither journey step here sends any.
+--   This turn's own prompt has to be stored *after* 'writeAgent' returns,
+--   not before -- see 'Server.Writer.File.chatWriter''s own Haddock:
+--   storing first would make 'writeAgent' see this turn's own instruction
+--   twice, once via its own internal history read and once as
+--   'Storyteller.Writer.Agent.Write.buildChapterMessages'\'s own trailing
+--   instruction message.
 writeChat
   :: forall r
   .  JourneyEffects r
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
-  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
-  worldCtx <- WorldContext <$> runContextValue @Main (renderContext writerVal)
-  currentTicks <- runStorage @Main (Tick.fileTicksOf path)
-  Prose generated <- writeAgent worldCtx emptyStyleContext [] emptyPinnedContext currentTicks (Instruction prompt)
+  Prose generated <- writeAgent @Main path emptyLore FullChapters emptyPinnedContext (Instruction prompt)
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   appendGenerated path generated
   return generated

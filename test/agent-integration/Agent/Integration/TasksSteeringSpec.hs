@@ -32,21 +32,25 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Context (resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
+import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent (CharLabel(..), Instruction(..), Prose(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 data Char_
 
 lenaBranch :: BranchName
 lenaBranch = BranchName "character/lena"
+
+sceneFile :: FilePath
+sceneFile = "scene.md"
 
 lenaSheet :: T.Text
 lenaSheet = "# Lena\n\nTomas's older sister. Sharp-tongued, doesn't let things go.\n"
@@ -93,11 +97,10 @@ spec runner = describe "tasks.md reaching generation as ordinary character conte
         _ <- Ops.addAtom "tasks.md" lenaTasks
         pure ()
 
-      lenaSummary <- runBranchAndFS @Char_ lenaBranch $ do
-        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "lena"
-        runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
+      _ <- runStorage @Main (Ops.addAtom sceneFile "")
+      _ <- recordPresence @Main sceneFile (Character lenaBranch) Enter
 
-      Prose text <- writeAgent emptyWorldContext emptyStyleContext [(CharLabel "Lena", lenaSummary)] emptyPinnedContext [] instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       Verdict pass reason <- judge @judgeModel text judgeQuestion

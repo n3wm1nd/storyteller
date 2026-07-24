@@ -30,48 +30,49 @@ import Polysemy.Fail (Fail)
 import Runix.Logging (Logging)
 
 import Storyteller.Core.LLM.Role (LLMs)
-import Storyteller.Writer.Agent (Instruction(..), Prose, CharLabel, CharSummary)
-import Storyteller.Writer.Agent.Context (WorldContext, StyleContext, PinnedContext)
+import Storyteller.Core.Context (ContextStorage)
+import Storyteller.Core.ContentEffects (BranchResolve, fileTicksOf, runFileTicks)
+import Storyteller.Core.Storage (StoryStorage, ticksSince)
+import Storyteller.Writer.Agent (Instruction(..), Prose, PastChaptersMode)
+import Storyteller.Writer.Agent.Context (Lore, PinnedContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.ContentEffects (fileTicksOf, runFileTicks)
 import Storyteller.Core.Git (BranchOp)
-import Storyteller.Core.Storage (ticksSince)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. Everything besides @path@\/@flowTid@ is the same
---   already-gathered context 'writeAgent' itself takes -- passed straight
+--   caller-supplied context 'writeAgent' itself takes -- passed straight
 --   through to it once the in-flight span (if any) has been reworked.
+--   'writeAgent' fetches its own fresh tick history internally now (see
+--   its own Haddock), so this module only needs the ticks itself, locally,
+--   to decide *whether* a rework is needed -- not to hand a snapshot
+--   through to 'writeAgent', which would risk being the stale pre-rework
+--   one.
 --
 --   The one place in production where 'ProseModel' (the new continuation)
 --   and 'AgentModel' (the in-flight revision) genuinely run side by side in
 --   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
-  => FilePath                                       -- ^ file being continued
-  -> TickId                                          -- ^ flowTid: HEAD when the user started typing
-  -> WorldContext                                    -- ^ world context -- see 'writeAgent's own Haddock
-  -> StyleContext                                    -- ^ standing style guide
-  -> [(CharLabel, CharSummary)]                       -- ^ every active character's summary
-  -> PinnedContext                                    -- ^ pinned/short-term context
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, StoryStorage, Fail, Logging] r)
+  => FilePath                    -- ^ file being continued
+  -> TickId                      -- ^ flowTid: HEAD when the user started typing
+  -> Lore                        -- ^ see 'writeAgent's own Haddock
+  -> PastChaptersMode
+  -> PinnedContext                -- ^ pinned/short-term context
   -> Instruction
   -> Sem r ([TickId], Prose)
-flowWriteAgent path flowTid context style chars pinned instruction = runFileTicks @branch $ do
-  allTicks <- fileTicksOf @branch path
-  let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
-      inFlightIdxs   = [length allTicks - inFlightCount .. length allTicks - 1]
-  reworkedTids <- if inFlightCount == 0
+flowWriteAgent path flowTid lore chaptersMode pinned instruction = do
+  inFlightIdxs <- runFileTicks @branch $ do
+    allTicks <- fileTicksOf @branch path
+    let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
+    pure [length allTicks - inFlightCount .. length allTicks - 1]
+  reworkedTids <- if null inFlightIdxs
     then return []
-    else raise (reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs)
+    else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
 
-  -- Reworked atoms get new ids/content, so the pre-rework snapshot is
-  -- stale the moment reworkAtomsAt commits -- re-read only when something
-  -- actually changed.
-  currentTicks <- if inFlightCount == 0 then return allTicks else fileTicksOf @branch path
-
-  generated <- raise (writeAgent context style chars pinned currentTicks instruction)
+  generated <- writeAgent @branch path lore chaptersMode pinned instruction
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

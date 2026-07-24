@@ -45,10 +45,9 @@ module Agent.Integration.Harness
   , resolveKnownAgentModel
   , runExpect
   , withKnownModel
-  , emptyWorldContext
-  , emptyStyleContext
+  , emptyLore
   , emptyPinnedContext
-  , worldContextFromMessages
+  , loreFromMessages
   ) where
 
 import Data.List (intercalate)
@@ -82,30 +81,32 @@ import Storyteller.Core.Context (ContextStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
 
 -- | The empty tree, wrapped for each of 'Storyteller.Writer.Agent.Write.writeAgent'\'s
---   three DSL-context parameters -- what a spec that doesn't care about
---   world\/style\/pinned context at all passes, the same as an empty list
---   used to before those parameters were newtype-wrapped
---   'Storyteller.Context.DSL.Rendering.Context' trees.
-emptyWorldContext :: WorldContext
-emptyWorldContext = WorldContext (Node [] [])
-
-emptyStyleContext :: StyleContext
-emptyStyleContext = StyleContext (Node [] [])
+--   two remaining caller-supplied DSL-context parameters ('Lore',
+--   'PinnedContext') -- what a spec that doesn't care about either passes.
+--   Chapters, "other" files, style, and who's present are agent-owned now
+--   (read directly off the branch a spec's own @path@ lives on -- see
+--   'writeAgent's own Haddock), so there's no equivalent empty stand-in
+--   needed for those any more; a spec isolating one channel keeps every
+--   *other* channel empty simply by not seeding anything for it on the
+--   branch (no chapters written, no presence ticks recorded), not by
+--   passing an empty parameter.
+emptyLore :: Lore
+emptyLore = Lore (Node [] [])
 
 emptyPinnedContext :: PinnedContext
 emptyPinnedContext = PinnedContext (Node [] [])
 
--- | Builds a 'WorldContext' directly from plain 'Message's -- what a spec
+-- | Builds a 'Lore' directly from plain 'Message's -- what a spec
 --   asserting on 'Storyteller.Writer.Agent.Write.writeAgent's own message
---   ordering used to pass as a bare @['Message' m]@ before world context
---   became a newtype-wrapped tree. @'UserText'@\/@'AssistantText'@ map onto
---   the DSL's own role tags directly; anything else this harness doesn't
+--   ordering used to pass as a bare @['Message' m]@ before lore became a
+--   newtype-wrapped tree. @'UserText'@\/@'AssistantText'@ map onto the
+--   DSL's own role tags directly; anything else this harness doesn't
 --   otherwise construct is given no sensible DSL equivalent and is dropped.
-worldContextFromMessages :: [Message m] -> WorldContext
-worldContextFromMessages msgs = WorldContext (Node [ ContextItem dm DSL.defaultMeta | Just dm <- map toDSLMessage msgs ] [])
+loreFromMessages :: [Message m] -> Lore
+loreFromMessages msgs = Lore (Node [ ContextItem dm DSL.defaultMeta | Just dm <- map toDSLMessage msgs ] [])
   where
     toDSLMessage (UserText t)      = Just (DSL.User t)
     toDSLMessage (AssistantText t) = Just (DSL.Assistant t)

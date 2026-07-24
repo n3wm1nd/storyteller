@@ -7,18 +7,19 @@
 
 -- | Is a character actually *known* to the writer once it's added to a
 --   scene -- through the real pipeline (a character branch, a 'Presence'
---   tick recording them entering a scene file, 'activeCharactersFor'
---   reading that back), not a hand-built 'CharContextBlock' list the way
---   'Agent.Integration.CharContextWriteSpec' already checks.
+--   tick recording them entering a scene file), with no help from this
+--   scenario at all: 'writeAgent' now reads presence and every active
+--   character's own context for itself (see its own Haddock) -- there's
+--   no @chars@ parameter left for a scenario to build by hand, so this is
+--   a direct test of that internal gathering, not a simulation of it the
+--   way an earlier version of this file (manually calling
+--   'activeCharactersFor'\/'resolveContext1' itself) had to be.
 --
 --   Two character branches, each with one distinctive, checkable fact on
 --   their @sheet.md@. Both enter the same scene file via
---   'Storyteller.Writer.Presence.recordPresence'; the scene is then written
---   with 'writeAgent' fed exactly the 'CharSummary's
---   'Server.Writer.File.activeCharacterContext' would have built for them
---   (the same @resolveContext1@ + 'Storyteller.Context.DSL.Library.contextCharacter'
---   + 'Storyteller.Context.DSL.Library.characterSummaryOf' call), not
---   anything shortcut past presence. A real LLM call, cached under
+--   'Storyteller.Writer.Presence.recordPresence'; the scene is then
+--   written with a plain 'writeAgent' call, nothing about characters
+--   threaded through explicitly. A real LLM call, cached under
 --   test/fixtures/llm-agent-cache/agent/.
 module Agent.Integration.CharacterPresenceSpec (spec) where
 
@@ -32,19 +33,16 @@ import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 import Runix.Git (Git)
 import Runix.Logging (info)
 import qualified Storage.Ops as Ops
-import Storyteller.Core.ContentEffects (BranchResolve)
-import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Instruction(..), Prose(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (activeCharactersFor, recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, emptyWorldContext, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | Phantom tag for opening one character branch's filesystem at a time --
@@ -78,8 +76,8 @@ judgeQuestion = T.unwords
   , "missing entirely."
   ]
 
--- | Create a character branch and seed its @sheet.md@ -- the one-time setup
---   'summarize' below reads back.
+-- | Create a character branch and seed its @sheet.md@ -- what 'writeAgent'
+--   itself reads back once presence marks the branch active on the scene.
 seedCharacter
   :: forall r
   .  Members '[Git, StoryStorage, Fail] r
@@ -87,23 +85,6 @@ seedCharacter
 seedCharacter branch sheet = do
   _ <- createBranch branch
   runBranchAndFS @Char_ branch $ runStorage @Char_ (Ops.saveFile "sheet.md" sheet)
-
--- | Read one active character's context back exactly the way
---   'Server.Writer.File.activeCharacterContext' does -- @sheet.md@ plus
---   nothing else (no other context files planted here, no journal), so
---   'csJournal' comes back empty; this scenario is about sheet identity,
---   not journal (see 'Agent.Integration.JournalInstructionSpec'/
---   'JournalIronySpec' for that).
-summarize
-  :: forall r
-  .  Members '[Git, StoryStorage, ContextStorage, BranchResolve, Fail] r
-  => Character -> Sem r (CharLabel, CharSummary)
-summarize (Character branch) = do
-  let label = maybe (unBranchName branch) id (T.stripPrefix "character/" (unBranchName branch))
-  summary <- runBranchAndFS @Char_ branch $ do
-    charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) label
-    runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
-  pure (CharLabel label, summary)
 
 spec
   :: forall judgeModel
@@ -129,8 +110,7 @@ spec runner = describe "characters present in a scene (real LLM, cached)" $
       info $ "active characters: " <> T.pack (show active)
       embed $ length active `shouldBe` 2
 
-      chars <- mapM summarize active
-      Prose text <- writeAgent emptyWorldContext emptyStyleContext chars emptyPinnedContext [] instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

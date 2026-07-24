@@ -11,16 +11,19 @@
 -- ENV:
 --   STORY_REPO          path to the git repository
 --   STORY_BRANCH        story branch name
---   ACTIVE_CHARS        comma-separated character branch names (optional)
 --   LLAMACPP_ENDPOINT   (optional, default http://localhost:8080/v1)
 --
 -- ARGS:
 --   <file>   path of the file to append to, relative to the branch root
 --
 -- STDIN: the instruction / prompt for what to write next.
+--
+-- No active-characters flag any more -- 'writeAgent' reads presence off
+-- the branch itself now (see its own Haddock), the same as every other
+-- caller; there's no separate CLI-only notion of "active characters" left
+-- to plumb through.
 module Main (main) where
 
-import Control.Monad (forM)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Environment (getArgs)
@@ -32,28 +35,21 @@ import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.Runtime ( Main, runStoryGit
-                           , BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage )
+import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storage.Ops as Ops
-import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharLabel(..), CharSummary(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
-import Storyteller.Context.DSL.Rendering (renderContext, RenderedContext(..))
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
+import Storyteller.Context.DSL.Rendering (RenderedContext(..))
 import Storyteller.Core.ContentEffects (BranchResolve)
-import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
-
--- | Phantom tag for character branches opened temporarily within the action.
-data Char_
+import Storyteller.Core.Context (ContextStorage, interpretContextStorageFS)
+import qualified Storage.Ops as Ops
 
 main :: IO ()
 main = do
@@ -69,7 +65,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS $ interpretContextStorageFS $ splitMarkdownAware $ writeAction outFile (Instruction instruction) (envActiveChars env))
+    (interpretPromptStorageFS $ interpretContextStorageFS $ splitMarkdownAware $ writeAction outFile (Instruction instruction))
 
   case result of
     Left err   -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -87,24 +83,8 @@ writeAction
               , Splitter
               , Git
               , Logging, Fail] r)
-  => FilePath -> Instruction -> [T.Text] -> Sem r T.Text
-writeAction outFile instruction activeChars = do
-  charBlocks <- forM activeChars $ \charBranch -> do
-    let branchName = BranchName charBranch
-    blocks <- runBranchAndFS @Char_ branchName
-            $ charSummaryAgent @(BranchTag Char_) (const True)
-    return (CharLabel charBranch, CharSummary { csSheet = [], csContext = blocks, csJournal = [] })
-
-  -- Same @context.writer@ definition every WS-driven prose path reads
-  -- through now (see 'Server.Writer.File.flatMainMessages') -- not a
-  -- second, independently-hardcoded 'Storyteller.Writer.Agent.Continuation.gatherFileContext'
-  -- read. Passed into 'writeAgent's own @context@ slot directly now (style
-  -- stays empty here; a CLI run has no separate "user's own selection" to
-  -- distinguish from surrounding context, so there's nothing for @pinned@
-  -- to hold).
-  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack outFile)
-  worldCtx <- WorldContext <$> runContextValue @Main (renderContext writerVal)
-  currentTicks <- runStorage @Main (Tick.fileTicksOf outFile)
-  Prose generated <- writeAgent worldCtx (StyleContext (Node [] [])) charBlocks (PinnedContext (Node [] [])) currentTicks instruction
+  => FilePath -> Instruction -> Sem r T.Text
+writeAction outFile instruction = do
+  Prose generated <- writeAgent @Main outFile (Lore (Node [] [])) FullChapters (PinnedContext (Node [] [])) instruction
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated

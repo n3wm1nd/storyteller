@@ -30,6 +30,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 import Server.Core.Protocol (Update, withId)
+import Storyteller.Writer.Agent (PastChaptersMode(..))
 
 -- | A piece of pinned context the client attaches to a chat prompt — an
 --   atom or annotation the user selected as reference material. 'ciContent'
@@ -61,17 +62,6 @@ data AtBranch = AtBranch
 instance FromJSON AtBranch where
   parseJSON = withObject "AtBranch" $ \o ->
     AtBranch <$> o .: "branch" <*> o .: "tickId"
-
--- | The one knob 'ChatWriter'\/'CorrectGroup' expose over past-chapters
---   framing -- a toggle between two compiled-in shapes
---   ('Storyteller.Context.DSL.Library.contextChapters'\/
---   'contextChaptersCompressed'), never a client-authored program. See
---   the project chat that settled the writer context's slot model: "how
---   should chapter history be framed" is the agent's own structural
---   decision, not something a caller has special knowledge over the way
---   lore/pinned content is -- so this is a fixed enum, not a DSL string.
-data PastChaptersMode = FullChapters | CompressedChapters
-  deriving (Show, Eq)
 
 -- | Parses the wire's own bare-string @pastChaptersMode@ field --
 --   @\"compressed\"@ or anything else (including the field being absent)

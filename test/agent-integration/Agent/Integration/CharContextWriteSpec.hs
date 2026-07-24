@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -5,23 +6,14 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | Does character context actually reach the model, and does it change
---   what gets written? 'charSummaryAgent' reads a character branch's files
---   and formats them as context blocks; this feeds those blocks into
---   'writeAgent' alongside an instruction that only makes sense if a
---   specific fact from the character sheet (test/fixtures/agent-integration/
---   char-context-write/character/mira/facts.md) was actually read and used
---   -- not just "the call succeeded", but "the context was legible to the
---   model and shaped its output".
---
---   Reading the fixture is a plain 'IO' step, done *before* the scenario is
---   handed to the shared 'Runner' (via 'readCharFixture', which runs its
---   own tiny, throwaway 'FileSystem' stack) rather than inside the 'Sem'
---   action -- the 'Runner' passed in (built once by @Main.hs@) has no
---   filesystem effect at all, so there's nothing for this spec to layer
---   onto in the first place. 'renderCharContext' (the pure half of
---   'charSummaryAgent') turns the plain @(path, content)@ pairs read here
---   into the same 'CharContextBlock's the effectful version would have
---   produced.
+--   what gets written? A real character branch (Mira, with a distinctive,
+--   checkable fact on a non-@sheet.md@ file -- the "full" bucket
+--   'writeAgent's own identity block reads, per its Haddock) enters the
+--   scene via a real 'Storyteller.Writer.Presence.recordPresence' tick;
+--   'writeAgent' reads her back for itself, the same as
+--   'Agent.Integration.CharacterPresenceSpec' -- not just "the call
+--   succeeded", but "the context was legible to the model and shaped its
+--   output".
 --
 --   Real 'Storyteller.Core.Runtime.StoryModel' call, cached under
 --   test/fixtures/llm-agent-cache/agent/ (see 'Agent.Integration.Harness').
@@ -30,42 +22,72 @@
 --   matters more than trusting the verdict alone.
 module Agent.Integration.CharContextWriteSpec (spec) where
 
-import Prelude hiding (readFile)
-
 import qualified Data.Text as T
 import Test.Hspec
 
-import Polysemy (embed, runM)
-import Polysemy.Fail (runFail)
-import Runix.FileSystem (HasProjectPath(..), fileSystemLocal)
-import Runix.FileSystem.System (filesystemIO)
-
+import Polysemy (Members, Sem, embed)
+import Polysemy.Fail (Fail)
+import Runix.Git (Git)
 import Runix.Logging (info)
-import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt, Message(..))
-import Storyteller.Writer.Agent (CharContextBlock, CharLabel(..), CharSummary(..), ExistingContent(..), Instruction(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (readCharFiles, renderCharContext)
-import Storyteller.Writer.Agent.Write (writeAgent)
+import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyStyleContext, resolveFixture, runExpect, worldContextFromMessages)
+import qualified Storage.Ops as Ops
+import Storyteller.Core.Git (runBranchAndFS, runStorage)
+import Storyteller.Core.Runtime (Main)
+import Storyteller.Core.Storage (StoryStorage, createBranch)
+import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Writer.Agent (ExistingContent(..), Instruction(..), Prose(..), PastChaptersMode(..))
+import Storyteller.Writer.Agent.Write (writeAgent)
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
+
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
--- | Chroot marker for the character-branch fixture directory, used only
---   inside 'readCharFixture''s own standalone stack -- never in scope for
---   a 'Runner''s @action@.
-newtype CharFixture = CharFixture FilePath
+-- | Phantom tag for opening the character branch's filesystem -- same role
+--   'Server.Writer.File.ActiveChar' plays in production.
+data Char_
 
-instance HasProjectPath CharFixture where
-  getProjectPath (CharFixture p) = p
+miraBranch :: BranchName
+miraBranch = BranchName "character/mira"
 
--- | Read and render the character fixture as plain 'IO', independent of
---   the LLM-effect stack a 'Runner' wraps.
-readCharFixture :: FilePath -> IO [CharContextBlock]
-readCharFixture dir = do
-  result <- runM . runFail . filesystemIO . fileSystemLocal (CharFixture dir) $ readCharFiles @CharFixture (const True)
-  either (fail . ("readCharFixture: " <>)) (pure . renderCharContext) result
+-- | Deliberately not @sheet.md@ -- 'writeAgent's own identity block reads
+--   both @csSheet@ (the @sheet.md@ bucket) and @csContext@ (the "full"
+--   bucket: every other branch file), so a fact planted on any other file
+--   still has to reach the model the same way. Same content the old
+--   fixture-file version of this test used.
+miraFacts :: T.Text
+miraFacts = T.unlines
+  [ "# Mira Solene"
+  , ""
+  , "## Background"
+  , ""
+  , "Mira grew up in the fishing quarter of Tessen Harbor. At age nine she fell"
+  , "through a rotted section of the dock during the autumn catch and was pinned"
+  , "underwater, tangled in a net full of dead fish, for nearly a minute before"
+  , "her uncle pulled her out. She has never spoken about it directly, but the"
+  , "memory surfaces whenever she is near fish -- the smell, the sight of scales,"
+  , "even the word \"catch\" said a certain way."
+  , ""
+  , "## Present-day behavior"
+  , ""
+  , "- Mira will not eat fish or shellfish of any kind, and avoids handling it"
+  , "  even when cooking for others."
+  , "- She is polite but firm about it: she declines rather than explains, unless"
+  , "  pressed."
+  , "- If served fish unexpectedly, she tends to go quiet, push the plate a"
+  , "  small distance away, and change the subject."
+  , "- She does not have this reaction to other seafood-adjacent things (the"
+  , "  sea itself, boats, swimming) -- only fish specifically."
+  ]
 
-charFixtureDir :: FilePath
-charFixtureDir = "test/fixtures/agent-integration/char-context-write/character"
+seedMira :: forall r. Members '[Git, StoryStorage, Fail] r => Sem r ()
+seedMira = do
+  _ <- createBranch miraBranch
+  runBranchAndFS @Char_ miraBranch $ runStorage @Char_ (Ops.saveFile "facts.md" miraFacts)
+
+sceneFile :: FilePath
+sceneFile = "scene.md"
 
 existingContent :: ExistingContent
 existingContent = ExistingContent $ T.unlines
@@ -98,15 +120,14 @@ spec
   .  (HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel))
   => Runner judgeModel -> Spec
 spec runner = describe "writeAgent with character context (real LLM, cached)" $
-  it "reflects Mira's aversion to fish from her character sheet" $ do
-    resolvedCharDir <- resolveFixture charFixtureDir
-    charBlocks      <- readCharFixture resolvedCharDir
-
-    let ExistingContent existingText = existingContent
-        charSummary = CharSummary { csSheet = [], csContext = charBlocks, csJournal = [] }
-
+  it "reflects Mira's aversion to fish from her character sheet" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent (worldContextFromMessages [UserText "## Chapter: scene.md", AssistantText existingText]) emptyStyleContext [(CharLabel "Mira", charSummary)] emptyPinnedContext [] instruction
+      seedMira
+      let ExistingContent existingText = existingContent
+      _ <- runStorage @Main (Ops.addAtom sceneFile existingText)
+      _ <- recordPresence @Main sceneFile (Character miraBranch) Enter
+
+      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

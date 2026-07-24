@@ -6,14 +6,18 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | Does 'writeAgent''s @pinned@ argument -- the user's own short-term
---   selection, per its Haddock, distinct from @lore@ (branch files) and
---   @csJournal@ (a character's own material) -- actually reach the model?
---   Nothing plants this as a file anywhere: unlike lore or a journal entry,
---   a pinned item is ephemeral, assembled by the caller for one call (see
---   'Server.Writer.File.chatWriter''s own @context@ parameter, folded into
---   @pinned@ alongside the target file's own other-file context) rather
---   than read off a branch, so this scenario builds the 'ContextBlock'
---   directly instead of writing anything to storage first.
+--   selection, per its Haddock, distinct from lore (branch files) and a
+--   character's own journal material -- actually reach the model? Nothing
+--   plants this as a file anywhere: unlike lore or a journal entry, a
+--   pinned item is ephemeral, assembled by the caller for one call (see
+--   'Server.Writer.File.chatWriter''s own @pinnedItems@\/@pinnedPrograms@
+--   parameters, folded into @pinned@ alongside the target file's own
+--   other-file context) rather than read off a branch, so this scenario
+--   builds the 'PinnedContext' directly instead of writing anything to
+--   storage first. The scene file itself is still seeded as an empty atom
+--   -- 'writeAgent' now reads chapters\/presence off it internally, and an
+--   untracked path would find nothing to attach to (same requirement
+--   'Agent.Integration.CharacterPresenceSpec' documents).
 --
 --   One planted scene-state fact a generic model has no way to already
 --   know (a sudden power outage), on an instruction that doesn't repeat it
@@ -29,13 +33,16 @@ import Polysemy (embed)
 import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
+import qualified Storage.Ops as Ops
+import Storyteller.Core.Git (runStorage)
+import Storyteller.Core.Runtime (Main)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..))
 import qualified Storyteller.Context.DSL.Value as DSL
-import Storyteller.Writer.Agent (Instruction(..), Prose(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Context (PinnedContext(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, emptyStyleContext, emptyWorldContext, runExpect)
+import Agent.Integration.Harness (Runner, emptyLore, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | The user's own short-term selection -- built directly as a
@@ -67,6 +74,9 @@ judgeQuestion = T.unwords
   , "her navigate as if she could see normally."
   ]
 
+sceneFile :: FilePath
+sceneFile = "scene.md"
+
 spec
   :: forall judgeModel
   .  (HasTools judgeModel, SupportsSystemPrompt (ProviderOf judgeModel))
@@ -74,7 +84,8 @@ spec
 spec runner = describe "pinned/short-term context reaching the writer (real LLM, cached)" $
   it "reflects a planted pinned scene-state fact that the instruction never repeats" $
     runExpect @judgeModel runner $ do
-      Prose text <- writeAgent emptyWorldContext emptyStyleContext [] pinned [] instruction
+      _ <- runStorage @Main (Ops.addAtom sceneFile "")
+      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters pinned instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion
