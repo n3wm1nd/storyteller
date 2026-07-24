@@ -47,13 +47,14 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve, Presence, TreeAccess, JournalCuration(..))
+import Storyteller.Core.ContentEffects (BranchResolve, Presence, Summarized, TreeAccess, JournalCuration(..))
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding, Library, bval, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
+import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
@@ -119,6 +120,8 @@ spec = do
   forOverBindingResultSpec
   charactersinIgnoresBranchRedirectionSpec
   multiMatchReadSpec
+  summarizedFilterSpec
+  summarizedOnceFilterSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -334,6 +337,60 @@ charname:
     go = do
       v <- redirectedDsl @Main (CtxLibrary.hostLibrary @Main) (textArg "aria")
       pure (map fst (valueEntries v))
+
+-- | @path | summarized(kind)@ -- reads @path@ through its own compressed
+--   form (see "Storyteller.Common.Summary", "Storyteller.Writer.Agent.SummaryAccess")
+--   rather than the raw branch. Eager, like @read@: the summarized text
+--   is already settled by the time this 'Value' comes back, not a
+--   deferred handle a caller resolves later.
+summarizedDsl :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r)
+summarizedDsl = [dslWith|
+"chapter.md" | summarized("prose/chapter")
+|]
+
+summarizedFilterSpec :: Spec
+summarizedFilterSpec = describe "path | summarized(kind) (reads a file through its own compressed form)" $ do
+  it "reads the summarized content once a pass of that kind actually covers the file" $
+    run (testStack $ do
+      seedBranch "main" [("chapter.md", "a very long chapter, in full")]
+      runBranchOpGit @Main (BranchName "main") $
+        void (runSummarizerForPath @Main "prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedDsl @Main (CtxLibrary.hostLibrary @Main))))
+    `shouldBe` Right "chapter one, summarized"
+
+  it "falls back to the raw file when nothing of that kind has summarized it yet" $
+    run (testStack $ do
+      seedBranch "main" [("chapter.md", "a very long chapter, in full")]
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedDsl @Main (CtxLibrary.hostLibrary @Main))))
+    `shouldBe` Right "a very long chapter, in full"
+
+-- | @path | summarizedOnce(kinds)@ -- 'summarizedBinding''s one-level
+--   counterpart: only the *first* kind in the given hierarchy is ever
+--   considered, so a caller listing a coarser tier after a finer one
+--   never falls through to it, unlike @summarized@.
+summarizedOnceDsl :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r)
+summarizedOnceDsl = [dslWith|
+"chapter.md" | summarizedOnce("prose/chapter prose/book")
+|]
+
+summarizedOnceFilterSpec :: Spec
+summarizedOnceFilterSpec = describe "path | summarizedOnce(kinds) (reads exactly one zoom level in, never falls through further)" $ do
+  it "stops at the finest kind's own summary, ignoring a coarser kind listed after it" $
+    run (testStack $ do
+      seedBranch "main" [("chapter.md", "a very long chapter, in full")]
+      runBranchOpGit @Main (BranchName "main") $ do
+        void (runSummarizerForPath @Main "prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
+        void (runSummarizerForPath @Main "prose/book" "chapter.md" (\_ -> pure "whole book, summarized"))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedOnceDsl @Main (CtxLibrary.hostLibrary @Main))))
+    `shouldBe` Right "chapter one, summarized"
+
+  it "falls back to raw content when even the finest listed kind hasn't summarized it yet, ignoring the coarser one" $
+    run (testStack $ do
+      seedBranch "main" [("chapter.md", "a very long chapter, in full")]
+      runBranchOpGit @Main (BranchName "main") $
+        void (runSummarizerForPath @Main "prose/book" "chapter.md" (\_ -> pure "whole book, summarized"))
+      runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedOnceDsl @Main (CtxLibrary.hostLibrary @Main))))
+    `shouldBe` Right "a very long chapter, in full"
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
 --   'FileRead'; @<@ forces it to read as ordinary authored text instead.

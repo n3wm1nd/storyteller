@@ -74,8 +74,8 @@ import Runix.Git (Git)
 import qualified Storage.FS as FS
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.ContentEffects
-  ( TreeAccess, Presence, JournalAccess, ConversationAccess, BranchResolve
-  , runTreeAccess, runPresence, runJournalAccess, runConversationAccess
+  ( TreeAccess, Presence, JournalAccess, ConversationAccess, Summarized, BranchResolve
+  , runTreeAccess, runPresence, runJournalAccess, runConversationAccess, runSummarized
   )
 import Storyteller.Core.Git (runBranchOpGit)
 import Storyteller.Core.Runtime (Contexts)
@@ -129,7 +129,7 @@ makeSem ''ContextStorage
 --   @\@Main@, @\@LoreSource@, a caller-generic @\@branch@ -- not one fixed
 --   choice).
 type ContextRow branch r =
-  TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch ': r
+  TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch ': Summarized branch ': r
 
 -- | The one well-known branch name this module owns -- exported the same
 --   way 'Storyteller.Core.Prompt.promptsBranchName' is, so
@@ -226,7 +226,7 @@ interpretContextStorageFS action = do
 --   own 'ContextStorage' operation (see that effect's own Haddock for
 --   why).
 buildContextLibrary
-  :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r
+  :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
   => Map Name Text -> Library r
 buildContextLibrary overrides = foldl' stepNew known newDefs
   where
@@ -298,7 +298,8 @@ runContextValue
   .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
   => Action (ContextRow branch r) a -> Sem r a
 runContextValue act =
-    runConversationAccess @branch
+    runSummarized @branch
+  . runConversationAccess @branch
   . runJournalAccess @branch
   . runPresence @branch
   . runTreeAccess @branch

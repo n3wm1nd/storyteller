@@ -103,6 +103,11 @@ module Storyteller.Core.ContentEffects
   , fileTicksOf
   , runFileTicks
 
+    -- * Reading a file through its own compressed (summarized) form
+  , Summarized(..)
+  , readSummarized
+  , runSummarized
+
     -- * Branch name resolution
   , BranchResolve(..)
   , resolveBranch
@@ -130,6 +135,7 @@ import Storage.Tick (FileTick(..))
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
+import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Writer.Presence as WriterPresence
 import Storyteller.Writer.Types (Character)
 
@@ -340,6 +346,35 @@ runFileTicks = interpret $ \case
   FileTicksOf path -> runStorage @branch (Tick.fileTicksOf path)
 
 -- ---------------------------------------------------------------------------
+-- Summarized reads
+-- ---------------------------------------------------------------------------
+
+-- | @path@'s content read through its own compressed form -- an eager,
+--   whole-file read exactly like 'TreeAccess', not a lazy handle a caller
+--   resolves later: 'ReadSummarized' picks and reads one summary level
+--   the moment it's called (see 'Storyteller.Writer.Agent.SummaryAccess.densest'),
+--   so what lands in a DSL 'Storyteller.Context.DSL.Value.Value' is
+--   already-settled text, giving context assembly the same "one
+--   deterministic pass, predictable cache boundary" shape 'ERead' already
+--   has for a plain file. @kinds@ is the summarizer hierarchy to consider,
+--   finest first (see 'Storyteller.Writer.Agent.SummaryAccess.zoomLevels');
+--   the caller names it explicitly rather than this effect assuming one
+--   fixed kind, since which summarizer(s) exist is app/DSL-call
+--   vocabulary, not something this effect boundary should hardcode.
+--   Always complete (never missing content written since the summary was
+--   last produced -- see 'SummaryAccess.completeContents'), and always
+--   succeeds: a @path@\/@kinds@ with nothing summarized yet falls back to
+--   @path@'s own raw content, the same as 'SummaryAccess.densest' does.
+data Summarized (branch :: Type) (m :: Type -> Type) a where
+  ReadSummarized :: [Text] -> FilePath -> Summarized branch m Text
+
+makeSem ''Summarized
+
+runSummarized :: forall branch r a. Member (BranchOp branch) r => Sem (Summarized branch ': r) a -> Sem r a
+runSummarized = interpret $ \case
+  ReadSummarized kinds path -> SummaryAccess.densest @branch kinds path
+
+-- ---------------------------------------------------------------------------
 -- Branch resolution
 -- ---------------------------------------------------------------------------
 
@@ -398,10 +433,11 @@ runContentEffectsGit
   :: forall branch r a
   .  Member (BranchOp branch) r
   => Sem ( TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch
-         ': TrackedFiles branch ': FileTicks branch ': r ) a
+         ': TrackedFiles branch ': FileTicks branch ': Summarized branch ': r ) a
   -> Sem r a
 runContentEffectsGit =
-    runFileTicks @branch
+    runSummarized @branch
+  . runFileTicks @branch
   . runTrackedFiles @branch
   . runConversationAccess @branch
   . runJournalAccess @branch

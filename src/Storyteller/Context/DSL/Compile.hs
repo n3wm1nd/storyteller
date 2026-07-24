@@ -71,6 +71,8 @@ module Storyteller.Context.DSL.Compile
     -- * Branch resolution -- injected, not hardcoded
   , branchBinding
   , charactersInBinding
+  , summarizedBinding
+  , summarizedOnceBinding
   , treeValueOfBranch
   , journalDelta
   , readConversation
@@ -98,10 +100,10 @@ import Storyteller.Context.DSL.AST
 import Storyteller.Context.DSL.Value
 
 import Storyteller.Core.ContentEffects
-  ( TreeAccess, Presence, JournalAccess, ConversationAccess
+  ( TreeAccess, Presence, JournalAccess, ConversationAccess, Summarized
   , BranchResolve, Turn(..), JournalCuration(..)
   , currentHead, treeSnapshot, readTreeBlob, charactersPresent, journalWindow
-  , conversationTurns, resolveBranch
+  , conversationTurns, resolveBranch, readSummarized
   )
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Writer.Agent.MessageWindow as MessageWindow
@@ -790,6 +792,58 @@ charactersInBinding = fn1 go
       let idents = [ Branches.branchDisplayName name | Character (BranchName name) <- Set.toList chars ]
       pure (Value (pure []) [ (ident, pure (leafValue [User ident])) | ident <- idents ] defaultMeta)
 
+-- | @summarized@\/@summarizedOnce@'s shared plumbing: force @vPath@\/@vKind@,
+--   split @vKind@'s text into the finest-first hierarchy
+--   'Storyteller.Core.ContentEffects.readSummarized' wants (the same way
+--   'argCriteria'\/glob patterns already tokenize on whitespace, so a
+--   caller wanting a coarser fallback chain just passes more than one
+--   word -- @summarized(path, \"prose\/chapter prose\/book\")@), then read.
+--
+--   Eager, not lazy, for both: the summarized text is read and settled
+--   into the resulting 'Value' the moment this runs, exactly like 'ERead'
+--   resolves a plain file -- context assembly stays one deterministic
+--   pass with a predictable cache boundary, rather than deferring "which
+--   version" to render time.
+summarizedGo :: forall branch r. Members '[Summarized branch, Fail] r => ([Text] -> [Text]) -> Action r (Value r) -> Action r (Value r) -> Action r (Value r)
+summarizedGo narrow vPath vKind = do
+  path  <- T.unpack . messagesText <$> (valueDefault =<< vPath)
+  kinds <- narrow . T.words . messagesText <$> (valueDefault =<< vKind)
+  text  <- liftSem (readSummarized @branch kinds path)
+  pure (leafValue [FileRead path text])
+
+-- | @summarized@'s own implementation, as an ordinary 'Binding' -- same
+--   reasoning as 'branchBinding'\/'charactersInBinding': reading a file
+--   through its own compressed form needs real capability
+--   ('Storyteller.Core.ContentEffects.Summarized'), not just forcing
+--   values already in hand, so it's a library entry rather than a
+--   'coreFilters' case. Takes the summarizer kind explicitly as its
+--   second argument (@path | summarized(\"prose\/chapter\")@, or bare
+--   @summarized path kind@) rather than assuming one fixed kind: which
+--   summarizer(s) a project actually runs is call-site knowledge, the
+--   same way 'without'\/'exclude''s own match patterns are supplied by
+--   the caller rather than baked in here.
+--
+--   "As deep as this file's compression gets" -- considers every kind in
+--   the given hierarchy and settles on the coarsest that actually covers
+--   @path@ (see 'Storyteller.Writer.Agent.SummaryAccess.densest'). The
+--   one-level-in counterpart is 'summarizedOnceBinding'; kept as two
+--   separate named filters, not one filter with a depth argument, since
+--   "give me the deepest compression" and "give me exactly the next zoom
+--   level" are two different questions a caller asks, not two settings
+--   of the same one.
+summarizedBinding :: forall branch r. Members '[Summarized branch, Fail] r => Binding r
+summarizedBinding = fn2 (summarizedGo @branch id)
+
+-- | @summarizedOnce@'s own implementation -- 'summarizedBinding''s
+--   one-level counterpart. Considers only the *finest* kind in the given
+--   hierarchy (@take 1@): the file's own summary at that one tier if it
+--   covers @path@, else the raw content -- never falls through to a
+--   coarser tier the way 'summarizedBinding' does, even if more kinds are
+--   listed. What a caller reaches for to show "the next zoom level up,"
+--   as a deliberately distinct step from "how compressed can this get."
+summarizedOnceBinding :: forall branch r. Members '[Summarized branch, Fail] r => Binding r
+summarizedOnceBinding = fn2 (summarizedGo @branch (take 1))
+
 -- | 'treeValueOfCommit' for a named branch -- resolves the name via
 --   'resolveBranch', then delegates. The one case a Reader-scope switch
 --   genuinely does correspond to a different commit (contrast
@@ -929,12 +983,14 @@ injectShallow isTurnStart lo hi toInsert history
 --   imports "Storyteller.Context.DSL.QQ" for 'dsl'\/'defQuote').
 --   Re-exported from "Storyteller.Context.DSL.Library" for every existing
 --   caller.
-hostLibrary :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r => Library r
+hostLibrary :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r => Library r
 hostLibrary = Map.fromList
   [ ("readconversation", readConversation @branch)
   , ("embedshallow",     embedShallow)
   , ("branch",           branchBinding @branch)
   , ("charactersin",     charactersInBinding @branch)
+  , ("summarized",       summarizedBinding @branch)
+  , ("summarizedOnce",   summarizedOnceBinding @branch)
   -- | The ambient character-context journal curation, pre-configured --
   --   'journalDelta''s own Haskell-level @lookback@\/@maxOut@\/@padding@
   --   tuning is genuine per-caller parametricity (see its own haddock), so
