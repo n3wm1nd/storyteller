@@ -31,11 +31,8 @@ module Storyteller.Context.DSL.Value
   , bval
   , fn1
   , fn2
-  , ContextLibrary(..)
   , Action(..)
   , liftSem
-  , currentLibrary
-  , lookupLibrary
   , Provenance(..)
   , Priority(..)
   , defaultPriority
@@ -55,8 +52,6 @@ module Storyteller.Context.DSL.Value
 import Polysemy (Member, Sem)
 import Polysemy.Fail (Fail)
 
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -108,90 +103,57 @@ fn1 :: Member Fail r => (Action r (Value r) -> Action r (Value r)) -> Binding r
 fn1 f = Binding 1 go
   where
     go [a] _  = f a
-    go args _ = Action (\_ -> fail $ "fn1: expected exactly 1 argument, got " <> show (length args))
+    go args _ = Action (fail $ "fn1: expected exactly 1 argument, got " <> show (length args))
 
 -- | 'fn1', two arguments.
 fn2 :: Member Fail r => (Action r (Value r) -> Action r (Value r) -> Action r (Value r)) -> Binding r
 fn2 f = Binding 2 go
   where
     go [a, b] _ = f a b
-    go args _   = Action (\_ -> fail $ "fn2: expected exactly 2 arguments, got " <> show (length args))
-
--- | The shared, once-built library table -- every named definition this
---   application knows about (compiled-in defaults, then whatever the
---   current 'Storyteller.Core.Storage.Contexts' branch overrides or adds
---   on top), fixed for the lifetime of one request/action, resolved by
---   dotted name. This is what makes cross-definition reference by plain
---   identifier possible at all (@contextWriter@'s own body calling @lore@,
---   say): 'Storyteller.Context.DSL.Compile's @EIdent@\/@EApp@ fall back
---   here once a name misses the current definition's own local 'Env'. A
---   found 'Binding' runs against the *caller's* own ambient scope (never
---   a fresh one) -- the exact same calling convention an ordinary local
---   one already has, so a library reference behaves indistinguishably
---   from a parameter or a @let@.
---
---   Holds compiled 'Binding's, not raw 'Storyteller.Context.DSL.AST.Definition's
---   -- deliberately, so a host-backed primitive (@readconversation@,
---   @embedshallow@ -- real Haskell closures, never expressible as parsed
---   DSL text) can sit in the *same* table as a pure-DSL one
---   (@lore@, @chapters@), both resolved by 'Storyteller.Context.DSL.Compile's
---   'EIdent'\/'EApp' the identical way. A host-backed entry just isn't
---   branch-overridable -- there's no text that could meaningfully replace
---   real Haskell logic, so an override attempt against one has no effect,
---   same treatment a bad arity already gets.
---
---   Parameterized by the same @r@ 'Action' is: a host builds one concrete
---   @library :: ContextLibrary r@ at whatever @r@ its own interpreter
---   stack provides (see @project_mcp_export_effect_boundary@) -- a
---   'Binding' requiring an effect that host's @r@ doesn't include simply
---   can't be listed in that host's own @Map.fromList@ literal, which is
---   the entire portability check, done once, at construction.
-newtype ContextLibrary r = ContextLibrary (Map Name (Binding r))
+    go args _   = Action (fail $ "fn2: expected exactly 2 arguments, got " <> show (length args))
 
 -- | A deferred computation against whatever Polysemy effect row @r@ the
---   host running this DSL provides, plus one plain Reader parameter for
---   'ContextLibrary'. This is @Thunk@ made concrete: constructing an
---   'Action' performs no effect at all (it's just a function value, same
---   as any other Haskell closure); the effect only happens at
---   'runAction'.
-newtype Action r a = Action { runAction :: ContextLibrary r -> Sem r a }
+--   host running this DSL provides. This is @Thunk@ made concrete:
+--   constructing an 'Action' performs no effect at all (it's just a
+--   function value, same as any other Haskell closure); the effect only
+--   happens at 'runAction'.
+--
+--   Carries no library-lookup mechanism of its own -- unlike the previous
+--   design (a @ContextLibrary r@ Reader parameter, consulted live at every
+--   identifier reference), cross-definition name resolution now happens
+--   once, at compile time, in 'Storyteller.Context.DSL.Compile.definitionBinding':
+--   a compiled 'Binding' already has every 'Storyteller.Context.DSL.AST.EIdent'\/
+--   'Storyteller.Context.DSL.AST.EApp' inside its own body resolved to a
+--   concrete 'Binding' value, baked into the closure. This is what makes
+--   an override referencing its own name resolve to whatever that name
+--   meant *before* the override (the previous default, or a compile
+--   failure if there wasn't one) rather than looping into itself -- see
+--   'Storyteller.Core.Context.buildContextLibrary's own Haddock for the
+--   fixed compile order this relies on.
+newtype Action r a = Action { runAction :: Sem r a }
 
 instance Functor (Action r) where
-  fmap f (Action g) = Action (\lib -> f <$> g lib)
+  fmap f (Action g) = Action (f <$> g)
 
 instance Applicative (Action r) where
-  pure a = Action (\_lib -> pure a)
-  Action f <*> Action g = Action (\lib -> f lib <*> g lib)
+  pure = Action . pure
+  Action f <*> Action g = Action (f <*> g)
 
 instance Monad (Action r) where
-  Action g >>= f = Action (\lib -> g lib >>= \a -> runAction (f a) lib)
+  Action g >>= f = Action (g >>= runAction . f)
 
 instance Member Fail r => MonadFail (Action r) where
-  fail msg = Action (\_lib -> fail msg)
+  fail = Action . fail
 
 -- | Lifts an arbitrary 'Sem' computation into 'Action' -- the only way in,
---   since 'Action's own constructor is exactly @ContextLibrary r -> Sem r
---   a@. Every DSL library function that reaches for a named effect
+--   since 'Action's own constructor is exactly @Sem r a@. Every DSL
+--   library function that reaches for a named effect
 --   ('Storyteller.Core.ContentEffects.treeSnapshot', 'askBranch', ...)
 --   goes through this; there is no separate "storage-specific" lift the
 --   way 'liftStore' used to be, because nothing here is storage-specific
 --   any more -- it's just entering the underlying effect monad.
 liftSem :: Sem r a -> Action r a
-liftSem act = Action (\_lib -> act)
-
--- | The 'ContextLibrary' this 'Action' is running against -- whatever
---   'Storyteller.Core.Context.runContextValue' was handed at the one
---   place 'runAction' actually gets called.
-currentLibrary :: Action r (ContextLibrary r)
-currentLibrary = Action (\lib -> pure lib)
-
--- | 'currentLibrary', narrowed to one name -- what
---   'Storyteller.Context.DSL.Compile's cross-definition 'EIdent'\/'EApp'
---   fallback actually calls.
-lookupLibrary :: Name -> Action r (Maybe (Binding r))
-lookupLibrary name = do
-  ContextLibrary m <- currentLibrary
-  pure (Map.lookup name m)
+liftSem = Action
 
 -- | Where a 'Value' came from -- stamped by @read@ itself (see
 --   'withProvenance'), never invented by a filter. Structural: knowing it

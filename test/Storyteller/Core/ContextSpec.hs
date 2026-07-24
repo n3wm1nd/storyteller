@@ -45,6 +45,7 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
+import Storyteller.Context.DSL.Compile (Library)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Rendering (renderContext, renderText, renderMessages, namedChild)
 import Storyteller.Context.DSL.Value
@@ -162,9 +163,12 @@ describeMessage msg@(LLM.AssistantText t) = (LLM.messageDirection msg, t)
 describeMessage msg                       = (LLM.messageDirection msg, "<unsupported in this test>")
 
 -- | An arity-0 default -- what @context.lore@\/@context.chapters@\/
---   @context.style@-style definitions actually have.
-defaultGreeting :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
-defaultGreeting = pure (leafValue [User "default text"])
+--   @context.style@-style definitions actually have. Takes (and ignores)
+--   the compile-time 'Library' table 'resolveContext0' now always applies
+--   to its @def@ argument -- this stub references no other library name,
+--   so it never needs to consult it.
+defaultGreeting :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
+defaultGreeting _table = pure (leafValue [User "default text"])
 
 -- | An arity-1 default -- the shape @context.character@-style definitions
 --   actually have (real production callers now resolve @context.character@
@@ -172,8 +176,8 @@ defaultGreeting = pure (leafValue [User "default text"])
 --   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent') -- echoes
 --   its own argument's text back, wrapped, so a caller can tell whether
 --   the argument it passed in actually reached the running definition.
-defaultEcho :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
-defaultEcho arg = pure (leafValue [User ("default: " <> arg)])
+defaultEcho :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+defaultEcho _table arg = pure (leafValue [User ("default: " <> arg)])
 
 resolveOverrideDefinitionSpec :: Spec
 resolveOverrideDefinitionSpec = describe "resolveOverrideDefinition" $ do

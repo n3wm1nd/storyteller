@@ -46,13 +46,13 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
+import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve, Presence, TreeAccess, JournalCuration(..))
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (Binding, bval, fn1, journalDelta)
+import Storyteller.Context.DSL.Compile (Binding, Library, bval, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Context.DSL.QQ (dsl)
+import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
@@ -161,8 +161,8 @@ absenceSpec = describe "absence, not an error (Non-goals)" $
     runInjuryCase "main" []
       `shouldBe` Right "not injured"
 
-crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Binding r -> Action r (Value r)
-crossBranchDsl = [dsl|
+crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Library r -> Binding r -> Action r (Value r)
+crossBranchDsl = [dslWith|
 charname:
   in (charname | branch): read "sheet.md"
 |]
@@ -174,7 +174,7 @@ crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $
          seedBranch "main" []
          seedBranch "character/aria" [("sheet.md", "Aria is a wandering rogue.")]
          runDslOn (BranchName "main")
-           (messagesText <$> (valueDefault =<< crossBranchDsl @Main (textArg "aria"))))
+           (messagesText <$> (valueDefault =<< crossBranchDsl @Main (CtxLibrary.hostLibrary @Main) (textArg "aria"))))
        `shouldBe` Right "Aria is a wandering rogue."
 
 -- | Shared by 'forLoopSpec' (checks the container's own default text)
@@ -290,14 +290,14 @@ forOverBindingResultSpec = describe "for iterates a Binding call's result direct
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["aria"]
   where
-    forCharsDsl :: forall branch r. Members '[TreeAccess branch, Presence branch, Fail] r => Action r (Value r)
-    forCharsDsl = [dsl|
+    forCharsDsl :: forall branch r. Members '[TreeAccess branch, Presence branch, Fail] r => Library r -> Action r (Value r)
+    forCharsDsl = [dslWith|
 for c in (charactersin "scene.md"):
   as c: c
 |]
     go :: forall r. DslR r => Action (ContextRow Main r) [Name]
     go = do
-      v <- forCharsDsl @Main
+      v <- forCharsDsl @Main (CtxLibrary.hostLibrary @Main)
       pure (map fst (valueEntries v))
 
 -- | @charactersin@ reads presence-tick history off the *ambient*
@@ -323,8 +323,8 @@ charactersinIgnoresBranchRedirectionSpec =
         runDslOn (BranchName "main") go)
       `shouldBe` Right ["aria"]
   where
-    redirectedDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Presence branch, Fail] r => Binding r -> Action r (Value r)
-    redirectedDsl = [dsl|
+    redirectedDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Presence branch, Fail] r => Library r -> Binding r -> Action r (Value r)
+    redirectedDsl = [dslWith|
 charname:
   in (charname | branch):
     for c in (charactersin "scene.md"):
@@ -332,7 +332,7 @@ charname:
 |]
     go :: forall r. DslR r => Action (ContextRow Main r) [Name]
     go = do
-      v <- redirectedDsl @Main (textArg "aria")
+      v <- redirectedDsl @Main (CtxLibrary.hostLibrary @Main) (textArg "aria")
       pure (map fst (valueEntries v))
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
@@ -699,7 +699,7 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
   where
     go :: forall r. DslR r => Action (ContextRow Main r) (Text, Text, Text, [Name], Text, Text)
     go = do
-      v <- CtxLibrary.contextCharacter @Main "jenny"
+      v <- CtxLibrary.contextCharacter @Main (buildContextLibrary @Main Map.empty) "jenny"
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

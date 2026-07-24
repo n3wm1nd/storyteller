@@ -18,6 +18,7 @@
 --   an agent call actually receives.
 module Storyteller.Context.DSL.RenderSpec (spec) where
 
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Test.Hspec
 
@@ -34,7 +35,7 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
+import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Context.DSL.Library (contextChapters, contextLore)
 import qualified Storyteller.Context.DSL.Render as Render
@@ -90,7 +91,7 @@ valueMessagesSpec = describe "valueMessages (via contextChapters' own default)" 
         , ("chapters/ch2.md", "chapter two prose")
         ]
       runDslOn (BranchName "main")
-        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters @Main)))
+        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters @Main (buildContextLibrary @Main Map.empty))))
     `shouldBe` Right
       [ (LLM.User,      "## Chapters written so far")
       , (LLM.User,      "## Chapter: chapters/ch2.md")
@@ -107,7 +108,7 @@ valueBlocksSpec = describe "valueBlocks (via contextLore's own default)" $
         [ ("lore/places/tavern.md", "the tavern")
         , ("lore/notes.md", "a note")
         ]
-      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore @Main)))
+      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore @Main (buildContextLibrary @Main Map.empty))))
     `shouldBe` Right
       [ ContextBlock "## Story background"
       , ContextBlock "## lore/notes.md"

@@ -18,6 +18,7 @@
 --   curried-function shape "Storyteller.Context.DSL.QQ" describes.
 module Storyteller.Context.DSL.QQSpec (spec) where
 
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Test.Hspec
 
@@ -77,4 +78,4 @@ spec = describe "[dsl| ... |]" $ do
     manualDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
     manualDsl = case parseDefinition "<test>" (T.unlines ["as \"injury\": read status/injury.md"]) of
       Left err  -> fail (T.unpack (renderParseErr err))
-      Right def -> runDefinition @branch def []
+      Right def -> runDefinition @branch Map.empty def []

@@ -16,6 +16,7 @@
 --   'renderMessages' built off 'renderContext''s result.
 module Storyteller.Context.DSL.RenderingSpec (spec) where
 
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Test.Hspec
 
@@ -32,10 +33,10 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
+import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (ProseModel)
-import Storyteller.Context.DSL.Compile (currentScope)
+import Storyteller.Context.DSL.Compile (Library, currentScope)
 import Storyteller.Context.DSL.Library (contextLore)
 import Storyteller.Context.DSL.Rendering
 import Storyteller.Context.DSL.Value
@@ -53,6 +54,12 @@ runDslOn
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
+-- | No overrides are ever staged in this spec -- just the compiled-in
+--   defaults, same as 'buildContextLibrary' would build from an empty
+--   override map.
+emptyLib :: forall r. Members '[BranchResolve, Fail] r => Library (ContextRow Main r)
+emptyLib = buildContextLibrary @Main Map.empty
+
 describeMessage :: LLM.Message m -> (LLM.MessageDirection, Text)
 describeMessage msg@(LLM.UserText t)      = (LLM.messageDirection msg, t)
 describeMessage msg@(LLM.AssistantText t) = (LLM.messageDirection msg, t)
@@ -68,7 +75,7 @@ renderContextSpec = describe "renderContext / renderText / renderMessages" $ do
   it "renderText concatenates every reachable message's own content, ignoring role" $
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
-      runDslOn (BranchName "main") (renderText <$> (renderContext =<< contextLore @Main)))
+      runDslOn (BranchName "main") (renderText <$> (renderContext =<< contextLore @Main emptyLib)))
     `shouldBe` Right
       "## Story background\n\n## lore/notes.md\n\na hand-authored note"
 
@@ -77,7 +84,7 @@ renderContextSpec = describe "renderContext / renderText / renderMessages" $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runDslOn (BranchName "main")
         (map describeMessage . (renderMessages :: Context -> [LLM.Message ProseModel])
-          <$> (renderContext =<< contextLore @Main)))
+          <$> (renderContext =<< contextLore @Main emptyLib)))
     `shouldBe` Right
       [ (LLM.User, "## Story background")
       , (LLM.User, "## lore/notes.md")
@@ -88,7 +95,7 @@ renderContextSpec = describe "renderContext / renderText / renderMessages" $ do
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runDslOn (BranchName "main") (do
-        ctx <- renderContext =<< contextLore @Main
+        ctx <- renderContext =<< contextLore @Main emptyLib
         case namedChild "lore/notes.md" ctx of
           Nothing    -> fail "expected a lore/notes.md entry"
           Just child -> pure (renderText child)))

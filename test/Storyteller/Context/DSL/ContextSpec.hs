@@ -37,8 +37,10 @@ import Server.TestStack
 import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve, TreeAccess)
 
+import Storyteller.Context.DSL.Compile (Library)
 import Storyteller.Context.DSL.Context (Context, toContext, user, assistant, runContext)
-import Storyteller.Context.DSL.QQ (dsl)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
+import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
@@ -132,7 +134,7 @@ toBindingSpec = describe "ToBinding (plain values as [dsl| |] arguments)" $ do
       seedBranch "main" []
       seedBranch "character/aria" [("sheet.md", "Aria is a wandering rogue.")]
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< crossBranchDsl @Main "aria")))
+        (messagesText <$> (valueDefault =<< crossBranchDsl @Main (CtxLibrary.hostLibrary @Main) "aria")))
     `shouldBe` Right "Aria is a wandering rogue."
 
   it "accepts a bare Context argument, no bval wrapping" $
@@ -142,8 +144,8 @@ toBindingSpec = describe "ToBinding (plain values as [dsl| |] arguments)" $ do
         (messagesText <$> (valueDefault =<< splicesDsl @Main (user "hello"))))
     `shouldBe` Right "hello"
   where
-    crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Text -> Action r (Value r)
-    crossBranchDsl = [dsl|
+    crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Library r -> Text -> Action r (Value r)
+    crossBranchDsl = [dslWith|
       charname:
         in (charname | branch): read "sheet.md"
       |]

@@ -48,7 +48,7 @@ import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.ContentEffects (BranchResolve)
-import Storyteller.Core.Context (ContextStorage, getContextOverrides, resolveOverrideDefinition, runContextValue)
+import Storyteller.Core.Context (ContextStorage, buildContextLibrary, getContextOverrides, resolveOverrideDefinition, runContextValue)
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Context.DSL.Compile (bval, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
@@ -90,8 +90,9 @@ activeMentionAliases aliasNames = do
         , valueMeta = defaultMeta
         }
   overrides <- getContextOverrides
+  let table = buildContextLibrary @Main overrides
   result <- runContextValue @Main $
     case resolveOverrideDefinition 1 (Map.lookup "context.mentionFilter" overrides) of
-      Just overrideDef -> runDefinition @Main overrideDef [bval (pure candidate)]
+      Just overrideDef -> runDefinition @Main table overrideDef [bval (pure candidate)]
       Nothing          -> CtxLibrary.contextMentionFilter @Main (bval (pure candidate))
   pure (Set.fromList (map fst (valueEntries result)))

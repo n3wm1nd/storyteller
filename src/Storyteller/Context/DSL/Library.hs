@@ -32,10 +32,13 @@
 --   ('contextWriter' pulling in 'contextLore'\/'contextChapters'\/
 --   'contextOther') is *cross-definition name resolution*, not Haskell
 --   parameter passing -- a body referencing @context.lore@ by its dotted
---   name resolves against the shared 'Storyteller.Context.DSL.Value.ContextLibrary'
---   (see 'Storyteller.Context.DSL.Compile.resolveIdent'), the identical
---   way whether the current name means the compiled-in default or a
---   project's own committed override. Only a genuinely host-backed
+--   name resolves against the compile-time library table
+--   'Storyteller.Core.Context.buildContextLibrary' builds (see
+--   'Storyteller.Context.DSL.Compile.resolveIdent'), the identical way
+--   whether the current name means the compiled-in default or a
+--   project's own committed override -- see 'defaultLibraryOrder''s own
+--   Haddock for the fixed compile order this now relies on. Only a
+--   genuinely host-backed
 --   capability (@journalDelta@'s Haskell-level curried tuning, say) still
 --   needs Haskell-side parameter passing -- see 'contextCharacter''s own
 --   @journal@ parameter -- because that's real per-caller parametricity,
@@ -56,6 +59,7 @@ module Storyteller.Context.DSL.Library
   , contextMentionFilter
   , toBinding1
   , identity
+  , defaultLibraryOrder
   , defaultLibrarySource
   , hostLibrary
   ) where
@@ -68,7 +72,7 @@ import Polysemy (Member, Members)
 import Polysemy.Fail (Fail)
 
 import Storyteller.Context.DSL.AST (Definition, Name)
-import Storyteller.Context.DSL.Compile (Binding(..), branchBinding, bval, charactersInBinding, embedShallow, journalDelta, readConversation, runDefinition)
+import Storyteller.Context.DSL.Compile (Binding(..), Library, bval, hostLibrary, runDefinition)
 import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
@@ -76,32 +80,6 @@ import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Core.ContentEffects
   (TreeAccess, Presence, JournalAccess, ConversationAccess, BranchResolve, JournalCuration(..))
 import Storyteller.Writer.Agent (CharSummary(..))
-
--- | Host-backed library entries -- real Haskell closures, never
---   expressible as parsed DSL text, so they can never be branch-
---   overridden (see 'Storyteller.Context.DSL.Value.ContextLibrary''s own
---   Haddock). Merged into the shared library alongside
---   'defaultLibrarySource' by 'Storyteller.Core.Context.buildContextLibrary',
---   resolved the identical way by 'Storyteller.Context.DSL.Compile's
---   'EIdent'\/'EApp' -- a DSL body referencing @readconversation@ can't
---   tell it apart from a bare reference to @lore@.
-hostLibrary :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r => Map Name (Binding r)
-hostLibrary = Map.fromList
-  [ ("readconversation", readConversation @branch)
-  , ("embedshallow",     embedShallow)
-  , ("branch",           branchBinding @branch)
-  , ("charactersin",     charactersInBinding @branch)
-  -- | The ambient character-context journal curation, pre-configured --
-  --   'Storyteller.Context.DSL.Compile.journalDelta''s own Haskell-level
-  --   @lookback@\/@maxOut@\/@padding@ tuning is genuine per-caller
-  --   parametricity (see its own haddock), so it stays a host 'Binding',
-  --   never expressible as parsed DSL text -- but the *numbers themselves*
-  --   are this application's one shared default (formerly
-  --   'Server.Writer.File.activeCharacterContext''s own constants), not
-  --   something 'contextCharacterDef' should have to take as a parameter
-  --   just to reference it by name.
-  , ("characterJournal", journalDelta @branch (JournalCuration 30 10 2))
-  ]
 
 -- | The one reserved standing-instruction file, if a project has one --
 --   mirrors 'Storyteller.Writer.Agent.WorldContext.isSystemContextPath',
@@ -118,17 +96,17 @@ contextStyleDef = [defQuote|
 read "style.md" | orifempty ""
 |]
 
-contextStyle :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
-contextStyle = runDefinition @branch contextStyleDef []
+contextStyle :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
+contextStyle lib = runDefinition @branch lib contextStyleDef []
 
 -- | Describes one lore (or "other") entry -- a header naming it, then its
 --   content, still role-undecided (see 'read''s own convention).
 --   Referenced by plain name from 'contextLore''s\/'contextOther''s own
 --   bodies (@loreEntry f@), not threaded in as a parameter: that only
 --   works because 'loreEntryDef' is *also* registered in
---   'defaultLibrarySource', so the shared library table
---   ('Storyteller.Context.DSL.Value.ContextLibrary') resolves the name at
---   runtime the same way it would resolve a project's own override.
+--   'defaultLibraryOrder', so the compile-time library table resolves the
+--   name the same way it would resolve a project's own override -- see
+--   'defaultLibraryOrder''s own Haddock for the ordering this depends on.
 loreEntryDef :: Definition
 loreEntryDef = [defQuote|
 f:
@@ -136,8 +114,8 @@ f:
   read f
 |]
 
-loreEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r) -> Action r (Value r)
-loreEntry a = runDefinition @branch loreEntryDef [toBinding a]
+loreEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
+loreEntry lib a = runDefinition @branch lib loreEntryDef [toBinding a]
 
 -- | Hand-authored lore -- a plain positive convention (@lore\/**@), not
 --   "everything except chapters/style/scratch": 'exclude'\/'without'\/
@@ -182,8 +160,8 @@ for f in lore/**/*:
   x
 |]
 
-contextLore :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
-contextLore = runDefinition @branch contextLoreDef []
+contextLore :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
+contextLore lib = runDefinition @branch lib contextLoreDef []
 
 -- | Describes one chapter -- a @User@ header immediately followed by its
 --   content re-tagged @Assistant@ (@> read f@, per
@@ -203,8 +181,8 @@ f:
   > read f
 |]
 
-chapterEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r) -> Action r (Value r)
-chapterEntry a = runDefinition @branch chapterEntryDef [toBinding a]
+chapterEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
+chapterEntry lib a = runDefinition @branch lib chapterEntryDef [toBinding a]
 
 -- | Chapter prose, in natural reading order (@ch2@ before @ch11@, not
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
@@ -235,8 +213,8 @@ in (x | sortBy):
     y
 |]
 
-contextChapters :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
-contextChapters = runDefinition @branch contextChaptersDef []
+contextChapters :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
+contextChapters lib = runDefinition @branch lib contextChaptersDef []
 
 -- | The catch-all: any file that isn't under @lore@\/@chapters@' own
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
@@ -269,8 +247,8 @@ path:
     x
 |]
 
-contextOther :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
-contextOther p = runDefinition @branch contextOtherDef [toBinding p]
+contextOther :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+contextOther lib p = runDefinition @branch lib contextOtherDef [toBinding p]
 
 -- | The writer agent's own default background context -- what
 --   'Server.Writer.File.chatWriter' resolves (branch-override-then-this)
@@ -351,8 +329,8 @@ path:
     as c: context.character c
 |]
 
-contextWriter :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
-contextWriter p = runDefinition @branch contextWriterDef [toBinding p]
+contextWriter :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+contextWriter lib p = runDefinition @branch lib contextWriterDef [toBinding p]
 
 -- | The "and this is the character" acquaintance-level line -- the
 --   header @sheet.md@ is required to open with (its display name, see
@@ -415,8 +393,8 @@ charname:
     "%n%: %a%"
 |]
 
-characterBlurb :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
-characterBlurb charname = runDefinition @branch characterBlurbDef [toBinding charname]
+characterBlurb :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+characterBlurb lib charname = runDefinition @branch lib characterBlurbDef [toBinding charname]
 
 -- | A named character's rich context, as five independently reachable
 --   buckets rather than one flattened blob -- every consumer
@@ -487,8 +465,8 @@ charname:
   character.blurb charname
 |]
 
-contextCharacter :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
-contextCharacter charname = runDefinition @branch contextCharacterDef [toBinding charname]
+contextCharacter :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+contextCharacter lib charname = runDefinition @branch lib contextCharacterDef [toBinding charname]
 
 -- | Reshapes an already-resolved @context.character@-shaped 'Value' into
 --   a 'CharSummary' -- the shared piece every consumer wanting that exact
@@ -570,15 +548,33 @@ identity :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Act
 identity = [dsl| a: a |]
 
 -- | Every pure-DSL definition this application ships, as already-parsed
---   'Definition's -- what 'Storyteller.Core.Context.buildContextLibrary'
---   folds a project's own 'Storyteller.Core.Context.contextsBranchName'
---   overrides on top of, once, into the shared table
---   'Storyteller.Context.DSL.Value.ContextLibrary' resolves both
---   cross-definition reference *and* 'Storyteller.Core.Context.resolveContext0'\/
---   'resolveContext1''s own external lookups against -- one map serves
---   both, since they're really the same question ("what does this name
---   mean right now"), just asked from inside a definition's own body or
---   from a plain @Sem@-level caller.
+--   'Definition's, in a *fixed compile order* --
+--   'Storyteller.Core.Context.buildContextLibrary' folds this list
+--   left to right (a project's own
+--   'Storyteller.Core.Context.contextsBranchName' override replacing a
+--   slot's definition, when one exists and matches arity), each slot
+--   compiled against only the table built from everything strictly
+--   earlier in this list (plus 'hostLibrary', seeded in first) -- never
+--   against the finished table as a whole. This is what makes an
+--   override's own self-reference resolve to the *previous* binding
+--   (or fail to resolve, compile-time, if there wasn't one) rather than
+--   looping into itself: see
+--   'Storyteller.Context.DSL.Compile.definitionBinding's own Haddock.
+--
+--   __The ordering is load-bearing project policy, not incidental__: an
+--   entry may only reference another library name (by 'EIdent'\/'EApp')
+--   if that name is *strictly earlier* in this list, or lives in
+--   'hostLibrary'. Referencing something later fails to resolve the
+--   first time that slot is compiled ("unknown identifier"), loudly, not
+--   silently. Current dependency edges: @loreEntry@\/@chapterEntry@ are
+--   called by @context.lore@\/@context.other@\/@context.chapters@;
+--   @context.other@\/@context.writer@ call @context.lore@\/
+--   @context.chapters@; @context.writer@ calls @context.other@ and
+--   @context.character@; @context.character@ calls @character.blurb@ and
+--   @characterJournal@ (the latter from 'hostLibrary'). Adding a new
+--   default that references an existing one must place it later in this
+--   list; adding one two existing defaults should both be able to see
+--   requires placing it earlier than both.
 --
 --   One key per definition (no second copy of the source, unlike this
 --   map's own predecessor -- see 'loreEntryDef''s Haddock on why a bare
@@ -600,15 +596,22 @@ identity = [dsl| a: a |]
 --   here -- needs a real Haskell-supplied capability, not expressible as
 --   parsed DSL text -- is in 'hostLibrary' instead; see that map's own
 --   Haddock for exactly which and why.
-defaultLibrarySource :: Map Name Definition
-defaultLibrarySource = Map.fromList
-  [ ("loreEntry",       loreEntryDef)
-  , ("context.lore",    contextLoreDef)
-  , ("chapterEntry",    chapterEntryDef)
-  , ("context.chapters", contextChaptersDef)
-  , ("context.other",   contextOtherDef)
-  , ("context.writer",  contextWriterDef)
-  , ("context.style",   contextStyleDef)
-  , ("character.blurb", characterBlurbDef)
-  , ("context.character", contextCharacterDef)
+defaultLibraryOrder :: [(Name, Definition)]
+defaultLibraryOrder =
+  [ ("loreEntry",         loreEntryDef)
+  , ("context.lore",      contextLoreDef)
+  , ("chapterEntry",      chapterEntryDef)
+  , ("context.chapters",  contextChaptersDef)
+  , ("context.other",     contextOtherDef)
+  , ("context.style",     contextStyleDef)
+  , ("character.blurb",   characterBlurbDef)
+  , ("context.character", contextCharacterDef)  -- needs character.blurb (above), characterJournal (hostLibrary)
+  , ("context.writer",    contextWriterDef)     -- needs context.lore/chapters/other/character (all above)
   ]
+
+-- | 'defaultLibraryOrder', as the plain 'Map' shape callers that only care
+--   about "is there a compiled-in default for this name" want (arity
+--   checks, 'Map.difference' against a project's own overrides) --
+--   derived, never hand-duplicated, so the two can't drift apart.
+defaultLibrarySource :: Map Name Definition
+defaultLibrarySource = Map.fromList defaultLibraryOrder

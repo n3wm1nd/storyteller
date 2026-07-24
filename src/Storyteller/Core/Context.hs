@@ -53,12 +53,12 @@ module Storyteller.Core.Context
   , runContextValue
   , resolveContext0
   , resolveContext1
-  , ContextLibrary(..)
   , buildContextLibrary
   ) where
 
 import Control.Monad (void)
 import Data.Kind (Type)
+import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -83,11 +83,11 @@ import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Storyteller.Context.DSL.AST (Definition(..), Name)
-import Storyteller.Context.DSL.Compile (Binding(..), bval, runDefinition)
+import Storyteller.Context.DSL.Compile (Binding(..), Library, bval, runDefinition)
 import qualified Storyteller.Context.DSL.Compile as Compile
-import Storyteller.Context.DSL.Library (defaultLibrarySource, hostLibrary)
+import Storyteller.Context.DSL.Library (defaultLibraryOrder, defaultLibrarySource, hostLibrary)
 import Storyteller.Context.DSL.Parser (parseDefinition)
-import Storyteller.Context.DSL.Value (Action, ContextLibrary(..), Value, Message(User), leafValue, runAction)
+import Storyteller.Context.DSL.Value (Action, Value, Message(User), leafValue, runAction)
 
 -- | Deliberately just data -- a name/text map plus staging, nothing
 --   'Binding'\/'Action'-shaped. One 'ContextStorage' interpretation is
@@ -183,36 +183,76 @@ interpretContextStorageFS action = do
   where
     pathToName = T.replace "/" "." . fromMaybe "" . T.stripSuffix ".dsl"
 
--- | 'Storyteller.Context.DSL.Library.defaultLibrarySource', with
---   @overrides@ folded on top by name -- same "override, don't guess"
---   precedence 'resolveOverrideDefinition' already gives a single named
---   query, just applied once, up front, to the whole table (see
---   'ContextLibrary''s own Haddock on why this has to be one fixed table
---   rather than a per-name decision) -- plus
---   'Storyteller.Context.DSL.Library.hostLibrary', not override-
---   addressable at all (real Haskell closures, nothing to replace them
---   with). Three cases for a pure-DSL name, matching
---   'resolveOverrideDefinition''s own: a name already in the default
---   library only accepts an override whose arity matches the default it
---   would replace (a parse failure or an arity mismatch both just keep
---   the default -- "missing, not broken"); a name with *no* compiled-in
---   default (and not a 'hostLibrary' one) is a project genuinely adding a
---   new one, accepted at whatever arity it parses to; a name that
---   collides with a 'hostLibrary' entry is simply ignored -- the host
---   entry always wins. Called locally by 'runContextValue', at whatever
---   @branch@\/@r@ its own local content-effects interpretation already
---   provides -- never wired as its own 'ContextStorage' operation (see
---   that effect's own Haddock for why).
+-- | 'Storyteller.Context.DSL.Library.defaultLibraryOrder', compiled as a
+--   single left-to-right fold, with @overrides@ replacing a slot's
+--   definition by name wherever one exists and matches arity (same
+--   "override, don't guess" precedence 'resolveOverrideDefinition' already
+--   gives a single named query, just applied per slot as the fold walks
+--   forward) -- seeded with 'Storyteller.Context.DSL.Library.hostLibrary'
+--   (real Haskell closures, never override-addressable, safe to seed first
+--   since none of them reference another library name), then any
+--   genuinely new override-only names appended last.
+--
+--   __This is the compile step that makes self-reference safe__: a slot
+--   with no override just compiles the default against the table
+--   accumulated so far, same as always. A slot *with* an override compiles
+--   the *default* into the table first (at this same slot -- an extra,
+--   otherwise-unused 'Compile.definitionBinding' call, cheap since
+--   'Binding' construction never touches 'Sem'), then compiles the
+--   override itself against that updated table, overwriting the same key.
+--   A name inside the override's own body that refers to its own name
+--   therefore resolves to the compiled default sitting one insert behind
+--   it -- never to itself, so it can never loop. A genuinely new
+--   override-only name (no default to seed first) that self-references has
+--   nothing to land on at all, and fails to resolve the same way any other
+--   unbound identifier does. The same reasoning makes mutual reference
+--   between two distinct new override-only names a resolution failure too:
+--   whichever is folded first can't see the other, which hasn't been
+--   compiled yet. See 'defaultLibraryOrder''s own Haddock for why the
+--   order itself is load-bearing project policy, not an implementation
+--   detail.
+--
+--   Three cases for a pure-DSL name, matching 'resolveOverrideDefinition''s
+--   own: a name already in the default library only accepts an override
+--   whose arity matches the default it would replace (a parse failure or
+--   an arity mismatch both just keep the default -- "missing, not
+--   broken"); a name with *no* compiled-in default (and not a
+--   'hostLibrary' one) is a project genuinely adding a new one, accepted
+--   at whatever arity it parses to; a name that collides with a
+--   'hostLibrary' entry is simply ignored -- the host entry always wins.
+--   Called locally by 'runContextValue'\/'resolveContext0'\/
+--   'resolveContext1', at whatever @branch@\/@r@ its own local
+--   content-effects interpretation already provides -- never wired as its
+--   own 'ContextStorage' operation (see that effect's own Haddock for
+--   why).
 buildContextLibrary
   :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r
-  => Map Name Text -> ContextLibrary r
-buildContextLibrary overrides = ContextLibrary (Map.unions [compiledKnown, compiledNew, hostLibrary @branch @r])
+  => Map Name Text -> Library r
+buildContextLibrary overrides = foldl' stepNew known newDefs
   where
-    compiledKnown = Compile.definitionBinding <$> Map.mapWithKey applyOverride defaultLibrarySource
-    compiledNew   = Compile.definitionBinding <$> Map.fromList (mapMaybe parseNamed (Map.toList newSource))
-    newSource     = overrides `Map.difference` defaultLibrarySource `Map.difference` hostLibrary @branch @r
-    applyOverride name defaultDef = fromMaybe defaultDef $
-      resolveOverrideDefinition (length (defParams defaultDef)) (Map.lookup name overrides)
+    seeded  = hostLibrary @branch @r
+    known   = foldl' step seeded defaultLibraryOrder
+    -- | When @name@ is genuinely overridden, the *default* definition is
+    --   compiled into @tbl@ first, at this same slot, and only then does
+    --   the override itself get compiled against the table that now
+    --   includes it -- this is what gives an override's own self-reference
+    --   somewhere to land (the compiled default), rather than treating
+    --   "override present" as "no prior binding existed here at all."
+    --   Compiling the unused default costs nothing extra beyond one more
+    --   'Compile.definitionBinding' call -- 'Binding' construction is pure,
+    --   never touching 'Sem', and the wasted table slot is immediately
+    --   overwritten with the override's own binding right after.
+    step tbl (name, defaultDef) = case Map.lookup name overrides of
+      Nothing  -> Map.insert name (Compile.definitionBinding tbl defaultDef) tbl
+      Just src -> case resolveOverrideDefinition (length (defParams defaultDef)) (Just src) of
+        Nothing        -> Map.insert name (Compile.definitionBinding tbl defaultDef) tbl
+        Just overrideDef ->
+          let tblWithDefault = Map.insert name (Compile.definitionBinding tbl defaultDef) tbl
+          in Map.insert name (Compile.definitionBinding tblWithDefault overrideDef) tblWithDefault
+
+    newSource = overrides `Map.difference` defaultLibrarySource `Map.difference` hostLibrary @branch @r
+    newDefs   = mapMaybe parseNamed (Map.toList newSource)
+    stepNew tbl (name, def) = Map.insert name (Compile.definitionBinding tbl def) tbl
     parseNamed (name, src) = (,) name <$> resolveOverrideDefinition (arityOf src) (Just src)
     -- | 'resolveOverrideDefinition' needs an expected arity to check
     --   *against* -- for a genuinely new name (no compiled-in default to
@@ -244,10 +284,12 @@ interpretContextStorageMap overrides action =
 --   'Storyteller.Core.ContentEffects.TreeAccess'\/'Presence'\/
 --   'JournalAccess'\/'ConversationAccess' locally and fresh, scoped to
 --   this one call's @branch@ (never wired globally to one fixed branch --
---   see 'ContextRow's own Haddock), builds the library at that same
---   local scope (so 'buildContextLibrary''s own @hostLibrary@\/override
---   compilation can actually call the effects it needs), then runs
---   @act@ against it. This is what makes calling @\@Main@ here and
+--   see 'ContextRow's own Haddock), then runs @act@. @act@ is already
+--   fully compiled by the time it's handed here -- every identifier
+--   inside it was resolved at its own construction (see
+--   'buildContextLibrary''s own Haddock), so unlike the previous design
+--   there is no library table left to build or thread through 'runAction'
+--   at this point. This is what makes calling @\@Main@ here and
 --   @\@LoreSource@ there, from the *same* 'ContextStorage' interpretation,
 --   safe: nothing about this function commits 'ContextStorage' itself to
 --   one branch.
@@ -260,10 +302,7 @@ runContextValue act =
   . runJournalAccess @branch
   . runPresence @branch
   . runTreeAccess @branch
-  $ do
-      overrides <- getContextOverrides
-      let lib = buildContextLibrary @branch overrides
-      runAction act lib
+  $ runAction act
 
 -- | 'getContextOverrides' immediately followed by "compile the override
 --   if there is one, else run the default" -- mirrors
@@ -276,25 +315,34 @@ runContextValue act =
 --   has one for prompts. Whether @name@'s override came from the 'Contexts'
 --   branch or a same-request 'SetContextOverride' is invisible here -- both
 --   already landed in the same store by the time this looks.
+--
+--   Builds the compile-time table once, here, via 'buildContextLibrary',
+--   and applies it directly to @def@ (or to the override definition, via
+--   'runDefinition') -- this is the one place a plain, not-yet-applied
+--   'Storyteller.Context.DSL.Library' wrapper function actually gets its
+--   table.
 resolveContext0
   :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Name -> Action (ContextRow branch r) (Value (ContextRow branch r)) -> Sem r (Value (ContextRow branch r))
+  => Name -> (Library (ContextRow branch r) -> Action (ContextRow branch r) (Value (ContextRow branch r))) -> Sem r (Value (ContextRow branch r))
 resolveContext0 name def = do
   overrides <- getContextOverrides
+  let table = buildContextLibrary @branch overrides
   runContextValue @branch $ case resolveOverrideDefinition 0 (Map.lookup name overrides) of
-    Just overrideDef -> runDefinition @branch overrideDef []
-    Nothing          -> def
+    Just overrideDef -> runDefinition @branch table overrideDef []
+    Nothing          -> def table
 
 -- | 'resolveContext0''s 1-arity counterpart -- what every real
 --   @context.character@\/@context.writer@ call site wants. @def@ is the
---   plain compiled-in definition itself (@Text -> Action Value@), the
---   ordinary Haskell function, no 'Binding' wrapping needed on this side
---   any more.
+--   plain compiled-in definition itself (@Library r -> Text -> Action
+--   Value@), the ordinary Haskell function, no 'Binding' wrapping needed
+--   on this side any more -- the table is applied here, so no external
+--   caller (which still just passes @contextWriter \@Main@, say) sees it.
 resolveContext1
   :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Name -> (Text -> Action (ContextRow branch r) (Value (ContextRow branch r))) -> Text -> Sem r (Value (ContextRow branch r))
+  => Name -> (Library (ContextRow branch r) -> Text -> Action (ContextRow branch r) (Value (ContextRow branch r))) -> Text -> Sem r (Value (ContextRow branch r))
 resolveContext1 name def arg = do
   overrides <- getContextOverrides
+  let table = buildContextLibrary @branch overrides
   runContextValue @branch $ case resolveOverrideDefinition 1 (Map.lookup name overrides) of
-    Just overrideDef -> runDefinition @branch overrideDef [bval (pure (leafValue [User arg]))]
-    Nothing          -> def arg
+    Just overrideDef -> runDefinition @branch table overrideDef [bval (pure (leafValue [User arg]))]
+    Nothing          -> def table arg

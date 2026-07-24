@@ -31,7 +31,7 @@ import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Context (ContextRow, ContextStorage, interpretContextStorageMap, runContextValue)
+import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, getContextOverrides, interpretContextStorageMap, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -41,7 +41,8 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (bval)
+import Storyteller.Context.DSL.Compile (Library, bval)
+import qualified Storyteller.Context.DSL.Compile as Compile
 import Storyteller.Context.DSL.Library
   (contextCharacter, contextLore, contextMentionFilter, contextWriter)
 import Storyteller.Context.DSL.Value
@@ -62,9 +63,11 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
-runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
+runDslOn bname act = runBranchAndFS @Main bname $ do
+  overrides <- getContextOverrides
+  runContextValue @Main (act (buildContextLibrary @Main overrides))
 
 -- | 'runDslOn', but against a library assembled with the given committed
 --   overrides -- what 'contextCharacterBlurbOverrideSpec' uses to prove an
@@ -75,10 +78,12 @@ runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 runDslOnWith
   :: forall a
   .  Map Name Text -> BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOnWith overrides bname act =
-  runBranchAndFS @Main bname (interpretContextStorageMap overrides (runContextValue @Main act))
+  runBranchAndFS @Main bname $ interpretContextStorageMap overrides $ do
+    ovr <- getContextOverrides
+    runContextValue @Main (act (buildContextLibrary @Main ovr))
 
 entryTexts :: Value r -> Action r (Map Text Text)
 entryTexts v = Map.fromList <$>
@@ -91,6 +96,9 @@ spec = do
   contextLoreSpec
   contextMentionFilterSpec
   contextCharacterBlurbOverrideSpec
+  contextStyleSelfReferenceOverrideSpec
+  newNameSelfReferenceOverrideSpec
+  mutualReferenceOverrideSpec
 
 -- | The regression test for the sibling bug 'contextCharacterBlurbOverrideSpec'
 --   flagged as "the same shape, sitting right next to it": @contextWriter@'s
@@ -127,8 +135,8 @@ contextWriterLoreOverrideSpec =
   where
     overrides = Map.fromList
       [ ("context.lore", "\"this is a project-committed override, not the default\"") ]
-    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) [Message]
-    go = valueDefault =<< contextWriter @Main ""
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) [Message]
+    go table = valueDefault =<< contextWriter @Main table ""
 
 -- | The regression test for the bug that started this whole redesign:
 --   'contextCharacter' used to take @blurb@ as a typed 'Binding'
@@ -156,11 +164,89 @@ contextCharacterBlurbOverrideSpec =
   where
     overrides = Map.fromList
       [ ("character.blurb", "charname:\n  \"this is a project-committed override, not the default\"") ]
-    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) Text
-    go = do
-      v <- contextCharacter @Main "aria"
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
+    go table = do
+      v <- contextCharacter @Main table "aria"
       Just blurbAction <- pure (lookup "blurb" (valueEntries v))
       messagesText <$> (valueDefault =<< blurbAction)
+
+-- | The regression test for the whole point of the compile-by-reference
+--   redesign: an override that calls its own name resolves to whatever
+--   that name meant *before* the override -- the compiled-in default, in
+--   this case -- rather than to the override itself, which would loop
+--   forever under the old live-lookup-by-name design. @context.style@ is
+--   the target here because it has no dependents of its own (unlike
+--   @context.lore@\/@character.blurb@, already exercised above for
+--   ordinary cross-name visibility), keeping this test about self-
+--   reference specifically.
+contextStyleSelfReferenceOverrideSpec :: Spec
+contextStyleSelfReferenceOverrideSpec =
+  describe "an override that calls its own name resolves to the previous binding, not itself" $
+    it "context.style calling context.style reaches the compiled-in default, not an infinite loop" $
+      run (testStack $ do
+        seedBranch "main" [("style.md", "write in past tense")]
+        runDslOnWith overrides (BranchName "main") go)
+      `shouldBe` Right "prefix: write in past tense"
+  where
+    overrides = Map.fromList
+      [ ("context.style", "\"prefix: %context.style%\"") ]
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
+    go table = case Map.lookup "context.style" table of
+      Just (Binding 0 fn) -> do
+        scope <- Compile.currentScope @Main
+        messagesText <$> (valueDefault =<< fn [] scope)
+      _ -> fail "expected context.style to be a 0-arity binding"
+
+-- | The other half of the same story: a genuinely *new* override-only
+--   name (nothing compiled-in ever bound it) that references its own name
+--   has no "previous binding" to fall back to at all -- an "unknown
+--   identifier" failure the moment it's actually run, not a loop and not
+--   a silent no-op.
+newNameSelfReferenceOverrideSpec :: Spec
+newNameSelfReferenceOverrideSpec =
+  describe "a brand-new override-only name that self-references" $
+    it "fails to resolve -- there is no previous binding to fall back to" $
+      run (testStack $ do
+        seedBranch "main" []
+        runDslOnWith overrides (BranchName "main") go)
+      `shouldSatisfy` \case
+        Left _  -> True
+        Right _ -> False
+  where
+    overrides = Map.fromList
+      [ ("context.brandNew", "context.brandNew") ]
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
+    go table = case Map.lookup "context.brandNew" table of
+      Just (Binding 0 fn) -> messagesText <$> (valueDefault =<< fn [] (emptyValue @(ContextRow Main r)))
+      _                   -> fail "expected context.brandNew to be a 0-arity binding"
+
+-- | Two new override-only names, each referencing the other -- mutual
+--   recursion across distinct names is exactly as unsupported as
+--   self-reference into a name with no prior binding: whichever compiles
+--   first (library-internal 'Data.Map.Strict.toList' order for new names --
+--   @context.mutualA@ before @context.mutualB@) can't see the other, since
+--   it hasn't been compiled yet. A resolution failure the moment it's
+--   actually run, not a loop -- the language was never meant to support
+--   arbitrary recursion (see the project chat that settled this design).
+mutualReferenceOverrideSpec :: Spec
+mutualReferenceOverrideSpec =
+  describe "two new override-only names that reference each other" $
+    it "fails to resolve for whichever compiles first" $
+      run (testStack $ do
+        seedBranch "main" []
+        runDslOnWith overrides (BranchName "main") go)
+      `shouldSatisfy` \case
+        Left _  -> True
+        Right _ -> False
+  where
+    overrides = Map.fromList
+      [ ("context.mutualA", "context.mutualB")
+      , ("context.mutualB", "context.mutualA")
+      ]
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
+    go table = case Map.lookup "context.mutualA" table of
+      Just (Binding 0 fn) -> messagesText <$> (valueDefault =<< fn [] (emptyValue @(ContextRow Main r)))
+      _                   -> fail "expected context.mutualA to be a 0-arity binding"
 
 contextWriterSpec :: Spec
 contextWriterSpec = describe "contextWriter (the default context.writer library entry)" $ do
@@ -174,7 +260,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
         , ("chat/scratch.md", "chat scratch, never lore or a chapter")
         , ("todo.md", "a stray root note, filed under neither lore/ nor chapters/")
         ]
-      runDslOn (BranchName "main") (go ""))
+      runDslOn (BranchName "main") (`go` ""))
     `shouldBe` Right
       [ User "## Story background"
       , User "## lore/notes.md"
@@ -194,7 +280,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
         [ ("lore/notes.md", "a hand-authored note")
         , ("chapters/ch2.md", "chapter two prose")
         ]
-      runDslOn (BranchName "main") (go "chapters/ch2.md"))
+      runDslOn (BranchName "main") (`go` "chapters/ch2.md"))
     `shouldBe` Right
       [ User "## Story background"
       , User "## lore/notes.md"
@@ -231,11 +317,11 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       , ["Aria: A wandering rogue."]
       )
   where
-    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Text -> Action (ContextRow Main r) [Message]
-    go path = valueDefault =<< contextWriter @Main path
-    goWithCharacter :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) ([Message], [Text])
-    goWithCharacter = do
-      v         <- contextWriter @Main "chapters/ch2.md"
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Text -> Action (ContextRow Main r) [Message]
+    go table path = valueDefault =<< contextWriter @Main table path
+    goWithCharacter :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) ([Message], [Text])
+    goWithCharacter table = do
+      v         <- contextWriter @Main table "chapters/ch2.md"
       def       <- valueDefault v
       Just aria <- pure (lookup "aria" (valueEntries v))
       ariaTexts <- messagesText <$> (valueDefault =<< aria)
@@ -259,9 +345,9 @@ contextLoreSpec = describe "contextLore/contextOther (standalone)" $ do
       , Map.fromList [("lore/notes.md", "## lore/notes.md\na hand-authored note")]
       )
   where
-    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) ([Message], Map Text Text)
-    go = do
-      v      <- contextLore @Main
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) ([Message], Map Text Text)
+    go table = do
+      v      <- contextLore @Main table
       def    <- valueDefault v
       texts  <- entryTexts v
       pure (def, texts)
@@ -280,7 +366,7 @@ contextMentionFilterSpec = describe "contextMentionFilter (the default context.m
       , valueEntries = [("Aria", pure (leafValue [User "Aria is a wandering rogue."]))]
       , valueMeta = defaultMeta
       }
-    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) (Map Text Text)
-    go = do
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) (Map Text Text)
+    go _table = do
       v <- contextMentionFilter @Main (bval aliases)
       entryTexts v

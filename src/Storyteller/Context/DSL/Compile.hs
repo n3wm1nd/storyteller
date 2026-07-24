@@ -55,6 +55,7 @@ module Storyteller.Context.DSL.Compile
   , fn1
   , fn2
   , Env
+  , Library
   , DSLFilter
   , FilterRegistry
   , coreFilters
@@ -74,6 +75,7 @@ module Storyteller.Context.DSL.Compile
   , journalDelta
   , readConversation
   , embedShallow
+  , hostLibrary
   ) where
 
 import Control.Monad (foldM, when)
@@ -113,10 +115,22 @@ import Storyteller.Writer.Types (Character(..))
 
 -- | 'Binding'\/'bval'\/'fn1'\/'fn2' now live in
 --   "Storyteller.Context.DSL.Value" (re-exported here for every existing
---   caller) -- moved so 'Storyteller.Context.DSL.Value.ContextLibrary' can
---   hold compiled 'Binding's directly without a module cycle; see that
---   module's own Haddock on 'Binding'.
+--   caller) -- moved so a library table (see 'Library') can hold compiled
+--   'Binding's directly without a module cycle; see that module's own
+--   Haddock on 'Binding'.
 type Env r = Map Name (Binding r)
+
+-- | The compile-time table an in-progress 'definitionBinding' call closes
+--   over -- "the library as it stood just before this slot," per
+--   'Storyteller.Core.Context.buildContextLibrary's fixed fold order. Kept
+--   as a separate parameter from 'Env' throughout this module rather than
+--   merged into it: 'Env' genuinely varies per call (fresh @args@\/@scope@
+--   each time a 'Binding' runs), while this table is fixed once, for the
+--   lifetime of whatever 'Binding' closure it was compiled into -- merging
+--   the two would blur "resolved once, at compile time" with "rebuilt on
+--   every call," which is exactly the distinction that makes self-reference
+--   resolve to the *previous* binding rather than looping into itself.
+type Library r = Map Name (Binding r)
 
 -- ---------------------------------------------------------------------------
 -- Building a Reader scope from a commit
@@ -172,17 +186,18 @@ treeValueOfCommit commit = do
 --   up with exactly the type shape a hand-written agent already has").
 compileDefinition
   :: Member Fail r
-  => Definition
+  => Library r        -- ^ compile-time table, fixed for this definition's whole body
+  -> Definition
   -> Value r          -- ^ initial ambient Reader scope
   -> [Binding r]      -- ^ arguments, matched against 'defParams'
   -> Action r (Value r)
-compileDefinition def scope args
+compileDefinition lib def scope args
   | length args /= length (defParams def) = fail $
       "arity mismatch: " <> show (length (defParams def)) <> " parameter(s), "
         <> show (length args) <> " argument(s) given"
   | otherwise = do
       let env = Map.fromList (zip (defParams def) args)
-      mkValue <$> runStmts env scope (defBody def)
+      mkValue <$> runStmts lib env scope (defBody def)
 
 mkValue :: ([Message], [(Name, Action r (Value r))]) -> Value r
 mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
@@ -192,11 +207,20 @@ mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
 --   not 'runDefinition''s own fresh 'currentScope') -- what
 --   'Storyteller.Core.Context.buildContextLibrary' uses to turn each
 --   pure-DSL entry (branch-committed or compiled-in) into the same
---   'Binding' shape a host-backed library entry already is, so
---   'Storyteller.Context.DSL.Value.ContextLibrary' can hold both
---   uniformly -- see that type's own Haddock.
-definitionBinding :: Member Fail r => Definition -> Binding r
-definitionBinding def = Binding (length (defParams def)) (\args scope -> compileDefinition def scope (map bval args))
+--   'Binding' shape a host-backed library entry already is, so both sit in
+--   the same table uniformly.
+--
+--   @lib@ is "the table as it stood immediately before this definition's
+--   own slot" in 'Storyteller.Core.Context.buildContextLibrary's fixed
+--   compile order -- baked into the returned 'Binding''s closure once,
+--   here, never consulted again afterwards. Every 'EIdent'\/'EApp' inside
+--   @def@'s own body resolves against *this* @lib@, so a self-reference
+--   (an override calling its own name) resolves to whatever that name
+--   meant before the override took effect, and a name with no earlier
+--   binding at all is a compile-time failure -- not a runtime lookup
+--   against whatever the table has *since* become.
+definitionBinding :: Member Fail r => Library r -> Definition -> Binding r
+definitionBinding lib def = Binding (length (defParams def)) (\args scope -> compileDefinition lib def scope (map bval args))
 
 -- | Combines a newly-produced entry list with what's already
 --   accumulated -- @new@'s own values win on a key collision (matching
@@ -220,33 +244,33 @@ unionEntries new old =
 --   call already threads (see their cases below).
 runStmts
   :: Member Fail r
-  => Env r -> Value r -> Block
+  => Library r -> Env r -> Value r -> Block
   -> Action r ([Message], [(Name, Action r (Value r))])
-runStmts env0 scope0 = go env0 scope0 [] []
+runStmts lib env0 scope0 = go env0 scope0 [] []
   where
     go _ _ msgs entries [] = pure (concat (reverse msgs), entries)
     go env scope msgs entries (Located _ (SExpr e) : rest) = do
-      v <- evalExpr env scope e
+      v <- evalExpr lib env scope e
       m <- valueDefault v
       go env scope (m : msgs) entries rest
     go env scope msgs entries (Located pos (SAs nameE body) : rest) = do
-      name <- nameOf env scope nameE
+      name <- nameOf lib env scope nameE
       when (any ((== name) . fst) entries) $
         fail $ "duplicate 'as' name " <> show name <> " at line " <> show (posLine pos)
-      let entryAction = mkValue <$> runStmts env scope body
+      let entryAction = mkValue <$> runStmts lib env scope body
       go env scope msgs (entries ++ [(name, entryAction)]) rest
     go env scope msgs entries (Located _ (SLet name mParams body) : rest) =
       let binding = case mParams of
-            Nothing -> bval (mkValue <$> runStmts env scope body)
+            Nothing -> bval (mkValue <$> runStmts lib env scope body)
             Just ps -> Binding (length ps) $ \args callerScope ->
-              mkValue <$> runStmts (bindParams ps args env) callerScope body
+              mkValue <$> runStmts lib (bindParams ps args env) callerScope body
       in go (Map.insert name binding env) scope msgs entries rest
     go env scope msgs entries (Located _ (SIn e body) : rest) = do
-      newScope <- evalExpr env scope e
-      (m, es) <- runStmts env newScope body
+      newScope <- evalExpr lib env scope e
+      (m, es) <- runStmts lib env newScope body
       go env scope (m : msgs) (unionEntries es entries) rest
     go env scope msgs entries (Located pos (SFor var srcExpr body) : rest) = do
-      srcVal <- evalExpr env scope srcExpr
+      srcVal <- evalExpr lib env scope srcExpr
       let matches = map fst (valueEntries srcVal)
       (m, es) <- foldM (runOneIteration pos var body) ([], entries) matches
       go env scope (m : msgs) es rest
@@ -263,7 +287,7 @@ runStmts env0 scope0 = go env0 scope0 [] []
         runOneIteration p var' body' (msgsAcc, entriesAcc) matchedPath = do
           let loopVar = Value (pure [User matchedPath]) [(matchedPath, forceAt scope matchedPath)] defaultMeta
               env'    = Map.insert var' (bval (pure loopVar)) env
-          (m1, es1) <- runStmts env' scope body'
+          (m1, es1) <- runStmts lib env' scope body'
           case filter ((`elem` map fst entriesAcc) . fst) es1 of
             ((dup, _) : _) -> fail $ "duplicate 'as' name " <> show dup
                                 <> " across for-loop iterations, near line " <> show (posLine p)
@@ -275,18 +299,18 @@ bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env 
 
 -- | Resolves an identifier against the current definition's own local
 --   'Env' first (parameters, @let@s, @for@-loop variables), falling back
---   to the shared library table ('lookupLibrary') only on a local miss --
---   the same shadowing a local variable would give a same-named library
---   entry in any ordinary language. A library 'Binding' -- pure-DSL or
---   host-backed alike -- already takes the *caller's own* ambient scope
---   (never a fresh 'currentScope') when it's pure-DSL, by construction of
---   however 'Storyteller.Core.Context.buildContextLibrary' compiled it --
---   see 'ContextLibrary's own Haddock for why that's what makes a library
---   reference behave indistinguishably from a local one.
-resolveIdent :: Member Fail r => Env r -> Name -> Action r (Binding r)
-resolveIdent env name = case Map.lookup name env of
+--   to the compile-time-fixed library table only on a local miss -- the
+--   same shadowing a local variable would give a same-named library entry
+--   in any ordinary language. @lib@ is never rebuilt or looked up again
+--   after 'definitionBinding' closes over it -- see that function's own
+--   Haddock -- so a name this definition's body references either was
+--   already compiled (into @lib@) before this definition's own slot, or
+--   fails to resolve here, at compile time, rather than being deferred to
+--   a runtime lookup against a table that might have changed since.
+resolveIdent :: Member Fail r => Library r -> Env r -> Name -> Action r (Binding r)
+resolveIdent lib env name = case Map.lookup name env of
   Just b  -> pure b
-  Nothing -> lookupLibrary name >>= \case
+  Nothing -> case Map.lookup name lib of
     Just b  -> pure b
     Nothing -> fail $ "unknown identifier: " <> T.unpack name
 
@@ -300,29 +324,29 @@ resolveIdent env name = case Map.lookup name env of
 --   the one primitive whose argument has no other sensible meaning than
 --   a path, so an unbound bare token there still means something, rather
 --   than being definitely a mistake.
-tryResolveIdent :: Env r -> Name -> Action r (Maybe (Binding r))
-tryResolveIdent env name = case Map.lookup name env of
+tryResolveIdent :: Library r -> Env r -> Name -> Action r (Maybe (Binding r))
+tryResolveIdent lib env name = case Map.lookup name env of
   Just b  -> pure (Just b)
-  Nothing -> lookupLibrary name
+  Nothing -> pure (Map.lookup name lib)
 
-nameOf :: Member Fail r => Env r -> Value r -> Expr -> Action r Name
-nameOf env scope e = do
-  v <- evalExpr env scope e
+nameOf :: Member Fail r => Library r -> Env r -> Value r -> Expr -> Action r Name
+nameOf lib env scope e = do
+  v <- evalExpr lib env scope e
   messagesText <$> valueDefault v
 
-evalExpr :: Member Fail r => Env r -> Value r -> Expr -> Action r (Value r)
-evalExpr env scope e = case e of
-  EString Quoted parts -> leafValue . (: []) . User <$> interpText env scope parts
-  EString Bare   parts -> interpText env scope parts >>= globResolve scope
+evalExpr :: Member Fail r => Library r -> Env r -> Value r -> Expr -> Action r (Value r)
+evalExpr lib env scope e = case e of
+  EString Quoted parts -> leafValue . (: []) . User <$> interpText lib env scope parts
+  EString Bare   parts -> interpText lib env scope parts >>= globResolve scope
   EAssistant inner -> do
-    v    <- evalExpr env scope inner
+    v    <- evalExpr lib env scope inner
     msgs <- valueDefault v
     pure v { valueDefault = pure (map (Assistant . messageText) msgs) }
   EUser inner -> do
-    v    <- evalExpr env scope inner
+    v    <- evalExpr lib env scope inner
     msgs <- valueDefault v
     pure v { valueDefault = pure (map (User . messageText) msgs) }
-  EIdent name -> resolveIdent env name >>= \case
+  EIdent name -> resolveIdent lib env name >>= \case
     Binding 0 fn    -> fn [] scope
     Binding arity _ -> fail $
       T.unpack name <> " needs " <> show arity <> " argument(s), used with none"
@@ -351,11 +375,11 @@ evalExpr env scope e = case e of
   -- unchanged.
   ERead argExpr -> do
     v <- case argExpr of
-      EString _ parts -> interpText env scope parts >>= globResolve scope
-      EIdent name -> tryResolveIdent env name >>= \case
-        Just _  -> evalExpr env scope argExpr
+      EString _ parts -> interpText lib env scope parts >>= globResolve scope
+      EIdent name -> tryResolveIdent lib env name >>= \case
+        Just _  -> evalExpr lib env scope argExpr
         Nothing -> globResolve scope name
-      _ -> evalExpr env scope argExpr
+      _ -> evalExpr lib env scope argExpr
     if null (valueEntries v)
       then pure v
       else do
@@ -363,10 +387,10 @@ evalExpr env scope e = case e of
         combined <- concat <$> mapM valueDefault forced
         pure v { valueDefault = pure combined }
   EApp headE argEs -> do
-    let args = map (evalExpr env scope) argEs
+    let args = map (evalExpr lib env scope) argEs
     case headE of
       EIdent name -> do
-        Binding arity fn <- resolveIdent env name
+        Binding arity fn <- resolveIdent lib env name
         when (length args /= arity) $ fail $
           T.unpack name <> ": expected " <> show arity <> " argument(s), got " <> show (length args)
         fn args scope
@@ -385,20 +409,20 @@ evalExpr env scope e = case e of
   -- and once matched keys are genuinely gone, a subsequent @for@\/glob
   -- over the result can't resurrect them the way it used to.
   EFilter inner "without" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+    v    <- evalExpr lib env scope inner
+    args <- mapM (evalExpr lib env scope) argEs
     shrinkEntries (==) False v args
   EFilter inner "only" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+    v    <- evalExpr lib env scope inner
+    args <- mapM (evalExpr lib env scope) argEs
     shrinkEntries (==) True v args
   EFilter inner "exclude" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+    v    <- evalExpr lib env scope inner
+    args <- mapM (evalExpr lib env scope) argEs
     shrinkEntries globMatches False v args
   EFilter inner "latest" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+    v    <- evalExpr lib env scope inner
+    args <- mapM (evalExpr lib env scope) argEs
     case args of
       [nArg] -> do
         nMsgs <- valueDefault nArg
@@ -421,11 +445,11 @@ evalExpr env scope e = case e of
   -- way; this is that same fallback, just called with the piped value
   -- prepended to whatever explicit arguments followed the pipe.
   EFilter inner name argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+    v    <- evalExpr lib env scope inner
+    args <- mapM (evalExpr lib env scope) argEs
     case Map.lookup name coreFilters of
       Just impl -> impl v args
-      Nothing   -> resolveIdent env name >>= \case
+      Nothing   -> resolveIdent lib env name >>= \case
         Binding arity fn
           | arity /= 1 + length args -> fail $
               T.unpack name <> ": expected " <> show (arity - 1)
@@ -459,11 +483,11 @@ shrinkEntries matches keep v args = do
 -- | Resolves every @%name%@ span against 'env' (a local binding's own
 --   plain text -- see 'Storyteller.Context.DSL.Value.messagesText'),
 --   leaving literal spans untouched.
-interpText :: Member Fail r => Env r -> Value r -> InterpText -> Action r Text
-interpText env scope = fmap T.concat . mapM part
+interpText :: Member Fail r => Library r -> Env r -> Value r -> InterpText -> Action r Text
+interpText lib env scope = fmap T.concat . mapM part
   where
     part (Lit t)    = pure t
-    part (Interp n) = messagesText <$> (valueDefault =<< evalExpr env scope (EIdent n))
+    part (Interp n) = messagesText <$> (valueDefault =<< evalExpr lib env scope (EIdent n))
 
 -- | @read@'s own path resolution: a flat scope (a branch tree or a glob
 --   result -- see 'treeValueOfCommit') stores full paths as its own
@@ -880,6 +904,48 @@ injectShallow isTurnStart lo hi toInsert history
     boundary = MessageWindow.windowBoundary lo hi total
     (before, after) = splitAt (turnIdxs !! boundary) history
 
+-- | Host-backed library entries -- real Haskell closures, never
+--   expressible as parsed DSL text, so they can never be branch-
+--   overridden. Seeds the compile-time table
+--   'Storyteller.Core.Context.buildContextLibrary' folds
+--   'Storyteller.Context.DSL.Library.defaultLibraryOrder' on top of (so any
+--   default\/override slot can reference a host name immediately -- safe,
+--   since a host binding never itself references another library name),
+--   resolved the identical way by this module's own 'EIdent'\/'EApp' -- a
+--   DSL body referencing @readconversation@ can't tell it apart from a
+--   bare reference to @lore@.
+--
+--   Also what a @['dsl'| ... |]@-spliced definition compiles against (see
+--   "Storyteller.Context.DSL.QQ"): safe there for the same reason it's
+--   safe as a fold seed -- a host binding's own body never references
+--   another library name, so handing an isolated snippet nothing but this
+--   table still lets it reach @branch@\/@charactersin@\/... while
+--   correctly failing to resolve any project- or default-library name it
+--   has no compile-order relationship to.
+--
+--   Lives here, not in "Storyteller.Context.DSL.Library" (its historical
+--   home) -- moved so 'Storyteller.Context.DSL.QQ' can import it directly
+--   without a module cycle ("Storyteller.Context.DSL.Library" itself
+--   imports "Storyteller.Context.DSL.QQ" for 'dsl'\/'defQuote').
+--   Re-exported from "Storyteller.Context.DSL.Library" for every existing
+--   caller.
+hostLibrary :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r => Library r
+hostLibrary = Map.fromList
+  [ ("readconversation", readConversation @branch)
+  , ("embedshallow",     embedShallow)
+  , ("branch",           branchBinding @branch)
+  , ("charactersin",     charactersInBinding @branch)
+  -- | The ambient character-context journal curation, pre-configured --
+  --   'journalDelta''s own Haskell-level @lookback@\/@maxOut@\/@padding@
+  --   tuning is genuine per-caller parametricity (see its own haddock), so
+  --   it stays a host 'Binding', never expressible as parsed DSL text --
+  --   but the *numbers themselves* are this application's one shared
+  --   default (formerly 'Server.Writer.File.activeCharacterContext''s own
+  --   constants), not something 'Storyteller.Context.DSL.Library.contextCharacterDef'
+  --   should have to take as a parameter just to reference it by name.
+  , ("characterJournal", journalDelta @branch (JournalCuration 30 10 2))
+  ]
+
 -- | The Reader scope for wherever this 'Action' is actually run --
 --   'Storyteller.Core.ContentEffects.currentHead', read straight off the
 --   ambient position, no 'Storyteller.Core.Types.BranchName' or lookup
@@ -894,5 +960,12 @@ currentScope = liftSem (currentHead @branch) >>= treeValueOfCommit @branch
 --   machinery this assembles. Still fully generic: the concrete backend
 --   only enters when the returned 'Action' is finally run via
 --   'Storyteller.Context.DSL.Value.runAction'.
-runDefinition :: forall branch r. Members '[TreeAccess branch, Fail] r => Definition -> [Binding r] -> Action r (Value r)
-runDefinition def args = currentScope @branch >>= \scope -> compileDefinition def scope args
+--
+--   @lib@ is the compile-time table @def@'s own body resolves any
+--   cross-definition reference against (see 'definitionBinding') --
+--   passed @Map.empty@ by @[dsl| |]@-spliced callers (see
+--   "Storyteller.Context.DSL.QQ"), since a quasiquoted definition is
+--   always a self-contained leaf, never referencing another named library
+--   entry.
+runDefinition :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Definition -> [Binding r] -> Action r (Value r)
+runDefinition lib def args = currentScope @branch >>= \scope -> compileDefinition lib def scope args
