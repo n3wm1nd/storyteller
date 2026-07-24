@@ -49,8 +49,10 @@ module Storyteller.Context.DSL.Library
   ( contextStyle
   , loreEntry
   , contextLore
+  , contextLoreWithout
   , chapterEntry
   , contextChapters
+  , contextChaptersWithout
   , chapterEntryCompressed
   , contextChaptersCompressed
   , contextOther
@@ -165,6 +167,48 @@ for f in lore/**/*:
 contextLore :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
 contextLore lib = runDefinition @branch lib contextLoreDef []
 
+-- | 'contextLoreDef', minus one path -- what 'contextWriterDef' actually
+--   calls, so the file currently being written never shows up twice (once
+--   here, once as 'Storyteller.Writer.Agent.Write.writeAgent''s own
+--   current-file framing). Calls @context.lore@ by name first (so a
+--   project's own override is seen, same discipline every other
+--   composition in this module follows -- see 'contextWriterDef''s own
+--   Haddock on the bug a bare-alias shortcut here would reopen), then
+--   walks its entries excluding @path@, the same @for f in **\/*@
+--   reflatten 'contextChaptersWithoutDef' needs for the identical reason.
+--
+--   __Emits its own @"## Story background"@ banner unconditionally__,
+--   rather than relying on @context.lore@'s own default to carry one
+--   through: the reflatten below only ever sees @valueEntries@, never a
+--   source's own @valueDefault@ (where @contextLoreDef@'s banner actually
+--   lives), so nothing would announce this section at all otherwise --
+--   the model would just see file content with no framing for what it's
+--   looking at. Restating the *label* here (not the content) is a small,
+--   deliberate exception to this module's usual "never restate another
+--   definition's own text" discipline -- every result of this walk needs a
+--   description one way or another, and there's no other honest place
+--   left to put it once the wrap discards the source's own default.
+--
+--   __On a bare, entry-less override__: @for@ only ever walks
+--   @valueEntries@, so an override with no per-file structure of its own
+--   (a plain string, say) produces nothing beyond the banner here, not
+--   "the override minus one file." This is the honest answer, not a
+--   defect to work around -- an override that never exposed file
+--   boundaries has nothing for "exclude one file" to mean in the first
+--   place; falling back to some other behavior would be guessing on the
+--   override author's behalf. A project wanting @context.lore@ overridden
+--   *and* path-exclusion-aware writes its override with real per-file
+--   entries (@for@\/@as@), the same shape 'contextLoreDef' itself uses.
+contextLoreWithoutDef :: Definition
+contextLoreWithoutDef = [defQuote|
+path:
+  "## Story background"
+  in (context.lore | exclude(path)): read **/*
+|]
+
+contextLoreWithout :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+contextLoreWithout lib p = runDefinition @branch lib contextLoreWithoutDef [toBinding p]
+
 -- | Describes one chapter -- a @User@ header immediately followed by its
 --   content re-tagged @Assistant@ (@> read f@, per
 --   'Storyteller.Context.DSL.AST.EAssistant''s own haddock) -- the exact
@@ -234,6 +278,26 @@ in (x | sortBy):
 
 contextChapters :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
 contextChapters lib = runDefinition @branch lib contextChaptersDef []
+
+-- | 'contextChaptersDef', minus one path -- 'contextLoreWithout''s own
+--   twin, same reasoning throughout (see its Haddock): calls
+--   @context.chapters@ by name so a project's own override is seen, walks
+--   its entries excluding @path@ via a bare multi-match @read@ (equivalent
+--   to, and simpler than, an explicit @for f in **\/*: read f@ -- see
+--   CONTEXT-DSL.md's own worked example on @read@ over a glob), and emits
+--   its own @"## Chapters written so far"@ banner unconditionally, for the
+--   identical reason 'contextLoreWithoutDef' emits its own: the reflatten
+--   only ever sees entries, never @context.chapters@'s own default, where
+--   that banner actually lives.
+contextChaptersWithoutDef :: Definition
+contextChaptersWithoutDef = [defQuote|
+path:
+  "## Chapters written so far"
+  in (context.chapters | exclude(path)): read **/*
+|]
+
+contextChaptersWithout :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+contextChaptersWithout lib p = runDefinition @branch lib contextChaptersWithoutDef [toBinding p]
 
 -- | 'contextChaptersDef', but each chapter's body read through
 --   @summarized(f, "prose")@ instead of @read f@ -- the
@@ -355,35 +419,42 @@ contextOther lib p = runDefinition @branch lib contextOtherDef [toBinding p]
 --
 --   @path@ is this definition's only real parameter, for the same reason
 --   it's 'contextOther''s: everything else is a fact about the branch,
---   resolved through the shared library. Excluding @path@ from
---   @context.chapters@ needs the walk-and-reflatten form (an @exclude@
---   only shrinks entries, so it can't act on 'contextChapters''s own
---   already-built default) -- deliberately *not* repeating
---   @contextChapters@'s own @"## Chapters written so far"@ banner here:
---   that text belongs to @contextChapters@, and restating it would be
---   exactly the drift risk this whole module exists to avoid. The
---   transition from @contextLore@'s own heading into each chapter's own
---   @"## Chapter: %f%"@ header is enough structure on its own.
+--   resolved through the shared library. Calls @context.loreWithout@\/
+--   @context.chaptersWithout@ -- not @context.lore@\/@context.chapters@
+--   wrapped at this call site -- to drop @path@ from each: the file
+--   currently being written must never appear in either section, since
+--   'Storyteller.Writer.Agent.Write.writeAgent' already frames it
+--   separately as the file being continued (via 'Storage.Tick.fileTicksOf'
+--   in its own current-file history). An earlier version of this fix tried
+--   wrapping the already-resolved @context.lore@\/@context.chapters@
+--   values inline (@in (context.lore | exclude(path)): for f in **\/*:
+--   read f@) -- that silently discarded a project's own override of
+--   either name whenever the override had no per-file entries of its own
+--   (a bare custom string, say): @for@ only ever walks @valueEntries@,
+--   never a source's own @valueDefault@, so an entry-less value's entire
+--   content vanished. 'contextLoreWithoutDef'\/'contextChaptersWithoutDef'
+--   build their own entries directly off the glob instead (@exclude@
+--   applied before 'loreEntry'\/'chapterEntry' ever run), so there is no
+--   opaque already-resolved 'Value' to misjudge -- see their own Haddocks.
 --
---   References @context.lore@\/@context.chapters@\/@context.other@ by
---   their dotted names, not the bare aliases those definitions used to be
---   reachable under too -- this used to be the one real, confirmed gap
---   'characterBlurb''s own haddock called out: a project committing an
---   override to any of those three, however correctly, was silently
---   never seen by this composition, the identical bug @character.blurb@
---   had before it got the same fix. Closing it here meant dropping the
---   bare aliases from 'defaultLibrarySource' entirely, not just adding the
---   dotted reference alongside the old one -- two keys pointing at one
---   'Definition' don't move together under a single override (see
---   'contextCharacterDef''s own haddock on why), so leaving a bare alias
---   registered would have left the same silent-miss risk sitting one key
---   away.
+--   References @context.loreWithout@\/@context.chaptersWithout@\/
+--   @context.other@ by their dotted names, not the bare aliases those
+--   definitions used to be reachable under too -- this used to be the one
+--   real, confirmed gap 'characterBlurb''s own haddock called out: a
+--   project committing an override to any of those three, however
+--   correctly, was silently never seen by this composition, the identical
+--   bug @character.blurb@ had before it got the same fix. Closing it here
+--   meant dropping the bare aliases from 'defaultLibrarySource' entirely,
+--   not just adding the dotted reference alongside the old one -- two keys
+--   pointing at one 'Definition' don't move together under a single
+--   override (see 'contextCharacterDef''s own haddock on why), so leaving
+--   a bare alias registered would have left the same silent-miss risk
+--   sitting one key away.
 contextWriterDef :: Definition
 contextWriterDef = [defQuote|
 path:
-  context.lore
-  in (context.chapters | exclude(path)):
-    for f in **/*: read f
+  context.loreWithout path
+  context.chaptersWithout path
   context.other path
   for c in (charactersin path):
     x = context.character c
@@ -662,15 +733,17 @@ defaultLibraryOrder :: [(Name, Definition)]
 defaultLibraryOrder =
   [ ("loreEntry",         loreEntryDef)
   , ("context.lore",      contextLoreDef)
+  , ("context.loreWithout", contextLoreWithoutDef)  -- needs loreEntry (above)
   , ("chapterEntry",      chapterEntryDef)
   , ("context.chapters",  contextChaptersDef)
+  , ("context.chaptersWithout", contextChaptersWithoutDef)  -- needs chapterEntry (above)
   , ("chapterEntryCompressed",     chapterEntryCompressedDef)
   , ("context.chaptersCompressed", contextChaptersCompressedDef)
   , ("context.other",     contextOtherDef)
   , ("context.style",     contextStyleDef)
   , ("character.blurb",   characterBlurbDef)
   , ("context.character", contextCharacterDef)  -- needs character.blurb (above), characterJournal (hostLibrary)
-  , ("context.writer",    contextWriterDef)     -- needs context.lore/chapters/other/character (all above)
+  , ("context.writer",    contextWriterDef)     -- needs context.loreWithout/chaptersWithout/other/character (all above)
   ]
 
 -- | 'defaultLibraryOrder', as the plain 'Map' shape callers that only care

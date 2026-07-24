@@ -91,7 +91,7 @@ clientSubmittedContextProgramSpec = describe "a client-submitted context.writer 
       runBranchAndFS @Main (BranchName "main") $ do
         writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) "target.md"
         renderText <$> runContextValue @Main (renderContext writerV))
-    `shouldBe` Right "## Story background\n\n## lore/notes.md\n\na hand-authored note\n\n## Other notes"
+    `shouldBe` Right "## Story background\n\n## lore/notes.md\n\na hand-authored note\n\n## Chapters written so far\n\n## Other notes"
 
   it "a client program staged via setContextOverride replaces the default completely, seeded lore included" $
     run (testStack $ do

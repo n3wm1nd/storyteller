@@ -101,13 +101,24 @@ export function ContextStrip({ path, onOpenPanel }: ContextStripProps) {
 
   const resetToDefault = useCallContext((s) => s.resetToDefault);
   const setLoreEnabled = useCallContext((s) => s.setLoreEnabled);
+  const resetLore = useCallContext((s) => s.resetLore);
   const setPastChaptersMode = useCallContext((s) => s.setPastChaptersMode);
   const removePinnedProgram = useCallContext((s) => s.removePinnedProgram);
 
   const chips = useMemo(() => {
     const out: React.ReactNode[] = [];
 
-    if (edits.loreEnabled !== DEFAULT_EDITS.loreEnabled) {
+    if (edits.loreOverride !== null) {
+      out.push(
+        <Chip
+          key="lore"
+          icon={<BookOpen style={{ width: 10, height: 10 }} />}
+          label={edits.loreOverrideHandEdited ? "Story lore: custom" : "Story lore: partial"}
+          tone="added"
+          onRemove={() => resetLore(path)}
+        />,
+      );
+    } else if (edits.loreEnabled !== DEFAULT_EDITS.loreEnabled) {
       out.push(
         <Chip
           key="lore"
@@ -154,7 +165,7 @@ export function ContextStrip({ path, onOpenPanel }: ContextStripProps) {
       );
     }
     return out;
-  }, [edits, mentionIds, characterBranches, path, setLoreEnabled, setPastChaptersMode, removePinnedProgram]);
+  }, [edits, mentionIds, characterBranches, path, setLoreEnabled, resetLore, setPastChaptersMode, removePinnedProgram]);
 
   const isPureDefault = !dirty;
 

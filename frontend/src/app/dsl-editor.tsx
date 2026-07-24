@@ -15,11 +15,16 @@
 // existing saved snippet (via the library below) shows its source,
 // editable in place -- "Save" then writes back to the same name.
 //
-// The editor itself is a plain textarea with monospace, no syntax
-// highlighting -- the DSL is small enough that a real highlighter
-// (CodeMirror etc.) isn't justified here.
+// The editor is a CodeMirror instance (code-cost-editor.tsx) with a
+// gutter showing each statement's own measured cost inline, next to its
+// source line -- fed by the same `context.cost.adhoc` command
+// context-cost-sidebar.tsx's per-snippet breakdown already used
+// (Storyteller.Writer.Agent.ContextCost.buildAdhocProgramCosts). One
+// connection per mounted editor, opened lazily on first edit and closed
+// on unmount -- same lifecycle convention as the sidebar's own
+// usePinnedSnippetCosts.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Save, RefreshCw, AlertCircle, Check } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
 import {
@@ -27,15 +32,22 @@ import {
   slugifyFunctionName, isValidFunctionName,
 } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
+import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
 
 interface DSLEditorProps {
   path: string;
+  // The branch the snippet is estimated against — same branch a real
+  // pinned-program resolution would run on. Falls back to no live cost
+  // estimate (gutter stays blank) when absent, e.g. before a branch
+  // connection is established.
+  branch?: string | null;
 }
 
 const BLANK_STARTER = `"the rules of magic"\n`;
 
-export function DSLEditor({ path }: DSLEditorProps) {
+export function DSLEditor({ path, branch }: DSLEditorProps) {
   const addPinnedProgram = useCallContext((s) => s.addPinnedProgram);
+  const fetchCosts = useAdhocCostFetcher(branch);
 
   const [draft, setDraft] = useState<string>(BLANK_STARTER);
   const [loadedName, setLoadedName] = useState<string | null>(null);
@@ -45,8 +57,8 @@ export function DSLEditor({ path }: DSLEditorProps) {
   const [namePromptOpen, setNamePromptOpen] = useState(false);
   const [rawName, setRawName] = useState("");
 
-  function onChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    setDraft(e.target.value);
+  function onChange(next: string) {
+    setDraft(next);
     setDirty(true);
   }
 
@@ -169,23 +181,18 @@ export function DSLEditor({ path }: DSLEditorProps) {
         </div>
       )}
 
-      <textarea
+      <CodeCostEditor
         value={loading ? "Loading…" : draft}
         onChange={onChange}
         disabled={loading || saving}
-        spellCheck={false}
-        placeholder={`# A 0-arity Context DSL snippet.\n# See CONTEXT-DSL.md for the full syntax.`}
-        style={{
-          width: "100%", minHeight: 160, maxHeight: 320, resize: "vertical",
-          padding: "6px 8px", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5,
-          background: "var(--card)", color: "var(--foreground)",
-          border: "1px solid var(--border-subtle)", borderRadius: 5, outline: "none",
-        }}
+        placeholder="# A 0-arity Context DSL snippet.&#10;# See CONTEXT-DSL.md for the full syntax."
+        fetchCosts={fetchCosts}
       />
       <div style={{ fontSize: 9.5, color: "var(--text-ghost)", lineHeight: 1.4 }}>
         Saved snippets are stored on the <code>contexts</code> branch as <code>context/&lt;name&gt;.dsl</code>,
         and are 0-arity -- one self-contained piece of content, folded into this call's pinned content by name.
-        Loading a snippet from the library below replaces this draft.
+        Loading a snippet from the library below replaces this draft. The gutter on the left shows each
+        line's own measured cost (ablation-estimated, see context-cost-sidebar.tsx's own note on the method).
       </div>
     </div>
   );

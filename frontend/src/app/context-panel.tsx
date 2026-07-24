@@ -29,17 +29,20 @@
 
 import { useEffect, useState } from "react";
 import {
-  BookOpen, FileText, X, Save, Code2, ChevronLeft,
+  BookOpen, FileText, X, Save, Code2, ChevronLeft, ChevronRight, Pencil, Check,
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
-import { DEFAULT_EDITS, type ContextEdits, type PastChaptersMode } from "@/lib/dslCompose";
+import { DEFAULT_EDITS, deriveLoreOverride, renderLoreProgram, type PastChaptersMode } from "@/lib/dslCompose";
 import { writeContextFunction, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
 import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
+import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
+import { useLoreTree, flattenLore } from "./lore-selector";
 
 interface ContextPanelProps {
   path: string;
+  branch: string;
   onClose: () => void;
 }
 
@@ -75,6 +78,185 @@ function ToggleRow({
         </span>
       </span>
     </label>
+  );
+}
+
+// ─── Lore row (toggle + inline expandable override editor) ───────────────
+
+// "Story lore" isn't just an on/off switch -- clicking the row's own label
+// (not the checkbox) expands it into a real CodeMirror editor over this
+// call's `context.lore` override (see dslCompose.ts's `loreOverride`
+// field/`synthesizeLoreOverride`). What it's editing is always explicit:
+// the section header inside the expansion names the exact wire field
+// (`lore`) this text becomes, so there's no ambiguity with the DSL
+// editor below, which only ever edits pinned snippets. Starts from the
+// compiled-in default's own source when there's nothing written yet, so
+// "expand and edit" reads as "customize the default," not "start from
+// blank and guess the syntax."
+// "Story lore" is more than an on/off switch: expanding it (click the
+// label, not just the checkbox) shows one checkbox per real lore entry on
+// this branch (via useLoreTree -- the same live tree the Codex tab
+// browses), so a user can quickly narrow which files get included without
+// ever touching DSL syntax. Every checkbox click re-derives the
+// `loreOverride` program on the user's behalf (see
+// dslCompose.ts's deriveLoreOverride) and shows the generated code below,
+// live -- so "quick toggle" and "see/edit the code" are the same surface,
+// never two disconnected views that could drift. Once the user edits that
+// generated code directly, `loreOverrideHandEdited` latches true and the
+// checkboxes disable (a banner explains why) rather than silently
+// clobbering a hand-written program on the next click.
+function LoreRow({ path, branch }: { path: string; branch: string }) {
+  const edits = useCallContext((s) => s.files[path]) ?? DEFAULT_EDITS;
+  const setLoreEnabled = useCallContext((s) => s.setLoreEnabled);
+  const setLoreOverride = useCallContext((s) => s.setLoreOverride);
+  const toggleLorePath = useCallContext((s) => s.toggleLorePath);
+  const resetLore = useCallContext((s) => s.resetLore);
+  const [expanded, setExpanded] = useState(false);
+  const fetchCosts = useAdhocCostFetcher(expanded ? branch : null);
+  const loreTree = useLoreTree(expanded ? branch : null);
+  // The file currently being written is never a checkbox choice here --
+  // the server always excludes it from context.lore on its own (see
+  // Storyteller.Context.DSL.Library.contextLoreWithoutDef), since
+  // writeAgent already frames it separately as the file being continued.
+  // Offering it as an includable/excludable lore entry would be
+  // misleading either way: checked, it wouldn't actually add anything
+  // (already-excluded server-side); unchecked, there'd be nothing for
+  // toggling it to do.
+  const allEntries = flattenLore(loreTree).filter((e) => e.path !== path);
+  const allPaths = allEntries.map((e) => e.path);
+
+  const hasOverride = edits.loreOverride !== null;
+  const handEdited = edits.loreOverrideHandEdited;
+  // What the code editor shows: the user's own program if there is one,
+  // otherwise a live preview of "select everything" -- so opening the
+  // editor for the first time never starts from a blank, unexplained box.
+  const draft = edits.loreOverride ?? (allPaths.length > 0 ? renderLoreProgram(allPaths) : "");
+
+  return (
+    <div style={{ borderRadius: 5, background: expanded ? "var(--card)" : "transparent", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input
+          type="checkbox"
+          checked={edits.loreEnabled}
+          onChange={(e) => setLoreEnabled(path, e.target.checked)}
+          style={{ accentColor: "var(--accent, var(--amber))", marginLeft: 4 }}
+        />
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? "Collapse" : "Choose which lore entries to include, or edit the block directly"}
+          style={{
+            display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0,
+            padding: "6px 4px", border: "none", background: "none", textAlign: "left", cursor: "pointer",
+            color: edits.loreEnabled ? "var(--foreground)" : "var(--text-dim)",
+          }}
+        >
+          <BookOpen style={{ width: 11, height: 11 }} />
+          <span>
+            <div style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+              Story lore
+              {hasOverride && (
+                <span style={{
+                  fontSize: 9, padding: "1px 5px", borderRadius: 7,
+                  background: "var(--accent-tint, var(--amber-tint))", color: "var(--accent, var(--amber))",
+                }}>
+                  {handEdited ? "custom" : `${allPaths.length - edits.excludedLorePaths.length}/${allPaths.length}`}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-ghost)" }}>
+              {hasOverride
+                ? (handEdited ? "Custom context.lore override for this call" : "Some entries excluded for this call")
+                : "Everything under lore/**"}
+            </div>
+          </span>
+          <ChevronRight style={{
+            width: 10, height: 10, marginLeft: "auto", flexShrink: 0,
+            transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s",
+          }} />
+        </button>
+      </div>
+
+      {expanded && (
+        <div style={{ padding: "0 6px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {allEntries.length === 0 ? (
+            <div style={{ fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic", padding: "2px 2px" }}>
+              {loreTree.length === 0 ? "Loading lore entries…" : "No lore entries on this branch yet."}
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 2px 4px" }}>
+                <span style={{ fontSize: 10, color: "var(--text-ghost)", flex: 1 }}>
+                  {allPaths.length - edits.excludedLorePaths.length} of {allPaths.length} included
+                </span>
+                {handEdited && (
+                  <span style={{ fontSize: 9.5, color: "var(--text-ghost)", fontStyle: "italic" }}>
+                    checkboxes disabled — editing directly below
+                  </span>
+                )}
+              </div>
+              <div style={{
+                display: "flex", flexDirection: "column", gap: 1, maxHeight: 130, overflowY: "auto",
+                border: "1px solid var(--border-subtle)", borderRadius: 5, padding: 3,
+              }}>
+                {allEntries.map((entry) => {
+                  const included = !edits.excludedLorePaths.includes(entry.path);
+                  return (
+                    <label
+                      key={entry.path}
+                      title={entry.path}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3,
+                        cursor: handEdited ? "default" : "pointer", opacity: handEdited ? 0.5 : 1,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={included}
+                        disabled={handEdited}
+                        onChange={() => toggleLorePath(path, allPaths, entry.path)}
+                        style={{ accentColor: "var(--accent, var(--amber))" }}
+                      />
+                      <span style={{
+                        fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        color: included ? "var(--foreground)" : "var(--text-ghost)",
+                      }}>
+                        {entry.path}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-ghost)",
+              padding: "2px 2px 5px",
+            }}>
+              <Pencil style={{ width: 9, height: 9 }} />
+              This call&apos;s <code style={{ fontFamily: "monospace" }}>lore</code> wire field, generated from the
+              checkboxes above — edit directly to take full control instead.
+            </div>
+            <CodeCostEditor
+              value={draft}
+              onChange={(next) => setLoreOverride(path, next.length > 0 ? next : null)}
+              placeholder='e.g. read "lore/**"'
+              fetchCosts={fetchCosts}
+              minHeight="90px"
+            />
+          </div>
+          {hasOverride && (
+            <button
+              onClick={() => resetLore(path)}
+              style={{ ...dialogBtnStyle, alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <Check style={{ width: 10, height: 10 }} /> Reset to default
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -154,9 +336,8 @@ const dialogBtnStyle: React.CSSProperties = {
 
 // ─── Main panel ───────────────────────────────────────────────────────────
 
-export function ContextPanel({ path, onClose }: ContextPanelProps) {
+export function ContextPanel({ path, branch, onClose }: ContextPanelProps) {
   const edits = useCallContext((s) => s.files[path]) ?? DEFAULT_EDITS;
-  const setLoreEnabled = useCallContext((s) => s.setLoreEnabled);
   const setPastChaptersMode = useCallContext((s) => s.setPastChaptersMode);
   const addPinnedProgram = useCallContext((s) => s.addPinnedProgram);
   const removePinnedProgram = useCallContext((s) => s.removePinnedProgram);
@@ -228,7 +409,7 @@ export function ContextPanel({ path, onClose }: ContextPanelProps) {
       <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px" }}>
         {view === "dsl" ? (
           // Layer 2 -- power-user
-          <PowerUserView path={path} />
+          <PowerUserView path={path} branch={branch} />
         ) : saveAsOpen ? (
           <SaveAsDialog onCancel={() => setSaveAsOpen(false)} onSave={handleSaveAs} />
         ) : (
@@ -237,13 +418,7 @@ export function ContextPanel({ path, onClose }: ContextPanelProps) {
             <section>
               <SectionLabel>Standing context</SectionLabel>
               <div style={{ display: "flex", flexDirection: "column" }}>
-                <ToggleRow
-                  icon={<BookOpen style={{ width: 11, height: 11 }} />}
-                  label="Story lore"
-                  hint="Everything under lore/**"
-                  checked={edits.loreEnabled}
-                  onChange={(v) => setLoreEnabled(path, v)}
-                />
+                <LoreRow path={path} branch={branch} />
                 <label style={{
                   display: "flex", alignItems: "center", gap: 8,
                   padding: "6px 4px", userSelect: "none",
@@ -349,10 +524,10 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ─── Power-user view (DSL editor + library) ───────────────────────────────
 
-function PowerUserView({ path }: { path: string }) {
+function PowerUserView({ path, branch }: { path: string; branch: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <DSLEditor path={path} />
+      <DSLEditor path={path} branch={branch} />
       <div>
         <SectionLabel>Saved snippets</SectionLabel>
         <ContextLibrary path={path} />

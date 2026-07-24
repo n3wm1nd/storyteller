@@ -177,13 +177,14 @@ function ContextAwareLoreCard({ entry, selectedFile }: {
   const [content, setContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
 
-  // Per-file context state for the badges.
-  const fileState = useCallContext((s) => (selectedFile ? s.files[selectedFile] : undefined));
+  // Per-file mention state for the badge -- the "extra files" pick-list
+  // concept this once also tracked (fileState.edits.extraFiles) doesn't
+  // exist any more (see dslCompose.ts's own header on the three-slot
+  // rollback): there's no per-file "+ added" state left for a lore card
+  // to reflect, only "@mentioned".
   const mentionIds = useCallContext((s) => (selectedFile ? s.mentions[selectedFile] ?? EMPTY_MENTIONS : EMPTY_MENTIONS));
   const requestMention = useUI((s) => s.requestMention);
 
-  const inExtraFiles = !!fileState && fileState.mode === "transient"
-    && fileState.edits.extraFiles.some((f) => f.path === entry.path);
   // A lore file is "@mentioned" if the composer's mention overlay
   // includes its path. mentionCharacterIds only catches character
   // branches today (see lib/mentions.ts's extractCharacterMentions),
@@ -228,12 +229,8 @@ function ContextAwareLoreCard({ entry, selectedFile }: {
         width: 190, borderRadius: 7,
         // The card's own border reflects its highest-priority state --
         // amber-dashed for "@mentioned" (matches the strip's transient
-        // tone), amber-solid for "+ added", subtle for plain auto.
-        border: mentioned
-          ? "1px dashed var(--amber)"
-          : inExtraFiles
-            ? "1px solid var(--amber)"
-            : "1px solid var(--border-subtle)",
+        // tone), subtle otherwise.
+        border: mentioned ? "1px dashed var(--amber)" : "1px solid var(--border-subtle)",
         background: "var(--card)",
         overflow: "hidden",
       }}
@@ -255,16 +252,11 @@ function ContextAwareLoreCard({ entry, selectedFile }: {
           }}>
             {basenameNoExt(entry.path)}
           </span>
-          {/* Status badge -- one of three states, in priority order. */}
+          {/* Status badge -- one of two states, in priority order. */}
           {mentioned ? (
             <span title="Currently @mentioned in the composer — included for this send only"
               style={badgeStyle("@")}>
               <Clock style={{ width: 8, height: 8 }} /> @
-            </span>
-          ) : inExtraFiles ? (
-            <span title="Explicitly added to context for this call"
-              style={badgeStyle("+")}>
-              +
             </span>
           ) : (
             <span title="Included by default (lore/** convention)"

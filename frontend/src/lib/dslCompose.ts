@@ -43,8 +43,30 @@ export interface ContextEdits {
   // -- "include lore, but not lore/battle-log.md (too long)". A positive
   // glob list (the synthesizer enumerates what's left), not a real
   // `exclude` filter -- `exclude` in this DSL can only neuter content to
-  // empty, never actually shrink a key set.
+  // empty, never actually shrink a key set. This is the checkbox list's own
+  // source of truth (see context-panel.tsx's LoreRow) -- `loreOverride`
+  // below is *derived* from it (via synthesizeLoreOverride/
+  // syncLoreOverrideFromCheckboxes) every time a checkbox changes, so
+  // re-opening the panel shows the right checkboxes back, not just an
+  // opaque already-generated program.
   excludedLorePaths: string[];
+  // The lore override's own real body, in the user's own words -- a bare
+  // 0-arity Context DSL program. Two ways it gets set: automatically,
+  // derived from `excludedLorePaths` whenever a checkbox changes (the fast
+  // path -- see syncLoreOverrideFromCheckboxes), or directly, by hand-
+  // editing the generated code in the panel's CodeMirror editor. `null`
+  // means "no custom program written yet" -- `loreEnabled` alone decides
+  // what gets sent in that case (the plain on/off toggle, the original,
+  // still-simplest case: nothing excluded, nothing hand-edited). A
+  // non-null value always wins over the toggle.
+  loreOverride: string | null;
+  // True once the user has hand-edited `loreOverride`'s text directly,
+  // rather than it only ever being a checkbox-derived synthesis. Once set,
+  // checkbox clicks stop silently overwriting the user's own edit (see
+  // LoreRow) -- editing always wins, per the explicit requirement that a
+  // user who wants to hand-write the program still can, without checkbox
+  // state clobbering it out from under them.
+  loreOverrideHandEdited: boolean;
   pastChaptersMode: PastChaptersMode;
   // Named Context DSL functions to fold into this call's pinned content --
   // e.g. ["rules.magic"]. Each is sent verbatim as one `pinnedPrograms`
@@ -56,6 +78,8 @@ export interface ContextEdits {
 export const DEFAULT_EDITS: ContextEdits = {
   loreEnabled: true,
   excludedLorePaths: [],
+  loreOverride: null,
+  loreOverrideHandEdited: false,
   pastChaptersMode: "full",
   pinnedProgramNames: [],
 };
@@ -66,6 +90,7 @@ export const DEFAULT_EDITS: ContextEdits = {
 export function isDirty(edits: ContextEdits): boolean {
   if (edits.loreEnabled !== DEFAULT_EDITS.loreEnabled) return true;
   if (edits.excludedLorePaths.length > 0) return true;
+  if (edits.loreOverride !== null) return true;
   if (edits.pastChaptersMode !== DEFAULT_EDITS.pastChaptersMode) return true;
   if (edits.pinnedProgramNames.length > 0) return true;
   return false;
@@ -73,22 +98,55 @@ export function isDirty(edits: ContextEdits): boolean {
 
 // ─── Synthesis ────────────────────────────────────────────────────────────
 
+// One `read "path"` statement per included file, in `loreEntry`'s own
+// "## Story background" + per-file shape (see
+// Storyteller.Context.DSL.Library's `contextLoreDef`) -- close enough to
+// the compiled-in default that a project reading the generated program
+// recognizes it immediately, without reproducing `loreEntry`'s own `as`
+// export (a per-call override has no name to export entries under -- see
+// CONTEXT-DSL.md's Worked examples on `for`/multi-`read` shape).
+//
+// Always generates real code, even for the full-selection case (unlike
+// deriveLoreOverride below, which treats "nothing excluded" as "don't
+// override at all") -- this is what the checkbox UI's code preview shows
+// so the editor is never left blank/placeholder text while the checkboxes
+// show everything selected; see LoreRow's own `draft` computation.
+export function renderLoreProgram(includedPaths: string[]): string {
+  if (includedPaths.length === 0) return '"" \n';
+  const reads = includedPaths.map((p) => `read "${p}"`).join("\n");
+  return `"## Story background"\n${reads}\n`;
+}
+
+// Called from the checkbox UI (context-panel.tsx's LoreRow), not from the
+// wire-composition path -- it needs the branch's live lore tree
+// (lib/lore-selector.tsx's useLoreTree) to know what "everything except
+// these" even means, and that's only available where a component is
+// already subscribed to it, not in fileview.actions.ts's plain,
+// hookless module. Every checkbox click re-derives `loreOverride` from
+// scratch and writes the result straight into callContextStore -- by the
+// time a command is actually sent, `loreOverride` already holds the
+// finished program (see synthesizeLoreOverride below, which just forwards
+// it).
+//
+// Unlike renderLoreProgram, deliberately returns null for the "nothing
+// excluded" case -- an untouched selection should stay "no override sent"
+// (the plain on/off toggle's own default posture), not a needlessly
+// synthesized program that happens to match the compiled-in default.
+export function deriveLoreOverride(allLorePaths: string[], excludedLorePaths: string[]): string | null {
+  if (excludedLorePaths.length === 0) return null; // nothing excluded -- fall back to the plain toggle
+  const included = allLorePaths.filter((p) => !excludedLorePaths.includes(p));
+  return renderLoreProgram(included);
+}
+
 // The lore override's own body -- a bare 0-arity Context DSL program
 // replacing `context.lore` for one call, or null when nothing about lore
 // has been touched (omit the wire field, server's compiled-in
-// `context.lore` runs).
-//
-// `excludedLorePaths` can't be expressed as a real `exclude` filter (see
-// this module's own header on why: `exclude` only neuters content to
-// empty, never shrinks a key set) -- Phase-1 only supports turning lore off
-// entirely via `loreEnabled`; per-path exclusion synthesis is deferred
-// until there's a glob primitive that can enumerate "everything except
-// these" without walking the lore tree client-side. The field stays in
-// `ContextEdits` so a future synthesizer can fill it in without a shape
-// change.
+// `context.lore` runs). `loreOverride` is already the finished program by
+// the time this runs (see deriveLoreOverride's own note) -- this function
+// only decides what "untouched" means for the plain on/off toggle, the
+// one case with no program at all.
 export function synthesizeLoreOverride(edits: ContextEdits): string | null {
-  if (edits.loreEnabled && edits.excludedLorePaths.length === 0) return null;
-  void edits.excludedLorePaths;
+  if (edits.loreOverride !== null) return edits.loreOverride;
   if (!edits.loreEnabled) return '"" \n';
   return null;
 }

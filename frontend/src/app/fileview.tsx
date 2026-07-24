@@ -2132,9 +2132,10 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
       {path && (
         <ContextStrip path={path} onOpenPanel={() => setPanelOpen(true)} />
       )}
-      {path && panelOpen && (
+      {path && activeBranch && panelOpen && (
         <ContextPanel
           path={path}
+          branch={activeBranch}
           onClose={() => setPanelOpen(false)}
         />
       )}

@@ -47,6 +47,18 @@ export interface AgentDef {
   // ignored if written into a prose agent's override (Storyteller.Core.LLM.
   // Settings.ProseSettings has no such field to decode into).
   configRole?: "prose" | "agent";
+  // Dotted Context DSL slot names (Storyteller.Core.Context) this agent
+  // reads that a project can override its compiled-in default for — e.g.
+  // "context.lore" for the Writer agent (Storyteller.Writer.Agent.Write).
+  // Each doubles as a path on the "contexts" branch the same way
+  // promptKeys double as paths on "prompts" (dots -> slashes, ".dsl"
+  // suffix — see lib/contextBranch.ts's dslPath). This is the *default*
+  // for the slot, project-wide; a per-call override (the input bar's
+  // Context panel, context-panel.tsx) always takes precedence over it.
+  // Empty for agents with no overridable context slot of their own (chat/
+  // fixer/outline-split read their context in ways not yet exposed as a
+  // named, overridable DSL slot).
+  contextSlots?: string[];
   appliesTo: (path: string) => boolean;
 }
 
@@ -57,6 +69,14 @@ export const AGENTS: AgentDef[] = [
     description: "Continues prose from the selection or file end.",
     promptKeys: ["agent.writer", "agent.writer.instructions"],
     configRole: "prose",
+    // writeAgent (Storyteller.Writer.Agent.Write) gathers most of its own
+    // context (past chapters, who's present, their own branches, style)
+    // with no override slot at all — see that module's own Haddock on why
+    // only genuinely user-suppliable inputs stay a named slot. Of those,
+    // "context.lore" and "context.chaptersCompressed" are the two with a
+    // real compiled-in default worth overriding project-wide; a per-call
+    // override still wins (see dslCompose.ts's fcLore/fcPastChaptersMode).
+    contextSlots: ["context.lore", "context.chaptersCompressed"],
     appliesTo: (path) => !isChatFile(path),
   },
   {

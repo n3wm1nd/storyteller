@@ -25,6 +25,7 @@ import Control.Monad (void)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (Members, Sem, run)
@@ -96,6 +97,7 @@ spec = do
   contextWriterSpec
   contextChaptersCompressedSpec
   contextWriterLoreOverrideSpec
+  contextWriterLoreOverrideWithEntriesSpec
   contextLoreSpec
   contextMentionFilterSpec
   contextCharacterBlurbOverrideSpec
@@ -109,28 +111,39 @@ spec = do
 --   @context.lore@, so a project's own override of @context.lore@ was
 --   silently invisible to @contextWriter@'s composition, exactly like
 --   @character.blurb@ was to @contextCharacter@ before that fix. Now that
---   'contextWriterDef' references @context.lore@ by its dotted name (and
---   'defaultLibrarySource' no longer even registers a bare @contextLore@
---   alias to fall back to), an override committed under that exact key has
---   to reach @contextWriter@'s own flat default stream.
+--   'contextWriterDef' calls @context.loreWithout@ (which itself references
+--   @context.lore@ by its dotted name, not a bare alias -- see
+--   'contextLoreWithoutDef''s own Haddock), an override committed under
+--   that exact key has to reach @contextWriter@'s own flat default stream.
 --
---   The override is a bare string, with no per-file entries of its own --
---   so @contextOther@'s own @exclude(context.lore, ...)@ (matched against
---   @context.lore@'s own 'valueEntries', never a forced default -- see
---   'contextOtherDef''s own haddock) has nothing to exclude @lore\/notes.md@
---   by, and it falls through into "Other notes" too. Asserting that
---   honestly, rather than a narrower fixture that hides it, is the point:
---   an override replacing @context.lore@ wholesale genuinely does affect
---   what @contextOther@ sees, not just what @context.lore@ itself prints.
+--   The override here is a bare string, with no per-file entries of its
+--   own -- two real consequences, both asserted honestly rather than
+--   hidden behind a narrower fixture:
+--
+--   * @context.loreWithout@'s own reflatten (@in (context.lore |
+--     exclude(path)): read **\/*@) only ever walks entries, so an
+--     entry-less override contributes nothing beyond
+--     @context.loreWithout@'s own @"## Story background"@ banner -- see
+--     that definition's own Haddock on why this is the honest answer, not
+--     a defect: an override that never exposed file boundaries has
+--     nothing for "exclude one file" to mean.
+--   * @contextOther@'s own @exclude(context.lore, ...)@ (matched against
+--     @context.lore@'s own 'valueEntries', never a forced default -- see
+--     'contextOtherDef''s own haddock) has nothing to exclude
+--     @lore\/notes.md@ by either, so it falls through into "Other notes"
+--     too -- an override replacing @context.lore@ wholesale genuinely
+--     does affect what @contextOther@ sees, not just what @context.lore@
+--     itself prints.
 contextWriterLoreOverrideSpec :: Spec
 contextWriterLoreOverrideSpec =
   describe "contextWriter honors a committed override of context.lore" $
-    it "uses the overridden lore definition, not the compiled-in default, in its own flat stream" $
+    it "sees the override reach context.other's own exclusion, even though the override's own bare text doesn't survive path-exclusion's entry walk" $
       run (testStack $ do
         seedBranch "main" [("lore/notes.md", "a hand-authored note")]
         runDslOnWith overrides (BranchName "main") go)
       `shouldBe` Right
-        [ User "this is a project-committed override, not the default"
+        [ User "## Story background"
+        , User "## Chapters written so far"
         , User "## Other notes"
         , User "## lore/notes.md"
         , FileRead "lore/notes.md" "a hand-authored note"
@@ -140,6 +153,45 @@ contextWriterLoreOverrideSpec =
       [ ("context.lore", "\"this is a project-committed override, not the default\"") ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) [Message]
     go table = valueDefault =<< contextWriter @Main table ""
+
+-- | The other half of 'contextWriterLoreOverrideSpec': a project's own
+--   override of @context.lore@ that *does* expose real per-file entries
+--   (the same @for@\/@as@ shape 'contextLoreDef' itself uses) survives
+--   path-exclusion intact, unlike the bare-string override case -- proving
+--   @context.loreWithout@'s entry walk isn't just "override text always
+--   vanishes," only that an entry-less override has nothing for it to
+--   walk. The overridden entry itself carries its own distinctive text
+--   ("overridden entry" rather than 'loreEntry''s own @"## %f%"@\/@read f@
+--   shape) so a pass here can only mean the override's own body actually
+--   ran, not that the compiled-in default happened to produce a
+--   coincidentally identical result.
+contextWriterLoreOverrideWithEntriesSpec :: Spec
+contextWriterLoreOverrideWithEntriesSpec =
+  describe "contextWriter honors a committed override of context.lore that carries its own per-file entries" $
+    it "excludes the target path from the override's own entries, the same as it would from the compiled-in default" $
+      run (testStack $ do
+        seedBranch "main"
+          [ ("lore/notes.md", "a hand-authored note")
+          , ("lore/being-written.md", "content already framed as the current file")
+          ]
+        runDslOnWith overrides (BranchName "main") (`go` "lore/being-written.md"))
+      `shouldBe` Right
+        [ User "## Story background"
+        , User "## overridden entry: lore/notes.md"
+        , User "## Chapters written so far"
+        , User "## Other notes"
+        ]
+  where
+    overrides = Map.fromList
+      [ ("context.lore", T.unlines
+          [ "for f in lore/**/*:"
+          , "  x = \"## overridden entry: %f%\""
+          , "  as f: x"
+          , "  x"
+          ])
+      ]
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Text -> Action (ContextRow Main r) [Message]
+    go table path = valueDefault =<< contextWriter @Main table path
 
 -- | The regression test for the bug that started this whole redesign:
 --   'contextCharacter' used to take @blurb@ as a typed 'Binding'
@@ -268,6 +320,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       [ User "## Story background"
       , User "## lore/notes.md"
       , FileRead "lore/notes.md" "a hand-authored note"
+      , User "## Chapters written so far"
       , User "## Chapter: chapters/ch2.md"
       , Assistant "chapter two prose"
       , User "## Chapter: chapters/ch11.md"
@@ -277,7 +330,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       , FileRead "todo.md" "a stray root note, filed under neither lore/ nor chapters/"
       ]
 
-  it "excludes the target path from chapters, but never from lore" $
+  it "excludes the target path from chapters" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/notes.md", "a hand-authored note")
@@ -288,6 +341,33 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       [ User "## Story background"
       , User "## lore/notes.md"
       , FileRead "lore/notes.md" "a hand-authored note"
+      , User "## Chapters written so far"
+      , User "## Other notes"
+      ]
+
+  -- | The bug this section exists to close: a file being actively written
+  --   that itself lives under @lore\/**@ used to show up twice -- once via
+  --   this unqualified read, once as 'Storyteller.Writer.Agent.Write.
+  --   writeAgent''s own current-file framing (see 'contextWriterDef''s own
+  --   Haddock). @context.lore@ stays genuinely 0-arity; 'contextWriterDef'
+  --   calls @context.loreWithout@ instead, a separate definition built to
+  --   drop @path@ from its own glob before ever reading anything (see
+  --   'contextLoreWithoutDef''s own Haddock).
+  it "excludes the target path from lore, when the file being written is itself a lore entry" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("lore/notes.md", "a hand-authored note")
+        , ("lore/being-written.md", "content already framed as the current file")
+        , ("chapters/ch2.md", "chapter two prose")
+        ]
+      runDslOn (BranchName "main") (`go` "lore/being-written.md"))
+    `shouldBe` Right
+      [ User "## Story background"
+      , User "## lore/notes.md"
+      , FileRead "lore/notes.md" "a hand-authored note"
+      , User "## Chapters written so far"
+      , User "## Chapter: chapters/ch2.md"
+      , Assistant "chapter two prose"
       , User "## Other notes"
       ]
 
@@ -320,6 +400,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       ( [ User "## Story background"
         , User "## lore/notes.md"
         , FileRead "lore/notes.md" "a hand-authored note"
+        , User "## Chapters written so far"
         , User "## Other notes"
         , User "Aria: A wandering rogue."
         ]

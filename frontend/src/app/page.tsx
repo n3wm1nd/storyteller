@@ -1057,7 +1057,7 @@ export default function Home() {
           )}
 
           {centerTab === "agents" && selectedFile && (
-            <AgentsTab path={selectedFile} onJumpToPrompt={handleJumpToPrompt} />
+            <AgentsTab path={selectedFile} branch={activeBranch} onJumpToPrompt={handleJumpToPrompt} />
           )}
         </div>
 
