@@ -273,26 +273,39 @@ contextOther lib p = runDefinition @branch lib contextOtherDef [toBinding p]
 --   completely independent of whether this definition or a client's own
 --   program produced the stream above.
 --
---   The trailing @for c in (charactersin path): as c: context.character
---   c@ is what used to be 'Server.Writer.File.activeCharacterContext' -- a
---   Haskell-side loop splicing @[(CharLabel, CharSummary)]@ into
---   'writeAgent''s own parameter list after this definition had already
---   been resolved. That was exactly the shape this whole redesign was
---   for: context the DSL couldn't see or override, folded in one layer up
---   instead of being *part of* "the context for this call." @as@, not a
---   bare re-emit -- so each active character's whole 'context.character'
---   'Value' (@"sheet"@\/@"blurb"@\/@"full"@\/@"journal"@\/@"journalFull"@,
---   see its own haddock) becomes reachable by name off @context.writer@'s
---   own result, without folding anything into the flat default stream
---   ('SFor's own entries never contribute to the enclosing block's
---   default, only its own re-emitted messages would -- see
---   'runStmts''s @SFor@ case). Deliberately additive rather than replacing
---   'activeCharacterContext' outright: 'Server.Writer.File.chatWriter'
---   still builds @[(CharLabel, CharSummary)]@ itself for now, so this
---   structural bucket and that Haskell-side one currently describe the
---   same characters twice, by two different paths, until a later pass
---   retires the Haskell one in favor of reading these named entries
---   instead.
+--   The trailing @for c in (charactersin path): x = context.character c;
+--   as c: x; x@ is what's meant to replace
+--   'Server.Writer.File.activeCharacterContext' -- a Haskell-side loop
+--   splicing @[(CharLabel, CharSummary)]@ into 'writeAgent''s own
+--   parameter list after this definition had already been resolved. That
+--   was exactly the shape this whole redesign was for: context the DSL
+--   couldn't see or override, folded in one layer up instead of being
+--   *part of* "the context for this call." @x = ...; as c: x; x@ (not a
+--   bare @as@, which used to leave this loop contributing nothing to the
+--   flat default at all -- @SFor@'s own entries never feed the enclosing
+--   block's own default, only its own re-emitted messages would; see
+--   'runStmts''s @SFor@ case) both names each active character's whole
+--   'context.character' 'Value' (@"sheet"@\/@"blurb"@\/@"full"@\/
+--   @"journal"@\/@"journalFull"@, see its own haddock) for a caller
+--   reaching in by name, *and* genuinely emits their acquaintance-level
+--   blurb into the flat stream every @flatMainMessages@\/@flatMainContext@
+--   caller ('roleplayWriter'\/'chatChapterRegen'\/'chatSplitOutline'\/the
+--   CLI tools) already reads directly.
+--
+--   __Known, temporary overlap__: 'Server.Writer.File.chatWriter' still
+--   builds @[(CharLabel, CharSummary)]@ itself via 'activeCharacterContext'
+--   and threads it through 'writeAgent' as its own separate parameter
+--   (spliced at a specific position relative to conversation history --
+--   see 'Storyteller.Writer.Agent.Write.buildChapterMessages''s own
+--   Haddock -- not something this flat stream's own ordering can express
+--   yet), so as of this change 'chatWriter' specifically sees each active
+--   character's blurb *twice*: once here, folded into @worldCtx@, and
+--   once via @charBlocks@. Retiring 'activeCharacterContext' needs the
+--   DSL to first gain some way to express "splice this at a specific
+--   message position, interleaved with reconstructed conversation
+--   history" -- real design work, not done here; this change only carries
+--   the flat-stream side of the migration through for the callers that
+--   already read nothing but that stream.
 --
 --   @path@ is this definition's only real parameter, for the same reason
 --   it's 'contextOther''s: everything else is a fact about the branch,
@@ -327,7 +340,9 @@ path:
     for f in **/*: read f
   context.other path
   for c in (charactersin path):
-    as c: context.character c
+    x = context.character c
+    as c: x
+    x
 |]
 
 contextWriter :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)

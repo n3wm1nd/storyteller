@@ -18,9 +18,13 @@ import Test.Hspec
 
 import Polysemy (run)
 
-import Storyteller.Core.Git (runBranchAndFS, runStorage)
+import Control.Monad (void)
+
+import Storyteller.Core.Git (runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
+import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 import qualified Storage.Ops as Ops
 
 import Server.Core.Branch (Main)
@@ -80,4 +84,33 @@ spec = describe "buildProgramCosts" $ do
         , LineCost { lcLine = 4, lcCol = 3, lcChars = 4 }  -- the bare `x` that actually reaches the model
         , LineCost { lcLine = 3, lcCol = 3, lcChars = 0 }  -- the whole `as "label": x` -- contributes only a named entry, never the default
         , LineCost { lcLine = 3, lcCol = 15, lcChars = 0 } -- just the `x` inside it -- same reason
+        ]
+
+  it "the real context.writer active-character loop costs zero even with a genuinely present character -- as's own content never reaches renderText" $
+    -- Direct answer to "how can this come back 0 if there's a character
+    -- in the scene": `charactersin path` really does find Aria here
+    -- (same fixture as Storyteller.Context.DSL.LibrarySpec's own
+    -- "exposes each active character as a named entry" test, which
+    -- asserts contextWriter's valueDefault is unchanged by her presence)
+    -- -- the zero isn't "no character found," it's that `as c: ...`
+    -- (and everything inside it, including the `context.character c`
+    -- call on its own line) only ever populates a *named entry*
+    -- (rcEntries), never the enclosing default (rcContent) --
+    -- renderText/ablation-cost only ever read rcContent. Real content,
+    -- parked somewhere this measurement structurally never looks.
+    (run . testStack $ do
+      _ <- createBranch (BranchName "main")
+      _ <- createBranch (BranchName "character/aria")
+      _ <- runBranchOpGit @Main (BranchName "character/aria")
+        (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
+      runBranchAndFS @Main (BranchName "main") $ do
+        runBranchOpGit @Main (BranchName "main") $
+          void (recordPresence @Main "chapters/ch2.md" (Character (BranchName "character/aria")) Enter)
+        buildProgramCosts @Main "chapters/ch2.md"
+          "path:\n  for c in (charactersin path):\n    as c: context.character c\n")
+    `shouldBe`
+      Right
+        [ LineCost { lcLine = 2, lcCol = 3, lcChars = 0 }  -- the whole `for` loop
+        , LineCost { lcLine = 3, lcCol = 5, lcChars = 0 }  -- `as c: context.character c` -- the whole as-block
+        , LineCost { lcLine = 3, lcCol = 11, lcChars = 0 } -- `context.character c` alone -- a real, output-producing call, but its output lands in the `as` block's own entry, not the default
         ]
