@@ -246,17 +246,16 @@ const activeCharacterLines: Lines = [
 // fragment re-indenting itself relative to a frame it doesn't know
 // about).
 //
-// Returns null when `edits` is structurally identical to the server's
-// default -- a caller who has done nothing should send nothing. Any
-// deviation, no matter how small, produces a full body (the synthesizer
-// doesn't try to emit a diff; it re-emits the whole baseline-plus-edits
-// shape). This matches the wire's "the program replaces the default"
-// semantics (CONTEXT-DSL.md / Context.hs:174): there's no concept of
-// "default plus additions" at the protocol level, so the frontend
-// composes them client-side and sends the result.
-function bodyLines(edits: ContextEdits): Lines | null {
-  if (!isDirty(edits)) return null;
-
+// Unconditional -- always emits the real expansion for whatever `edits`
+// currently says, even when that's structurally identical to
+// `DEFAULT_EDITS`. "Should a caller actually *send* this, or omit the
+// wire field and let the server's own default run" is a send-time
+// decision, made by `synthesizeProgram`'s own `isDirty` guard, not a
+// property of the expansion itself -- `alwaysSynthesizeProgram` (used by
+// context-cost-sidebar.tsx to preview the default's own real shape,
+// ablatable line by line, rather than an opaque "the default ran" stand-
+// in) needs the identical lines with no such guard in the way.
+function bodyLines(edits: ContextEdits): Lines {
   const chunks: Lines = [];
 
   // Bare, not `as "lore": ...` -- these three mirror `contextWriterDef`'s
@@ -295,7 +294,17 @@ function bodyLines(edits: ContextEdits): Lines | null {
   }
 
   if (edits.baseline.style) {
-    chunks.push(`context.style`);
+    // `context.other`, not `context.style` -- `contextWriterDef`'s own
+    // real third bucket (Library.hs) is `context.other path`: style.md
+    // *plus* every other file outside the lore/**, chapters/**, and
+    // chat/** scratch conventions (contextOtherDef's own exclusion list).
+    // `context.style` alone (just style.md, no `path` parameter) used to
+    // sit here -- a real, silent gap: any casual "Style guide" toggle
+    // was quietly dropping every "other" file a real send would include,
+    // undetectable until context-cost-sidebar.tsx's ablation preview
+    // could finally show the real expansion side by side with what the
+    // opaque `context.writer path` default actually produces.
+    chunks.push(`context.other path`);
   }
 
   // Cast list wins outright, presence auto-fill only when it's untouched
@@ -327,10 +336,27 @@ function bodyLines(edits: ContextEdits): Lines | null {
 // here wouldn't error either -- it would just never take effect, which
 // is worse: every "transient" edit sent without this frame was silently
 // discarded server-side, indistinguishable from working.
+// Returns null when `edits` is structurally identical to the server's
+// default -- a caller who has done nothing should send nothing (any
+// deviation, no matter how small, produces a full body; this doesn't try
+// to emit a diff, it re-emits the whole baseline-plus-edits shape). This
+// matches the wire's "the program replaces the default" semantics
+// (CONTEXT-DSL.md / Context.hs:174): there's no concept of "default plus
+// additions" at the protocol level, so the frontend composes them
+// client-side and sends the result.
 export function synthesizeProgram(edits: ContextEdits): string | null {
-  const lines = bodyLines(edits);
-  if (lines === null) return null;
-  return "path:\n" + block(lines).join("\n") + "\n";
+  if (!isDirty(edits)) return null;
+  return alwaysSynthesizeProgram(edits);
+}
+
+// `synthesizeProgram`, but never null -- always the real expansion for
+// whatever `edits` currently says, even when that's exactly
+// `DEFAULT_EDITS`. What context-cost-sidebar.tsx uses to preview the
+// default's own real shape ablatable line by line, rather than an opaque
+// "the default ran" stand-in a client-side ablation pass can't see
+// inside.
+export function alwaysSynthesizeProgram(edits: ContextEdits): string {
+  return "path:\n" + block(bodyLines(edits)).join("\n") + "\n";
 }
 
 // ─── Send-time composition ─────────────────────────────────────────────────
@@ -374,9 +400,8 @@ export function composeSendProgram(ctx: CallContext): string | null {
     // site.
     body = [`${ctx.namedName} path`, ...overlayLines];
   } else {
-    const edited = bodyLines(ctx.edits);
-    if (edited === null && overlayLines.length === 0) return null;
-    body = [...(edited ?? []), ...overlayLines];
+    if (!isDirty(ctx.edits) && overlayLines.length === 0) return null;
+    body = [...bodyLines(ctx.edits), ...overlayLines];
   }
 
   return "path:\n" + block(body).join("\n") + "\n";

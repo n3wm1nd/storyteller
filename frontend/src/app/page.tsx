@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode, Pilcrow, BookMarked } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Eye, EyeOff, Trash2, Users, ListTree, Combine, Split, FileCode, Pilcrow, BookMarked, Gauge } from "lucide-react";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { connect, createBranch, deleteBranch, selectBranch, uploadFiles, uploadImageToTimeline, createChapter, importCharacterCard } from "./sidebar.actions";
@@ -28,6 +28,7 @@ import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
 import { CharacterSidebar } from "./character-sidebar";
 import { CodexTab } from "./codex";
+import { ContextCostSidebar } from "./context-cost-sidebar";
 import { AgentsTab } from "./agentstab";
 import { isOutlineFile, isChatFile } from "@/lib/agents";
 import { UndoTimeline } from "./undo-timeline";
@@ -213,7 +214,7 @@ export default function Home() {
   // presence (the panel's original, and still default, content) or the
   // codex card grid (see codex.tsx). A plain local switch for now, same
   // as LeftSidebar's own tab strip, not yet promoted to a shared type.
-  const [rightTab, setRightTab] = useState<"characters" | "codex">("characters");
+  const [rightTab, setRightTab] = useState<"characters" | "codex" | "cost">("characters");
   const [hoveredCharacter, setHoveredCharacter] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<"file" | "ticks" | "chat" | "agents">("file");
   // What the center file pane currently displays — a *single* atomic value,
@@ -1074,10 +1075,10 @@ export default function Home() {
             />
             <div style={{ flexShrink: 0, padding: "8px 8px 0" }}>
               <div style={{
-                display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1,
+                display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1,
                 background: "var(--surface)", borderRadius: 6, padding: 2,
               }}>
-                {(["characters", "codex"] as const).map((t) => (
+                {(["characters", "codex", "cost"] as const).map((t) => (
                   <button key={t} onClick={() => setRightTab(t)} style={{
                     height: 26, display: "flex", alignItems: "center", justifyContent: "center",
                     gap: 5, fontSize: 11, borderRadius: 4, border: "none", cursor: "pointer",
@@ -1085,8 +1086,8 @@ export default function Home() {
                     color: rightTab === t ? "var(--amber)" : "var(--text-disabled)",
                     transition: "background 0.15s, color 0.15s",
                   }}>
-                    {t === "characters" ? <Users style={{ width: 12, height: 12 }} /> : <BookMarked style={{ width: 12, height: 12 }} />}
-                    {t === "characters" ? "Characters" : "Codex"}
+                    {t === "characters" ? <Users style={{ width: 12, height: 12 }} /> : t === "codex" ? <BookMarked style={{ width: 12, height: 12 }} /> : <Gauge style={{ width: 12, height: 12 }} />}
+                    {t === "characters" ? "Characters" : t === "codex" ? "Codex" : "Cost"}
                   </button>
                 ))}
               </div>
@@ -1114,8 +1115,10 @@ export default function Home() {
                   enterScene={enterScene} leaveScene={leaveScene}
                   askCharacter={askCharacter} characterAnswers={characterAnswers}
                 />
-              ) : (
+              ) : rightTab === "codex" ? (
                 <CodexTab activeBranch={activeBranch} selectedFile={selectedFile} />
+              ) : (
+                <ContextCostSidebar activeBranch={activeBranch} selectedFile={selectedFile} />
               )}
             </div>
           </div>

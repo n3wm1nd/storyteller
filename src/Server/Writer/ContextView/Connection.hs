@@ -49,6 +49,7 @@ import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
 import Storyteller.Core.Runtime (Main)
+import Storyteller.Writer.Agent.ContextCost (buildProgramCosts)
 import Storyteller.Writer.Agent.ContextPreview (buildPreview)
 
 -- | 'path' (the route parameter) is accepted but unused: each
@@ -92,6 +93,13 @@ commandLoop branch conn reqVar = loop
             embed $ atomically $ writeTVar reqVar (Just (path, program))
             pushPreview branch conn mid path program
             loop
+          Just (EstimateCost mid path program) -> do
+            -- Deliberately doesn't touch 'reqVar' -- unlike a preview
+            -- request, a cost estimate is a one-off "show me now" action,
+            -- not something the notify thread re-runs on every branch
+            -- change (see this module's own Protocol-facing Haddock).
+            pushCost branch conn mid path program
+            loop
 
 -- | The notify thread: on every 'RefMoved' for this branch, re-resolve
 --   whatever @(path, program)@ was last submitted (nothing to push if the
@@ -121,3 +129,10 @@ pushPreview
 pushPreview branch conn mid path program = do
   result <- withBranch @Main branch (buildPreview @Main path program)
   embed $ WS.sendTextData conn (encode (ContextPreviewed mid result))
+
+pushCost
+  :: (SessionEffects r, Member (Embed IO) r)
+  => T.Text -> WS.Connection -> Maybe T.Text -> FilePath -> T.Text -> Sem r ()
+pushCost branch conn mid path program = do
+  costs <- withBranch @Main branch (buildProgramCosts @Main path program)
+  embed $ WS.sendTextData conn (encode (ContextCosted mid costs))

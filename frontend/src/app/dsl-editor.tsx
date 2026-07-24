@@ -40,6 +40,8 @@ interface DSLEditorProps {
 export function DSLEditor({ path }: DSLEditorProps) {
   const fileState = useCallContext((s) => s.files[path]);
   const loadNamed = useCallContext((s) => s.loadNamed);
+  const setLiveDslDraft = useCallContext((s) => s.setLiveDslDraft);
+  const clearLiveDslDraft = useCallContext((s) => s.clearLiveDslDraft);
 
   const namedName = fileState?.mode === "named" ? fileState.namedName : null;
 
@@ -89,6 +91,22 @@ export function DSLEditor({ path }: DSLEditorProps) {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [namedName]);
+
+  // Publish the live draft so a always-on consumer (context-cost-
+  // sidebar.tsx) can estimate against exactly what's currently in this
+  // textarea, not just whatever was last saved -- skipped while
+  // `loading` (the placeholder "Loading…" text isn't real DSL source),
+  // and cleared on unmount so a closed editor stops overriding the
+  // sidebar's own saved-state-derived program.
+  useEffect(() => {
+    if (loading) return;
+    setLiveDslDraft(path, draft);
+  }, [path, draft, loading, setLiveDslDraft]);
+
+  useEffect(() => {
+    return () => clearLiveDslDraft(path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
 
   function onChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setDraft(e.target.value);

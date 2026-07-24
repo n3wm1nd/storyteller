@@ -11,12 +11,32 @@
 --           nothing about a submitted program persists across requests, so
 --           a client never needs to reconstruct or diff against
 --           server-held state.
--- Events:   'ContextPreviewed' — the resolved tree, pushed once per command
---           and again whenever the underlying branch changes (re-resolved
---           against the most recently submitted program — see
---           'Server.Writer.ContextView.Connection').
+--
+--           'EstimateCost' — the same @(path, program)@ shape, asking
+--           instead for a per-line size breakdown (see
+--           'Storyteller.Writer.Agent.ContextCost'). Kept as its own
+--           command rather than folded into every 'PreviewContext'
+--           response: cost estimation runs the whole program once per
+--           candidate line (ablation, not static instrumentation — see
+--           that module's own Haddock), materially more expensive than a
+--           single resolve, so a client asks for it only when it actually
+--           wants to see where the budget is going, not on every
+--           branch-change-triggered re-preview.
+-- Events:   'ContextPreviewed' — the resolved tree, pushed once per
+--           'PreviewContext' and again whenever the underlying branch
+--           changes (re-resolved against the most recently submitted
+--           program — see 'Server.Writer.ContextView.Connection').
+--
+--           'ContextCosted' — one 'LineCost' per ablation candidate,
+--           pushed once per 'EstimateCost'. Not re-pushed on every branch
+--           change the way 'ContextPreviewed' is (see
+--           'Server.Writer.ContextView.Connection': only the most
+--           recently submitted *preview* request is remembered for that
+--           purpose) — a cost estimate is a deliberate, one-off "show me
+--           now" action, not a live-updating view.
 module Server.Writer.ContextView.Protocol
   ( PreviewNode(..)
+  , LineCost(..)
   , ContextViewCommand(..)
   , ContextViewEvent(..)
   ) where
@@ -25,6 +45,7 @@ import Data.Aeson hiding (Error)
 import Data.Aeson.Types (Parser)
 import qualified Data.Text as T
 
+import Storyteller.Writer.Agent.ContextCost (LineCost(..))
 import Storyteller.Writer.Agent.ContextPreview (PreviewNode(..))
 
 instance ToJSON PreviewNode where
@@ -33,9 +54,17 @@ instance ToJSON PreviewNode where
     , "entries" .= [ object [ "name" .= name, "node" .= toJSON node ] | (name, node) <- pnEntries n ]
     ]
 
+instance ToJSON LineCost where
+  toJSON lc = object
+    [ "line"  .= lcLine lc
+    , "col"   .= lcCol lc
+    , "chars" .= lcChars lc
+    ]
+
 -- | Commands the client may send on a context-view connection.
 data ContextViewCommand
   = PreviewContext { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
+  | EstimateCost { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
   deriving (Show)
 
 instance FromJSON ContextViewCommand where
@@ -44,11 +73,13 @@ instance FromJSON ContextViewCommand where
     i <- o .:? "id"
     case t of
       "context.preview" -> PreviewContext i <$> o .: "path" <*> o .: "program"
+      "context.cost"    -> EstimateCost  i <$> o .: "path" <*> o .: "program"
       _                 -> fail ("unknown context-view command: " <> T.unpack t)
 
 -- | Events the server sends on a context-view connection.
 data ContextViewEvent
   = ContextPreviewed { cveId :: Maybe T.Text, cveResult :: PreviewNode }
+  | ContextCosted { cveId :: Maybe T.Text, cveCosts :: [LineCost] }
   | ContextViewError T.Text
   deriving (Show)
 
@@ -58,6 +89,11 @@ instance ToJSON ContextViewEvent where
       object $
         [ "type"   .= ("context.preview" :: T.Text)
         , "result" .= result
+        ] <> maybe [] (\i -> ["id" .= i]) mid
+    ContextCosted mid costs ->
+      object $
+        [ "type"  .= ("context.cost" :: T.Text)
+        , "costs" .= costs
         ] <> maybe [] (\i -> ["id" .= i]) mid
     ContextViewError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]

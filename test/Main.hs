@@ -42,6 +42,7 @@ import qualified Storyteller.LoreSpec
 import qualified Storyteller.BranchesSpec
 import qualified Storyteller.ContextFilterSpec
 import qualified Storyteller.ContextPreviewSpec
+import qualified Storyteller.ContextCostSpec
 import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
 import qualified Storyteller.Context.DSL.ParserSpec
@@ -108,6 +109,7 @@ main = hspec $ do
   describe "Storyteller.Writer.Branches"   Storyteller.BranchesSpec.spec
   describe "Storyteller.Writer.Agent.ContextFilter" Storyteller.ContextFilterSpec.spec
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
+  describe "Storyteller.Writer.Agent.ContextCost" Storyteller.ContextCostSpec.spec
   describe "Storyteller.Writer.Agent.Outline" Storyteller.OutlineSpec.spec
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
   describe "Storyteller.Context.DSL.Parser" Storyteller.Context.DSL.ParserSpec.spec

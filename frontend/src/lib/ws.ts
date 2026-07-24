@@ -453,11 +453,18 @@ export type CharacterEvent =
 // program's own `path:` parameter, the same target file a real send would
 // pass.
 //
+// `context.cost` asks instead for a per-line size breakdown (see
+// Storyteller.Writer.Agent.ContextCost) — same (path, program) shape, but
+// materially more expensive to answer (the whole program re-runs once per
+// candidate line, via ablation), so it's its own command rather than
+// riding along on every `context.preview` response.
+//
 // Every request is self-contained — the full (path, program) pair, resolved
 // fresh each time, same discipline an LLM call's full history follows.
 // Nothing about a submitted program persists across requests server-side.
 export type ContextViewCommand =
-  | { type: "context.preview"; id?: string; path: string; program: string };
+  | { type: "context.preview"; id?: string; path: string; program: string }
+  | { type: "context.cost"; id?: string; path: string; program: string };
 
 // A node mirrors the DSL's own Value shape: its own text content (each
 // source Message flattened to its text, in order), then named child
@@ -468,8 +475,23 @@ export interface PreviewNode {
   entries: { name: string; node: PreviewNode }[];
 }
 
+// One ablation candidate's own measured contribution — `line`/`col`
+// identify the exact source statement (see
+// Storyteller.Context.DSL.AST.Pos; unique per statement, so no separate id
+// is needed), `chars` is the rendered-character delta removing just that
+// statement produces (baseline minus with-it-ablated) — see
+// Storyteller.Writer.Agent.ContextCost's own Haddock for why this is
+// measured by ablation (re-running the whole program) rather than a
+// static per-statement sum.
+export interface LineCost {
+  line: number;
+  col: number;
+  chars: number;
+}
+
 export type ContextViewEvent =
   | { type: "context.preview"; id?: string; result: PreviewNode }
+  | { type: "context.cost"; id?: string; costs: LineCost[] }
   | ErrorEvent;
 
 // ── Library protocol ──────────────────────────────────────────────────────────

@@ -61,12 +61,23 @@ interface CallContextState {
   // mention-autocomplete.tsx's live parsing on every keystroke.
   mentions: Record<string, string[]>;
 
+  // The DSL editor's own current textarea content for a file, while
+  // that view is open -- separate from `files[path].edits`/`namedName`
+  // (which only ever reflect *saved* state), so a live-updating consumer
+  // (context-cost-sidebar.tsx) can see exactly what's being typed, not
+  // just what was last saved. `null` (via `clearLiveDslDraft`, called on
+  // unmount) means "the DSL editor isn't open, or has nothing unsaved to
+  // show" -- falls back to the ordinary saved-state derivation.
+  liveDslDrafts: Record<string, string>;
+
   setEdits: (path: string, edits: ContextEdits) => void;
   patchEdits: (path: string, patch: Partial<ContextEdits>) => void;
   loadNamed: (path: string, name: string) => void;
   clearNamed: (path: string) => void;
   resetToDefault: (path: string) => void;
   setMentions: (path: string, ids: string[]) => void;
+  setLiveDslDraft: (path: string, draft: string) => void;
+  clearLiveDslDraft: (path: string) => void;
   clearForFile: (path: string) => void;
   clearAll: () => void;
 }
@@ -82,6 +93,7 @@ function freshFileState(): CallContextFileState {
 export const useCallContext = create<CallContextState>((set) => ({
   files: {},
   mentions: {},
+  liveDslDrafts: {},
 
   setEdits: (path, edits) =>
     set((s) => ({
@@ -152,16 +164,33 @@ export const useCallContext = create<CallContextState>((set) => ({
       },
     })),
 
+  setLiveDslDraft: (path, draft) =>
+    set((s) => ({
+      liveDslDrafts: {
+        ...s.liveDslDrafts,
+        [path]: draft,
+      },
+    })),
+
+  clearLiveDslDraft: (path) =>
+    set((s) => {
+      const liveDslDrafts = { ...s.liveDslDrafts };
+      delete liveDslDrafts[path];
+      return { liveDslDrafts };
+    }),
+
   clearForFile: (path) =>
     set((s) => {
       const files = { ...s.files };
       const mentions = { ...s.mentions };
+      const liveDslDrafts = { ...s.liveDslDrafts };
       delete files[path];
       delete mentions[path];
-      return { files, mentions };
+      delete liveDslDrafts[path];
+      return { files, mentions, liveDslDrafts };
     }),
 
-  clearAll: () => set({ files: {}, mentions: {} }),
+  clearAll: () => set({ files: {}, mentions: {}, liveDslDrafts: {} }),
 }));
 
 // ─── Read helpers ─────────────────────────────────────────────────────────

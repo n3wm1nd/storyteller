@@ -514,8 +514,8 @@ export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps)
                 />
                 <ToggleRow
                   icon={<Sparkles style={{ width: 11, height: 11 }} />}
-                  label="Style guide"
-                  hint="The project's style.md"
+                  label="Style guide & other files"
+                  hint="style.md plus anything outside lore/chapters"
                   checked={edits.baseline.style}
                   onChange={(v) => setBaseline("style", v)}
                 />

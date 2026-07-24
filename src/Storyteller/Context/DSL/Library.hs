@@ -53,6 +53,7 @@ module Storyteller.Context.DSL.Library
   , contextChapters
   , contextOther
   , contextWriter
+  , contextWriterDef
   , contextCharacter
   , characterBlurb
   , characterSummaryOf
