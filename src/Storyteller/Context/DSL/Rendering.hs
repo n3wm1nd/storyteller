@@ -71,7 +71,22 @@ import Storyteller.Core.ContentEffects (TreeAccess)
 data RenderedContext a = Node
   { rcContent :: [a]
   , rcEntries :: [(Name, RenderedContext a)]
-  } deriving (Functor, Foldable, Traversable)
+  } deriving (Functor, Foldable, Traversable, Eq, Show)
+
+-- | Concatenation, content then entries, in order -- the natural
+--   "combine several already-rendered nodes into one flat node" any
+--   caller composing more than one resolved slot needs (e.g.
+--   'Server.Writer.File.chatWriter' folding @context.lore@\/chapters\/
+--   @context.other@ into one 'WorldContext', or folding several
+--   'fcPinnedPrograms' results in alongside plain pinned items). No
+--   attempt at deduplicating repeated names between the two sides' own
+--   'rcEntries' -- same "whatever's there is there, in order" contract
+--   'renderContext' itself already has for a single node's own entries.
+instance Semigroup (RenderedContext a) where
+  Node c1 e1 <> Node c2 e2 = Node (c1 <> c2) (e1 <> e2)
+
+instance Monoid (RenderedContext a) where
+  mempty = Node [] []
 
 -- | A fully-materialized entry -- 'renderContext' already forced
 --   'valueDefault' to get 'ciMessage', and copied the source 'Value'

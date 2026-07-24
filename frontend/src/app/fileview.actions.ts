@@ -14,7 +14,7 @@ import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview }
 import { tickChain, promptGroupForAtom } from "@/lib/utils";
 import { resolveMentions } from "@/lib/mentions";
 import { getCallContext } from "@/lib/callContextStore";
-import { composeSendProgram } from "@/lib/dslCompose";
+import { composeWriterContextFields } from "@/lib/dslCompose";
 
 // A summary tier (see .summarization-ui.md) is genuinely just another file
 // connection — Server.Writer.File.Connection's own openTarget resolves
@@ -444,32 +444,30 @@ export function unhideSelected(path: string) {
 // The Writer agent's own context shape (pinned selection plus the cleaned
 // prompt text) — shared by chatWrite and correctAtom, since "correct" is
 // the same agent/context, just landing back at the group's old position
-// instead of appending at file end. The `context` field carries the
-// per-call Context DSL program (see CONTEXT-DSL.md) composed from the new
-// context UI (lib/callContextStore.ts + lib/dslCompose.ts): null = omit
-// the field entirely (server's compiled-in default runs), a string =
-// either synthesized DSL source (casual panel edits) or a bare function
-// name (loaded/authored named function on the contexts branch). The
-// @mention overlay composes on top in either case.
+// instead of appending at file end. `writerFields` carries the three
+// independent per-call wire slots (lore override, past-chapters mode,
+// pinned programs — see lib/dslCompose.ts's own header and
+// Server.Writer.File.Protocol's `ChatWriter` Haddock) composed from the
+// casual context UI (lib/callContextStore.ts); each is its own optional
+// wire field, omitted whenever that slot hasn't been touched. The
+// @mention overlay folds into `pinnedPrograms` in that same composition.
 //
 // `@mention` markup is still stripped to plain `@Name` text for
-// readability in the prompt itself; the inclusion it triggers is in the
-// composed `context` program, not the prompt text.
+// readability in the prompt itself; the inclusion it triggers is in
+// `pinnedPrograms`, not the prompt text.
 function writerCommandContext(path: string, text: string) {
   const pinned = buildContextItems(path);
   const cleanText = resolveMentions(text);
   const ctx = getCallContext(path);
-  const context = composeSendProgram(ctx);
-  return { cleanText, pinned, context };
+  const writerFields = composeWriterContextFields(ctx);
+  return { cleanText, pinned, writerFields };
 }
 
 export function chatWrite(path: string, text: string) {
-  const { cleanText, pinned, context } = writerCommandContext(path, text);
-  sendChatCommand(path, (flowTid) => {
-    const cmd: FileCommand = { type: "chat.writer", text: cleanText, pinned, flowTid };
-    if (context !== null) cmd.context = context;
-    return cmd;
-  });
+  const { cleanText, pinned, writerFields } = writerCommandContext(path, text);
+  sendChatCommand(path, (flowTid) => ({
+    type: "chat.writer", text: cleanText, pinned, flowTid, ...writerFields,
+  } as FileCommand));
 }
 
 // Roleplay writer — every character present on this file is interrogated,
@@ -511,18 +509,15 @@ export function correctAtom(path: string, atomTickId: string) {
   const group = promptGroupForAtom(fc.ticks, fc.head, atomTickId);
   if (!group) return;
 
-  const { cleanText, pinned, context } = writerCommandContext(path, group.promptTick.message);
-  sendChatCommand(path, () => {
-    const cmd: FileCommand = {
-      type: "correct.group",
-      promptTickId: group.promptTick.tickId,
-      targets: group.atomTickIds,
-      text: cleanText,
-      pinned,
-    };
-    if (context !== null) cmd.context = context;
-    return cmd;
-  });
+  const { cleanText, pinned, writerFields } = writerCommandContext(path, group.promptTick.message);
+  sendChatCommand(path, () => ({
+    type: "correct.group",
+    promptTickId: group.promptTick.tickId,
+    targets: group.atomTickIds,
+    text: cleanText,
+    pinned,
+    ...writerFields,
+  } as FileCommand));
 }
 
 export function chatFix(path: string, text: string) {

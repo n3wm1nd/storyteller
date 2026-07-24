@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -32,7 +33,12 @@ import Server.TestStack
 import Storyteller.Writer.Agent.ContextCost
 
 spec :: Spec
-spec = describe "buildProgramCosts" $ do
+spec = do
+  buildProgramCostsSpec
+  buildAdhocProgramCostsSpec
+
+buildProgramCostsSpec :: Spec
+buildProgramCostsSpec = describe "buildProgramCosts" $ do
 
   it "assigns each bare statement a cost including the separator its removal also collapses" $
     -- renderText joins rcContent elements with a two-character "\n\n" --
@@ -114,3 +120,31 @@ spec = describe "buildProgramCosts" $ do
         , LineCost { lcLine = 3, lcCol = 5, lcChars = 0 }  -- `as c: context.character c` -- the whole as-block
         , LineCost { lcLine = 3, lcCol = 11, lcChars = 0 } -- `context.character c` alone -- a real, output-producing call, but its output lands in the `as` block's own entry, not the default
         ]
+
+-- | 'buildAdhocProgramCosts' -- what a per-call @pinnedPrograms@ entry
+--   (Server.Writer.File.Protocol's own @ChatWriter@) is actually measured
+--   through now that @context.writer@ no longer accepts a whole-program
+--   override: no @path@, no slot identity, just the bare 0-arity
+--   program's own rendered size, broken down per statement, the same
+--   ablation logic 'buildProgramCosts' uses underneath.
+buildAdhocProgramCostsSpec :: Spec
+buildAdhocProgramCostsSpec = describe "buildAdhocProgramCosts" $ do
+  it "measures a bare 0-arity literal the same way buildProgramCosts measures a 1-arity one" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $
+        buildAdhocProgramCosts @Main "\"aaaa\"\n\"bb\"\n")
+    `shouldBe`
+      Right
+        [ LineCost { lcLine = 1, lcCol = 1, lcChars = 6 }
+        , LineCost { lcLine = 2, lcCol = 1, lcChars = 4 }
+        ]
+
+  it "fails on a 1-arity program -- there is no slot default to fall back to" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $
+        buildAdhocProgramCosts @Main "name:\n  \"got %name%\"\n")
+    `shouldSatisfy` \case
+      Left _  -> True
+      Right _ -> False

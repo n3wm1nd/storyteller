@@ -46,7 +46,7 @@ import Server.Core.File (FileOpen, deleteFileTicks)
 import qualified Server.Core.File as Core (fileStateSince)
 import Server.Core.Run (SessionEffects)
 import Server.Core.Protocol (WireTick(..), Update(..))
-import Server.Writer.File.Protocol (ContextItem(..))
+import Server.Writer.File.Protocol (ContextItem(..), PastChaptersMode(..))
 
 import UniversalLLM (Message(..))
 
@@ -89,7 +89,7 @@ import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Rendering as Rendering
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent.Context (WorldContext(..), StyleContext(..), PinnedContext(..))
-import Storyteller.Core.Context (resolveContext0, resolveContext1, setContextOverride, runContextValue)
+import Storyteller.Core.Context (resolveContext0, resolveContext1, resolveAdhoc0, setContextOverride, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
 
@@ -140,39 +140,59 @@ activeCharacterContext path = do
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Writer.Agent.FlowWrite'). World context comes from one
---   resolution of @context.writer@ (see "Storyteller.Context.DSL.Library").
---   @contextProgram@ (a client-sent context program for this one call), if
---   present, is staged via 'Storyteller.Core.Context.setContextOverride'
---   *before* that resolution runs -- so it's indistinguishable from a
---   project's own committed 'Contexts'-branch override by the time
---   @context.writer@ actually gets looked up: no separate wire-override
---   code path, no bypass around the normal lookup. Whatever the resolved
---   definition writes, default or override, *is* the context 'writeAgent'
---   sees, verbatim (see the project chat that settled this). Style is
---   resolved separately (@context.style@ is never "context" -- see
---   'Storyteller.Context.DSL.Library.contextWriter''s own Haddock) and is
---   never affected by @contextProgram@. Character summaries run through
---   the DSL too ('activeCharacterContext', backed by
---   'Storyteller.Context.DSL.Library.contextCharacter'); only
---   pinned/short-term context is still gathered outside it (no DSL
---   equivalent of "whatever the client explicitly pinned this turn" is
---   needed -- it's already just data, not something to assemble). Handed
---   to the agents as plain data -- see 'Storyteller.Writer.Agent.Write.writeAgent'
---   for how it turns into a real @['UniversalLLM.Message']@ rather than one
---   flattened string. Agents append nothing themselves, so appending the
---   result is done here too.
-chatWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> Maybe T.Text -> Maybe TickId -> Sem r ()
-chatWriter path prompt pinnedItems contextProgram mFlowTid = do
-  mapM_ (setContextOverride "context.writer") contextProgram
-  writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
-  styleV  <- resolveContext0 @Main "context.style" (CtxLibrary.contextStyle @Main)
-  (worldCtx, styleCtx) <- runContextValue @Main $ do
-    w <- Rendering.renderContext writerV
-    s <- Rendering.renderContext styleV
-    pure (WorldContext w, StyleContext s)
+--   'Storyteller.Writer.Agent.FlowWrite'). World context is composed here,
+--   in Haskell, from three independently-resolved slots -- @context.lore@
+--   (overridable per call via 'mLore'), chapters (in @chaptersMode@'s
+--   chosen framing), and @context.other@ -- rather than resolving one
+--   monolithic @context.writer@ program (see the project chat that
+--   retired that design: full per-call DSL control over the *entire*
+--   writer context doubled every piece of assembly knowledge across two
+--   hand-synced implementations, for a flexibility real users never
+--   needed over slots they have no special insight into anyway). Style
+--   and characters stay entirely agent-owned, with no client knob:
+--   @context.style@ is resolved plain, and characters are gathered via
+--   'activeCharacterContext' exactly as 'writeAgent' has always wanted
+--   them (@charBlocks@), never duplicated into @worldCtx@ itself.
+--
+--   'mLore' is staged via 'Storyteller.Core.Context.setContextOverride'
+--   *before* @context.lore@ is resolved -- so it's indistinguishable from
+--   a project's own committed 'Contexts'-branch override by the time the
+--   lookup runs, the same "no separate wire-override code path" contract
+--   the old whole-program design had, just scoped to one slot now.
+--   'pinnedPrograms' are each resolved via
+--   'Storyteller.Core.Context.resolveAdhoc0' (a bare 0-arity program, no
+--   slot identity, no fallback) and folded into this call's pinned
+--   content alongside 'pinnedItems''s own plain data.
+--
+--   Handed to the agents as plain data -- see
+--   'Storyteller.Writer.Agent.Write.writeAgent' for how it turns into a
+--   real @['UniversalLLM.Message']@ rather than one flattened string.
+--   Agents append nothing themselves, so appending the result is done
+--   here too.
+chatWriter
+  :: (FileOpen r, Member Splitter r, SessionEffects r)
+  => FilePath -> T.Text -> [ContextItem]
+  -> Maybe T.Text -> PastChaptersMode -> [T.Text]
+  -> Maybe TickId -> Sem r ()
+chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = do
+  mapM_ (setContextOverride "context.lore") mLore
+  let pathT = T.pack path
+  loreV     <- resolveContext0 @Main "context.lore" (CtxLibrary.contextLore @Main)
+  chaptersV <- case chaptersMode of
+    FullChapters       -> resolveContext0 @Main "context.chapters" (CtxLibrary.contextChapters @Main)
+    CompressedChapters -> resolveContext0 @Main "context.chaptersCompressed" (CtxLibrary.contextChaptersCompressed @Main)
+  otherV    <- resolveContext1 @Main "context.other" (CtxLibrary.contextOther @Main) pathT
+  styleV    <- resolveContext0 @Main "context.style" (CtxLibrary.contextStyle @Main)
+  pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
+  (worldCtx, styleCtx, pinnedProgramCtxs) <- runContextValue @Main $ do
+    lore     <- Rendering.renderContext loreV
+    chapters <- Rendering.renderContext chaptersV
+    other    <- Rendering.renderContext otherV
+    s        <- Rendering.renderContext styleV
+    progCtxs <- mapM Rendering.renderContext pinnedProgramValues
+    pure (WorldContext (lore <> chapters <> other), StyleContext s, progCtxs)
   charBlocks <- activeCharacterContext path
-  let pinned      = PinnedContext (pinnedContext pinnedItems)
+  let pinned      = PinnedContext (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs))
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
       -- below has already read whatever tick history it needs -- both
@@ -334,26 +354,30 @@ roleplayWriter path prompt = do
 --   replays back on top of the fresh generation -- see 'atGeneric's own
 --   Haddock: popped ticks are replayed verbatim, so anything still
 --   present when it starts winding back would simply reappear.
-correctGroup :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem] -> Maybe T.Text -> Sem r ()
-correctGroup path promptTid targets prompt pinnedItems contextProgram = do
+correctGroup
+  :: (FileOpen r, Member Splitter r, SessionEffects r)
+  => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem]
+  -> Maybe T.Text -> PastChaptersMode -> [T.Text]
+  -> Sem r ()
+correctGroup path promptTid targets prompt pinnedItems mLore chaptersMode pinnedPrograms = do
   typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash (unTickId promptTid)))
   case tickParent typed of
     Nothing -> fail "correctGroup: prompt tick has no parent to rebase onto"
     Just parentTid -> do
       deleteFileTicks (promptTid : targets)
-      atGeneric @Main parentTid (chatWriter path prompt pinnedItems contextProgram Nothing)
+      atGeneric @Main parentTid (chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms Nothing)
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
 --   With no targets, there's nothing to rework — that's a different policy
 --   ("just write") from the Fixer's, so it's handled here as a fall through
 --   to the same Writer path 'chatWriter' takes, rather than living inside
---   'Storyteller.Writer.Agent.Fix.fixAgent'. 'chatFixer' itself never had a
---   context-program wire field (unlike 'chatWriter'\/'correctGroup') -- the
---   fallthrough passes @""@, which 'Storyteller.Core.Context.
---   resolveContextQuery' reads as "no query-level override, use whatever
---   branch override\/compiled-in default is already configured."
+--   'Storyteller.Writer.Agent.Fix.fixAgent'. 'chatFixer' itself never had
+--   any of 'chatWriter''s own per-call context slots (unlike 'chatWriter'\/
+--   'correctGroup') -- the fallthrough passes the all-default values
+--   (@Nothing@ lore, 'FullChapters', no pinned programs), same as any
+--   caller that never sent them at all.
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems Nothing Nothing
+chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems Nothing FullChapters [] Nothing
 chatFixer path prompt _pinnedItems targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path

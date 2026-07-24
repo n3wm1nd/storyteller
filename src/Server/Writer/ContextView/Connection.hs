@@ -49,7 +49,7 @@ import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
 import Storyteller.Core.Runtime (Main)
-import Storyteller.Writer.Agent.ContextCost (buildProgramCosts)
+import Storyteller.Writer.Agent.ContextCost (buildProgramCosts, buildAdhocProgramCosts)
 import Storyteller.Writer.Agent.ContextPreview (buildPreview)
 
 -- | 'path' (the route parameter) is accepted but unused: each
@@ -100,6 +100,9 @@ commandLoop branch conn reqVar = loop
             -- change (see this module's own Protocol-facing Haddock).
             pushCost branch conn mid path program
             loop
+          Just (EstimateAdhocCost mid program) -> do
+            pushAdhocCost branch conn mid program
+            loop
 
 -- | The notify thread: on every 'RefMoved' for this branch, re-resolve
 --   whatever @(path, program)@ was last submitted (nothing to push if the
@@ -135,4 +138,11 @@ pushCost
   => T.Text -> WS.Connection -> Maybe T.Text -> FilePath -> T.Text -> Sem r ()
 pushCost branch conn mid path program = do
   costs <- withBranch @Main branch (buildProgramCosts @Main path program)
+  embed $ WS.sendTextData conn (encode (ContextCosted mid costs))
+
+pushAdhocCost
+  :: (SessionEffects r, Member (Embed IO) r)
+  => T.Text -> WS.Connection -> Maybe T.Text -> T.Text -> Sem r ()
+pushAdhocCost branch conn mid program = do
+  costs <- withBranch @Main branch (buildAdhocProgramCosts @Main program)
   embed $ WS.sendTextData conn (encode (ContextCosted mid costs))

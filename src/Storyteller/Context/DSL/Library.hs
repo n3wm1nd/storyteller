@@ -51,6 +51,8 @@ module Storyteller.Context.DSL.Library
   , contextLore
   , chapterEntry
   , contextChapters
+  , chapterEntryCompressed
+  , contextChaptersCompressed
   , contextOther
   , contextWriter
   , contextWriterDef
@@ -78,8 +80,7 @@ import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
-import Storyteller.Core.ContentEffects
-  (TreeAccess, Presence, JournalAccess, ConversationAccess, BranchResolve, JournalCuration(..))
+import Storyteller.Core.ContentEffects (TreeAccess, Summarized)
 import Storyteller.Writer.Agent (CharSummary(..))
 
 -- | The one reserved standing-instruction file, if a project has one --
@@ -185,6 +186,23 @@ f:
 chapterEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
 chapterEntry lib a = runDefinition @branch lib chapterEntryDef [toBinding a]
 
+-- | 'chapterEntryDef', but the body read through @summarized(f, "prose")@
+--   instead of @read f@ -- a separate definition, not a parameterized
+--   variant of 'chapterEntryDef', because @f@ there is bound to the bare
+--   path itself (interpolated verbatim into the @"## Chapter: %f%"@
+--   header, then re-read inside the body) -- there's no path expression
+--   this could thread through 'chapterEntry''s existing 'Action'
+--   parameter without breaking that interpolation.
+chapterEntryCompressedDef :: Definition
+chapterEntryCompressedDef = [defQuote|
+f:
+  "## Chapter: %f%"
+  > (f | summarized("prose"))
+|]
+
+chapterEntryCompressed :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
+chapterEntryCompressed lib a = runDefinition @branch lib chapterEntryCompressedDef [toBinding a]
+
 -- | Chapter prose, in natural reading order (@ch2@ before @ch11@, not
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
 --   re-export through a second glob (see
@@ -216,6 +234,34 @@ in (x | sortBy):
 
 contextChapters :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
 contextChapters lib = runDefinition @branch lib contextChaptersDef []
+
+-- | 'contextChaptersDef', but each chapter's body read through
+--   @summarized(f, "prose")@ instead of @read f@ -- the
+--   "compressed past chapters" mode 'Server.Writer.File.chatWriter' picks
+--   via its own @pastChaptersMode@ wire field (see that module's own
+--   Haddock: a toggle, not a client-authorable program, since "should
+--   chapter history be full or compressed" is a shape decision, not a
+--   content-selection one the caller has any special knowledge over).
+--   Kept as its own sibling definition rather than a parameter on
+--   'contextChaptersDef' itself -- overriding "how one chapter reads" and
+--   "whether chapters are summarized at all" are two independent axes a
+--   project might want to override separately, the same reasoning
+--   'chapterEntry' already being its own named unit rests on.
+contextChaptersCompressedDef :: Definition
+contextChaptersCompressedDef = [defQuote|
+x =
+  for f in chapters/**/*:
+    as f: chapterEntryCompressed f
+"## Chapters written so far (compressed)"
+in (x | sortBy):
+  for f in **/*:
+    y = read f
+    as f: y
+    y
+|]
+
+contextChaptersCompressed :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r)
+contextChaptersCompressed lib = runDefinition @branch lib contextChaptersCompressedDef []
 
 -- | The catch-all: any file that isn't under @lore@\/@chapters@' own
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
@@ -618,6 +664,8 @@ defaultLibraryOrder =
   , ("context.lore",      contextLoreDef)
   , ("chapterEntry",      chapterEntryDef)
   , ("context.chapters",  contextChaptersDef)
+  , ("chapterEntryCompressed",     chapterEntryCompressedDef)
+  , ("context.chaptersCompressed", contextChaptersCompressedDef)
   , ("context.other",     contextOtherDef)
   , ("context.style",     contextStyleDef)
   , ("character.blurb",   characterBlurbDef)

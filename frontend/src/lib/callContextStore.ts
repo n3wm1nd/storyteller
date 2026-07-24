@@ -1,226 +1,147 @@
 "use client";
 
-// Per-file state for the new context UI -- structured casual edits,
-// the loaded named function (if any), and the live mention overlay.
-// Mirrors lib/uiStore.ts's per-file conventions (selection, rebase
-// marker): keyed by file path, cleared on file/branch change.
+// Per-file state for the writer's casual context UI -- lore
+// toggle/exclusions, the past-chapters mode, and the list of named pinned
+// programs -- plus the live mention overlay. Mirrors lib/uiStore.ts's
+// per-file conventions (selection, rebase marker): keyed by file path,
+// cleared on file/branch change.
 //
-// Three modes, one per file at a time:
-//
-//   "default"  — no edits, nothing loaded. The next send omits the
-//                wire's `context` field entirely; the server's
-//                compiled-in default runs. This is the resting state
-//                for a file the user hasn't touched.
-//
-//   "transient" — the user has toggled/added something in the casual
-//                 panel, or a mention is in the composer. The
-//                 structured state is composed into DSL source at send
-//                 time (lib/dslCompose.ts); nothing is persisted.
-//
-//   "named"     — the user loaded a saved function from the contexts
-//                 branch (or just authored one and saved). The
-//                 function's name is what's sent (as a bare-name DSL
-//                 program). Loading a named function clears any
-//                 transient edits -- the named function is the entire
-//                 context program now.
-//
-// Mode precedence at send: "named" overrides "transient" overrides
-// "default". Mentions always overlay on top, regardless of base.
+// This store used to also track a "named"/"transient"/"default" mode for
+// a whole synthesized-or-loaded Context DSL program overriding the entire
+// writer context, plus a `liveDslDrafts` mirror of the DSL editor's own
+// unsaved textarea content. That design was rolled back (see
+// dslCompose.ts's own header: full per-call DSL control over the *entire*
+// writer context moved expertise away from the agent and doubled every
+// piece of context-assembly knowledge across two hand-synced
+// implementations) -- there's no longer a single "the program for this
+// file" to track, just three small independent fields that each become
+// their own wire field at send time (see composeWriterContextFields). A
+// "named program" now means one more entry in `pinnedProgramNames`, not a
+// whole-context override mode.
 
 import { create } from "zustand";
-import {
-  DEFAULT_EDITS,
-  type ContextEdits,
-} from "./dslCompose";
+import { DEFAULT_EDITS, type ContextEdits, type PastChaptersMode } from "./dslCompose";
 
 // A single stable empty array used by every selector that wants
-// `s.mentions[path] ?? []` without re-rendering on every store change
-// -- creating a fresh `[]` each call makes zustand's reference equality
-// see a new value every time, causing the "getSnapshot should be
-// cached" infinite loop. Shared across modules so the identity of "the
-// empty mention list" is genuinely the same reference everywhere.
+// `s.mentions[path] ?? []` without re-rendering on every store change --
+// creating a fresh `[]` each call makes zustand's reference equality see a
+// new value every time, causing the "getSnapshot should be cached" infinite
+// loop. Shared across modules so the identity of "the empty mention list"
+// is genuinely the same reference everywhere.
 export const EMPTY_MENTIONS: readonly string[] = Object.freeze([]);
 
-export type CallContextMode = "default" | "transient" | "named";
-
-export interface CallContextFileState {
-  mode: CallContextMode;
-  // Valid in "transient" mode; ignored otherwise.
-  edits: ContextEdits;
-  // Valid in "named" mode; the loaded function's name on the contexts
-  // branch. null otherwise.
-  namedName: string | null;
-}
+// Same reasoning, for `s.files[path]?.pinnedProgramNames` -- a selector
+// that falls back to a fresh `[]` on every call (rather than this one
+// shared, frozen reference) breaks zustand's reference-equality check,
+// which React then reports as "the result of getSnapshot should be
+// cached" (an infinite re-render loop), not just a wasted re-render.
+export const EMPTY_PINNED_PROGRAMS: readonly string[] = Object.freeze([]);
 
 interface CallContextState {
-  files: Record<string, CallContextFileState>;
-  // Per-file mention overlay: character ids currently @-mentioned in
-  // the composer for that file. Kept in this store (not derived from
-  // the textarea) so the strip/panel can subscribe to it without
-  // reaching into InputBar's local state. Driven by
-  // mention-autocomplete.tsx's live parsing on every keystroke.
+  files: Record<string, ContextEdits>;
+  // Per-file mention overlay: character ids currently @-mentioned in the
+  // composer for that file. Kept in this store (not derived from the
+  // textarea) so the strip/panel can subscribe to it without reaching into
+  // InputBar's local state. Driven by mention-autocomplete.tsx's live
+  // parsing on every keystroke.
   mentions: Record<string, string[]>;
 
-  // The DSL editor's own current textarea content for a file, while
-  // that view is open -- separate from `files[path].edits`/`namedName`
-  // (which only ever reflect *saved* state), so a live-updating consumer
-  // (context-cost-sidebar.tsx) can see exactly what's being typed, not
-  // just what was last saved. `null` (via `clearLiveDslDraft`, called on
-  // unmount) means "the DSL editor isn't open, or has nothing unsaved to
-  // show" -- falls back to the ordinary saved-state derivation.
-  liveDslDrafts: Record<string, string>;
-
-  setEdits: (path: string, edits: ContextEdits) => void;
-  patchEdits: (path: string, patch: Partial<ContextEdits>) => void;
-  loadNamed: (path: string, name: string) => void;
-  clearNamed: (path: string) => void;
+  setLoreEnabled: (path: string, enabled: boolean) => void;
+  setExcludedLorePaths: (path: string, paths: string[]) => void;
+  setPastChaptersMode: (path: string, mode: PastChaptersMode) => void;
+  addPinnedProgram: (path: string, name: string) => void;
+  removePinnedProgram: (path: string, name: string) => void;
   resetToDefault: (path: string) => void;
   setMentions: (path: string, ids: string[]) => void;
-  setLiveDslDraft: (path: string, draft: string) => void;
-  clearLiveDslDraft: (path: string) => void;
   clearForFile: (path: string) => void;
   clearAll: () => void;
 }
 
-function freshFileState(): CallContextFileState {
-  return {
-    mode: "default",
-    edits: { ...DEFAULT_EDITS, baseline: { ...DEFAULT_EDITS.baseline }, characters: [], extraFiles: [], excludedLorePaths: [] },
-    namedName: null,
-  };
+function freshFileState(): ContextEdits {
+  return { ...DEFAULT_EDITS, excludedLorePaths: [], pinnedProgramNames: [] };
 }
 
 export const useCallContext = create<CallContextState>((set) => ({
   files: {},
   mentions: {},
-  liveDslDrafts: {},
 
-  setEdits: (path, edits) =>
+  setLoreEnabled: (path, enabled) =>
     set((s) => ({
-      files: {
-        ...s.files,
-        [path]: { mode: "transient", edits, namedName: null },
-      },
+      files: { ...s.files, [path]: { ...(s.files[path] ?? freshFileState()), loreEnabled: enabled } },
     })),
 
-  patchEdits: (path, patch) =>
+  setExcludedLorePaths: (path, paths) =>
+    set((s) => ({
+      files: { ...s.files, [path]: { ...(s.files[path] ?? freshFileState()), excludedLorePaths: paths } },
+    })),
+
+  setPastChaptersMode: (path, mode) =>
+    set((s) => ({
+      files: { ...s.files, [path]: { ...(s.files[path] ?? freshFileState()), pastChaptersMode: mode } },
+    })),
+
+  addPinnedProgram: (path, name) =>
     set((s) => {
       const cur = s.files[path] ?? freshFileState();
-      const nextEdits = { ...cur.edits, ...patch };
-      return {
-        files: {
-          ...s.files,
-          [path]: { mode: "transient", edits: nextEdits, namedName: null },
-        },
-      };
+      if (cur.pinnedProgramNames.includes(name)) return s;
+      return { files: { ...s.files, [path]: { ...cur, pinnedProgramNames: [...cur.pinnedProgramNames, name] } } };
     }),
 
-  loadNamed: (path, name) =>
-    set((s) => ({
-      files: {
-        ...s.files,
-        [path]: {
-          mode: "named",
-          // Keep `edits` around (not used in "named" mode) so a later
-          // "clear named" can fall back to "default" without losing
-          // anything the user had drafted in the casual panel before
-          // loading. Whether that's the right UX is a Phase-2 call;
-          // for now we preserve.
-          edits: (s.files[path] ?? freshFileState()).edits,
-          namedName: name,
-        },
-      },
-    })),
-
-  clearNamed: (path) =>
+  removePinnedProgram: (path, name) =>
     set((s) => {
-      const cur = s.files[path];
-      if (!cur || cur.mode !== "named") return s;
-      // Fall back to "default" -- not back to a prior "transient"
-      // draft. The user explicitly cleared the named function; landing
-      // them in their stale casual draft instead of the clean default
-      // would surprise them. They can re-open the panel if they want.
+      const cur = s.files[path] ?? freshFileState();
       return {
-        files: {
-          ...s.files,
-          [path]: freshFileState(),
-        },
+        files: { ...s.files, [path]: { ...cur, pinnedProgramNames: cur.pinnedProgramNames.filter((n) => n !== name) } },
       };
     }),
 
   resetToDefault: (path) =>
-    set((s) => ({
-      files: {
-        ...s.files,
-        [path]: freshFileState(),
-      },
-    })),
+    set((s) => ({ files: { ...s.files, [path]: freshFileState() } })),
 
   setMentions: (path, ids) =>
-    set((s) => ({
-      mentions: {
-        ...s.mentions,
-        [path]: ids,
-      },
-    })),
-
-  setLiveDslDraft: (path, draft) =>
-    set((s) => ({
-      liveDslDrafts: {
-        ...s.liveDslDrafts,
-        [path]: draft,
-      },
-    })),
-
-  clearLiveDslDraft: (path) =>
-    set((s) => {
-      const liveDslDrafts = { ...s.liveDslDrafts };
-      delete liveDslDrafts[path];
-      return { liveDslDrafts };
-    }),
+    set((s) => ({ mentions: { ...s.mentions, [path]: ids } })),
 
   clearForFile: (path) =>
     set((s) => {
       const files = { ...s.files };
       const mentions = { ...s.mentions };
-      const liveDslDrafts = { ...s.liveDslDrafts };
       delete files[path];
       delete mentions[path];
-      delete liveDslDrafts[path];
-      return { files, mentions, liveDslDrafts };
+      return { files, mentions };
     }),
 
-  clearAll: () => set({ files: {}, mentions: {}, liveDslDrafts: {} }),
+  clearAll: () => set({ files: {}, mentions: {} }),
 }));
 
 // ─── Read helpers ─────────────────────────────────────────────────────────
 
-// The send-time view of a file's context state -- one shape the wire
-// site (fileview.actions.ts) can read without reasoning about modes.
-// Returns null when nothing should be sent (omit the wire field).
+// The send-time view of a file's context state -- one shape the wire site
+// (fileview.actions.ts) can read without touching the store directly.
 export function getCallContext(path: string): {
   path: string;
   edits: ContextEdits;
-  namedName: string | null;
   mentionCharacterIds: string[];
 } {
   const s = useCallContext.getState();
-  const f = s.files[path];
   return {
     path,
-    edits: f?.edits ?? DEFAULT_EDITS,
-    namedName: f?.mode === "named" ? f.namedName : null,
+    edits: s.files[path] ?? DEFAULT_EDITS,
     mentionCharacterIds: s.mentions[path] ?? [],
   };
 }
 
-// True iff the next send for this file would emit a non-default
-// program. Lights up the strip's "edited" affordance.
+// True iff the next send for this file would carry any non-default writer
+// context field. Lights up the strip's "edited" affordance.
 export function isFileDirty(path: string): boolean {
   const s = useCallContext.getState();
-  const f = s.files[path];
-  if (!f) return false;
-  if (f.mode === "named") return true;
-  if (f.mode === "transient") return true;
-  return (s.mentions[path]?.length ?? 0) > 0;
+  const edits = s.files[path];
+  const hasMentions = (s.mentions[path]?.length ?? 0) > 0;
+  if (!edits) return hasMentions;
+  return (
+    edits.loreEnabled !== DEFAULT_EDITS.loreEnabled ||
+    edits.excludedLorePaths.length > 0 ||
+    edits.pastChaptersMode !== DEFAULT_EDITS.pastChaptersMode ||
+    edits.pinnedProgramNames.length > 0 ||
+    hasMentions
+  );
 }

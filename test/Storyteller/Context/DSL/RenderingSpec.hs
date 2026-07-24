@@ -69,6 +69,30 @@ spec :: Spec
 spec = do
   renderContextSpec
   renderFileSystemSpec
+  monoidSpec
+
+-- | 'RenderedContext''s 'Semigroup'\/'Monoid' instance -- plain
+--   concatenation, content then entries, in that order. What
+--   'Server.Writer.File.chatWriter' uses to fold its independently-
+--   resolved slots (@context.lore@, chapters, @context.other@) into one
+--   'Storyteller.Writer.Agent.Context.WorldContext', and separately to
+--   fold each @fcPinnedPrograms@ entry's own rendered result in alongside
+--   the client's plain pinned items.
+monoidSpec :: Spec
+monoidSpec = describe "RenderedContext's Semigroup/Monoid instance" $ do
+  it "<> concatenates content and entries in order, left then right" $
+    let a = Node ["a1", "a2"] [("x", Node ["ax"] [])]
+        b = Node ["b1"]       [("y", Node ["by"] [])]
+    in (a <> b) `shouldBe` Node ["a1", "a2", "b1"] [("x", Node ["ax"] []), ("y", Node ["by"] [])]
+
+  it "mempty is a genuine identity on both sides" $ do
+    let a = Node ["a1"] [("x", Node ["ax"] [])] :: RenderedContext Text
+    (mempty <> a) `shouldBe` a
+    (a <> mempty) `shouldBe` a
+
+  it "mconcat folds a list the same way repeated <> would" $
+    let nodes = [Node ["1"] [], Node ["2"] [], Node ["3"] []] :: [RenderedContext Text]
+    in mconcat nodes `shouldBe` Node ["1", "2", "3"] []
 
 renderContextSpec :: Spec
 renderContextSpec = describe "renderContext / renderText / renderMessages" $ do

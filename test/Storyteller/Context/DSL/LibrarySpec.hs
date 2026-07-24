@@ -45,7 +45,9 @@ import Storyteller.Context.DSL.Compile (Library, bval)
 import qualified Storyteller.Context.DSL.Compile as Compile
 import Storyteller.Context.DSL.Library
   (contextCharacter, contextLore, contextMentionFilter, contextWriter)
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value
+import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
 import Storyteller.Writer.Presence (recordPresence)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
@@ -92,6 +94,7 @@ entryTexts v = Map.fromList <$>
 spec :: Spec
 spec = do
   contextWriterSpec
+  contextChaptersCompressedSpec
   contextWriterLoreOverrideSpec
   contextLoreSpec
   contextMentionFilterSpec
@@ -290,13 +293,18 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
 
   -- | The case this section's own module exists to prove: an active
   --   character reaches 'contextWriter''s own result as a named entry
-  --   (@as c: context.character c@ in 'Storyteller.Context.DSL.Library
-  --   .contextWriterDef'), without changing the flat default stream
-  --   above at all -- structural, additive access, not a fold. Presence
-  --   is keyed off the same @path@ 'contextWriter' itself takes, exactly
-  --   like 'Storyteller.Context.DSL.CompileSpec.forOverBindingResultSpec'
+  --   (@x = context.character c; as c: x; x@ in
+  --   'Storyteller.Context.DSL.Library.contextWriterDef'), *and* the same
+  --   trailing bare @x@ re-emit genuinely extends the flat default stream
+  --   above with that character's own blurb -- both at once, not a
+  --   fold-vs-entry choice (a bare @as c: ...@ would only ever populate
+  --   the named entry, never the enclosing default -- see
+  --   'contextWriterDef''s own Haddock on the bug that shape used to be).
+  --   Presence is keyed off the same @path@ 'contextWriter' itself takes,
+  --   exactly like
+  --   'Storyteller.Context.DSL.CompileSpec.forOverBindingResultSpec'
   --   proved @charactersin@ resolves it.
-  it "exposes each active character as a named entry, carrying their own context.character bucket, alongside the unchanged flat default" $
+  it "exposes each active character as a named entry, carrying their own context.character bucket, and also extends the flat default with their blurb" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/notes.md", "a hand-authored note")
@@ -313,6 +321,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
         , User "## lore/notes.md"
         , FileRead "lore/notes.md" "a hand-authored note"
         , User "## Other notes"
+        , User "Aria: A wandering rogue."
         ]
       , ["Aria: A wandering rogue."]
       )
@@ -326,6 +335,31 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       Just aria <- pure (lookup "aria" (valueEntries v))
       ariaTexts <- messagesText <$> (valueDefault =<< aria)
       pure (def, [ariaTexts])
+
+-- | 'contextChaptersCompressed' -- 'Server.Writer.File.chatWriter''s
+--   compressed @pastChaptersMode@ variant: each chapter read through
+--   @summarized(f, "prose")@ instead of @read f@, everything else
+--   (heading, sort order, entry-keeping) identical to 'contextChapters'.
+--   Genuinely proves the summarized form is what comes back, not just
+--   that this compiles -- a chapter with no summarizer pass recorded yet
+--   still falls back to its raw content (@summarized@'s own documented
+--   fallback), so this fixture records one real pass first.
+contextChaptersCompressedSpec :: Spec
+contextChaptersCompressedSpec = describe "contextChaptersCompressed (the compressed past-chapters variant)" $ do
+  it "reads each chapter through its own summarized form once a pass covers it" $
+    run (testStack $ do
+      seedBranch "main" [("chapters/ch2.md", "chapter two, the long version")]
+      runBranchOpGit @Main (BranchName "main") $
+        void (runSummarizerForPath @Main "prose" "chapters/ch2.md" (\_ -> pure "chapter two, summarized"))
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right
+      [ User "## Chapters written so far (compressed)"
+      , User "## Chapter: chapters/ch2.md"
+      , Assistant "chapter two, summarized"
+      ]
+  where
+    go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) [Message]
+    go table = valueDefault =<< CtxLibrary.contextChaptersCompressed @Main table
 
 -- | 'contextLore'\/'contextOther' each on their own -- self-describing
 --   *and* keeping per-file entries, both at once (see 'contextLore''s own

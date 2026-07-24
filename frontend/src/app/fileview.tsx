@@ -2135,7 +2135,6 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
       {path && panelOpen && (
         <ContextPanel
           path={path}
-          activeBranch={activeBranch}
           onClose={() => setPanelOpen(false)}
         />
       )}

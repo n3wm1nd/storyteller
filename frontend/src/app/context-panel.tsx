@@ -1,52 +1,45 @@
 "use client";
 
-// Layer 1 / Layer 2 of the context UI. Layer 1 (the default view) is
-// the casual editor: plain-language toggles and pickers, no DSL
-// visible. Layer 2 (the "Edit as code" view, behind one click) is the
-// power-user surface: the actual DSL text + a saved-functions library.
+// Layer 1 / Layer 2 of the context UI. Layer 1 (the default view) is the
+// casual editor: plain-language toggles, no DSL visible. Layer 2 (the
+// "Edit as code" view, behind one click) is the power-user surface: a
+// small pinned-snippet editor + a saved-snippets library.
 //
-// The panel mounts as an expandable region above the InputBar's
-// textarea (fileview.tsx). It's dismissable (Esc, click-outside, or the
-// close button); state changes persist in callContextStore regardless
-// of whether the panel is open, so closing it doesn't lose edits.
+// The panel mounts as an expandable region above the InputBar's textarea
+// (fileview.tsx). It's dismissable (Esc, click-outside, or the close
+// button); state changes persist in callContextStore regardless of
+// whether the panel is open, so closing it doesn't lose edits.
 //
-// The casual editor's vocabulary is deliberately small -- three
-// baseline toggles ("Story lore", "Past chapters", "Style guide"), one
-// character multi-select with depth, one file picker for extras. Every
-// selection is positive ("include this") -- there's no negation in the
-// casual UI. Removing a default-on baseline item is a toggle, not a
-// special "exclusion" concept. Anything more nuanced (a glob exclusion,
-// a for-loop, a cross-branch read) is the power-user's job in Layer 2.
+// The casual editor's vocabulary is deliberately small now -- a lore
+// toggle, a past-chapters mode toggle, and a list of named pinned
+// snippets (e.g. "rules.magic") to fold into this call's authors-notes
+// content. Style, character identity, and "other notes" are entirely
+// agent-owned (see Server.Writer.File.Protocol's own Haddock on
+// `ChatWriter`'s three wire slots) -- there's no cast-list picker or
+// extra-file picker anymore; full per-call DSL control over the *entire*
+// writer context was rolled back (see dslCompose.ts's own header), and
+// those two pickers went with it. They may come back in a narrower form
+// later, but aren't part of this pass.
 //
-// "Save as..." promotes the current structured state to a named
-// function on the contexts branch (lib/contextBranch.ts) -- the user
-// names it, we synthesize DSL source, write the file, and switch this
-// file's mode to "named" with that name loaded. The casual state is
-// then dormant until "Clear named function" or "Reset to default".
+// "Save as..." authors a small snippet (a single 0-arity Context DSL
+// definition, e.g. `"the rules of magic"` or a real `read`/`for` body) on
+// the contexts branch, then adds its name to this file's
+// `pinnedProgramNames` -- the direct replacement for the old "load a
+// whole context program" flow.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  BookOpen, FileText, Sparkles, Users, X, Plus, Save, Code2,
-  ChevronLeft, Search, AlertCircle,
+  BookOpen, FileText, X, Save, Code2, ChevronLeft,
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
-import {
-  DEFAULT_EDITS, type ContextEdits, type CharacterAdd, type FileAdd,
-} from "@/lib/dslCompose";
-import type { CharacterSummary, LoreNode } from "@/lib/ws";
-import { useServerCache } from "@/lib/serverCacheStore";
-import { characterDisplayName } from "@/lib/utils";
-import {
-  writeContextFunction, slugifyFunctionName, isValidFunctionName,
-} from "@/lib/contextBranch";
+import { DEFAULT_EDITS, type ContextEdits, type PastChaptersMode } from "@/lib/dslCompose";
+import { writeContextFunction, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
-import { useLoreTree } from "./lore-selector";
 import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
 
 interface ContextPanelProps {
   path: string;
-  activeBranch: string | null;
   onClose: () => void;
 }
 
@@ -85,268 +78,58 @@ function ToggleRow({
   );
 }
 
-// ─── Character picker ─────────────────────────────────────────────────────
-
-function CharacterPicker({
-  characters, characterBranches, onAdd, onRemove, onDepthChange,
-}: {
-  characters: CharacterAdd[];
-  characterBranches: CharacterSummary[];
-  onAdd: (c: CharacterAdd) => void;
-  onRemove: (id: string) => void;
-  onDepthChange: (id: string, depth: "blurb" | "full") => void;
-}) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const available = characterBranches
-    .map((cb) => cb.branch.replace(/^character\//, ""))
-    .filter((id) => !characters.some((c) => c.id === id));
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {characters.length === 0 ? (
-        <div style={{ fontSize: 11, color: "var(--text-ghost)", fontStyle: "italic", padding: "4px 0" }}>
-          No characters added — the scene's present characters are still included by default.
-        </div>
-      ) : (
-        characters.map((c) => {
-          const branch = `character/${c.id}`;
-          return (
-            <div key={c.id} style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "3px 6px",
-              background: "var(--card)", borderRadius: 5, fontSize: 11,
-            }}>
-              <Users style={{ width: 10, height: 10, color: "var(--text-dim)" }} />
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {characterDisplayName(branch,
-                  characterBranches.find((cb) => cb.branch === branch)?.sheet)}
-              </span>
-              <select
-                value={c.depth}
-                onChange={(e) => onDepthChange(c.id, e.target.value as "blurb" | "full")}
-                title="How much of this character to include"
-                style={{
-                  fontSize: 10, padding: "1px 3px", borderRadius: 3,
-                  border: "1px solid var(--border-subtle)", background: "var(--surface-deep)",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                <option value="blurb">Brief</option>
-                <option value="full">Full</option>
-              </select>
-              <button
-                onClick={() => onRemove(c.id)}
-                title="Remove"
-                style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-ghost)", padding: 2 }}
-              >
-                <X style={{ width: 10, height: 10 }} />
-              </button>
-            </div>
-          );
-        })
-      )}
-      <div style={{ position: "relative" }}>
-        <button
-          onClick={() => setPickerOpen((v) => !v)}
-          disabled={available.length === 0}
-          style={{
-            display: "inline-flex", alignItems: "center", gap: 4,
-            fontSize: 10.5, padding: "2px 8px", borderRadius: 4,
-            border: "1px dashed var(--border-subtle)", background: "transparent",
-            color: available.length === 0 ? "var(--text-ghost)" : "var(--text-dim)",
-            cursor: available.length === 0 ? "default" : "pointer",
-          }}
-        >
-          <Plus style={{ width: 10, height: 10 }} /> Add character
-        </button>
-        {pickerOpen && available.length > 0 && (
-          <div style={{
-            position: "absolute", bottom: "100%", left: 0, marginBottom: 4,
-            background: "var(--surface-deep)", border: "1px solid var(--border-subtle)",
-            borderRadius: 5, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-            maxHeight: 200, overflowY: "auto", minWidth: 180, zIndex: 10,
-          }}>
-            {available.map((id) => {
-              const branch = `character/${id}`;
-              return (
-                <button
-                  key={id}
-                  onClick={() => { onAdd({ id, depth: "blurb" }); setPickerOpen(false); }}
-                  style={{
-                    display: "block", width: "100%", textAlign: "left",
-                    padding: "4px 8px", border: "none", background: "transparent",
-                    cursor: "pointer", color: "var(--text-secondary)", fontSize: 11,
-                  }}
-                >
-                  {characterDisplayName(branch,
-                    characterBranches.find((cb) => cb.branch === branch)?.sheet)}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── File picker (extras) ─────────────────────────────────────────────────
-
-function FilePicker({
-  extras, loreEntries, onAdd, onRemove,
-}: {
-  extras: FileAdd[];
-  loreEntries: LoreNode[];
-  onAdd: (f: FileAdd) => void;
-  onRemove: (path: string) => void;
-}) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [filter, setFilter] = useState("");
-
-  const flatPaths = useMemo(() => {
-    const out: string[] = [];
-    const walk = (nodes: LoreNode[]) => {
-      for (const n of nodes) {
-        if (n.children.length === 0) out.push(n.path);
-        else walk(n.children);
-      }
-    };
-    walk(loreEntries);
-    return out;
-  }, [loreEntries]);
-
-  const filtered = filter
-    ? flatPaths.filter((p) => p.toLowerCase().includes(filter.toLowerCase()))
-    : flatPaths;
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {extras.length === 0 ? (
-        <div style={{ fontSize: 11, color: "var(--text-ghost)", fontStyle: "italic", padding: "4px 0" }}>
-          No extra files — anything under <code>lore/</code> or <code>chapters/</code> is already included.
-        </div>
-      ) : (
-        extras.map((f) => (
-          <div key={f.path} style={{
-            display: "flex", alignItems: "center", gap: 6, padding: "3px 6px",
-            background: "var(--card)", borderRadius: 5, fontSize: 11,
-          }}>
-            <FileText style={{ width: 10, height: 10, color: "var(--text-dim)" }} />
-            <code style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>
-              {f.path}
-            </code>
-            <button
-              onClick={() => onRemove(f.path)}
-              title="Remove"
-              style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-ghost)", padding: 2 }}
-            >
-              <X style={{ width: 10, height: 10 }} />
-            </button>
-          </div>
-        ))
-      )}
-      <div style={{ position: "relative" }}>
-        <button
-          onClick={() => setPickerOpen((v) => !v)}
-          disabled={flatPaths.length === 0}
-          style={{
-            display: "inline-flex", alignItems: "center", gap: 4,
-            fontSize: 10.5, padding: "2px 8px", borderRadius: 4,
-            border: "1px dashed var(--border-subtle)", background: "transparent",
-            color: flatPaths.length === 0 ? "var(--text-ghost)" : "var(--text-dim)",
-            cursor: flatPaths.length === 0 ? "default" : "pointer",
-          }}
-        >
-          <Plus style={{ width: 10, height: 10 }} /> Add file
-        </button>
-        {pickerOpen && (
-          <div style={{
-            position: "absolute", bottom: "100%", left: 0, marginBottom: 4,
-            background: "var(--surface-deep)", border: "1px solid var(--border-subtle)",
-            borderRadius: 5, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-            maxHeight: 240, overflowY: "auto", minWidth: 240, zIndex: 10,
-            display: "flex", flexDirection: "column",
-          }}>
-            <div style={{
-              display: "flex", alignItems: "center", gap: 4,
-              padding: "4px 6px", borderBottom: "1px solid var(--border-subtle)",
-            }}>
-              <Search style={{ width: 10, height: 10, color: "var(--text-ghost)" }} />
-              <input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="filter…"
-                autoFocus
-                style={{
-                  flex: 1, minWidth: 0, border: "none", outline: "none",
-                  background: "transparent", color: "var(--foreground)", fontSize: 11,
-                }}
-              />
-            </div>
-            <div style={{ flex: 1, overflowY: "auto" }}>
-              {filtered.length === 0 ? (
-                <div style={{ padding: 8, fontSize: 10, color: "var(--text-ghost)" }}>no matches</div>
-              ) : filtered.slice(0, 80).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => { onAdd({ path: p }); setPickerOpen(false); setFilter(""); }}
-                  style={{
-                    display: "block", width: "100%", textAlign: "left",
-                    padding: "3px 8px", border: "none", background: "transparent",
-                    cursor: "pointer", color: "var(--text-secondary)",
-                    fontSize: 10.5, fontFamily: "monospace",
-                  }}
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Save-as dialog ───────────────────────────────────────────────────────
 
 function SaveAsDialog({
   onCancel, onSave,
 }: {
   onCancel: () => void;
-  onSave: (name: string) => void;
+  onSave: (name: string, source: string) => void;
 }) {
   const [raw, setRaw] = useState("");
+  const [source, setSource] = useState('"the rules of magic"\n');
   const slug = slugifyFunctionName(raw);
-  const valid = slug.length > 0 && isValidFunctionName(slug);
+  const valid = slug.length > 0 && isValidFunctionName(slug) && source.trim().length > 0;
   return (
     <div style={{
       display: "flex", flexDirection: "column", gap: 6,
       padding: 8, background: "var(--card)", border: "1px solid var(--border-subtle)", borderRadius: 5,
     }}>
       <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-        Save current selections as a reusable function:
+        Save a snippet to pin whenever it's relevant:
       </div>
       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
         <input
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
-          placeholder="e.g. Alice battle scene"
+          placeholder="e.g. rules.magic"
           autoFocus
-          onKeyDown={(e) => { if (e.key === "Enter" && valid) onSave(slug); if (e.key === "Escape") onCancel(); }}
+          onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}
           style={{
             flex: 1, padding: "3px 6px", fontSize: 11,
             border: "1px solid var(--border-subtle)", background: "var(--surface-deep)",
             color: "var(--foreground)", borderRadius: 4, outline: "none",
           }}
         />
-        <code style={{ fontSize: 10, color: valid ? "var(--text-dim)" : "var(--text-ghost)", fontFamily: "monospace", minWidth: 80 }}>
+        <code style={{ fontSize: 10, color: slug ? "var(--text-dim)" : "var(--text-ghost)", fontFamily: "monospace", minWidth: 80 }}>
           {slug || "—"}
         </code>
       </div>
+      <textarea
+        value={source}
+        onChange={(e) => setSource(e.target.value)}
+        spellCheck={false}
+        placeholder='"the rules of magic"'
+        style={{
+          minHeight: 70, padding: "4px 6px", fontFamily: "monospace", fontSize: 11,
+          border: "1px solid var(--border-subtle)", background: "var(--surface-deep)",
+          color: "var(--foreground)", borderRadius: 4, outline: "none", resize: "vertical",
+        }}
+      />
       <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
         <button onClick={onCancel} style={dialogBtnStyle}>Cancel</button>
         <button
-          onClick={() => valid && onSave(slug)}
+          onClick={() => valid && onSave(slug, source)}
           disabled={!valid}
           style={{
             ...dialogBtnStyle,
@@ -371,25 +154,17 @@ const dialogBtnStyle: React.CSSProperties = {
 
 // ─── Main panel ───────────────────────────────────────────────────────────
 
-export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps) {
-  const fileState = useCallContext((s) => s.files[path]);
-  const setEdits = useCallContext((s) => s.setEdits);
-  const patchEdits = useCallContext((s) => s.patchEdits);
-  const loadNamed = useCallContext((s) => s.loadNamed);
+export function ContextPanel({ path, onClose }: ContextPanelProps) {
+  const edits = useCallContext((s) => s.files[path]) ?? DEFAULT_EDITS;
+  const setLoreEnabled = useCallContext((s) => s.setLoreEnabled);
+  const setPastChaptersMode = useCallContext((s) => s.setPastChaptersMode);
+  const addPinnedProgram = useCallContext((s) => s.addPinnedProgram);
+  const removePinnedProgram = useCallContext((s) => s.removePinnedProgram);
   const resetToDefault = useCallContext((s) => s.resetToDefault);
-
-  const characterBranches = useServerCache((s) => s.characterBranches);
 
   const [view, setView] = useState<"casual" | "dsl">("casual");
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-
-  // The branch's own lore tree -- reuses the same /lore/{branch}
-  // connection lifecycle the Codex tab and the mention autocomplete
-  // already use. Owned locally by this hook (connects on mount, closes
-  // on unmount); a single connection is fine here because the panel
-  // unmounts when collapsed.
-  const loreEntries = useLoreTree(activeBranch);
 
   // Esc closes the panel.
   useEffect(() => {
@@ -400,41 +175,11 @@ export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps)
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const edits: ContextEdits = fileState?.edits ?? DEFAULT_EDITS;
-
-  function setBaseline(key: keyof ContextEdits["baseline"], value: boolean) {
-    patchEdits(path, { baseline: { ...edits.baseline, [key]: value } });
-  }
-  function addCharacter(c: CharacterAdd) {
-    patchEdits(path, { characters: [...edits.characters.filter((x) => x.id !== c.id), c] });
-  }
-  function removeCharacter(id: string) {
-    patchEdits(path, { characters: edits.characters.filter((x) => x.id !== id) });
-  }
-  function setCharacterDepth(id: string, depth: "blurb" | "full") {
-    patchEdits(path, {
-      characters: edits.characters.map((c) => (c.id === id ? { ...c, depth } : c)),
-    });
-  }
-  function addFile(f: FileAdd) {
-    if (edits.extraFiles.some((x) => x.path === f.path)) return;
-    patchEdits(path, { extraFiles: [...edits.extraFiles, f] });
-  }
-  function removeFile(p: string) {
-    patchEdits(path, { extraFiles: edits.extraFiles.filter((x) => x.path !== p) });
-  }
-
-  async function handleSaveAs(name: string) {
+  async function handleSaveAs(name: string, source: string) {
     setSaving(true);
     try {
-      const { synthesizeProgram } = await import("@/lib/dslCompose");
-      const source = synthesizeProgram(edits);
-      if (source === null) {
-        setError("Nothing to save — selections match the default.");
-        return;
-      }
       await writeContextFunction(name, source);
-      loadNamed(path, name);
+      addPinnedProgram(path, name);
       setSaveAsOpen(false);
     } catch (err) {
       setError(String(err));
@@ -465,7 +210,7 @@ export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps)
         )}
         <button
           onClick={() => setView((v) => (v === "casual" ? "dsl" : "casual"))}
-          title="Edit as DSL (advanced)"
+          title="Edit pinned snippets as DSL (advanced)"
           style={{
             ...headerBtnStyle,
             background: view === "dsl" ? "var(--accent-tint, var(--amber-tint))" : "transparent",
@@ -484,12 +229,6 @@ export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps)
         {view === "dsl" ? (
           // Layer 2 -- power-user
           <PowerUserView path={path} />
-        ) : fileState?.mode === "named" ? (
-          // Casual view, but a named function is loaded -- the panel
-          // becomes a read-only summary of what's in effect, with
-          // affordances to clear or to switch to the DSL view (the
-          // named function's source is editable there).
-          <NamedLoadedView path={path} />
         ) : saveAsOpen ? (
           <SaveAsDialog onCancel={() => setSaveAsOpen(false)} onSave={handleSaveAs} />
         ) : (
@@ -502,45 +241,62 @@ export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps)
                   icon={<BookOpen style={{ width: 11, height: 11 }} />}
                   label="Story lore"
                   hint="Everything under lore/**"
-                  checked={edits.baseline.lore}
-                  onChange={(v) => setBaseline("lore", v)}
+                  checked={edits.loreEnabled}
+                  onChange={(v) => setLoreEnabled(path, v)}
                 />
-                <ToggleRow
-                  icon={<FileText style={{ width: 11, height: 11 }} />}
-                  label="Past chapters"
-                  hint="Earlier chapters for continuity"
-                  checked={edits.baseline.chapters}
-                  onChange={(v) => setBaseline("chapters", v)}
-                />
-                <ToggleRow
-                  icon={<Sparkles style={{ width: 11, height: 11 }} />}
-                  label="Style guide & other files"
-                  hint="style.md plus anything outside lore/chapters"
-                  checked={edits.baseline.style}
-                  onChange={(v) => setBaseline("style", v)}
-                />
+                <label style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "6px 4px", userSelect: "none",
+                }}>
+                  <FileText style={{ width: 11, height: 11, color: "var(--text-dim)" }} />
+                  <span style={{ fontSize: 12, color: "var(--foreground)" }}>Past chapters</span>
+                  <select
+                    value={edits.pastChaptersMode}
+                    onChange={(e) => setPastChaptersMode(path, e.target.value as PastChaptersMode)}
+                    style={{
+                      marginLeft: "auto", fontSize: 10.5, padding: "1px 4px", borderRadius: 3,
+                      border: "1px solid var(--border-subtle)", background: "var(--surface-deep)",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    <option value="full">Full</option>
+                    <option value="compressed">Compressed</option>
+                  </select>
+                </label>
               </div>
             </section>
 
             <section>
-              <SectionLabel>Additional characters</SectionLabel>
-              <CharacterPicker
-                characters={edits.characters}
-                characterBranches={characterBranches}
-                onAdd={addCharacter}
-                onRemove={removeCharacter}
-                onDepthChange={setCharacterDepth}
-              />
-            </section>
-
-            <section>
-              <SectionLabel>Extra files</SectionLabel>
-              <FilePicker
-                extras={edits.extraFiles}
-                loreEntries={loreEntries}
-                onAdd={addFile}
-                onRemove={removeFile}
-              />
+              <SectionLabel>Pinned snippets</SectionLabel>
+              {edits.pinnedProgramNames.length === 0 ? (
+                <div style={{ fontSize: 11, color: "var(--text-ghost)", fontStyle: "italic", padding: "4px 0" }}>
+                  Nothing pinned for this call.
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {edits.pinnedProgramNames.map((name) => (
+                    <div key={name} style={{
+                      display: "flex", alignItems: "center", gap: 6, padding: "3px 6px",
+                      background: "var(--card)", borderRadius: 5, fontSize: 11,
+                    }}>
+                      <code style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>
+                        {name}
+                      </code>
+                      <button
+                        onClick={() => removePinnedProgram(path, name)}
+                        title="Remove"
+                        style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-ghost)", padding: 2 }}
+                      >
+                        <X style={{ width: 10, height: 10 }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ marginTop: 4 }}>
+                <SectionLabel>Saved snippets</SectionLabel>
+                <ContextLibrary path={path} />
+              </div>
             </section>
 
             <div style={{
@@ -556,11 +312,9 @@ export function ContextPanel({ path, activeBranch, onClose }: ContextPanelProps)
                   opacity: saving ? 0.6 : 1,
                 }}
               >
-                <Save style={{ width: 10, height: 10 }} /> Save as…
+                <Save style={{ width: 10, height: 10 }} /> Save new snippet…
               </button>
-              <span style={{ fontSize: 10, color: "var(--text-ghost)", flex: 1 }}>
-                Promotes these selections to a reusable named function
-              </span>
+              <span style={{ flex: 1 }} />
               <button
                 onClick={() => resetToDefault(path)}
                 style={dialogBtnStyle}
@@ -593,39 +347,6 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ─── Named-function-loaded view ───────────────────────────────────────────
-
-function NamedLoadedView({ path }: { path: string }) {
-  const fileState = useCallContext((s) => s.files[path]);
-  const clearNamed = useCallContext((s) => s.clearNamed);
-  if (!fileState || fileState.mode !== "named") return null;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }}>
-      <div style={{
-        display: "flex", alignItems: "center", gap: 6,
-        padding: 8, background: "var(--card)", border: "1px solid var(--border-subtle)", borderRadius: 5,
-      }}>
-        <AlertCircle style={{ width: 12, height: 12, color: "var(--accent, var(--amber))" }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 11, color: "var(--foreground)" }}>
-            Using saved function
-          </div>
-          <code style={{ fontSize: 11, fontFamily: "monospace", color: "var(--accent, var(--amber))" }}>
-            {fileState.namedName}
-          </code>
-        </div>
-      </div>
-      <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
-        The selections below are dormant — the named function is the entire context program.
-        Edit its source under the DSL tab, or clear it to return to the casual editor.
-      </div>
-      <button onClick={() => clearNamed(path)} style={dialogBtnStyle}>
-        Clear named function
-      </button>
-    </div>
-  );
-}
-
 // ─── Power-user view (DSL editor + library) ───────────────────────────────
 
 function PowerUserView({ path }: { path: string }) {
@@ -633,7 +354,7 @@ function PowerUserView({ path }: { path: string }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <DSLEditor path={path} />
       <div>
-        <SectionLabel>Saved functions</SectionLabel>
+        <SectionLabel>Saved snippets</SectionLabel>
         <ContextLibrary path={path} />
       </div>
     </div>

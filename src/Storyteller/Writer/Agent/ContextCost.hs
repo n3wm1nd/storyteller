@@ -36,6 +36,7 @@ module Storyteller.Writer.Agent.ContextCost
   ( LineCost(..)
   , buildLineCosts
   , buildProgramCosts
+  , buildAdhocProgramCosts
   ) where
 
 import Data.List (sortOn)
@@ -48,7 +49,7 @@ import Polysemy.Fail (Fail)
 import qualified Data.Map.Strict as Map
 
 import Storyteller.Context.DSL.AST (Block, Definition(..), Located(..), Pos(..), Stmt(..))
-import Storyteller.Context.DSL.Compile (Library, runDefinition)
+import Storyteller.Context.DSL.Compile (Binding, Library, runDefinition)
 import Storyteller.Context.DSL.Library (contextWriterDef)
 import Storyteller.Context.DSL.Rendering (renderContext, renderText)
 import Storyteller.Context.DSL.Value (Message(User), bval, leafValue)
@@ -142,23 +143,22 @@ ablate target block =
       SFor n srcE body  -> SFor n srcE (ablate target body)
       s@(SExpr _)       -> s
 
--- | The rendered size of running @def@ (as @context.writer@'s own body,
---   with @path@ already bound) against @lib@ -- 'renderText' char count,
---   the same text a real send's token estimate would start from.
---   'runDefinition' takes the caller-position path binding as its own
---   single argument (see 'Storyteller.Writer.Agent.ContextPreview.buildPreview':
---   @context.writer@ is 1-arity, its own parameter is @path@) -- passed
---   the same way 'Storyteller.Core.Context.resolveContext1' passes an
---   override's own argument, a plain 'Message' leaf, not a file read.
-sizeOf :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r => Library (ContextRow branch r) -> Definition -> Text -> Sem r Int
-sizeOf lib def path =
+-- | The rendered size of running @def@ against @lib@ with @args@ already
+--   bound -- 'renderText' char count, the same text a real send's token
+--   estimate would start from. @args@ is whatever the caller's own
+--   definition declares (a single @path@ binding for @context.writer@-
+--   shaped programs via 'buildProgramCosts', none at all for a bare
+--   0-arity snippet via 'buildAdhocProgramCosts') -- this function itself
+--   has no opinion on arity, same as 'runDefinition' doesn't.
+sizeOf :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r => Library (ContextRow branch r) -> Definition -> [Binding (ContextRow branch r)] -> Sem r Int
+sizeOf lib def args =
   runContextValue @branch $ do
-    v        <- runDefinition @branch lib def [bval (pure (leafValue [User path]))]
+    v        <- runDefinition @branch lib def args
     rendered <- renderContext v
     pure (T.length (renderText rendered))
 
 -- | Every statement in @def@'s own body, each paired with its own
---   ablation cost against @path@ -- the whole point of this module.
+--   ablation cost against @args@ -- the whole point of this module.
 --   Evaluates the program @1 + length (positions (defBody def))@ times
 --   total (once for the real baseline, once per candidate line), each a
 --   fresh, independent 'runContextValue' interpretation exactly like a
@@ -171,12 +171,12 @@ sizeOf lib def path =
 buildLineCosts
   :: forall branch r
   .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Library (ContextRow branch r) -> Definition -> Text -> Sem r [LineCost]
-buildLineCosts lib def path = do
-  baseline <- sizeOf @branch lib def path
+  => Library (ContextRow branch r) -> Definition -> [Binding (ContextRow branch r)] -> Sem r [LineCost]
+buildLineCosts lib def args = do
+  baseline <- sizeOf @branch lib def args
   let candidates = positions (defBody def)
   costs <- mapM (\pos -> do
-    ablatedSize <- sizeOf @branch lib def { defBody = ablate pos (defBody def) } path
+    ablatedSize <- sizeOf @branch lib def { defBody = ablate pos (defBody def) } args
     pure LineCost { lcLine = posLine pos, lcCol = posCol pos, lcChars = baseline - ablatedSize }
     ) candidates
   pure (sortOn (negate . lcChars) costs)
@@ -201,4 +201,27 @@ buildProgramCosts path program = do
       table      = buildContextLibrary @branch overrides'
       def        = maybe contextWriterDef id
                      (resolveOverrideDefinition (length (defParams contextWriterDef)) (Just program))
-  buildLineCosts @branch table def (T.pack path)
+  buildLineCosts @branch table def [bval (pure (leafValue [User (T.pack path)]))]
+
+-- | 'buildLineCosts', but for a bare 0-arity ad-hoc snippet -- what a
+--   @pinnedPrograms@ entry (see Server.Writer.File.Protocol's own
+--   Haddock) actually is: no @path@, no slot identity, just "this
+--   program's own rendered size, broken down per statement." The
+--   frontend's context-cost-sidebar.tsx repoints here (rather than
+--   'buildProgramCosts') now that @context.writer@ no longer accepts a
+--   whole-program override to estimate against -- see the project chat
+--   that settled the writer context's three-slot model. A parse failure
+--   or non-zero declared arity is a real error here (mirroring
+--   'Storyteller.Core.Context.resolveAdhoc0': there's no slot default to
+--   silently fall back to for a program that was never a named slot to
+--   begin with).
+buildAdhocProgramCosts
+  :: forall branch r
+  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Text -> Sem r [LineCost]
+buildAdhocProgramCosts program = do
+  overrides <- getContextOverrides
+  let table = buildContextLibrary @branch overrides
+  case resolveOverrideDefinition 0 (Just program) of
+    Nothing  -> fail ("buildAdhocProgramCosts: not a valid 0-arity program: " <> T.unpack program)
+    Just def -> buildLineCosts @branch table def []

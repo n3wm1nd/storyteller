@@ -1,14 +1,15 @@
 "use client";
 
-// The saved-functions library -- a small browser that lists every
+// The saved-snippets library -- a small browser that lists every
 // `context/*.dsl` file on the `contexts` branch (lib/contextBranch.ts)
-// and lets the user load one as this file's active context program.
+// and lets the user pin one for this call (adds its name to this file's
+// `pinnedProgramNames` -- see dslCompose.ts's own header on the three-slot
+// writer-context wire model).
 //
-// Each row: the function's name, a "Load" button (sets this file's
-// mode to "named" with that name), and a "View source" affordance
-// (read-only peek without committing). Deleting is Phase-2 (the file
-// API has no DELETE) -- power users can edit the contexts branch
-// directly via git for now.
+// Each row: the snippet's name, a "Pin" button, and a "View source"
+// affordance (read-only peek without committing). Deleting is Phase-2
+// (the file API has no DELETE) -- power users can edit the contexts
+// branch directly via git for now.
 //
 // Refresh is manual (a button) -- the contexts branch changes rarely
 // (only when the user themselves saves), so a live connection would
@@ -16,8 +17,8 @@
 // enough.
 
 import { useEffect, useState } from "react";
-import { RefreshCw, FileCode, Upload, Eye } from "lucide-react";
-import { useCallContext } from "@/lib/callContextStore";
+import { RefreshCw, FileCode, Pin, Eye } from "lucide-react";
+import { useCallContext, EMPTY_PINNED_PROGRAMS } from "@/lib/callContextStore";
 import {
   listContextFunctions, readContextFunction,
   type SavedContextFunction,
@@ -29,14 +30,12 @@ interface ContextLibraryProps {
 }
 
 export function ContextLibrary({ path }: ContextLibraryProps) {
-  const fileState = useCallContext((s) => s.files[path]);
-  const loadNamed = useCallContext((s) => s.loadNamed);
+  const pinnedNames = useCallContext((s) => s.files[path]?.pinnedProgramNames ?? EMPTY_PINNED_PROGRAMS);
+  const addPinnedProgram = useCallContext((s) => s.addPinnedProgram);
   const [items, setItems] = useState<SavedContextFunction[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<{ name: string; source: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-
-  const activeName = fileState?.mode === "named" ? fileState.namedName : null;
 
   async function refresh() {
     setLoading(true);
@@ -81,7 +80,7 @@ export function ContextLibrary({ path }: ContextLibraryProps) {
         padding: 8, fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic",
         border: "1px dashed var(--border-subtle)", borderRadius: 5,
       }}>
-        No saved functions yet. Use the editor above to author one, or the casual panel's "Save as…" to promote selections.
+        No saved snippets yet. Use the editor above to author one, or the casual panel's "Save new snippet…".
       </div>
     );
   }
@@ -90,33 +89,33 @@ export function ContextLibrary({ path }: ContextLibraryProps) {
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
         <span style={{ fontSize: 10, color: "var(--text-ghost)", flex: 1 }}>
-          {items.length} function{items.length === 1 ? "" : "s"} on the contexts branch
+          {items.length} snippet{items.length === 1 ? "" : "s"} on the contexts branch
         </span>
         <button onClick={refresh} disabled={loading} title="Refresh" style={libBtnStyle}>
           <RefreshCw style={{ width: 10, height: 10 }} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
       {items.map((fn) => {
-        const isActive = fn.name === activeName;
+        const isPinned = pinnedNames.includes(fn.name);
         return (
           <div
             key={fn.path}
             style={{
               display: "flex", alignItems: "center", gap: 6,
               padding: "3px 6px", borderRadius: 5,
-              background: isActive ? "var(--accent-tint, var(--amber-tint))" : "var(--card)",
-              border: `1px solid ${isActive ? "var(--accent, var(--amber))" : "var(--border-subtle)"}`,
+              background: isPinned ? "var(--accent-tint, var(--amber-tint))" : "var(--card)",
+              border: `1px solid ${isPinned ? "var(--accent, var(--amber))" : "var(--border-subtle)"}`,
               fontSize: 11,
             }}
           >
             <FileCode style={{
               width: 11, height: 11,
-              color: isActive ? "var(--accent, var(--amber))" : "var(--text-dim)",
+              color: isPinned ? "var(--accent, var(--amber))" : "var(--text-dim)",
             }} />
             <code style={{
               flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
               fontFamily: "monospace",
-              color: isActive ? "var(--accent, var(--amber))" : "var(--foreground)",
+              color: isPinned ? "var(--accent, var(--amber))" : "var(--foreground)",
             }}>
               {fn.name}
             </code>
@@ -129,16 +128,16 @@ export function ContextLibrary({ path }: ContextLibraryProps) {
               <Eye style={{ width: 10, height: 10 }} />
             </button>
             <button
-              onClick={() => loadNamed(path, fn.name)}
-              disabled={isActive}
-              title={isActive ? "Currently active" : "Use this function"}
+              onClick={() => addPinnedProgram(path, fn.name)}
+              disabled={isPinned}
+              title={isPinned ? "Already pinned for this call" : "Pin for this call"}
               style={{
                 ...libBtnStyle,
-                color: isActive ? "var(--text-ghost)" : "var(--accent, var(--amber))",
-                cursor: isActive ? "default" : "pointer",
+                color: isPinned ? "var(--text-ghost)" : "var(--accent, var(--amber))",
+                cursor: isPinned ? "default" : "pointer",
               }}
             >
-              <Upload style={{ width: 10, height: 10 }} /> {isActive ? "Active" : "Load"}
+              <Pin style={{ width: 10, height: 10 }} /> {isPinned ? "Pinned" : "Pin"}
             </button>
           </div>
         );

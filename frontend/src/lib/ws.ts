@@ -320,15 +320,28 @@ export type FileCommand =
   // whether atoms generated since then are still provisional. `pinned` is
   // the user's own explicit atom/annotation selection (see ContextItem) —
   // unrelated to context assembly, added as reference text regardless of
-  // what `context` resolves to. `context` is this call's own Context DSL
-  // program (see CONTEXT-DSL.md) — replaces the old `contextLayout`/
-  // `characterLayouts` bucket-picker knobs entirely: empty/omitted means
-  // "no query-level override", falling back to whatever the branch/
-  // compiled-in default resolves to (today: lore/**, chapters/**, style.md,
-  // by convention) rather than "show nothing". There's no per-file curation
-  // UI for this anymore — organize by directory convention instead (see
-  // lore-selector.tsx, now a read-only codex browser).
-  | { type: "chat.writer"; id?: string; text: string; pinned?: ContextItem[]; context?: string; flowTid?: string }
+  // the other fields below.
+  //
+  // Three independent, narrow slots — replacing the old single `context`
+  // whole-program override (see the project chat that settled this: full
+  // per-call DSL control over the *entire* writer context moved expertise
+  // away from the agent and doubled every piece of context-assembly
+  // knowledge across two hand-synced implementations; only the inputs a
+  // user genuinely knows better than the agent stay client-choosable):
+  //
+  //  - `lore`: an optional Context DSL program overriding `context.lore`
+  //    for this one call (omitted = compiled-in lore).
+  //  - `pastChaptersMode`: `"full"` (default) or `"compressed"` — a fixed
+  //    toggle between two compiled-in chapter-framing shapes, never a
+  //    program.
+  //  - `pinnedPrograms`: zero or more bare 0-arity Context DSL programs
+  //    (typically just a name, like `rules.magic`), each resolved and
+  //    folded into this call's pinned/authors-notes content alongside
+  //    `pinned`'s own plain items.
+  //
+  // Style, character identity, and "other notes" stay entirely agent-
+  // owned — no client knob over any of them.
+  | { type: "chat.writer"; id?: string; text: string; pinned?: ContextItem[]; lore?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[]; flowTid?: string }
   // Roleplay: every character present on this file is interrogated, in
   // character, for what they'd do or say before one scene gets written and
   // appended — see Server.Writer.File.roleplayWriter. `text` is the
@@ -353,9 +366,9 @@ export type FileCommand =
   // all as one server-side transaction (one undo point, the group staying
   // on screen untouched until the replacement lands, rather than
   // vanishing tick-by-tick as N separate delete.atom round trips would).
-  // Same `pinned`/`context` shape as chat.writer — it rebases and re-runs
-  // exactly that command.
-  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; pinned?: ContextItem[]; context?: string }
+  // Same `pinned`/`lore`/`pastChaptersMode`/`pinnedPrograms` shape as
+  // chat.writer — it rebases and re-runs exactly that command.
+  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; pinned?: ContextItem[]; lore?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[] }
   // Converse: discuss, don't write. Send a message to the chat agent — see
   // WRITER.md's chat/ convention. No context/targets: a chat file has no
   // atom-selection concept of its own.
@@ -459,12 +472,20 @@ export type CharacterEvent =
 // candidate line, via ablation), so it's its own command rather than
 // riding along on every `context.preview` response.
 //
-// Every request is self-contained — the full (path, program) pair, resolved
-// fresh each time, same discipline an LLM call's full history follows.
-// Nothing about a submitted program persists across requests server-side.
+// `context.cost.adhoc` is the same idea for a bare 0-arity snippet with no
+// `path` of its own — what a `pinnedPrograms` entry (see
+// Server/Writer/File/Protocol.hs's own `ChatWriter`) actually is, now that
+// `context.writer` no longer accepts a whole-program override to estimate
+// against (see lib/dslCompose.ts's own header on the writer context's
+// three-slot model).
+//
+// Every request is self-contained — resolved fresh each time, same
+// discipline an LLM call's full history follows. Nothing about a
+// submitted program persists across requests server-side.
 export type ContextViewCommand =
   | { type: "context.preview"; id?: string; path: string; program: string }
-  | { type: "context.cost"; id?: string; path: string; program: string };
+  | { type: "context.cost"; id?: string; path: string; program: string }
+  | { type: "context.cost.adhoc"; id?: string; program: string };
 
 // A node mirrors the DSL's own Value shape: its own text content (each
 // source Message flattened to its text, in order), then named child

@@ -36,7 +36,7 @@ import qualified Storage.Ops as Ops
 import Storyteller.Core.LLM.Role (ProseModel)
 import Storyteller.Core.Context
   ( contextsBranchName, setContextOverride, interpretContextStorageFS, interpretContextStorageMap
-  , resolveOverrideDefinition, ContextRow, ContextStorage, resolveContext0, resolveContext1, runContextValue )
+  , resolveOverrideDefinition, ContextRow, ContextStorage, resolveContext0, resolveContext1, resolveAdhoc0, runContextValue )
 import Storyteller.Core.ContentEffects (BranchResolve, TreeAccess)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -63,6 +63,7 @@ spec = do
   resolveOverrideDefinitionSpec
   resolveContext0Spec
   resolveContext1Spec
+  resolveAdhoc0Spec
   clientSubmittedContextProgramSpec
   frontendSynthesizedProgramShapeSpec
 
@@ -278,3 +279,44 @@ resolveContext1Spec = describe "resolveContext1" $ do
           v <- resolveContext1 @Main "context.greeting1" (defaultEcho @Main) "Aria"
           runContextValue @Main (messagesText <$> valueDefault v))
     `shouldBe` Right "overridden for Aria"
+
+-- | 'resolveAdhoc0' -- what a per-call @pinnedPrograms@ entry
+--   ('Server.Writer.File.chatWriter''s own wire field) resolves through:
+--   no name, no compiled-in default to fall back to, just "run this
+--   0-arity program against the library, or fail." A bare call to an
+--   existing library name (@rules.magic@, say -- any project's own
+--   committed @context.*@-style definition) resolves the same way any
+--   other cross-definition reference does, since it's compiled against
+--   the exact same 'buildContextLibrary' table 'resolveContext0'\/
+--   'resolveContext1' use.
+resolveAdhoc0Spec :: Spec
+resolveAdhoc0Spec = describe "resolveAdhoc0" $ do
+  it "runs a bare literal 0-arity program directly" $
+    run (testStack $ do
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        v <- resolveAdhoc0 @Main "\"hand-authored pinned text\"\n"
+        runContextValue @Main (messagesText <$> valueDefault v))
+    `shouldBe` Right "hand-authored pinned text"
+
+  it "resolves a bare call to a project's own committed library definition" $
+    run (testStack $ do
+      seedBranch "main" [("sheet.md", "# Aria\n\nA wandering rogue.")]
+      seedBranch (unBranchName contextsBranchName)
+        [("rules/magic.dsl", "\"the rules of magic\"\n")]
+      runBranchAndFS @Main (BranchName "main") $
+        interpretContextStorageFS $ do
+          v <- resolveAdhoc0 @Main "rules.magic\n"
+          runContextValue @Main (messagesText <$> valueDefault v))
+    `shouldBe` Right "the rules of magic"
+
+  it "fails (rather than silently contributing nothing) for a 1-arity program -- there is no slot default to fall back to" $
+    (run (testStack $ do
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        v <- resolveAdhoc0 @Main "name:\n  \"got %name%\"\n"
+        runContextValue @Main (messagesText <$> valueDefault v))
+      :: Either String Text)
+    `shouldSatisfy` \case
+      Left _  -> True
+      Right _ -> False

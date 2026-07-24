@@ -19,6 +19,8 @@ module Server.Writer.File.Protocol
   , FileEvent(..)
   , ContextItem(..)
   , AtBranch(..)
+  , PastChaptersMode(..)
+  , parsePastChaptersMode
   , commandKind
   ) where
 
@@ -59,6 +61,26 @@ data AtBranch = AtBranch
 instance FromJSON AtBranch where
   parseJSON = withObject "AtBranch" $ \o ->
     AtBranch <$> o .: "branch" <*> o .: "tickId"
+
+-- | The one knob 'ChatWriter'\/'CorrectGroup' expose over past-chapters
+--   framing -- a toggle between two compiled-in shapes
+--   ('Storyteller.Context.DSL.Library.contextChapters'\/
+--   'contextChaptersCompressed'), never a client-authored program. See
+--   the project chat that settled the writer context's slot model: "how
+--   should chapter history be framed" is the agent's own structural
+--   decision, not something a caller has special knowledge over the way
+--   lore/pinned content is -- so this is a fixed enum, not a DSL string.
+data PastChaptersMode = FullChapters | CompressedChapters
+  deriving (Show, Eq)
+
+-- | Parses the wire's own bare-string @pastChaptersMode@ field --
+--   @\"compressed\"@ or anything else (including the field being absent)
+--   means 'FullChapters', matching 'Server.Writer.File.chatWriter''s own
+--   "no override, no special mode" default posture everywhere else on
+--   this record.
+parsePastChaptersMode :: Maybe T.Text -> PastChaptersMode
+parsePastChaptersMode (Just "compressed") = CompressedChapters
+parsePastChaptersMode _                   = FullChapters
 
 -- | Commands the client may send on a file connection.
 --   Each is an intent — the server decides what ticks result.
@@ -130,22 +152,36 @@ data FileCommand
   --   unrelated to context assembly, added as (mostly) plain text into the
   --   query, same field\/meaning on every constructor that carries it.
   --
-  --   'fcContext' is this call's one Context DSL program (see
-  --   @CONTEXT-DSL.md@\/"Storyteller.Context.DSL.Library") -- replaces the
-  --   old @contextLayout@\/@characterLayouts@ 'PickerRule' knobs.
-  --   'Nothing' (the field wire-absent) means "no query-level override",
-  --   falling through to 'Storyteller.Core.Context.resolveContextQuery''s
-  --   own branch-override-then-compiled-default chain. This is
-  --   deliberately @Maybe Text@, not @Text@ defaulting to @\"\"@: an empty
-  --   string is a real, if degenerate, DSL program (parses to an empty
-  --   definition, resolving to @Value{valueDefault=[], valueEntries=[]}@ —
-  --   genuinely "include nothing"), a completely different thing from "no
-  --   override was sent" — collapsing the two would make an explicitly
-  --   empty program impossible to express and silently reinterpret it as
-  --   "use the default" instead. World lore, style, earlier chapters, and
-  --   (eventually) character context are all selected by running this one
-  --   program instead of picking each independently.
-  | ChatWriter { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: Maybe T.Text, fcFlowTid :: Maybe T.Text }
+  --   Three independent, narrow slots replace the old single @fcContext@
+  --   whole-program override (see the project chat that settled this:
+  --   full DSL control over the *entire* writer context moved expertise
+  --   away from the agent and doubled every piece of context-assembly
+  --   knowledge across two hand-synced implementations; only the inputs a
+  --   user genuinely knows better than the agent stay client-choosable):
+  --
+  --   * 'fcLore' -- an optional Context DSL program overriding
+  --     @context.lore@ for this one call ('Nothing' = compiled-in lore).
+  --     Deliberately @Maybe Text@, not @Text@ defaulting to @\"\"@: an
+  --     empty string is a real, if degenerate, 0-arity program (resolves
+  --     to nothing), a different thing from "no override sent" --
+  --     collapsing the two would make "include no lore at all" and "use
+  --     the default" indistinguishable.
+  --   * 'fcPastChaptersMode' -- full vs. compressed chapter framing, a
+  --     fixed toggle (see 'PastChaptersMode'), never a program.
+  --   * 'fcPinnedPrograms' -- zero or more bare 0-arity Context DSL
+  --     programs (typically just a name, like @rules.magic@), each
+  --     resolved via 'Storyteller.Core.Context.resolveAdhoc0' and folded
+  --     into this call's pinned\/authors-notes content alongside
+  --     'fcPinned''s own plain items -- what lets a user say "include the
+  --     magic rules this turn" without authoring the whole context.
+  --
+  --   Style, character identity, and "other notes" stay entirely agent-
+  --   owned -- no client knob over any of them.
+  | ChatWriter
+      { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem]
+      , fcLore :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
+      , fcFlowTid :: Maybe T.Text
+      }
   -- | Roleplay writer: every character present on this file (see
   --   'Storyteller.Writer.Presence.activeCharactersFor') is interrogated,
   --   in character, for what they'd do or say before one scene gets
@@ -195,9 +231,13 @@ data FileCommand
   --   atom before generation even started) for what's actually one atomic
   --   edit. See 'Server.Writer.File.Dispatch's handler and
   --   'frontend/src/app/fileview.actions.ts''s 'correctAtom'. Same
-  --   'fcPinned'\/'fcContext' shape as 'ChatWriter' -- it rebases and
-  --   re-runs exactly that command.
-  | CorrectGroup { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text, fcPinned :: [ContextItem], fcContext :: Maybe T.Text }
+  --   'fcPinned'\/'fcLore'\/'fcPastChaptersMode'\/'fcPinnedPrograms' shape
+  --   as 'ChatWriter' -- it rebases and re-runs exactly that command.
+  | CorrectGroup
+      { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text
+      , fcPinned :: [ContextItem]
+      , fcLore :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
+      }
   -- | Split this file (a whole-story outline, @outline.md@ by convention)
   --   into per-chapter beat sheets. No prompt or targets — the outline text is
   --   the whole input; the model decides the chapter breakdown. See
@@ -280,10 +320,14 @@ instance FromJSON FileCommand where
       "hide.atoms"   -> HideAtoms   i . fromMaybe [] <$> o .:? "targets"
       "unhide.atoms" -> UnhideAtoms i . fromMaybe [] <$> o .:? "targets"
       "chat.writer" -> do
-        pinned  <- fromMaybe [] <$> o .:? "pinned"
-        context <- o .:? "context"
-        flowTid <- o .:? "flowTid"
-        ChatWriter i <$> o .: "text" <*> pure pinned <*> pure context <*> pure flowTid
+        pinned          <- fromMaybe [] <$> o .:? "pinned"
+        lore            <- o .:? "lore"
+        pastChaptersRaw <- o .:? "pastChaptersMode"
+        pinnedPrograms  <- fromMaybe [] <$> o .:? "pinnedPrograms"
+        flowTid         <- o .:? "flowTid"
+        ChatWriter i <$> o .: "text" <*> pure pinned
+          <*> pure lore <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
+          <*> pure flowTid
       "chat.roleplay" -> RoleplayWrite i . fromMaybe "" <$> o .:? "text"
       "chat.fixer"  -> do
         pinned  <- fromMaybe [] <$> o .:? "pinned"
@@ -294,10 +338,13 @@ instance FromJSON FileCommand where
         byBeat <- fromMaybe False <$> o .:? "byBeat"
         ChatRegen i <$> o .: "text" <*> pure pinned <*> pure byBeat
       "correct.group" -> do
-        pinned  <- fromMaybe [] <$> o .:? "pinned"
-        context <- o .:? "context"
-        targets <- fromMaybe [] <$> o .:? "targets"
-        CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text" <*> pure pinned <*> pure context
+        pinned          <- fromMaybe [] <$> o .:? "pinned"
+        lore            <- o .:? "lore"
+        pastChaptersRaw <- o .:? "pastChaptersMode"
+        pinnedPrograms  <- fromMaybe [] <$> o .:? "pinnedPrograms"
+        targets         <- fromMaybe [] <$> o .:? "targets"
+        CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text"
+          <*> pure pinned <*> pure lore <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
       "chat.converse" -> ChatConverse i <$> o .: "text"
       "chat.converse.regen" ->
         ChatConverseSwipe i <$> o .: "promptTickId" <*> o .: "atomTickId" <*> o .: "text"

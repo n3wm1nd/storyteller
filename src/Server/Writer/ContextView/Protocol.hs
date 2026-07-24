@@ -22,15 +22,24 @@
 --           single resolve, so a client asks for it only when it actually
 --           wants to see where the budget is going, not on every
 --           branch-change-triggered re-preview.
+--
+--           'EstimateAdhocCost' — the same idea, but for a bare 0-arity
+--           snippet with no @path@ of its own (see
+--           'Storyteller.Writer.Agent.ContextCost.buildAdhocProgramCosts')
+--           -- what a @pinnedPrograms@ entry
+--           (Server.Writer.File.Protocol's own @ChatWriter@) actually is,
+--           now that @context.writer@ no longer accepts a whole-program
+--           override to estimate against (see the project chat that
+--           settled the writer context's three-slot model).
 -- Events:   'ContextPreviewed' — the resolved tree, pushed once per
 --           'PreviewContext' and again whenever the underlying branch
 --           changes (re-resolved against the most recently submitted
 --           program — see 'Server.Writer.ContextView.Connection').
 --
 --           'ContextCosted' — one 'LineCost' per ablation candidate,
---           pushed once per 'EstimateCost'. Not re-pushed on every branch
---           change the way 'ContextPreviewed' is (see
---           'Server.Writer.ContextView.Connection': only the most
+--           pushed once per 'EstimateCost'\/'EstimateAdhocCost'. Not
+--           re-pushed on every branch change the way 'ContextPreviewed'
+--           is (see 'Server.Writer.ContextView.Connection': only the most
 --           recently submitted *preview* request is remembered for that
 --           purpose) — a cost estimate is a deliberate, one-off "show me
 --           now" action, not a live-updating view.
@@ -65,6 +74,7 @@ instance ToJSON LineCost where
 data ContextViewCommand
   = PreviewContext { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
   | EstimateCost { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
+  | EstimateAdhocCost { cvId :: Maybe T.Text, cvProgram :: T.Text }
   deriving (Show)
 
 instance FromJSON ContextViewCommand where
@@ -72,9 +82,10 @@ instance FromJSON ContextViewCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "context.preview" -> PreviewContext i <$> o .: "path" <*> o .: "program"
-      "context.cost"    -> EstimateCost  i <$> o .: "path" <*> o .: "program"
-      _                 -> fail ("unknown context-view command: " <> T.unpack t)
+      "context.preview"    -> PreviewContext i <$> o .: "path" <*> o .: "program"
+      "context.cost"       -> EstimateCost  i <$> o .: "path" <*> o .: "program"
+      "context.cost.adhoc" -> EstimateAdhocCost i <$> o .: "program"
+      _                    -> fail ("unknown context-view command: " <> T.unpack t)
 
 -- | Events the server sends on a context-view connection.
 data ContextViewEvent

@@ -53,6 +53,7 @@ module Storyteller.Core.Context
   , runContextValue
   , resolveContext0
   , resolveContext1
+  , resolveAdhoc0
   , buildContextLibrary
   ) where
 
@@ -347,3 +348,28 @@ resolveContext1 name def arg = do
   runContextValue @branch $ case resolveOverrideDefinition 1 (Map.lookup name overrides) of
     Just overrideDef -> runDefinition @branch table overrideDef [bval (pure (leafValue [User arg]))]
     Nothing          -> def table arg
+
+-- | Runs a raw, caller-supplied 0-arity Context DSL program against the
+--   compiled library, with no name of its own and no default to fall back
+--   to -- unlike 'resolveContext0'\/'resolveContext1', this __is__ the
+--   content, not an override of some slot that already has a compiled-in
+--   answer. What a per-call @pinnedPrograms@ entry
+--   ('Server.Writer.File.chatWriter''s own wire field) resolves through: a
+--   client picking a named function like @rules.magic@ to fold into this
+--   turn's pinned\/authors-notes content is exactly a bare call to an
+--   existing library name, the same as any @context.*@ cross-reference --
+--   no different mechanism needed, just no slot identity to check an
+--   override's arity against. A parse failure or non-zero declared arity
+--   is a real 'Fail' here, not a silent "use the default" -- there is no
+--   default for a program that was never a named slot to begin with, so
+--   swallowing the error would just mean silently contributing nothing,
+--   worse than telling the caller their program didn't run.
+resolveAdhoc0
+  :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Text -> Sem r (Value (ContextRow branch r))
+resolveAdhoc0 src = do
+  overrides <- getContextOverrides
+  let table = buildContextLibrary @branch overrides
+  case resolveOverrideDefinition 0 (Just src) of
+    Nothing  -> fail ("resolveAdhoc0: not a valid 0-arity program: " <> T.unpack src)
+    Just def -> runContextValue @branch (runDefinition @branch table def [])
