@@ -22,6 +22,7 @@
 module Storyteller.Writer.Agent.ContextPreview
   ( PreviewNode(..)
   , buildPreview
+  , buildAdhocPreview
   ) where
 
 import Data.Text (Text)
@@ -35,7 +36,8 @@ import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..), 
 import Storyteller.Context.DSL.Value (messageText)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Branch (BranchOp)
-import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, setContextOverride)
+import Storyteller.Core.Context
+  (ContextStorage, resolveContext1, resolveAdhoc0, runContextValue, setContextOverride)
 import Storyteller.Core.ContentEffects (BranchResolve)
 
 -- | One node of a rendered program's result -- own text content (each
@@ -66,3 +68,25 @@ buildPreview path program = do
   setContextOverride "context.writer" program
   writerV <- resolveContext1 @branch "context.writer" (CtxLibrary.contextWriter @branch) (T.pack path)
   fromRendered <$> runContextValue @branch (renderContext writerV)
+
+-- | 'buildPreview', but for a bare 0-arity snippet with no @path@ of its
+--   own -- the same distinction 'Storyteller.Writer.Agent.ContextCost.
+--   buildAdhocProgramCosts' draws from 'buildProgramCosts', and via the
+--   identical resolution primitive ('Storyteller.Core.Context.
+--   resolveAdhoc0'): a project-default context slot (@context.lore@,
+--   @context.chaptersCompressed@, ...) or a saved pinned snippet is never
+--   staged as a whole @context.writer@ override the way 'buildPreview'
+--   works -- it's compiled and resolved directly against the live
+--   library table, so a name reference inside it (@context.lore@ itself,
+--   say) sees this project's own committed override the identical way a
+--   real send would. There's no @path@ for this to frame against, so
+--   nothing here excludes "the file currently being written" the way
+--   'contextWriterDef' does -- exactly the same caveat 'resolveAdhoc0'
+--   already documents for its own callers.
+buildAdhocPreview
+  :: forall branch r
+  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Text -> Sem r PreviewNode
+buildAdhocPreview program = do
+  v <- resolveAdhoc0 @branch program
+  fromRendered <$> runContextValue @branch (renderContext v)

@@ -21,7 +21,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { EditorView, gutter, GutterMarker } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
 import { contextViewConn } from "@/lib/ws";
-import type { LineCost } from "@/lib/ws";
+import type { LineCost, PreviewNode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity } from "@/lib/uiStore";
 
 const DEBOUNCE_MS = 600;
@@ -76,6 +76,62 @@ export function useAdhocCostFetcher(branch: string | null | undefined) {
     return new Promise((resolve) => {
       pendingRef.current = { resolve };
       conn.send({ type: "context.cost.adhoc", program });
+    });
+  };
+}
+
+// 'useAdhocCostFetcher''s own sibling for `context.preview.adhoc` (see
+// Storyteller.Writer.Agent.ContextPreview.buildAdhocPreview): resolves
+// and renders a bare 0-arity Context DSL program directly, the way a
+// project-default context slot or a saved pinned snippet's own editor
+// needs to preview -- never staged as a whole `context.writer` override
+// the way contextViewConn's plain `context.preview` command works (that
+// one is DSLEditor/RawEditPanel's whole-file preview, a different
+// question). A separate connection from useAdhocCostFetcher (rather than
+// sharing one) so a caller that only wants one of cost/preview doesn't
+// pay for the other's connection lifecycle -- DSLFileEditor below uses
+// both together.
+export function useAdhocPreviewFetcher(branch: string | null | undefined) {
+  const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
+  const pendingRef = useRef<{ resolve: (n: PreviewNode | null) => void } | null>(null);
+
+  useEffect(() => {
+    if (!branch) return;
+    const connLabel = `context.preview.adhoc:editor:${branch}`;
+    setConnStatus(connLabel, "connecting");
+    const conn = contextViewConn(branch, "");
+    connRef.current = conn;
+    conn.subscribe((evt) => {
+      bumpActivity(connLabel);
+      if (evt.type === "context.preview") {
+        pendingRef.current?.resolve(evt.result);
+        pendingRef.current = null;
+      } else if (evt.type === "error") {
+        pendingRef.current?.resolve(null);
+        pendingRef.current = null;
+      }
+    });
+    (async () => {
+      try {
+        await conn.connect();
+        setConnStatus(connLabel, "connected");
+      } catch {
+        setConnStatus(connLabel, "error");
+      }
+    })();
+    return () => {
+      conn.close();
+      connRef.current = null;
+      removeConn(connLabel);
+    };
+  }, [branch]);
+
+  return async (program: string): Promise<PreviewNode | null> => {
+    const conn = connRef.current;
+    if (!conn) return null;
+    return new Promise((resolve) => {
+      pendingRef.current = { resolve };
+      conn.send({ type: "context.preview.adhoc", program });
     });
   };
 }
@@ -141,6 +197,14 @@ const costGutter = gutter({
 const baseTheme = EditorView.theme({
   "&": { fontSize: "11px", backgroundColor: "transparent" },
   ".cm-content": { fontFamily: "monospace", padding: "6px 0", color: "var(--foreground)", caretColor: "var(--foreground)" },
+  // `caret-color` above only styles a native text-input caret -- CM6 draws
+  // its own cursor as a `.cm-cursor` element via the `drawSelection`
+  // extension (part of `basicSetup`), themed separately. Without an
+  // explicit rule here it can render invisible against this app's
+  // transparent/dark surfaces, which is what made a genuinely focused,
+  // editable instance look uneditable (no visible caret at all).
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--foreground)", borderLeftWidth: "1.5px" },
+  "&.cm-focused .cm-cursor": { borderLeftColor: "var(--foreground)" },
   ".cm-gutters": { backgroundColor: "transparent", border: "none" },
   ".cm-cost-gutter": { borderRight: "1px solid var(--border-subtle)" },
   ".cm-activeLine": { backgroundColor: "transparent" },

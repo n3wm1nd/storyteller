@@ -164,8 +164,9 @@ function FileTreeNode({
 
   // Binary (no atom history): no tick chain for the prose/atom viewer to
   // show, and writing to it would just glue text onto whatever binary
-  // content is actually there — open the raw bytes in a new tab instead
-  // of calling onSelectFile (same endpoint uploadFiles PUTs to).
+  // content is actually there — open the raw bytes in a new tab rather
+  // than the atom editor. Still calls onSelectFile so the rename/
+  // checkpoint/delete toolbar (which keys off selectedFile) works for it.
   if (node.isBinary) {
     const isImage = isImagePath(node.name);
     const imageUrl = isImage && activeBranch ? branchFileUrl(activeBranch, node.path) : null;
@@ -179,7 +180,10 @@ function FileTreeNode({
             if (isImage) e.dataTransfer.setData(IMAGE_DRAG_MIME, node.path);
           }}
           onDoubleClick={() => onStartRename(node.path)}
-          onClick={() => activeBranch && window.open(branchFileUrl(activeBranch, node.path), "_blank")}
+          onClick={() => {
+            onSelectFile(node.path);
+            if (activeBranch) window.open(branchFileUrl(activeBranch, node.path), "_blank");
+          }}
           onMouseEnter={() => imageUrl && setImgHovered(true)}
           onMouseLeave={() => setImgHovered(false)}
           title={isImage ? "Image file — opens raw, drag onto the editor to attach (double-click to rename)" : "Binary file — opens raw, not editable here (double-click to rename)"}

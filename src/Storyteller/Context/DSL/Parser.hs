@@ -236,6 +236,25 @@ pBareExpr = classify <$> bareWord
       | isPathLike t = EString Bare (parseInterp t)
       | otherwise    = EIdent t
 
+-- | @[glob text]@ -- an explicit glob/path literal, unambiguously
+--   'EString' 'Bare' regardless of content (no @isPathLike@ heuristic:
+--   the brackets alone are the "this is definitely a path" signal, the
+--   same role quoting plays for 'pQuotedExpr''s "definitely literal
+--   text" meaning). Exists for exactly what a bare token can't express --
+--   a path containing whitespace (@bareWord@ stops at the first space,
+--   so @loreEntry file with spaces.md@ would tokenize as three separate
+--   arguments) or any other character outside @bareWord@'s permissive but
+--   still-restricted charset. No escaping inside the brackets: @]@ itself
+--   can't appear in a path this project would ever author, so none is
+--   needed, unlike '"'-delimited quoting which shares its delimiter
+--   character with ordinary prose.
+pBracketGlobExpr :: Parser Expr
+pBracketGlobExpr = lexeme . try $ do
+  _ <- char '['
+  chars <- many (satisfy (\c -> c /= ']' && c /= '\n'))
+  _ <- char ']'
+  pure (EString Bare (parseInterp (T.pack chars)))
+
 -- ---------------------------------------------------------------------------
 -- Expressions
 -- ---------------------------------------------------------------------------
@@ -269,7 +288,7 @@ pUserExpr = do
 -- | An atom: the tightest-binding expression form, usable as an
 --   application argument or a filter's single bare argument.
 pAtom :: Parser Expr
-pAtom = pParenExpr <|> pReadExpr <|> pUserExpr <|> pQuotedExpr <|> pBareExpr
+pAtom = pParenExpr <|> pReadExpr <|> pUserExpr <|> pBracketGlobExpr <|> pQuotedExpr <|> pBareExpr
 
 -- | Curried application by juxtaposition. Because 'sc' never crosses a
 --   newline, this loop naturally stops at end-of-line -- no explicit

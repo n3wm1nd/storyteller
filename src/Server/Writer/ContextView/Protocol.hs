@@ -31,10 +31,20 @@
 --           now that @context.writer@ no longer accepts a whole-program
 --           override to estimate against (see the project chat that
 --           settled the writer context's three-slot model).
+--
+--           'PreviewAdhoc' — 'PreviewContext''s own bare-snippet
+--           counterpart, via 'Storyteller.Writer.Agent.ContextPreview.
+--           buildAdhocPreview': what a named context slot's own editor
+--           (a project-default @context.lore@\/@context.chaptersCompressed@
+--           override, or a saved pinned snippet) actually previews against
+--           -- resolved and rendered directly, never staged as a whole
+--           @context.writer@ override the way 'PreviewContext' works, since
+--           a slot editor isn't editing the writer's entire context.
 -- Events:   'ContextPreviewed' — the resolved tree, pushed once per
---           'PreviewContext' and again whenever the underlying branch
---           changes (re-resolved against the most recently submitted
---           program — see 'Server.Writer.ContextView.Connection').
+--           'PreviewContext'\/'PreviewAdhoc' and (for 'PreviewContext'
+--           only) again whenever the underlying branch changes
+--           (re-resolved against the most recently submitted program —
+--           see 'Server.Writer.ContextView.Connection').
 --
 --           'ContextCosted' — one 'LineCost' per ablation candidate,
 --           pushed once per 'EstimateCost'\/'EstimateAdhocCost'. Not
@@ -73,6 +83,7 @@ instance ToJSON LineCost where
 -- | Commands the client may send on a context-view connection.
 data ContextViewCommand
   = PreviewContext { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
+  | PreviewAdhoc { cvId :: Maybe T.Text, cvProgram :: T.Text }
   | EstimateCost { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
   | EstimateAdhocCost { cvId :: Maybe T.Text, cvProgram :: T.Text }
   deriving (Show)
@@ -82,10 +93,11 @@ instance FromJSON ContextViewCommand where
     t <- o .: "type" :: Parser T.Text
     i <- o .:? "id"
     case t of
-      "context.preview"    -> PreviewContext i <$> o .: "path" <*> o .: "program"
-      "context.cost"       -> EstimateCost  i <$> o .: "path" <*> o .: "program"
-      "context.cost.adhoc" -> EstimateAdhocCost i <$> o .: "program"
-      _                    -> fail ("unknown context-view command: " <> T.unpack t)
+      "context.preview"       -> PreviewContext i <$> o .: "path" <*> o .: "program"
+      "context.preview.adhoc" -> PreviewAdhoc i <$> o .: "program"
+      "context.cost"          -> EstimateCost  i <$> o .: "path" <*> o .: "program"
+      "context.cost.adhoc"    -> EstimateAdhocCost i <$> o .: "program"
+      _                       -> fail ("unknown context-view command: " <> T.unpack t)
 
 -- | Events the server sends on a context-view connection.
 data ContextViewEvent

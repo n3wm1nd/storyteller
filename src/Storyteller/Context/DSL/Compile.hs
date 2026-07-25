@@ -528,11 +528,27 @@ forceAt scope path = maybe emptyValue id <$> resolveRead scope path
 --   bare glob expression already builds (see 'EString'\'s own
 --   @Bare@ case), reused here by 'ERead' for both a literal string
 --   argument and an otherwise-unresolved bare identifier.
+--
+--   @valueDefault@ is the single matched path's own text when @pat@
+--   resolves to exactly one file, empty otherwise -- the identical shape
+--   a @for@-loop's own per-iteration binding already has (see 'SFor's own
+--   @runOneIteration@: @loopVar = Value (pure [User matchedPath]) [...]
+--   ...@), so a function taking a "this one file" argument (e.g.
+--   'Storyteller.Context.DSL.Library.loreEntry', whose own @"## %f%"@
+--   heading interpolates its parameter's default) works identically
+--   whether called from inside a @for@ or directly against a single-match
+--   glob -- @loreEntry lore/notes.md@, not just @loreEntry f@ inside
+--   @for f in lore/**/*:@. Zero or multiple matches keep the empty
+--   default: there's no single "the path" to name in either case, exactly
+--   the existing ambiguity a multi-file glob (@read *.md@) already has.
 globResolve :: Value r -> Text -> Action r (Value r)
 globResolve scope pat = do
   matches <- globMatchPat scope pat
   entries <- mapM (\m -> (,) m . pure <$> forceAt scope m) matches
-  pure (Value (pure []) entries defaultMeta)
+  let dflt = case matches of
+        [singleMatch] -> pure [User singleMatch]
+        _             -> pure []
+  pure (Value dflt entries defaultMeta)
 
 -- ---------------------------------------------------------------------------
 -- Filters -- all of them pure, no exceptions. Applying a filter is a

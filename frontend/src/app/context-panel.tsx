@@ -32,8 +32,9 @@ import {
   BookOpen, FileText, X, Save, Code2, ChevronLeft, ChevronRight, Pencil, Check,
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
-import { DEFAULT_EDITS, deriveLoreOverride, renderLoreProgram, type PastChaptersMode } from "@/lib/dslCompose";
-import { writeContextFunction, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
+import { DEFAULT_EDITS, parseLoreProgram, type PastChaptersMode } from "@/lib/dslCompose";
+import { writeContextFunction, readContextFunction, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
+import { CONTEXT_DEFAULT_SOURCE } from "@/lib/contextDefaults";
 import { setError } from "@/lib/uiStore";
 import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
@@ -84,27 +85,25 @@ function ToggleRow({
 // ─── Lore row (toggle + inline expandable override editor) ───────────────
 
 // "Story lore" isn't just an on/off switch -- clicking the row's own label
-// (not the checkbox) expands it into a real CodeMirror editor over this
-// call's `context.lore` override (see dslCompose.ts's `loreOverride`
-// field/`synthesizeLoreOverride`). What it's editing is always explicit:
-// the section header inside the expansion names the exact wire field
-// (`lore`) this text becomes, so there's no ambiguity with the DSL
-// editor below, which only ever edits pinned snippets. Starts from the
-// compiled-in default's own source when there's nothing written yet, so
-// "expand and edit" reads as "customize the default," not "start from
-// blank and guess the syntax."
-// "Story lore" is more than an on/off switch: expanding it (click the
-// label, not just the checkbox) shows one checkbox per real lore entry on
-// this branch (via useLoreTree -- the same live tree the Codex tab
-// browses), so a user can quickly narrow which files get included without
-// ever touching DSL syntax. Every checkbox click re-derives the
-// `loreOverride` program on the user's behalf (see
-// dslCompose.ts's deriveLoreOverride) and shows the generated code below,
-// live -- so "quick toggle" and "see/edit the code" are the same surface,
-// never two disconnected views that could drift. Once the user edits that
-// generated code directly, `loreOverrideHandEdited` latches true and the
-// checkboxes disable (a banner explains why) rather than silently
-// clobbering a hand-written program on the next click.
+// (not the checkbox) expands it into a real DSLFileEditor (draft-backed
+// mode) over this call's `context.lore` override (see dslCompose.ts's
+// `loreOverride` field/`synthesizeLoreOverride`). What it's editing is
+// always explicit: the section header inside the expansion names the
+// exact wire field (`lore`) this text becomes.
+//
+// The source file is ground truth: with no per-call override yet, the
+// draft starts from this project's own committed `context/lore.dsl` if
+// one exists, else the compiled-in default's mirrored source (see
+// lib/contextDefaults.ts's own header on why that's a hand-kept JS copy,
+// not something fetched live). Checking a box regenerates `loreOverride`
+// via `renderLoreProgram` (dslCompose.ts) and shows the generated code
+// live -- "quick toggle" and "see/edit the code" are the same surface.
+// Checkbox state itself is never separately stored: it's recovered by
+// *parsing* the current draft (`parseLoreProgram`) on every render, so a
+// hand edit that doesn't match the generator's own shape leaves the
+// checkboxes with nothing truthful to show, and they go inert -- see
+// dslCompose.ts's own header on why this replaced an earlier, broken
+// `exclude()`-based attempt.
 function LoreRow({ path, branch }: { path: string; branch: string }) {
   const edits = useCallContext((s) => s.files[path]) ?? DEFAULT_EDITS;
   const setLoreEnabled = useCallContext((s) => s.setLoreEnabled);
@@ -125,12 +124,31 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   const allEntries = flattenLore(loreTree).filter((e) => e.path !== path);
   const allPaths = allEntries.map((e) => e.path);
 
+  // Ground truth for "no override touched yet": the committed project
+  // file, or (only if nothing was ever committed) the mirrored default
+  // source -- never a bare `context.lore` name reference, which resolves
+  // correctly server-side at send time but can't be shown/edited here as
+  // if it were real content of its own (see contextDefaults.ts).
+  const [committedDefault, setCommittedDefault] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setCommittedDefault(undefined);
+    readContextFunction("lore")
+      .then((text) => { if (!cancelled) setCommittedDefault(text); })
+      .catch(() => { if (!cancelled) setCommittedDefault(null); });
+    return () => { cancelled = true; };
+  }, [branch]);
+  const resetTarget = committedDefault ?? CONTEXT_DEFAULT_SOURCE.lore ?? "";
+
   const hasOverride = edits.loreOverride !== null;
-  const handEdited = edits.loreOverrideHandEdited;
-  // What the code editor shows: the user's own program if there is one,
-  // otherwise a live preview of "select everything" -- so opening the
-  // editor for the first time never starts from a blank, unexplained box.
-  const draft = edits.loreOverride ?? (allPaths.length > 0 ? renderLoreProgram(allPaths) : "");
+  const draft = edits.loreOverride ?? resetTarget;
+  // parseLoreProgram matches a checkbox-generated PREFIX of the draft --
+  // an exact generated block, or nothing at all (zero paths). There is no
+  // "conflict"/disabled state: real default source (contextLoreDef's own
+  // glob-walking body included) that happens to share the generator's
+  // banner line just reads as zero paths, same as any other text with no
+  // recognized prefix -- see dslCompose.ts's own header.
+  const checkedPaths = parseLoreProgram(draft);
 
   return (
     <div style={{ borderRadius: 5, background: expanded ? "var(--card)" : "transparent", overflow: "hidden" }}>
@@ -159,14 +177,12 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                   fontSize: 9, padding: "1px 5px", borderRadius: 7,
                   background: "var(--accent-tint, var(--amber-tint))", color: "var(--accent, var(--amber))",
                 }}>
-                  {handEdited ? "custom" : `${allPaths.length - edits.excludedLorePaths.length}/${allPaths.length}`}
+                  {`${checkedPaths.length}/${allPaths.length}`}
                 </span>
               )}
             </div>
             <div style={{ fontSize: 10, color: "var(--text-ghost)" }}>
-              {hasOverride
-                ? (handEdited ? "Custom context.lore override for this call" : "Some entries excluded for this call")
-                : "Everything under lore/**"}
+              {hasOverride ? "Some entries excluded for this call" : "This project's context.lore"}
             </div>
           </span>
           <ChevronRight style={{
@@ -186,34 +202,28 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 2px 4px" }}>
                 <span style={{ fontSize: 10, color: "var(--text-ghost)", flex: 1 }}>
-                  {allPaths.length - edits.excludedLorePaths.length} of {allPaths.length} included
+                  {checkedPaths.length} of {allPaths.length} included
                 </span>
-                {handEdited && (
-                  <span style={{ fontSize: 9.5, color: "var(--text-ghost)", fontStyle: "italic" }}>
-                    checkboxes disabled — editing directly below
-                  </span>
-                )}
               </div>
               <div style={{
                 display: "flex", flexDirection: "column", gap: 1, maxHeight: 130, overflowY: "auto",
                 border: "1px solid var(--border-subtle)", borderRadius: 5, padding: 3,
               }}>
                 {allEntries.map((entry) => {
-                  const included = !edits.excludedLorePaths.includes(entry.path);
+                  const included = checkedPaths.includes(entry.path);
                   return (
                     <label
                       key={entry.path}
                       title={entry.path}
                       style={{
                         display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3,
-                        cursor: handEdited ? "default" : "pointer", opacity: handEdited ? 0.5 : 1,
+                        cursor: "pointer",
                       }}
                     >
                       <input
                         type="checkbox"
                         checked={included}
-                        disabled={handEdited}
-                        onChange={() => toggleLorePath(path, allPaths, entry.path)}
+                        onChange={() => toggleLorePath(path, resetTarget, entry.path)}
                         style={{ accentColor: "var(--accent, var(--amber))" }}
                       />
                       <span style={{
@@ -240,7 +250,7 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
             </div>
             <CodeCostEditor
               value={draft}
-              onChange={(next) => setLoreOverride(path, next.length > 0 ? next : null)}
+              onChange={(next) => setLoreOverride(path, next === resetTarget ? null : next)}
               placeholder='e.g. read "lore/**"'
               fetchCosts={fetchCosts}
               minHeight="90px"

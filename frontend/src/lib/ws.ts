@@ -484,6 +484,7 @@ export type CharacterEvent =
 // submitted program persists across requests server-side.
 export type ContextViewCommand =
   | { type: "context.preview"; id?: string; path: string; program: string }
+  | { type: "context.preview.adhoc"; id?: string; program: string }
   | { type: "context.cost"; id?: string; path: string; program: string }
   | { type: "context.cost.adhoc"; id?: string; program: string };
 

@@ -19,9 +19,16 @@
 // context-panel.tsx (above the input bar) is the *per-call* override that
 // always wins over it — "Agents tab = defaults, input bar = override".
 // An overridden prompt/context slot's text is expandable and editable in
-// place; a default one isn't, because its text only exists as a literal
-// in Haskell source, unreachable over the wire — there's nothing to fetch
-// or fall back to showing.
+// place; a default prompt isn't, because its text only exists as a
+// literal in Haskell source, unreachable over the wire — there's nothing
+// to fetch. A default context slot IS expandable/editable: it starts from
+// CONTEXT_DEFAULT_SOURCE (lib/contextDefaults.ts), a hand-kept JS copy of
+// the same Haskell literal, so editing one reads as "customize the
+// default" instead of "start from a blank, unexplained box." Saving
+// either kind of slot writes through saveRawFile (contextBranch.ts's
+// writeContextFunction wraps the DSL editor/panel's own saves the same
+// way) so the file lands as an ordinary atom-tracked text file, not the
+// opaque binary blob uploadBranchFile would leave behind.
 
 import { useEffect, useState } from "react";
 import {
@@ -31,9 +38,11 @@ import {
 import { AGENTS, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
 import { branchConn, branchFileUrl, uploadBranchFile } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { contextFunctionUrl, contextsBranchName } from "@/lib/contextBranch";
-import { renderLoreProgram } from "@/lib/dslCompose";
+import { contextFunctionUrl, contextsBranchName, writeContextFunction } from "@/lib/contextBranch";
+import { CONTEXT_DEFAULT_SOURCE } from "@/lib/contextDefaults";
+import { parseLoreProgram, toggleLorePathInProgram } from "@/lib/dslCompose";
 import { useLoreTree, flattenLore } from "./lore-selector";
+import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
 
 const AGENT_ICONS: Record<string, typeof PenLine> = {
   writer: PenLine,
@@ -422,31 +431,36 @@ function ConfigOverride({ agent, files, onJumpToPrompt }: {
 // Same fetch/edit/save shape as PromptEditor, against the "contexts"
 // branch instead of "prompts" — a Context DSL slot's compiled-in default
 // (Storyteller.Core.Context.buildContextLibrary) works exactly like a
-// PromptStorage default: no override file present means "use the literal
-// in Haskell source," so there's nothing to fetch until one exists. Also
-// handles *creating* that first override (prompts/config rely on jumping
-// to the file view to create a file there; a Context DSL slot has no such
-// file-view surface, so this owns create inline via a starter textarea).
-function ContextSlotEditor({ path }: { path: string }) {
-  const [content, setContent] = useState<string | null>(null);
+// PromptStorage default, except its text CAN be shown: unlike a prompt,
+// every context slot's default source has a hand-kept JS copy in
+// CONTEXT_DEFAULT_SOURCE (lib/contextDefaults.ts), since the compiled DSL
+// only keeps a parsed AST at runtime with no source/pretty-printer to
+// fetch instead. `committed` tracks the real saved baseline (null = no
+// override file yet) separately from `draft`, which seeds from the
+// default source so "expand and edit" reads as "customize the default,"
+// not "start from blank and guess the syntax" — same posture LoreRow
+// already takes for the per-call editor (context-panel.tsx).
+function ContextSlotEditor({ path, branch }: { path: string; branch: string | null }) {
+  const [committed, setCommitted] = useState<string | null | undefined>(undefined); // undefined = loading
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const fetchCosts = useAdhocCostFetcher(branch);
 
   useEffect(() => {
     let cancelled = false;
-    setContent(null);
+    setCommitted(undefined);
     setLoadError(null);
     fetch(contextFunctionUrl(path))
       .then((res) => {
-        if (res.status === 404) return null; // no override yet — start blank
+        if (res.status === 404) return null; // no override yet
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         return res.text();
       })
       .then((text) => {
         if (cancelled) return;
-        setContent(text ?? "");
-        setDraft(text ?? "");
+        setCommitted(text);
+        setDraft(text ?? CONTEXT_DEFAULT_SOURCE[path] ?? "");
       })
       .catch((err) => { if (!cancelled) setLoadError(String(err)); });
     return () => { cancelled = true; };
@@ -455,8 +469,8 @@ function ContextSlotEditor({ path }: { path: string }) {
   async function save() {
     setSaving(true);
     try {
-      await uploadBranchFile(contextsBranchName, `context/${path}.dsl`, new Blob([draft]));
-      setContent(draft);
+      await writeContextFunction(path, draft);
+      setCommitted(draft);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -467,7 +481,7 @@ function ContextSlotEditor({ path }: { path: string }) {
   if (loadError) {
     return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "var(--rose)" }}>failed to load: {loadError}</div>;
   }
-  if (content === null) {
+  if (committed === undefined) {
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", fontSize: 10.5, color: "var(--text-ghost)" }}>
         <RefreshCw style={{ width: 10, height: 10 }} className="animate-spin" /> loading…
@@ -475,20 +489,15 @@ function ContextSlotEditor({ path }: { path: string }) {
     );
   }
 
-  const dirty = draft !== content;
+  const dirty = draft !== (committed ?? CONTEXT_DEFAULT_SOURCE[path] ?? "");
   return (
     <div style={{ padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
-      <textarea
+      <CodeCostEditor
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={setDraft}
         placeholder={'A 0-arity Context DSL program, e.g.:\n\nread "lore/**"'}
-        rows={6}
-        spellCheck={false}
-        style={{
-          width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5,
-          padding: 8, borderRadius: 5, border: "1px solid var(--border-subtle)",
-          background: "var(--card)", color: "var(--foreground)",
-        }}
+        fetchCosts={fetchCosts}
+        minHeight="90px"
       />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
@@ -505,10 +514,19 @@ function ContextSlotEditor({ path }: { path: string }) {
         </button>
         {dirty && !saving && (
           <button
-            onClick={() => setDraft(content)}
+            onClick={() => setDraft(committed ?? CONTEXT_DEFAULT_SOURCE[path] ?? "")}
             style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
           >
             revert
+          </button>
+        )}
+        {path in CONTEXT_DEFAULT_SOURCE && draft !== CONTEXT_DEFAULT_SOURCE[path] && (
+          <button
+            onClick={() => setDraft(CONTEXT_DEFAULT_SOURCE[path])}
+            title="Load the compiled-in default's own source into the draft (still requires Save to actually commit it)"
+            style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
+          >
+            reset to default
           </button>
         )}
       </div>
@@ -524,18 +542,18 @@ function ContextSlotEditor({ path }: { path: string }) {
 // (renderLoreProgram) keeps "what a checkbox produces" identical whether
 // a user is setting the project default here or a one-off override there.
 function LoreSlotEditor({ branch }: { branch: string | null }) {
-  const [content, setContent] = useState<string | null>(null);
+  const [committed, setCommitted] = useState<string | null | undefined>(undefined); // undefined = loading
   const [draft, setDraft] = useState("");
-  const [excluded, setExcluded] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const fetchCosts = useAdhocCostFetcher(branch);
   const loreTree = useLoreTree(branch);
   const allEntries = flattenLore(loreTree);
   const allPaths = allEntries.map((e) => e.path);
 
   useEffect(() => {
     let cancelled = false;
-    setContent(null);
+    setCommitted(undefined);
     setLoadError(null);
     fetch(contextFunctionUrl("lore"))
       .then((res) => {
@@ -545,8 +563,8 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
       })
       .then((text) => {
         if (cancelled) return;
-        setContent(text ?? "");
-        setDraft(text ?? "");
+        setCommitted(text);
+        setDraft(text ?? CONTEXT_DEFAULT_SOURCE.lore ?? "");
       })
       .catch((err) => { if (!cancelled) setLoadError(String(err)); });
     return () => { cancelled = true; };
@@ -555,8 +573,8 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
   async function save(nextDraft: string) {
     setSaving(true);
     try {
-      await uploadBranchFile(contextsBranchName, "context/lore.dsl", new Blob([nextDraft]));
-      setContent(nextDraft);
+      await writeContextFunction("lore", nextDraft);
+      setCommitted(nextDraft);
       setDraft(nextDraft);
     } catch (err) {
       setError(String(err));
@@ -565,17 +583,24 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
     }
   }
 
+  // Checkbox state is recovered by parsing `draft` itself -- see
+  // dslCompose.ts's `parseLoreProgram` header on why there is no
+  // separately tracked exclusion set here (the earlier version of this
+  // component had one, and it silently ignored hand edits to the
+  // program below -- a real bug this replaced, not a style choice).
+  // There's no "conflict"/disabled state: real DSL source (like
+  // `contextLoreDef`'s own glob-walking body) that isn't an exact
+  // checkbox-generated block just reads as zero checked paths.
+  const checkedPaths = parseLoreProgram(draft);
+
   function toggleEntry(entryPath: string) {
-    const next = excluded.includes(entryPath) ? excluded.filter((p) => p !== entryPath) : [...excluded, entryPath];
-    setExcluded(next);
-    const included = allPaths.filter((p) => !next.includes(p));
-    save(renderLoreProgram(included));
+    save(toggleLorePathInProgram(draft, entryPath));
   }
 
   if (loadError) {
     return <div style={{ padding: "6px 8px", fontSize: 10.5, color: "var(--rose)" }}>failed to load: {loadError}</div>;
   }
-  if (content === null) {
+  if (committed === undefined) {
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", fontSize: 10.5, color: "var(--text-ghost)" }}>
         <RefreshCw style={{ width: 10, height: 10 }} className="animate-spin" /> loading…
@@ -583,7 +608,7 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
     );
   }
 
-  const dirty = draft !== content;
+  const dirty = draft !== (committed ?? CONTEXT_DEFAULT_SOURCE.lore ?? "");
   return (
     <div style={{ padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
       {!branch ? (
@@ -595,19 +620,22 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
       ) : (
         <div>
           <div style={{ fontSize: 10, color: "var(--text-ghost)", padding: "0 2px 4px" }}>
-            {allPaths.length - excluded.length} of {allPaths.length} included by default
+            {checkedPaths.length} of {allPaths.length} included
           </div>
           <div style={{
             display: "flex", flexDirection: "column", gap: 1, maxHeight: 130, overflowY: "auto",
             border: "1px solid var(--border-subtle)", borderRadius: 5, padding: 3,
           }}>
             {allEntries.map((entry) => {
-              const included = !excluded.includes(entry.path);
+              const included = checkedPaths.includes(entry.path);
               return (
                 <label
                   key={entry.path}
                   title={entry.path}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3, cursor: "pointer" }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3,
+                    cursor: "pointer",
+                  }}
                 >
                   <input
                     type="checkbox"
@@ -632,17 +660,12 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
         <div style={{ fontSize: 10, color: "var(--text-ghost)", padding: "0 2px 4px" }}>
           Generated from the checkboxes above — edit directly for full control.
         </div>
-        <textarea
+        <CodeCostEditor
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={setDraft}
           placeholder={'A 0-arity Context DSL program, e.g.:\n\nread "lore/**"'}
-          rows={6}
-          spellCheck={false}
-          style={{
-            width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5,
-            padding: 8, borderRadius: 5, border: "1px solid var(--border-subtle)",
-            background: "var(--card)", color: "var(--foreground)",
-          }}
+          fetchCosts={fetchCosts}
+          minHeight="90px"
         />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -660,10 +683,19 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
         </button>
         {dirty && !saving && (
           <button
-            onClick={() => setDraft(content)}
+            onClick={() => setDraft(committed ?? CONTEXT_DEFAULT_SOURCE.lore ?? "")}
             style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
           >
             revert
+          </button>
+        )}
+        {draft !== CONTEXT_DEFAULT_SOURCE.lore && (
+          <button
+            onClick={() => setDraft(CONTEXT_DEFAULT_SOURCE.lore)}
+            title="Load the compiled-in default's own source into the draft (still requires Save to actually commit it)"
+            style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
+          >
+            reset to default
           </button>
         )}
       </div>
@@ -733,7 +765,7 @@ function ContextSlotOverrides({ contextSlots, files, branch }: {
             {open && (
               bareName === "lore"
                 ? <LoreSlotEditor branch={branch} />
-                : <ContextSlotEditor path={bareName} />
+                : <ContextSlotEditor path={bareName} branch={branch} />
             )}
           </div>
         );

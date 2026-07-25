@@ -50,7 +50,7 @@ import Runix.StreamChunk (ignoreChunks)
 import Server.Core.Run (SessionEffects)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Writer.Agent.ContextCost (buildProgramCosts, buildAdhocProgramCosts)
-import Storyteller.Writer.Agent.ContextPreview (buildPreview)
+import Storyteller.Writer.Agent.ContextPreview (buildPreview, buildAdhocPreview)
 
 -- | 'path' (the route parameter) is accepted but unused: each
 --   'PreviewContext' command carries its own @path@, since a client may
@@ -93,6 +93,14 @@ commandLoop branch conn reqVar = loop
             embed $ atomically $ writeTVar reqVar (Just (path, program))
             pushPreview branch conn mid path program
             loop
+          Just (PreviewAdhoc mid program) -> do
+            -- Deliberately doesn't touch 'reqVar' -- same reasoning as
+            -- 'EstimateAdhocCost' just below: a bare-snippet preview has
+            -- no @path@ of its own for the notify thread to re-resolve
+            -- against, and (like the adhoc cost case) is a one-off
+            -- "show me now" request, not a live-updating view.
+            pushAdhocPreview branch conn mid program
+            loop
           Just (EstimateCost mid path program) -> do
             -- Deliberately doesn't touch 'reqVar' -- unlike a preview
             -- request, a cost estimate is a one-off "show me now" action,
@@ -131,6 +139,13 @@ pushPreview
   => T.Text -> WS.Connection -> Maybe T.Text -> FilePath -> T.Text -> Sem r ()
 pushPreview branch conn mid path program = do
   result <- withBranch @Main branch (buildPreview @Main path program)
+  embed $ WS.sendTextData conn (encode (ContextPreviewed mid result))
+
+pushAdhocPreview
+  :: (SessionEffects r, Member (Embed IO) r)
+  => T.Text -> WS.Connection -> Maybe T.Text -> T.Text -> Sem r ()
+pushAdhocPreview branch conn mid program = do
+  result <- withBranch @Main branch (buildAdhocPreview @Main program)
   embed $ WS.sendTextData conn (encode (ContextPreviewed mid result))
 
 pushCost

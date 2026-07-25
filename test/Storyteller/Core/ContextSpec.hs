@@ -320,3 +320,40 @@ resolveAdhoc0Spec = describe "resolveAdhoc0" $ do
     `shouldSatisfy` \case
       Left _  -> True
       Right _ -> False
+
+  -- The frontend's checkbox-generated lore-override shape (dslCompose.ts's
+  -- `renderLoreProgram`): a banner plus one `loreEntry [path]` call per
+  -- chosen file -- calling the real library function directly (not
+  -- reproducing its body) so the per-file `## <path>` heading can never
+  -- drift from what the real default (`contextLoreDef`) itself produces.
+  -- `[path]` (Parser.hs's bracket-glob literal), not a bare token: the
+  -- generator needs to handle any real filename, including ones with
+  -- spaces, uniformly -- see the second example below.
+  it "a loreEntry [path] call per chosen path reproduces the real per-file heading+content shape" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("lore/a.md", "note about a")
+        , ("lore/b.md", "note about b")
+        ]
+      runBranchAndFS @Main (BranchName "main") $
+        interpretContextStorageFS $ do
+          v <- resolveAdhoc0 @Main frontendCheckboxProgram
+          runContextValue @Main (messagesText <$> valueDefault v))
+    `shouldBe` Right "## Story background\n## lore/a.md\nnote about a\n## lore/b.md\nnote about b"
+
+  it "the same shape works for a path containing spaces, which a bare token could never tokenize as one argument" $
+    run (testStack $ do
+      seedBranch "main" [("lore/file with spaces.md", "note in a spaced file")]
+      runBranchAndFS @Main (BranchName "main") $
+        interpretContextStorageFS $ do
+          v <- resolveAdhoc0 @Main "\"## Story background\"\nloreEntry [lore/file with spaces.md]\n"
+          runContextValue @Main (messagesText <$> valueDefault v))
+    `shouldBe` Right "## Story background\n## lore/file with spaces.md\nnote in a spaced file"
+  where
+    -- Exactly `renderLoreProgram`'s own output shape (dslCompose.ts) for
+    -- two chosen paths.
+    frontendCheckboxProgram = T.unlines
+      [ "\"## Story background\""
+      , "loreEntry [lore/a.md]"
+      , "loreEntry [lore/b.md]"
+      ]

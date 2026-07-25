@@ -147,6 +147,17 @@ shapeSpec = describe "AST shape" $ do
         [ Located (Pos 1 1) (SExpr (ERead (EString Bare
             [Lit "presence/", Interp "chapterPath", Lit "/*.md"]))) ])
 
+  it "[bracket glob] is unambiguously a bare/glob reference, even with whitespace a plain bareWord token couldn't hold" $
+    parseDefinition "<test>" "read [file with spaces.md]\n"
+      `shouldBe` Right (Definition []
+        [ Located (Pos 1 1) (SExpr (ERead (EString Bare [Lit "file with spaces.md"]))) ])
+
+  it "[bracket glob] still splits %name% interpolation the same as a bare token" $
+    parseDefinition "<test>" "loreEntry [lore/%chapterPath%/notes with spaces.md]\n"
+      `shouldBe` Right (Definition []
+        [ Located (Pos 1 1) (SExpr (EApp (EIdent "loreEntry")
+            [EString Bare [Lit "lore/", Interp "chapterPath", Lit "/notes with spaces.md"]])) ])
+
   it "parses a curried function head with a multi-statement body" $
     parseDefinition "<test>" "a: b:\n  x\n  y\n"
       `shouldBe` Right (Definition ["a", "b"]

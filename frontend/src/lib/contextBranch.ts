@@ -19,7 +19,7 @@
 // Kept as an opt-in hook (the library component calls it on mount) so
 // the cost is paid only when the user opens the library browser.
 
-import { branchFileUrl, uploadBranchFile, branchConn } from "./ws";
+import { branchFileUrl, saveRawFile, branchConn } from "./ws";
 import type { BranchEvent } from "./ws";
 
 export const contextsBranchName = "contexts";
@@ -30,6 +30,12 @@ function dslPath(name: string): string {
 }
 
 // ─── Single-file read/write ───────────────────────────────────────────────
+//
+// The compiled-in default for each overridable context slot (used only
+// when NOTHING has ever been committed to `context/<name>.dsl`) lives in
+// lib/contextDefaults.ts's `CONTEXT_DEFAULT_SOURCE` -- a hand-kept JS
+// mirror of Storyteller.Context.DSL.Library's own `defQuote` bodies, not
+// something this module fetches (see that file's own header for why).
 
 export function contextFunctionUrl(name: string): string {
   return branchFileUrl(contextsBranchName, dslPath(name));
@@ -48,10 +54,15 @@ export async function readContextFunction(name: string): Promise<string> {
 }
 
 export async function writeContextFunction(name: string, source: string): Promise<void> {
-  // PUT bytes -- matches how sidebar.actions's `uploadBranchFile` is
-  // used elsewhere. The server reconciles file writes the same way it
-  // would for any branch file.
-  await uploadBranchFile(contextsBranchName, dslPath(name), new Blob([source]));
+  // $raw reconciles against the path's existing atom chain (see
+  // ws.ts's saveRawFile) so the file gets ordinary Atom ticks -- the
+  // same thing 'file.create'/edits produce for any other text file.
+  // uploadBranchFile's plain PUT deposits an opaque, untracked blob
+  // instead, which is what made every saved .dsl file show up in the
+  // library tree flagged binary (see Server.Writer.Library's
+  // lfcTracked / withBinaryFlags -- "binary" there means "never had
+  // an atom tick", not an actual content/mime check).
+  await saveRawFile(contextsBranchName, dslPath(name), source);
 }
 
 export async function deleteContextFunction(name: string): Promise<void> {

@@ -39,34 +39,29 @@ export type PastChaptersMode = "full" | "compressed";
 // for all of them together anymore, since each maps to its own wire field.
 export interface ContextEdits {
   loreEnabled: boolean;
-  // Specific paths under lore/** to *exclude* even when loreEnabled is true
-  // -- "include lore, but not lore/battle-log.md (too long)". A positive
-  // glob list (the synthesizer enumerates what's left), not a real
-  // `exclude` filter -- `exclude` in this DSL can only neuter content to
-  // empty, never actually shrink a key set. This is the checkbox list's own
-  // source of truth (see context-panel.tsx's LoreRow) -- `loreOverride`
-  // below is *derived* from it (via synthesizeLoreOverride/
-  // syncLoreOverrideFromCheckboxes) every time a checkbox changes, so
-  // re-opening the panel shows the right checkboxes back, not just an
-  // opaque already-generated program.
-  excludedLorePaths: string[];
-  // The lore override's own real body, in the user's own words -- a bare
-  // 0-arity Context DSL program. Two ways it gets set: automatically,
-  // derived from `excludedLorePaths` whenever a checkbox changes (the fast
-  // path -- see syncLoreOverrideFromCheckboxes), or directly, by hand-
-  // editing the generated code in the panel's CodeMirror editor. `null`
-  // means "no custom program written yet" -- `loreEnabled` alone decides
-  // what gets sent in that case (the plain on/off toggle, the original,
-  // still-simplest case: nothing excluded, nothing hand-edited). A
-  // non-null value always wins over the toggle.
+  // The lore override's own real body -- a bare 0-arity Context DSL
+  // program, or `null` meaning "no custom program written yet" (the plain
+  // on/off toggle, `loreEnabled` alone, decides what gets sent in that
+  // case). There is no separately-tracked checkbox/exclusion state
+  // anymore: the checkbox list (context-panel.tsx's LoreRow) is a pure
+  // input METHOD onto this same field, never a second source of truth.
+  // Checking a box regenerates `loreOverride` via `renderLoreProgram`;
+  // whether the checkboxes can show anything at all is decided by
+  // re-*parsing* this text on every render (see `parseLoreProgram`) --
+  // if it matches what the generator itself would have produced, the
+  // checkboxes reflect that; otherwise they go inert, because a hand
+  // edit that changed the shape has nothing truthful left for them to
+  // show ("the program is the ground truth; the checkboxes are a view
+  // onto it, not the other way around" -- see the project chat that
+  // settled this after `exclude()` on a bare `context.lore` reference
+  // turned out not to work: `exclude` only shrinks `valueEntries`, never
+  // `valueDefault`, and rendering a bare value reads only `valueDefault`
+  // -- see Storyteller.Context.DSL.Compile's `shrinkEntries`/
+  // Rendering.hs's `renderText`. `renderLoreProgram` below instead
+  // reproduces `loreEntry`'s own per-file heading+content shape directly,
+  // scoped to an explicit path list, which needs no reflatten and always
+  // matches what it claims to show).
   loreOverride: string | null;
-  // True once the user has hand-edited `loreOverride`'s text directly,
-  // rather than it only ever being a checkbox-derived synthesis. Once set,
-  // checkbox clicks stop silently overwriting the user's own edit (see
-  // LoreRow) -- editing always wins, per the explicit requirement that a
-  // user who wants to hand-write the program still can, without checkbox
-  // state clobbering it out from under them.
-  loreOverrideHandEdited: boolean;
   pastChaptersMode: PastChaptersMode;
   // Named Context DSL functions to fold into this call's pinned content --
   // e.g. ["rules.magic"]. Each is sent verbatim as one `pinnedPrograms`
@@ -77,9 +72,7 @@ export interface ContextEdits {
 
 export const DEFAULT_EDITS: ContextEdits = {
   loreEnabled: true,
-  excludedLorePaths: [],
   loreOverride: null,
-  loreOverrideHandEdited: false,
   pastChaptersMode: "full",
   pinnedProgramNames: [],
 };
@@ -89,62 +82,122 @@ export const DEFAULT_EDITS: ContextEdits = {
 // counterpart when false) and to light up the strip's "edited" affordance.
 export function isDirty(edits: ContextEdits): boolean {
   if (edits.loreEnabled !== DEFAULT_EDITS.loreEnabled) return true;
-  if (edits.excludedLorePaths.length > 0) return true;
   if (edits.loreOverride !== null) return true;
   if (edits.pastChaptersMode !== DEFAULT_EDITS.pastChaptersMode) return true;
   if (edits.pinnedProgramNames.length > 0) return true;
   return false;
 }
 
-// ─── Synthesis ────────────────────────────────────────────────────────────
-
-// One `read "path"` statement per included file, in `loreEntry`'s own
-// "## Story background" + per-file shape (see
-// Storyteller.Context.DSL.Library's `contextLoreDef`) -- close enough to
-// the compiled-in default that a project reading the generated program
-// recognizes it immediately, without reproducing `loreEntry`'s own `as`
-// export (a per-call override has no name to export entries under -- see
-// CONTEXT-DSL.md's Worked examples on `for`/multi-`read` shape).
+// ─── Checkbox generator/parser ──────────────────────────────────────────────
 //
-// Always generates real code, even for the full-selection case (unlike
-// deriveLoreOverride below, which treats "nothing excluded" as "don't
-// override at all") -- this is what the checkbox UI's code preview shows
-// so the editor is never left blank/placeholder text while the checkboxes
-// show everything selected; see LoreRow's own `draft` computation.
-export function renderLoreProgram(includedPaths: string[]): string {
-  if (includedPaths.length === 0) return '"" \n';
-  const reads = includedPaths.map((p) => `read "${p}"`).join("\n");
-  return `"## Story background"\n${reads}\n`;
+// The checkbox list is a pure INPUT METHOD onto `loreOverride`'s own text,
+// never a second source of truth for it (see `ContextEdits.loreOverride`'s
+// own doc comment for why an `exclude()`-based approach doesn't work here).
+// `renderLoreProgramPrefix` is the one and only shape the checkboxes ever
+// write; `parseLoreProgram` recognizes exactly that shape as a PREFIX of
+// the draft (not the whole thing) and hands back whatever follows it
+// untouched, so the checkboxes can always answer "does the draft start
+// with what I'd have generated" by re-parsing it, and a user can freely
+// hand-write more DSL after the generated block without losing checkbox
+// control over the part it owns.
+//
+// The empty-selection form (`renderLoreProgramPrefix([])`) is the empty
+// string -- so "nothing chosen via checkboxes yet" is trivially a prefix
+// of ANY draft, including a project's own hand-written default source
+// (`contextLoreDef`'s glob-walking body, or any other real DSL). This is
+// what makes the untouched/no-override case work correctly: it's not a
+// special case, it's the same prefix rule with zero chosen paths.
+
+// One `loreEntry [path]` line per chosen file -- a direct call to the
+// real `loreEntry` library function (Storyteller.Context.DSL.Library),
+// never a reproduction of its `"## %f%"` heading + `read f` body, so the
+// per-file rendering can never drift from what the real default
+// (`contextLoreDef`, which walks `lore/**/*` the same way) itself
+// produces -- only *which files* is chosen here, never *how one file
+// renders*. `[path]` is Parser.hs's bracket-glob literal (a single-match
+// glob reference, unambiguous even for a path containing spaces or other
+// characters a bare token can't hold) -- confirmed end-to-end against the
+// real parser+evaluator in test/Storyteller/Core/ContextSpec.hs's
+// "loreEntry [path]" cases, including one with spaces in the filename.
+const LORE_PROGRAM_HEADER = '"## Story background"';
+
+function renderLoreProgramPrefix(includedPaths: string[]): string {
+  if (includedPaths.length === 0) return "";
+  const lines = includedPaths.map((p) => `loreEntry [${p}]`).join("\n");
+  return `${LORE_PROGRAM_HEADER}\n${lines}\n`;
 }
 
-// Called from the checkbox UI (context-panel.tsx's LoreRow), not from the
-// wire-composition path -- it needs the branch's live lore tree
-// (lib/lore-selector.tsx's useLoreTree) to know what "everything except
-// these" even means, and that's only available where a component is
-// already subscribed to it, not in fileview.actions.ts's plain,
-// hookless module. Every checkbox click re-derives `loreOverride` from
-// scratch and writes the result straight into callContextStore -- by the
-// time a command is actually sent, `loreOverride` already holds the
-// finished program (see synthesizeLoreOverride below, which just forwards
-// it).
-//
-// Unlike renderLoreProgram, deliberately returns null for the "nothing
-// excluded" case -- an untouched selection should stay "no override sent"
-// (the plain on/off toggle's own default posture), not a needlessly
-// synthesized program that happens to match the compiled-in default.
-export function deriveLoreOverride(allLorePaths: string[], excludedLorePaths: string[]): string | null {
-  if (excludedLorePaths.length === 0) return null; // nothing excluded -- fall back to the plain toggle
-  const included = allLorePaths.filter((p) => !excludedLorePaths.includes(p));
-  return renderLoreProgram(included);
+// Whole-program convenience for a caller that just wants a complete,
+// self-contained draft from a path list (e.g. seeding a brand-new
+// override) -- the prefix with nothing after it.
+export function renderLoreProgram(includedPaths: string[]): string {
+  return renderLoreProgramPrefix(includedPaths);
+}
+
+// Recovers the chosen path list AND whatever text follows the generated
+// prefix. Only an EXACT match of a real generated block -- the header
+// followed by one or more well-formed `loreEntry [path]` lines -- counts
+// as checkbox-owned; anything else falls through to the trivial
+// zero-selection match (`{ paths: [], rest: program }`), the same as text
+// with no recognizable prefix at all. This never fails/returns `null`:
+// the header line ("## Story background") is not, on its own, meaningful
+// "claimed" territory -- `renderLoreProgramPrefix([])` is the empty
+// string, not the header alone, so real default/hand-written source that
+// happens to start with the same banner (contextLoreDef does) is not a
+// conflict, just ordinary text the checkboxes have nothing to say about
+// yet. Re-checking a box regenerates just the recognized prefix (if any)
+// and re-appends `rest` verbatim.
+function parseLoreProgramPrefix(program: string): { paths: string[]; rest: string } {
+  if (!program.startsWith(LORE_PROGRAM_HEADER + "\n")) {
+    return { paths: [], rest: program };
+  }
+  let cursor = LORE_PROGRAM_HEADER.length + 1;
+  const paths: string[] = [];
+  // Each generated line is `loreEntry [<path>]\n` -- `]` can't appear
+  // inside a real path (Parser.hs's bracket-glob has no escaping, so `]`
+  // is unconditionally the terminator), making each line's own bounds
+  // unambiguous with a plain indexOf scan, no JSON-style quoting/escaping
+  // needed at all.
+  for (;;) {
+    if (!program.startsWith("loreEntry [", cursor)) break;
+    const openIdx = cursor + "loreEntry [".length;
+    const closeIdx = program.indexOf("]", openIdx);
+    if (closeIdx === -1 || program[closeIdx + 1] !== "\n") break; // malformed -- not a generated line after all
+    paths.push(program.slice(openIdx, closeIdx));
+    cursor = closeIdx + 2;
+  }
+  if (paths.length === 0) return { paths: [], rest: program }; // header alone (or followed by non-generated text) -- zero-path match
+  const rest = program.slice(cursor);
+  return { paths, rest };
+}
+
+// The caller-facing form: just the chosen paths, or `null` if the draft
+// currently checked (possibly empty -- there's no "conflict" state:
+// every draft has a well-defined checkbox reading, since only an exact
+// generated block ever contributes any paths at all -- see
+// `parseLoreProgramPrefix`'s own header). Used where a caller only needs
+// to know what's checked, not the trailing text (see
+// `toggleLorePathInProgram` for the mutation that needs both).
+export function parseLoreProgram(program: string): string[] {
+  return parseLoreProgramPrefix(program).paths;
+}
+
+// Toggle one path's membership in the draft's own checkbox-owned prefix,
+// leaving anything the user wrote after that prefix (or, if there was no
+// recognized prefix at all, the entire original draft) untouched.
+export function toggleLorePathInProgram(program: string, entryPath: string): string {
+  const parsed = parseLoreProgramPrefix(program);
+  const nextPaths = parsed.paths.includes(entryPath)
+    ? parsed.paths.filter((p) => p !== entryPath)
+    : [...parsed.paths, entryPath];
+  return renderLoreProgramPrefix(nextPaths) + parsed.rest;
 }
 
 // The lore override's own body -- a bare 0-arity Context DSL program
 // replacing `context.lore` for one call, or null when nothing about lore
 // has been touched (omit the wire field, server's compiled-in
-// `context.lore` runs). `loreOverride` is already the finished program by
-// the time this runs (see deriveLoreOverride's own note) -- this function
-// only decides what "untouched" means for the plain on/off toggle, the
-// one case with no program at all.
+// `context.lore` runs, or this project's own committed
+// `context/lore.dsl` override of it).
 export function synthesizeLoreOverride(edits: ContextEdits): string | null {
   if (edits.loreOverride !== null) return edits.loreOverride;
   if (!edits.loreEnabled) return '"" \n';
