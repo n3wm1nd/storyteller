@@ -217,10 +217,13 @@ parseInterp = go . T.splitOn "%"
     isNonEmptyPart (Lit t)    = not (T.null t)
     isNonEmptyPart (Interp t) = not (T.null t)
 
+-- | Quoted strings may span multiple lines -- only @"@ itself (or
+--   end-of-input) terminates one, so a project authoring a longer block
+--   of prose doesn't need a separate multi-line literal syntax.
 pQuotedText :: Parser Text
 pQuotedText = lexeme . try $ do
   _ <- char '"'
-  chars <- many (escaped <|> satisfy (\c -> c /= '"' && c /= '\n'))
+  chars <- many (escaped <|> satisfy (/= '"'))
   _ <- char '"'
   pure (T.pack chars)
   where
@@ -332,18 +335,20 @@ pAssistantExpr = do
 -- ---------------------------------------------------------------------------
 
 -- | The body of a @:@ (or, for a headless @x = ...@, the position right
---   after @=@): either the rest of the current line as a single
---   statement, or -- if nothing follows on that line -- an indented
---   block of one or more statements on the lines after, each indented
---   strictly further than @parentCol@.
+--   after @=@): either the rest of the current line as one or more
+--   @;@-separated statements, or -- if nothing follows on that line -- an
+--   indented block of one or more statements on the lines after, each
+--   indented strictly further than @parentCol@. @;@ only ever separates
+--   statements sharing this one inline position -- an indented block's own
+--   statements are still one-per-line, indentation remaining the only
+--   block-structuring rule there.
 pBody :: Pos -> Parser Block
 pBody parentCol = inline <|> pIndentedBlock parentCol
   where
     inline = do
       sc
       notFollowedBy (void eol <|> eof <|> lineComment)
-      s <- pStmtLine
-      pure [s]
+      pStmtLine `sepBy1` symbol ";"
 
 -- | Reads one or more statements, all at the same freshly-established
 --   column, which must be indented strictly further than @parentCol@.

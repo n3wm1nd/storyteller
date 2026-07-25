@@ -215,6 +215,43 @@ doesn't reopen the general "no silent fallback" rule — it's scoped to
 exactly one primitive whose entire job already is "resolve a path," not a
 general softening.
 
+## Concrete syntax: quoting, grouping, statement separators
+
+A few lexical/layout details, settled directly against
+`Storyteller.Context.DSL.Parser`:
+
+- **Quoted strings may span multiple lines.** `"..."` is terminated only by
+  a closing `"` — there is no separate triple-quote form. A project
+  authoring a longer block of prose as a string literal doesn't need
+  different syntax for it; the same `"..."` used for a one-line label works
+  unchanged for a multi-paragraph one. An unterminated `"` (running to end
+  of input with no closing quote) is still a parse error, reported at the
+  opening `"` — nothing changed about that; only the *interior* of a
+  properly closed string may now contain literal newlines.
+- **Escaping is minimal, on purpose: `\"` and `\\` only.** No `\n`, `\t`, or
+  other escapes are recognized — there's no need for `\n` once a literal
+  newline can already appear inside the string (see above), and the DSL has
+  no other use for control characters in text meant for an LLM. A bare `\`
+  followed by anything else is just two ordinary characters, not an error.
+- **Parenthesized grouping is universal for expressions, not for call
+  arguments.** `(expr)` is one of `pAtom`'s own alternatives
+  (`Storyteller.Context.DSL.Parser.pParenExpr`), so it composes wherever an
+  atom is expected — including as an application argument (`f (a b) c`) or
+  inside a filter chain. This is a genuinely different piece of grammar from
+  a filter's own `filt(a, b)` argument-list parens
+  (`Storyteller.Context.DSL.Parser.pFilterStep`'s `pParenArgs`), which are
+  comma-separated and only ever appear right after a filter name — the two
+  don't share a production, they just both use `(`/`)` as delimiters.
+- **`;` separates statements sharing one inline body, and only there.**
+  `as "name": stmt1; stmt2` is now valid — the same widening of `pBody`'s
+  own inline case (`Storyteller.Context.DSL.Parser.pBody`) that already let
+  it hold a single statement now lets it hold a `;`-separated sequence via
+  `sepBy1`. Deliberately scoped to exactly that one position: an indented
+  block's own statements (`pStatementsAtCol`) are still one-per-line, parsed
+  directly via `pStmtLine` rather than through `pBody`, so indentation
+  remains the only block-structuring rule there — `;` never becomes a second
+  way to end a statement inside a multi-line block.
+
 ## Filters
 
 ```haskell
@@ -300,16 +337,18 @@ precise about:**
 - `buildContextLibrary` checks a project's committed override text against
   `defaultLibrarySource`'s own keys **independently, per key**. A
   definition registered under two keys pointing at the *same* underlying
-  `Definition` (a bare name like `contextLore`, and a dotted override
-  address like `context.lore`) does **not** automatically move together
-  under one committed override — a project overriding `context.lore` does
-  not thereby change what `contextLore` (the bare name `contextWriter`'s own
-  body references) resolves to. This is exactly the bug class
-  `character.blurb` used to have, fixed for that one case by giving it only
-  the dotted key and having every reference — including its own use inside
-  `contextCharacter` — go through that same dotted name. `contextLore`
-  itself still has the two-key shape and the same latent gap; it hasn't
-  been revisited (see Open questions).
+  `Definition` (a bare name, and a dotted override address) would **not**
+  automatically move together under one committed override — overriding the
+  dotted key wouldn't thereby change what the bare name (used by some other
+  default's own body) resolves to. This was a real bug in `character.blurb`,
+  fixed by giving it only the dotted key and having every reference —
+  including its own use inside `contextCharacter` — go through that same
+  dotted name. `context.lore`/`context.chapters`/`context.other` have since
+  been given the identical one-key treatment (see
+  `Storyteller.Context.DSL.Library.defaultLibraryOrder`) — no two-key
+  default is currently registered anywhere in the library, so this is a bug
+  class the codebase now avoids by convention, not a live gap (see Open
+  questions).
 
 ## Verification
 
@@ -562,17 +601,19 @@ Unchanged in spirit from the original design:
   Worked examples); `character.blurb` was the different case — a shared
   default with no such parametricity — which is why only it moved to
   bare-name resolution.
-- **Two keys, one `Definition`, don't move together under override** — a
-  real, confirmed gap, not just a question: `contextLore`/`context.lore`
-  (and `contextChapters`/`context.chapters`, `contextOther`/`context.other`)
-  still have the same shape `character.blurb` used to, and the same latent
-  bug — an override committed under the dotted address doesn't reach a
-  bare-name reference to the same `Definition` from another body. Nothing
-  has broken yet because no project has tried to override
-  `context.lore`\/`context.chapters`\/`context.other` independently of
-  `context.writer` as a whole, but the fix (drop the bare alias, reference
-  the dotted name directly, as `character.blurb` now does) is the same
-  shape and not yet applied to these three.
+- ~~**Two keys, one `Definition`, don't move together under override**~~ —
+  **resolved**, not open: `Storyteller.Context.DSL.Library.defaultLibraryOrder`
+  registers `context.lore`/`context.chapters`/`context.other` under *only*
+  their dotted names (see that map's own Haddock on "one key per
+  definition"), the same shape `character.blurb` already has — every other
+  default referencing them (`context.other`, `context.writer`, their own
+  `*Without` variants) does so by the dotted name, never a bare alias. This
+  entry used to describe a real gap while the fix was still pending for
+  these three; the fix has since landed, so there is no bare-alias/dotted-key
+  split left anywhere in `defaultLibraryOrder` to cause the
+  `character.blurb`-style bug. Left here struck through rather than deleted,
+  since it's exactly the kind of claim worth re-checking against the code
+  before trusting again.
 - **Override failure mode**: reject/flag loudly at commit time, or only
   fail (falling back to default) opportunistically when something resolves
   it? Leaning loud, not confirmed.

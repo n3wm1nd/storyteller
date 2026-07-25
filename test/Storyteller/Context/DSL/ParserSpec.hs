@@ -173,6 +173,34 @@ shapeSpec = describe "AST shape" $ do
                                "b" [EIdent "1", EIdent "2"])
                      "c" [EIdent "d"])) ])
 
+  it "lets a quoted string span multiple lines" $
+    parseDefinition "<test>" "\"line one\nline two\"\n"
+      `shouldBe` Right (Definition []
+        [ Located (Pos 1 1) (SExpr (EString Quoted [Lit "line one\nline two"])) ])
+
+  it "still fails on an unterminated quote, even with no closing '\"' before eof" $
+    "\"never closed\n" `shouldFailAt` (1, 1)
+
+  it "separates two statements on one inline body with ';'" $
+    parseDefinition "<test>" "as \"x\": a; b\n"
+      `shouldBe` Right (Definition []
+        [ Located (Pos 1 1) (SAs (EString Quoted [Lit "x"])
+            [ Located (Pos 1 9) (SExpr (EIdent "a"))
+            , Located (Pos 1 12) (SExpr (EIdent "b"))
+            ]) ])
+
+  it "still allows a single inline statement with no ';'" $
+    parseDefinition "<test>" "as \"x\": a\n"
+      `shouldBe` Right (Definition []
+        [ Located (Pos 1 1) (SAs (EString Quoted [Lit "x"])
+            [ Located (Pos 1 9) (SExpr (EIdent "a")) ]) ])
+
+  it "does not let ';' separate statements across an indented block" $
+    -- indentation, not ';', still structures a block's own statements --
+    -- ';' only applies within pBody's own inline case -- 'pStatementsAtCol'
+    -- parses each indented-block line via 'pStmtLine' directly, not 'pBody'.
+    "as \"x\":\n  a; b\n" `shouldFailAt` (2, 4)
+
 errorSpec :: Spec
 errorSpec = describe "parse errors" $ do
   it "reports a specific location for a dangling 'as' with no body" $
