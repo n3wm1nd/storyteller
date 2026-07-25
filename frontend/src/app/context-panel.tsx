@@ -32,7 +32,7 @@ import {
   BookOpen, FileText, X, Save, Code2, ChevronLeft, ChevronRight, Pencil, Check,
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
-import { DEFAULT_EDITS, parseLoreProgram, type PastChaptersMode } from "@/lib/dslCompose";
+import { DEFAULT_EDITS, parseLoreProgram, isLoreProgramCheckboxOwned, type PastChaptersMode } from "@/lib/dslCompose";
 import { writeContextFunction, slugifyFunctionName, isValidFunctionName, useLoreDraft } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
 import { DSLEditor } from "./dsl-editor";
@@ -129,19 +129,16 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   // surfaces resolve the exact same text, never two independently-drifting
   // copies of the same derivation.
   const { draft, resetTarget, hasOverride } = useLoreDraft(path, branch);
-  // Checkboxes only have something truthful to show/toggle when there's
-  // either no override yet (checking a box starts a FRESH checkbox
-  // program from `""`, never from `resetTarget`'s real default text --
-  // see toggleLorePath's own call below) or the override itself is
-  // entirely checkbox-owned (empty, or an exact generated block -- see
-  // dslCompose.ts's own header on parseLoreProgramPrefix). A hand-edited
-  // override that doesn't match that shape makes the checkboxes go
-  // inert: there's no truthful "toggle one file" reading of arbitrary
-  // DSL, and building on top of it is exactly what produced a duplicated
-  // "## Story background" block before this was fixed (that block came
-  // from treating the compiled default's own body as safe to build on).
-  const checkedPaths = hasOverride ? parseLoreProgram(draft) : [];
-  const checkboxesActive = !hasOverride || draft === "" || checkedPaths.length > 0;
+  // Checkboxes are purely ADDITIVE: they insert/remove their own
+  // `loreEntry [path]` lines right after the header, never touching
+  // whatever real program content follows (the compiled default's own
+  // `for f in lore/**/*: ...` walk, hand-written DSL, anything) -- see
+  // dslCompose.ts's own header on parseLoreProgramPrefix. Only the very
+  // BEGINNING of `draft` needs to be recognizable (the header, or truly
+  // empty) for this to be a reliable, surgical operation; everything
+  // after is carried through untouched regardless of what it is.
+  const checkboxesActive = isLoreProgramCheckboxOwned(draft);
+  const checkedPaths = checkboxesActive ? parseLoreProgram(draft) : [];
 
   return (
     <div style={{ borderRadius: 5, background: expanded ? "var(--card)" : "transparent", overflow: "hidden" }}>
@@ -202,6 +199,14 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                 display: "flex", flexDirection: "column", gap: 1, maxHeight: 130, overflowY: "auto",
                 border: "1px solid var(--border-subtle)", borderRadius: 5, padding: 3,
               }}>
+                {!checkboxesActive && (
+                  <div style={{
+                    fontSize: 10, color: "var(--text-ghost)", fontStyle: "italic", padding: "3px 5px 6px",
+                  }}>
+                    This isn&apos;t a checkbox-generated selection (or the draft below no longer
+                    matches that shape) — edit the code directly, or clear it to start a fresh selection.
+                  </div>
+                )}
                 {allEntries.map((entry) => {
                   const included = checkedPaths.includes(entry.path);
                   return (
@@ -210,15 +215,19 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                       title={entry.path}
                       style={{
                         display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3,
-                        cursor: "pointer",
+                        cursor: checkboxesActive ? "pointer" : "not-allowed",
+                        opacity: checkboxesActive ? 1 : 0.45,
                       }}
                     >
                       <input
                         type="checkbox"
                         checked={included}
                         disabled={!checkboxesActive}
-                        onChange={() => toggleLorePath(path, "", entry.path)}
-                        style={{ accentColor: "var(--accent, var(--amber))" }}
+                        onChange={() => toggleLorePath(path, draft, entry.path)}
+                        style={{
+                          accentColor: "var(--accent, var(--amber))",
+                          cursor: checkboxesActive ? "pointer" : "not-allowed",
+                        }}
                       />
                       <span style={{
                         fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",

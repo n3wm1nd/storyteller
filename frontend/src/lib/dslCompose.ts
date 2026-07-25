@@ -121,10 +121,17 @@ export function isDirty(edits: ContextEdits): boolean {
 // "loreEntry [path]" cases, including one with spaces in the filename.
 const LORE_PROGRAM_HEADER = '"## Story background"';
 
+// The header ALONE (no `loreEntry` lines) is itself a valid, real
+// checkbox-owned state -- "zero files selected," not "nothing." Once the
+// checkboxes have been engaged at all, unchecking every last one must
+// still keep the header, never collapse all the way back to the true
+// untouched sentinel (`""`, see parseLoreProgramPrefix's own header) --
+// a project's real, intentional "include no lore" choice is not the same
+// state as "never touched this at all," and conflating them was the bug
+// that made the header silently vanish when the last box was unchecked.
 function renderLoreProgramPrefix(includedPaths: string[]): string {
-  if (includedPaths.length === 0) return "";
   const lines = includedPaths.map((p) => `loreEntry [${p}]`).join("\n");
-  return `${LORE_PROGRAM_HEADER}\n${lines}\n`;
+  return includedPaths.length === 0 ? `${LORE_PROGRAM_HEADER}\n` : `${LORE_PROGRAM_HEADER}\n${lines}\n`;
 }
 
 // Whole-program convenience for a caller that just wants a complete,
@@ -135,24 +142,22 @@ export function renderLoreProgram(includedPaths: string[]): string {
 }
 
 // Recovers the chosen path list AND whatever text follows the generated
-// prefix -- but ONLY when `program` is itself entirely checkbox-owned:
-// either empty (zero selections, the checkboxes' own starting point) or an
-// exact generated block (the header followed by one or more well-formed
-// `loreEntry [path]` lines, optionally with more checkbox-owned lines
-// after -- "rest" only ever holds trailing text the checkboxes still
-// recognize as their own shape, via the same recursive match, never
-// arbitrary prose). Anything else -- most importantly the real compiled
-// default's own body (`contextLoreDef`'s `for f in lore/**/*: ...`, which
-// happens to start with the identical "## Story background" banner) or
-// any hand-written program -- returns `null`: there is no truthful
-// "toggle one file" operation on source the checkboxes didn't generate,
-// since blindly prepending a fresh block in front of it would either
-// duplicate that banner or silently graft checkbox state onto content
-// with completely different semantics (see the project chat: this was
-// exactly the bug that produced two "## Story background" blocks
-// concatenated when a first checkbox click started from the compiled
-// default text). A caller with `null` here must disable its checkboxes
-// entirely, not fall back to a best-effort zero-selection reading.
+// prefix. Only needs the BEGINNING of `program` to be recognizable, not
+// the whole thing: the header (`"## Story background"\n`) marks where
+// checkbox-owned `loreEntry [path]` lines start, and matching stops the
+// moment a line doesn't fit that shape -- everything from there on,
+// whatever it is (the real compiled default's own `for f in lore/**/*:
+// ...` body, hand-written prose, nothing at all), is `rest`, carried
+// through untouched by any insert/remove. This is a reliable, surgical
+// operation regardless of what `rest` contains: a `loreEntry [path]` line
+// only ever needs inserting into or removing from the recognized prefix,
+// never touching what follows.
+//
+// The true untouched sentinel is `""` (checkboxes never engaged at all --
+// see synthesizeLoreOverride/useLoreDraft); anything that doesn't start
+// with the header at all (a hand-edit that removed it, say) returns
+// `null` -- there's no reliable insertion point without the header to
+// anchor on.
 function parseLoreProgramPrefix(program: string): { paths: string[]; rest: string } | null {
   if (program === "") return { paths: [], rest: "" };
   if (!program.startsWith(LORE_PROGRAM_HEADER + "\n")) return null;
@@ -171,7 +176,6 @@ function parseLoreProgramPrefix(program: string): { paths: string[]; rest: strin
     paths.push(program.slice(openIdx, closeIdx));
     cursor = closeIdx + 2;
   }
-  if (paths.length === 0) return null; // header alone, or followed by non-generated text -- not checkbox-owned
   const rest = program.slice(cursor);
   return { paths, rest };
 }
@@ -179,10 +183,20 @@ function parseLoreProgramPrefix(program: string): { paths: string[]; rest: strin
 // The caller-facing form: the chosen paths, or `[]` if `program` isn't
 // checkbox-owned at all (see `parseLoreProgramPrefix`'s own header) --
 // callers that need to distinguish "zero selected" from "not ours to
-// parse" (to disable checkboxes) should call `parseLoreProgramPrefix`
-// directly instead.
+// parse" (to disable checkboxes) should call `isLoreProgramCheckboxOwned`
+// instead.
 export function parseLoreProgram(program: string): string[] {
   return parseLoreProgramPrefix(program)?.paths ?? [];
+}
+
+// True iff `program` is entirely checkbox-owned (the true untouched
+// sentinel `""`, the header alone, or an exact generated block -- see
+// parseLoreProgramPrefix's own header) -- what a caller like LoreRow
+// needs to decide whether its checkboxes have anything truthful to
+// show/toggle, since `parseLoreProgram`'s own `[]` fallback can't
+// distinguish "zero selected, but still ours" from "not ours at all."
+export function isLoreProgramCheckboxOwned(program: string): boolean {
+  return parseLoreProgramPrefix(program) !== null;
 }
 
 // Toggle one path's membership in the draft's own checkbox-owned prefix,
