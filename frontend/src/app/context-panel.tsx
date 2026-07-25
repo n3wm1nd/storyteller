@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
 import { DEFAULT_EDITS, parseLoreProgram, type PastChaptersMode } from "@/lib/dslCompose";
-import { writeContextFunction, readContextFunction, readContextDefault, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
+import { writeContextFunction, slugifyFunctionName, isValidFunctionName, useLoreDraft } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
 import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
@@ -124,29 +124,11 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   const allEntries = flattenLore(loreTree).filter((e) => e.path !== path);
   const allPaths = allEntries.map((e) => e.path);
 
-  // Ground truth for "no override touched yet": the committed project
-  // file, or (only if nothing was ever committed) the real compiled-in
-  // default source -- never a bare `context.lore` name reference, which
-  // resolves correctly server-side at send time but can't be
-  // shown/edited here as if it were real content of its own.
-  const [committedDefault, setCommittedDefault] = useState<string | null | undefined>(undefined);
-  const [compiledDefault, setCompiledDefault] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    setCommittedDefault(undefined);
-    setCompiledDefault("");
-    readContextFunction("lore")
-      .then((text) => { if (!cancelled) setCommittedDefault(text); })
-      .catch(() => { if (!cancelled) setCommittedDefault(null); });
-    readContextDefault("context.lore")
-      .then((text) => { if (!cancelled) setCompiledDefault(text); })
-      .catch(() => {}); // no compiled-in default -- fine, nothing to seed from
-    return () => { cancelled = true; };
-  }, [branch]);
-  const resetTarget = committedDefault ?? compiledDefault;
-
-  const hasOverride = edits.loreOverride !== null;
-  const draft = edits.loreOverride ?? resetTarget;
+  // Ground truth for "no override touched yet" -- shared with
+  // context-cost-sidebar.tsx (see contextBranch.ts's useLoreDraft) so both
+  // surfaces resolve the exact same text, never two independently-drifting
+  // copies of the same derivation.
+  const { draft, resetTarget, hasOverride } = useLoreDraft(path, branch);
   // parseLoreProgram matches a checkbox-generated PREFIX of the draft --
   // an exact generated block, or nothing at all (zero paths). There is no
   // "conflict"/disabled state: real default source (contextLoreDef's own

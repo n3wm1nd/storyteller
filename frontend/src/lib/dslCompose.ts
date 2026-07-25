@@ -198,9 +198,19 @@ export function toggleLorePathInProgram(program: string, entryPath: string): str
 // has been touched (omit the wire field, server's compiled-in
 // `context.lore` runs, or this project's own committed
 // `context/lore.dsl` override of it).
+//
+// `loreEnabled` is checked FIRST, ahead of `loreOverride` -- the top-level
+// "Story lore" toggle is an explicit kill switch and must win regardless
+// of whatever text happens to sit in `loreOverride` (e.g. from an earlier
+// per-file checkbox selection): checking individual lore files, then
+// disabling "Story lore" entirely, must send an empty program, not
+// whatever the checkboxes last generated. `loreOverride` is left
+// untouched by `setLoreEnabled` (callContextStore.ts) so re-enabling
+// restores it -- this function is what has to apply the precedence, not
+// the store clearing it out.
 export function synthesizeLoreOverride(edits: ContextEdits): string | null {
-  if (edits.loreOverride !== null) return edits.loreOverride;
   if (!edits.loreEnabled) return '"" \n';
+  if (edits.loreOverride !== null) return edits.loreOverride;
   return null;
 }
 

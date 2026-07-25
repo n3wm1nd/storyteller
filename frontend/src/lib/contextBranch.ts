@@ -19,8 +19,11 @@
 // Kept as an opt-in hook (the library component calls it on mount) so
 // the cost is paid only when the user opens the library browser.
 
+import { useEffect, useState } from "react";
 import { branchFileUrl, contextDefaultUrl, saveRawFile, branchConn } from "./ws";
 import type { BranchEvent } from "./ws";
+import { useCallContext } from "./callContextStore";
+import { DEFAULT_EDITS, synthesizeLoreOverride } from "./dslCompose";
 
 export const contextsBranchName = "contexts";
 const DSL_DIR = "context"; // matches Core.Context's dotted-name → path rule
@@ -61,6 +64,73 @@ export async function readContextDefault(name: string): Promise<string> {
     throw new Error(`read failed: ${res.status} ${name}`);
   }
   return res.text();
+}
+
+// The lore slot's exact draft text for one open file/branch -- the same
+// derivation `context-panel.tsx`'s `LoreRow` uses to seed and display its
+// own editor, extracted here so a second consumer (context-cost-sidebar.tsx)
+// can cost the *actual* text a send would use instead of guessing at a
+// parallel approximation. There is exactly one correct answer to "what DSL
+// governs this call's lore" and this is it -- not a bare `context.lore`
+// name reference (which resolves the *branch's* default, blind to any
+// per-call override the user has made) and not a hand-synthesized
+// reconstruction of the checkbox state (which could silently drift from
+// what LoreRow itself renders/edits).
+//
+// Ground truth precedence, matching `Server.Writer.File.chatWriter`'s own
+// `mLore`/`setContextOverride` resolution exactly:
+//   1. `edits.loreOverride` -- this call's own touched override, if any.
+//   2. This project's committed `context/lore.dsl` (`readContextFunction`),
+//      if one exists.
+//   3. The compiled-in default's real source (`readContextDefault`).
+// Nothing here is a guess: 2 and 3 are literally what the server would
+// resolve `context.lore` to for an untouched call, fetched the same way
+// LoreRow already does.
+export function useLoreDraft(path: string | null, branch: string | null): { draft: string; resetTarget: string; hasOverride: boolean; sendText: string | null } {
+  const edits = useCallContext((s) => (path ? s.files[path] : undefined)) ?? DEFAULT_EDITS;
+  const [committedDefault, setCommittedDefault] = useState<string | null | undefined>(undefined);
+  const [compiledDefault, setCompiledDefault] = useState("");
+
+  useEffect(() => {
+    if (!branch) return;
+    let cancelled = false;
+    setCommittedDefault(undefined);
+    setCompiledDefault("");
+    readContextFunction("lore")
+      .then((text) => { if (!cancelled) setCommittedDefault(text); })
+      .catch(() => { if (!cancelled) setCommittedDefault(null); });
+    readContextDefault("context.lore")
+      .then((text) => { if (!cancelled) setCompiledDefault(text); })
+      .catch(() => {}); // no compiled-in default -- fine, nothing to seed from
+    return () => { cancelled = true; };
+  }, [branch]);
+
+  // Ground truth for "no override touched yet" -- the committed project
+  // file, or (only if nothing was ever committed) the real compiled-in
+  // default source -- never a bare `context.lore` name reference, which
+  // resolves correctly server-side at send time but can't be shown/edited
+  // here as if it were real content of its own. Exposed separately from
+  // `draft` (always the *default*, regardless of whether an override is
+  // currently active) since callers that toggle/reset need to seed from
+  // or compare against it independent of the override's own current state.
+  const resetTarget = committedDefault ?? compiledDefault;
+  return {
+    draft: edits.loreOverride ?? resetTarget,
+    resetTarget,
+    hasOverride: edits.loreOverride !== null,
+    // What a real send would put on the wire as `lore` -- `null` means
+    // "omit the field entirely" (nothing touched, server resolves its own
+    // context.lore). Deliberately reuses `synthesizeLoreOverride`
+    // (dslCompose.ts) rather than re-deriving the loreEnabled/loreOverride
+    // precedence here a second time: that function is the literal code
+    // path `fileview.actions.ts` calls to build the wire field, so a
+    // consumer asking "what will actually be sent" gets the same answer a
+    // real chat.writer command would carry, including the disabled case
+    // (loreEnabled === false sends `'"" \n'` -- an explicitly EMPTY
+    // program -- never the resolved default; sending the default while a
+    // user unchecked "Story lore" would silently ignore that toggle).
+    sendText: synthesizeLoreOverride(edits),
+  };
 }
 
 export async function writeContextFunction(name: string, source: string): Promise<void> {
