@@ -321,6 +321,10 @@ export function ContextCostSidebar({ activeBranch, selectedFile, fileChainTicks,
   const mode = useUI((s) => s.writerMode);
   const pinnedNames = useCallContext((s) => (selectedFile ? s.files[selectedFile]?.pinnedProgramNames : undefined)) ?? EMPTY_PINNED_PROGRAMS;
   const pinned = usePinnedSnippetCosts(activeBranch, selectedFile);
+  // Display-only, local to this panel -- see writeLinesGrouped's own
+  // header for what each toggle does.
+  const [hideZeroCost, setHideZeroCost] = useState(true);
+  const [sortByCost, setSortByCost] = useState(false);
 
   // The exact same lore text a real send would put on the wire -- never a
   // bare `context.lore` reference, never a reconstruction (see
@@ -355,22 +359,32 @@ export function ContextCostSidebar({ activeBranch, selectedFile, fileChainTicks,
 
   const writeTotal = writeCosts?.reduce((sum, c) => sum + c.chars, 0) ?? 0;
   const writeMax = writeCosts?.reduce((m, c) => Math.max(m, c.chars), 0) ?? 0;
-  // Grouped by source line, in source order -- a line can carry more than
-  // one ablated statement (e.g. `as f: x` has its own cost for the `as f:`
-  // wrapper and a separate one for `x`, the nested body it binds), so a
-  // line renders once with each of its own statements as its own span
-  // (see SourceLineRow) rather than one row per LineCost duplicating the
-  // full line text. Source order, not the ablation's own descending-cost
-  // order: each span's own opacity already shows relative weight at a
-  // glance, and reading top to bottom in program order (lore first, then
-  // chapters/other/style/characters/pinned) is easier to place.
+  // Grouped by source line -- a line can carry more than one ablated
+  // statement (e.g. `as f: x` has its own cost for the `as f:` wrapper
+  // and a separate one for `x`, the nested body it binds), so a line
+  // renders once with each of its own statements as its own row (see
+  // SourceLineRow), not duplicated per statement.
+  //
+  // `hideZeroCost` drops lines whose statements *all* round to 0 tok --
+  // real signal (a nested `as`/`for` wrapper genuinely contributing
+  // nothing on its own, distinct from the body it wraps) but usually
+  // noise for "where am I paying," so it's opt-in to see, not opt-in to
+  // hide. `sortByCost` reorders the visible lines by their own highest
+  // single statement's cost (descending) instead of source order -- the
+  // per-row bar already shows weight at a glance either way, this is
+  // purely about which lines surface first when there are many.
   const writeLinesGrouped = useMemo(() => {
     const byLine = new Map<number, LineCost[]>();
     for (const c of writeCosts ?? []) {
       byLine.set(c.line, [...(byLine.get(c.line) ?? []), c].sort((a, b) => a.col - b.col));
     }
-    return [...byLine.entries()].sort(([a], [b]) => a - b);
-  }, [writeCosts]);
+    let entries = [...byLine.entries()];
+    if (hideZeroCost) entries = entries.filter(([, cs]) => cs.some((c) => c.chars >= 4));
+    entries.sort(sortByCost
+      ? ([, a], [, b]) => Math.max(...b.map((c) => c.chars)) - Math.max(...a.map((c) => c.chars))
+      : ([a], [b]) => a - b);
+    return entries;
+  }, [writeCosts, hideZeroCost, sortByCost]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -398,6 +412,30 @@ export function ContextCostSidebar({ activeBranch, selectedFile, fileChainTicks,
                 </span>
               )}
               {writeLoading && <RefreshCw className="animate-spin" style={{ width: 10, height: 10, color: "var(--text-ghost)" }} />}
+            </div>
+            <div style={{ display: "flex", gap: 4, padding: "0 2px 8px" }}>
+              <button
+                onClick={() => setHideZeroCost((v) => !v)}
+                style={{
+                  fontSize: 9.5, padding: "2px 7px", borderRadius: 10, cursor: "pointer",
+                  border: "1px solid var(--border-subtle)",
+                  background: hideZeroCost ? "var(--accent-tint, var(--amber-tint))" : "transparent",
+                  color: hideZeroCost ? "var(--accent, var(--amber))" : "var(--text-ghost)",
+                }}
+              >
+                Hide 0-tok lines
+              </button>
+              <button
+                onClick={() => setSortByCost((v) => !v)}
+                style={{
+                  fontSize: 9.5, padding: "2px 7px", borderRadius: 10, cursor: "pointer",
+                  border: "1px solid var(--border-subtle)",
+                  background: sortByCost ? "var(--accent-tint, var(--amber-tint))" : "transparent",
+                  color: sortByCost ? "var(--accent, var(--amber))" : "var(--text-ghost)",
+                }}
+              >
+                Sort by cost
+              </button>
             </div>
             {writeCosts && writeLinesGrouped.map(([lineNo, lineCosts]) => (
               <SourceLineRow
