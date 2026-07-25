@@ -60,6 +60,7 @@ library
                   , Storyteller.Writer.Agent.JournalSummarizer
                   , Storyteller.Writer.Agent.Tasks
                   , Storyteller.Writer.Agent.Roleplay
+                  , Storyteller.Writer.Agent.PresenceTrack
                   , Storyteller.Core.Atom
                   , Storyteller.Core.Image
                   , Storyteller.Core.Create
@@ -208,6 +209,12 @@ executable story-chapter
 executable story-track
   import:           exe-common
   main-is:          Track.hs
+  hs-source-dirs:   app
+
+-- | Retroactively tag which characters are present in one chapter, or every chapter.
+executable story-presence
+  import:           exe-common
+  main-is:          Presence.hs
   hs-source-dirs:   app
 
 -- | Split working-tree diffs and merge them into the chain at the right positions.
@@ -371,6 +378,7 @@ executable storyteller-agent-integration-test
                   , Agent.Integration.OutlineSplitFreeformSpec
                   , Agent.Integration.OutlineSplitBulkSpec
                   , Agent.Integration.CharacterPresenceSpec
+                  , Agent.Integration.CharacterPresenceTrackSpec
                   , Agent.Integration.RoleplayHarness
                   , Agent.Integration.RoleplaySpec
                   , Agent.Integration.RoleplayMidStorySpec

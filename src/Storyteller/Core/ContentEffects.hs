@@ -113,6 +113,12 @@ module Storyteller.Core.ContentEffects
   , resolveBranch
   , runBranchResolve
 
+    -- * The story's known cast (spans every character branch)
+  , Cast(..)
+  , CastMember(..)
+  , knownCast
+  , runCast
+
     -- * The whole vocabulary, one branch, one backend
   , runContentEffectsGit
   ) where
@@ -124,6 +130,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail (Fail)
 
@@ -133,11 +140,11 @@ import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
 
 import Storyteller.Core.Branch (BranchOp, runStorage)
-import Storyteller.Core.Storage (StoryStorage, getBranch)
+import Storyteller.Core.Storage (StoryStorage, getBranch, listBranches)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Writer.Presence as WriterPresence
-import Storyteller.Writer.Types (Character)
+import Storyteller.Writer.Types (Character(..))
 
 -- ---------------------------------------------------------------------------
 -- Tree snapshots
@@ -412,6 +419,81 @@ resolveBranch name = send (ResolveBranch name) >>= \case
 runBranchResolve :: Member StoryStorage r => Sem (BranchResolve ': r) a -> Sem r a
 runBranchResolve = interpret $ \case
   ResolveBranch name -> fmap (Core.ObjectHash . unTickId . branchHead) <$> getBranch name
+
+-- ---------------------------------------------------------------------------
+-- The story's known cast
+-- ---------------------------------------------------------------------------
+
+-- | One member of the story's known cast: its branch identity and
+--   @sheet.md@ verbatim (empty if the branch has none yet -- a character
+--   branch created but not fleshed out is still a legitimate cast
+--   member). Same "hand the raw sheet over, let the caller decide what to
+--   do with it" shape 'Server.Writer.Character.characterState' already
+--   gives the sidebar's own display -- this is the same read, just for
+--   every character branch at once instead of one. No display name here
+--   -- that's 'Storyteller.Writer.Branches.branchDisplayName' applied to
+--   'cmBranch', a caller-side concern this module can't reach for itself
+--   (see 'runCast's own Haddock on the import cycle that would create).
+data CastMember = CastMember
+  { cmBranch :: BranchName
+  , cmSheet  :: Text
+  } deriving (Show, Eq)
+
+-- | "Which characters does this story know about, and what do their
+--   sheets say" -- the operation 'runContentEffectsGit''s own Haddock
+--   flags as the general "iterate over branches" gap 'BranchResolve'
+--   doesn't cover. No @branch@ phantom, same reasoning as 'BranchResolve':
+--   enumerating every @character/*@ branch is inherently project-global,
+--   not scoped to one already-open branch.
+data Cast (m :: Type -> Type) a where
+  KnownCast :: Cast m [CastMember]
+
+makeSem ''Cast
+
+-- | Built entirely on 'StoryStorage' (list every branch, filter to
+--   @character/*@) plus this module's own 'TreeAccess' (resolve each
+--   character branch's head, read @sheet.md@'s blob from its tree) --
+--   never a fresh 'BranchOp'\/filesystem scope opened per character.
+--   @treeBranch@ is only ever used for its underlying git object store,
+--   never its own content: a blob is addressed by hash, the same hash
+--   regardless of which branch's 'BranchOp' scope happens to be open when
+--   it's read (see 'TreeAccess' own Haddock, "safe to call against a
+--   foreign commit without disturbing the caller's own position") -- so
+--   any already-open branch works as @treeBranch@, not specifically a
+--   character's own.
+--
+--   The @character/@ prefix check below is inlined rather than reusing
+--   'Storyteller.Writer.Branches.classifyBranch' (the one real place that
+--   convention is owned) -- that module imports
+--   'Storyteller.Core.Prompt', which imports 'Storyteller.Core.Runtime',
+--   which imports this module, so pulling it in here would be a real
+--   compile-time cycle, not just a style preference. Keep the two in sync
+--   if the convention ever changes (see WRITER.md's "Branch naming").
+runCast
+  :: forall treeBranch r a
+  .  Members '[StoryStorage, BranchResolve, TreeAccess treeBranch, Fail] r
+  => Sem (Cast ': r) a -> Sem r a
+runCast = interpret $ \case
+  KnownCast -> do
+    branches <- listBranches
+    let charBranches = [ b | b <- branches, "character/" `T.isPrefixOf` unBranchName (branchName b) ]
+    mapM toCastMember charBranches
+  where
+    toCastMember :: Branch -> Sem r CastMember
+    toCastMember b = do
+      let name = branchName b
+      mCommit <- send (ResolveBranch name)
+      sheet <- case mCommit of
+        Nothing     -> pure ""
+        Just commit -> do
+          tree <- treeSnapshot @treeBranch commit
+          case lookup "sheet.md" tree of
+            Nothing -> pure ""
+            Just h  -> TE.decodeUtf8 <$> readTreeBlob @treeBranch h
+      pure CastMember
+        { cmBranch = name
+        , cmSheet  = sheet
+        }
 
 -- ---------------------------------------------------------------------------
 -- The whole vocabulary, one branch, one backend

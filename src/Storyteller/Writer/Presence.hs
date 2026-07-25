@@ -12,6 +12,7 @@
 -- 'Storyteller.Common.Annotation' has to 'Storyteller.Common.Types'.
 module Storyteller.Writer.Presence
   ( recordPresence
+  , recordPresenceAtAtom
   , activeCharacters
   , activeCharactersFor
   , presentOn
@@ -19,6 +20,7 @@ module Storyteller.Writer.Presence
   ) where
 
 import Control.Monad (join)
+import Control.Monad.Trans.Class (lift)
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -27,6 +29,7 @@ import Polysemy.Fail
 
 import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Storage (StoryStorage, getBranch)
+import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
@@ -54,23 +57,99 @@ recordPresence
   :: forall branch r
   .  Members '[BranchOp branch, StoryStorage, Fail] r
   => FilePath -> Character -> PresenceEvent -> Sem r (Maybe TickId)
-recordPresence file character@(Character branch) event =
-  getBranch branch >>= \case
-    Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName branch))
-    Just _  -> runStorage @branch (do
-      mTrailing <- trailingPresenceFor file character
-      priorActive <- case mTrailing of
-        Nothing  -> presentOn file character
-        Just tid -> do
-          _ <- Ops.deleteTick (toHash tid)
-          presentOn file character
+recordPresence file character event =
+  withCharacterBranch character $ runStorage @branch (do
+    mTrailing <- trailingPresenceFor file character
+    priorActive <- case mTrailing of
+      Nothing  -> presentOn file character
+      Just tid -> do
+        _ <- Ops.deleteTick (toHash tid)
+        presentOn file character
+    let wantsActive = event == Enter
+    if wantsActive == priorActive
+      then pure Nothing
+      else Just . toTickId <$> Tick.storeAs (Presence file character event))
+
+-- | Like 'recordPresence', but placed relative to a specific atom
+--   (@atTick@, e.g. one 'Storage.Tick.FileTick.ftTickId' from
+--   'Storage.Tick.fileTicksOf') instead of always at the branch's current
+--   head. What retroactive, per-atom ingestion needs (see
+--   'Storyteller.Writer.Agent.PresenceTrack''s module Haddock for the full
+--   argument): a character who enters partway through an
+--   already-fully-written, multi-atom scene has to be marked present
+--   starting exactly at the atom where they actually appear, not from the
+--   file's start, or a caller replaying history at an earlier atom (via
+--   'presentAt') would see them there too, when they aren't.
+--
+--   The direction follows from @event@, not a caller-supplied choice — an
+--   @Enter@ has to land strictly *before* @atTick@ (the character is
+--   already present as of that atom, so a reader replaying history at
+--   @atTick@ itself must see it), an @Leave@ strictly *after* it (they're
+--   still present *in* that atom, only gone as of the next one). Getting
+--   this backwards would put an Enter one atom too late or a Leave one atom
+--   too early, silently wrong for exactly the atom this call is about — see
+--   'presentAt'.
+--
+--   "Before @atTick@" has nowhere on this file's own lifetime to anchor
+--   after if @atTick@ is the file's very first tick (no earlier position on
+--   *this file* exists) — resolved via the raw chain parent (read straight
+--   off @atTick@'s own 'Storage.Core.CommitData', the same field
+--   'Storage.Core.at''s own tail-replay walk already follows) instead,
+--   whatever tick precedes @atTick@ on the branch overall, file-relevant or
+--   not; 'Storage.Ops.at' operates on the whole chain, not just this file's
+--   own ticks, so anchoring there is just as valid. Fails outright only if
+--   @atTick@ is the branch's very root (nothing precedes it at all) — a
+--   character can't be present before the branch itself begins.
+--
+--   Built on 'Storage.Ops.at' -- the same "insert a new tick right after
+--   this position, replaying everything after it forward" primitive
+--   'Storage.Reconcile.emitStandaloneGap' already uses for inserting a
+--   standalone gap-atom mid-chain, not a fresh mechanism. Redundancy is
+--   checked the same way 'recordPresence' checks it at head -- collapsed to
+--   a no-op if @event@ wouldn't actually change this character's state as
+--   of the resolved anchor -- except there is no "trailing tick since head"
+--   to delete here: an insertion strictly before the current head has no
+--   such notion, since anything already after the anchor is real,
+--   already-written history this call must never disturb, only insert
+--   relative to.
+recordPresenceAtAtom
+  :: forall branch r
+  .  Members '[BranchOp branch, StoryStorage, Fail] r
+  => TickId -> FilePath -> Character -> PresenceEvent -> Sem r (Maybe TickId)
+recordPresenceAtAtom (TickId atTick) file character event =
+  withCharacterBranch character $ runStorage @branch $ do
+    anchor <- case event of
+      Leave -> pure (Ops.ObjectHash atTick)
+      Enter -> do
+        (cd, _) <- lift (Core.readCommitTick (Ops.ObjectHash atTick))
+        case Core.commitParents cd of
+          (p : _) -> pure p
+          []      -> fail "recordPresenceAtAtom: no position precedes the branch's own root"
+    Ops.at anchor (do
+      priorActive <- presentAsOf anchor file character
       let wantsActive = event == Enter
       if wantsActive == priorActive
         then pure Nothing
         else Just . toTickId <$> Tick.storeAs (Presence file character event))
-  where
-    toHash (TickId t) = Ops.ObjectHash t
-    toTickId (Ops.ObjectHash t) = TickId t
+
+-- | Shared branch-existence guard 'recordPresence'\/'recordPresenceAt' both
+--   need — a character is referenced by branch name, not by tick id (see
+--   'Storyteller.Writer.Types.Presence'), so there's no chain-walk
+--   integrity check to lean on; this is the one check available.
+withCharacterBranch
+  :: forall r a
+  .  Members '[StoryStorage, Fail] r
+  => Character -> Sem r a -> Sem r a
+withCharacterBranch (Character branch) action =
+  getBranch branch >>= \case
+    Nothing -> fail ("character branch not found: " <> T.unpack (unBranchName branch))
+    Just _  -> action
+
+toHash :: TickId -> Ops.ObjectHash
+toHash (TickId t) = Ops.ObjectHash t
+
+toTickId :: Ops.ObjectHash -> TickId
+toTickId (Ops.ObjectHash t) = TickId t
 
 -- | Every character active as of the end of @ticks@ -- the "list everyone
 --   present" counterpart to 'presentOn's "is this one character present":

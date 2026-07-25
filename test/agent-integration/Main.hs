@@ -43,6 +43,7 @@ import qualified Agent.Integration.OutlineSplitFreeformSpec
 import qualified Agent.Integration.OutlineSplitBulkSpec
 import qualified Agent.Integration.OutlineSplitEscapingSpec
 import qualified Agent.Integration.CharacterPresenceSpec
+import qualified Agent.Integration.CharacterPresenceTrackSpec
 import qualified Agent.Integration.RoleplaySpec
 import qualified Agent.Integration.RoleplayMidStorySpec
 import qualified Agent.Integration.JournalInstructionSpec
@@ -199,6 +200,7 @@ main = do
         describe "Agent.Integration.OutlineSplitBulkSpec" (Agent.Integration.OutlineSplitBulkSpec.spec @judgeTy runner)
         describe "Agent.Integration.OutlineSplitEscapingSpec" (Agent.Integration.OutlineSplitEscapingSpec.spec @judgeTy runner)
         describe "Agent.Integration.CharacterPresenceSpec"    (Agent.Integration.CharacterPresenceSpec.spec @judgeTy runner)
+        describe "Agent.Integration.CharacterPresenceTrackSpec" (Agent.Integration.CharacterPresenceTrackSpec.spec @judgeTy runner)
         describe "Agent.Integration.RoleplaySpec"             (Agent.Integration.RoleplaySpec.spec @judgeTy runner)
         describe "Agent.Integration.RoleplayMidStorySpec"     (Agent.Integration.RoleplayMidStorySpec.spec @judgeTy runner)
         describe "Agent.Integration.JournalInstructionSpec"   (Agent.Integration.JournalInstructionSpec.spec @judgeTy runner)
