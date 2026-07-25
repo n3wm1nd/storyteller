@@ -65,8 +65,8 @@ module Storyteller.Context.DSL.Compile
   , errorValue
   , compileDefinition
   , definitionBinding
-  , runStmts
-  , evalExpr
+  , runCompiledBlock
+  , runCompiledExpr
   , treeValueOfCommit
   , currentScope
   , runDefinition
@@ -312,7 +312,7 @@ data CExpr r
 --   "unresolved is a hard failure" -- decided once, here, rather than via
 --   'tryResolveIdent''s runtime probe.
 data CReadArg r
-  = CReadPath !InterpText
+  = CReadPath ![CInterpPart r]
   | CReadLocalOrPath !Name !(Maybe (CRef r))
   | CReadExpr !(CExpr r)
 
@@ -335,51 +335,69 @@ type CBlock r = [CStmt r]
 -- ---------------------------------------------------------------------------
 
 -- | Compiles one expression against @env@ (this point's own local-name
---   shape -- just enough to know which names are locals and at what
---   arity, never their values) and @lib@ (the real, fixed 'Library').
---   Mirrors 'checkExpr'\'s old identifier-resolution surface exactly (same
---   @without@\/@only@\/@exclude@\/@latest@\/'coreFilters' carve-outs, same
---   'ERead' string-literal-or-unbound-bare-token exemption) -- the
---   difference from that earlier, discarded-result check is that this one
---   *keeps* what it resolves: a hit against @env@ becomes 'CLocalRef'
---   (looked up again, cheaply, in a locals-only 'Env', once per call,
---   because only its *value* is per-call); a hit against @lib@ becomes
---   'CGlobal' holding the real 'Binding' directly, looked up here and
---   never again.
-compileExpr :: Library r -> Map Name Int -> Expr -> Either String (CExpr r)
+--   shape -- just enough to know which names are locals and, where
+--   knowable, at what arity, never their values) and @lib@ (the real,
+--   fixed 'Library'). Mirrors 'checkExpr'\'s old identifier-resolution
+--   surface exactly (same @without@\/@only@\/@exclude@\/@latest@\/
+--   'coreFilters' carve-outs, same 'ERead' string-literal-or-unbound-
+--   bare-token exemption) -- the difference from that earlier,
+--   discarded-result check is that this one *keeps* what it resolves: a
+--   hit against @env@ becomes 'CLocalRef' (looked up again, cheaply, in a
+--   locals-only 'Env', once per call, because only its *value* is
+--   per-call); a hit against @lib@ becomes 'CGlobal' holding the real
+--   'Binding' directly, looked up here and never again.
+--
+--   __A parameter's own arity is genuinely not knowable here, unlike
+--   everything else__: a @let@\/@for@-loop variable's arity is fixed by
+--   the body's own text (a plain @let@ or loop variable is always
+--   0-arity; a curried @let@ declares its own parameter count), but a
+--   *parameter*'s real arity is whatever 'Binding' its caller happens to
+--   pass in -- e.g. a host function (@'fn1' f@) supplied for one call and
+--   something else entirely for another. @env@ therefore maps a name to
+--   @'Just' arity@ when it's known (library entries, @let@s, loop
+--   variables) and 'Nothing' for a parameter, whose arity check can only
+--   ever happen where it always correctly did: at the actual call site,
+--   against the real 'Binding' 'CApp'\'s own executor fetches from
+--   'Env' at runtime (see 'runCompiledExpr'\'s @CApp@ case).
+compileExpr :: forall r. Library r -> Map Name (Maybe Int) -> Expr -> Either String (CExpr r)
 compileExpr lib = ce
   where
-    resolveRef :: Map Name Int -> Name -> Maybe (Int, CRef r)
+    resolveRef :: Map Name (Maybe Int) -> Name -> Maybe (Maybe Int, CRef r)
     resolveRef env name = case Map.lookup name env of
-      Just arity -> Just (arity, CLocalRef name)
-      Nothing    -> case lookup name (libraryEntries lib) of
-        Just b@(Binding arity _) -> Just (arity, CGlobal b)
+      Just marity -> Just (marity, CLocalRef name)
+      Nothing     -> case lookup name (libraryEntries lib) of
+        Just b@(Binding arity _) -> Just (Just arity, CGlobal b)
         Nothing                  -> Nothing
 
-    requireRef :: Map Name Int -> Int -> Name -> Either String (CRef r)
+    -- | Checks arity only when it's actually knowable ('Just') -- a
+    -- parameter ('Nothing') always resolves, unconditionally, deferring
+    -- its own arity check to the real call site.
+    requireRef :: Map Name (Maybe Int) -> Int -> Name -> Either String (CRef r)
     requireRef env argc name = case resolveRef env name of
       Nothing -> Left ("unknown identifier: " <> T.unpack name)
-      Just (arity, ref)
+      Just (Nothing, ref) -> Right ref
+      Just (Just arity, ref)
         | arity /= argc -> Left (T.unpack name <> ": expected " <> show arity
                                     <> " argument(s), got " <> show argc)
         | otherwise     -> Right ref
 
-    ceInterp :: Map Name Int -> InterpPart -> Either String (CInterpPart r)
+    ceInterp :: Map Name (Maybe Int) -> InterpPart -> Either String (CInterpPart r)
     ceInterp _   (Lit t)    = Right (CLit t)
     ceInterp env (Interp n) = CInterp <$> requireRef env 0 n
 
-    ce :: Map Name Int -> Expr -> Either String (CExpr r)
+    ce :: Map Name (Maybe Int) -> Expr -> Either String (CExpr r)
     ce env = \case
       EString q parts  -> CString q <$> mapM (ceInterp env) parts
       EAssistant inner -> CAssistant <$> ce env inner
       EUser inner      -> CUser <$> ce env inner
       EIdent name      -> CIdent <$> requireRef env 0 name
-      ERead (EString Quoted parts) -> Right (CRead (CReadPath parts))
-      ERead (EString Bare   parts) -> Right (CRead (CReadPath parts))
+      ERead (EString Quoted parts) -> CRead . CReadPath <$> mapM (ceInterp env) parts
+      ERead (EString Bare   parts) -> CRead . CReadPath <$> mapM (ceInterp env) parts
       ERead (EIdent name) -> case resolveRef env name of
-        Nothing         -> Right (CRead (CReadLocalOrPath name Nothing))
-        Just (0, ref)   -> Right (CRead (CReadLocalOrPath name (Just ref)))
-        Just (arity, _) -> Left (T.unpack name <> " needs " <> show arity <> " argument(s), used with none")
+        Nothing                    -> Right (CRead (CReadLocalOrPath name Nothing))
+        Just (Nothing, ref)        -> Right (CRead (CReadLocalOrPath name (Just ref)))
+        Just (Just 0, ref)         -> Right (CRead (CReadLocalOrPath name (Just ref)))
+        Just (Just arity, _)       -> Left (T.unpack name <> " needs " <> show arity <> " argument(s), used with none")
       ERead argExpr -> CRead . CReadExpr <$> ce env argExpr
       EApp (EIdent name) argEs -> CApp <$> requireRef env (length argEs) name <*> mapM (ce env) argEs
       EApp _ _ -> Left "application head must be a plain identifier"
@@ -395,12 +413,15 @@ compileExpr lib = ce
 --   exactly the way 'checkBlock' used to -- 'SLet'\/'SFor' extend @env@
 --   for their own body and (for @let@) everything after them, an @as@'s
 --   own nested body sees the same @env@ its enclosing statement did.
-compileBlock :: Library r -> Map Name Int -> Block -> Either String (CBlock r)
+--   @let@\/@for@-introduced names always carry a known arity ('Just') --
+--   only 'compileBody''s own top-level parameter seeding uses 'Nothing'
+--   (see 'compileExpr''s own Haddock on why).
+compileBlock :: forall r. Library r -> Map Name (Maybe Int) -> Block -> Either String (CBlock r)
 compileBlock lib = cb
   where
     ce = compileExpr lib
 
-    cb :: Map Name Int -> Block -> Either String (CBlock r)
+    cb :: Map Name (Maybe Int) -> Block -> Either String (CBlock r)
     cb env = \case
       [] -> Right []
       Located _ (SExpr e) : rest -> (:) . CSExpr <$> ce env e <*> cb env rest
@@ -408,12 +429,12 @@ compileBlock lib = cb
         (\n b r -> CSAs n b : r) <$> ce env nameE <*> cb env body <*> cb env rest
       Located _ (SLet name mParams body) : rest ->
         let arity = maybe 0 length mParams
-            env'  = maybe env (\ps -> foldr (\p e -> Map.insert p 0 e) env ps) mParams
-        in (\b r -> CSLet name mParams b : r) <$> cb env' body <*> cb (Map.insert name arity env) rest
+            env'  = maybe env (\ps -> foldr (\p e -> Map.insert p (Just 0) e) env ps) mParams
+        in (\b r -> CSLet name mParams b : r) <$> cb env' body <*> cb (Map.insert name (Just arity) env) rest
       Located _ (SIn e body) : rest ->
         (\ce' b r -> CSIn ce' b : r) <$> ce env e <*> cb env body <*> cb env rest
       Located _ (SFor var srcExpr body) : rest ->
-        (\se b r -> CSFor var se b : r) <$> ce env srcExpr <*> cb (Map.insert var 0 env) body <*> cb env rest
+        (\se b r -> CSFor var se b : r) <$> ce env srcExpr <*> cb (Map.insert var (Just 0) env) body <*> cb env rest
 
 -- | Just the name set 'coreFilters' resolves without ever consulting
 --   'Library' -- what 'compileExpr' needs to tell "this filter name never
@@ -444,11 +465,15 @@ resolveRef env (CLocalRef n)  = case Map.lookup n env of
 -- | Compiles and immediately runs a whole 'Definition' against a supplied
 --   initial scope and argument list -- the entry point a host embeds
 --   (matching the spec's own framing: "a compiled context ends up with
---   exactly the type shape a hand-written agent already has"). Delegates
---   the real work to 'definitionBinding' (which does the actual
---   compiling) purely for callers, like 'runDefinition', that want to
---   compile and run in one step rather than holding onto a reusable
---   'Binding'.
+--   exactly the type shape a hand-written agent already has"). Shares its
+--   real compiling with 'definitionBinding' (via 'compileBody', see that
+--   function's own Haddock for what "compiling" now means) rather than
+--   routing through the 'Binding' it produces -- @args@ here is
+--   @['Binding' r]@ (an arbitrary-arity function per parameter is legal,
+--   even though every real caller only ever passes 0-arity leaves), which
+--   'Binding''s own @fn :: [Action r (Value r)] -> ...@ argument shape
+--   can't accept directly; 'compileBody''s own @env@ takes 'Binding's
+--   as-is instead, the same way 'Env' always has.
 compileDefinition
   :: Member Fail r
   => Library r        -- ^ compile-time table, fixed for this definition's whole body
@@ -456,12 +481,29 @@ compileDefinition
   -> Value r          -- ^ initial ambient Reader scope
   -> [Binding r]      -- ^ arguments, matched against 'defParams'
   -> Action r (Value r)
-compileDefinition lib def scope args = case definitionBinding lib def of
-  Left err             -> fail err
-  Right (Binding _ fn) -> fn (map pure args) scope
+compileDefinition lib def scope args
+  | length args /= length (defParams def) = fail $
+      "arity mismatch: " <> show (length (defParams def)) <> " parameter(s), "
+        <> show (length args) <> " argument(s) given"
+  | otherwise = case compileBody lib def of
+      Left err       -> fail err
+      Right compiled -> mkValue <$> runCompiledBlock (Map.fromList (zip (defParams def) args)) scope compiled
 
 mkValue :: ([Message], [(Name, Action r (Value r))]) -> Value r
 mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
+
+-- | The shared compiling step 'definitionBinding' and 'compileDefinition'
+--   both use -- turns @def@'s whole body into a 'CBlock', once, resolving
+--   every 'EIdent'\/'EApp'\/'EFilter' reference against @lib@ (see
+--   'compileBlock'\/'compileExpr'). __This is the one and only place
+--   @def@'s body is ever walked or any name in it resolved against
+--   @lib@__: a library reference compiles to a real 'Binding', baked
+--   directly into the returned tree; a local (parameter, @let@, @for@-loop
+--   variable) compiles to a 'CLocalRef', still looked up by name, but only
+--   ever against a locals-only 'Env' built fresh per call -- never
+--   'Library' again, at any point after this function returns.
+compileBody :: Library r -> Definition -> Either String (CBlock r)
+compileBody lib def = compileBlock lib (Map.fromList (map (, Nothing) (defParams def))) (defBody def)
 
 -- | Compiles a parsed 'Definition' into a 'Binding' that runs against
 --   whatever scope its *caller* hands it (via 'runCompiledBlock' directly,
@@ -471,18 +513,13 @@ mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
 --   so both sit in the same table uniformly.
 --
 --   @lib@ is "the table as it stood immediately before this definition's
---   own slot" in 'buildLibrary''s fixed left-to-right build order.
---   __This is the one and only place @def@'s body is ever walked or any
---   name in it resolved against @lib@__: 'compileBlock' (via 'compileExpr')
---   turns @def@'s whole body into a 'CBlock' right here, replacing every
---   'EIdent'\/'EApp'\/'EFilter' reference with its own resolved 'CRef' --
---   a real 'Binding', baked directly into the tree, for a library
---   reference; a name, for a genuine local (see 'CRef''s own Haddock).
---   The returned 'Binding''s closure holds only this already-compiled
---   'CBlock' -- @lib@ itself, and @def@'s original, unresolved 'Expr'
---   tree, are *not* captured; there is nothing left in the closure a
---   later call could re-consult 'Library' through, because there is no
---   'Library' reference sitting in the closure at all any more.
+--   own slot" in 'buildLibrary''s fixed left-to-right build order. The
+--   returned 'Binding''s closure holds only 'compileBody''s
+--   already-compiled 'CBlock' -- @lib@ itself, and @def@'s original,
+--   unresolved 'Expr' tree, are *not* captured; there is nothing left in
+--   the closure a later call could re-consult 'Library' through, because
+--   there is no 'Library' reference sitting in the closure at all any
+--   more.
 --
 --   This is possible in one pass, exhaustively, because the language has
 --   no @if@ and no recursion (see \"Verification\" in @CONTEXT-DSL.md@):
@@ -491,10 +528,19 @@ mkValue (msgs, entries) = Value (pure msgs) entries defaultMeta
 --   arity, is therefore a fact about @(lib, def)@ alone -- decidable
 --   immediately, not something that has to wait for a runtime 'Action' to
 --   stumble into it.
+--
+--   Every real @defParams@ name is used purely as a plain value reference
+--   inside a body (@EIdent paramName@, never applied with further
+--   arguments -- the language has no way to write a higher-order
+--   parameter), but 'Binding''s own @fn@ argument shape
+--   (@[Action r (Value r)] -> ...@) is what a caller applying this
+--   'Binding' actually supplies, so each is wrapped via 'bval' into a
+--   0-arity 'Binding' before insertion into 'Env' here.
 definitionBinding :: Member Fail r => Library r -> Definition -> Either String (Binding r)
 definitionBinding lib def = do
-  compiled <- compileBlock lib (Map.fromList (map (, 0) (defParams def))) (defBody def)
-  Right (Binding (length (defParams def)) (\args scope -> mkValue <$> runCompiledBlock (bindParams (defParams def) args Map.empty) scope compiled))
+  compiled <- compileBody lib def
+  let run args scope = mkValue <$> runCompiledBlock (bindParams (defParams def) args Map.empty) scope compiled
+  Right (Binding (length (defParams def)) run)
 
 -- | Combines a newly-produced entry list with what's already
 --   accumulated -- @new@'s own values win on a key collision (matching
@@ -508,45 +554,54 @@ unionEntries new old =
   [ (k, maybe v id (lookup k new)) | (k, v) <- old ]
   ++ filter (\(k, _) -> k `notElem` map fst old) new
 
--- | Runs a whole 'Block', folding every statement's contribution into
---   one @([Message], entries)@ pair -- this *is* "a fresh writer
+-- | Runs a whole compiled 'CBlock', folding every statement's contribution
+--   into one @([Message], entries)@ pair -- this *is* "a fresh writer
 --   target" (rules 4\/5): whoever calls this (a function body, an @as@
---   body, 'compileDefinition') wraps the result into a new 'Value'.
---   @in@\/@for@ do *not* call this to get an independent 'Value' of
---   their own -- per rule 6, "the writer target is untouched" -- they
+--   body, 'definitionBinding''s own closure) wraps the result into a new
+--   'Value'. @in@\/@for@ do *not* call this to get an independent 'Value'
+--   of their own -- per rule 6, "the writer target is untouched" -- they
 --   fold their own nested statements into the *same* accumulator this
 --   call already threads (see their cases below).
-runStmts
+--
+--   @env@ here is deliberately *not* seeded with 'Library' the way the
+--   pre-IR design's ever-rebuilt @env@ was -- every 'CGlobal' reference
+--   already carries its own resolved 'Binding' directly in the compiled
+--   tree (see 'CRef''s own Haddock), so there is nothing left for @env@ to
+--   hold except this body's own locals: parameters, @let@s, @for@-loop
+--   variables. A fresh @env@ is still built per call (a local's *value*
+--   is inescapably per-call), but it only ever grows to the size of the
+--   handful of locals actually in scope, never the whole 'Library'.
+runCompiledBlock
   :: Member Fail r
-  => Env r -> Value r -> Block
+  => Env r -> Value r -> CBlock r
   -> Action r ([Message], [(Name, Action r (Value r))])
-runStmts env0 scope0 = go env0 scope0 [] []
+runCompiledBlock env0 scope0 = go env0 scope0 [] []
   where
     go _ _ msgs entries [] = pure (concat (reverse msgs), entries)
-    go env scope msgs entries (Located _ (SExpr e) : rest) = do
-      v <- evalExpr env scope e
+    go env scope msgs entries (CSExpr e : rest) = do
+      v <- runCompiledExpr env scope e
       m <- valueDefault v
       go env scope (m : msgs) entries rest
-    go env scope msgs entries (Located pos (SAs nameE body) : rest) = do
-      name <- nameOf env scope nameE
+    go env scope msgs entries (CSAs nameE body : rest) = do
+      name <- nameOfCompiled env scope nameE
       when (any ((== name) . fst) entries) $
-        fail $ "duplicate 'as' name " <> show name <> " at line " <> show (posLine pos)
-      let entryAction = mkValue <$> runStmts env scope body
+        fail $ "duplicate 'as' name " <> show name
+      let entryAction = mkValue <$> runCompiledBlock env scope body
       go env scope msgs (entries ++ [(name, entryAction)]) rest
-    go env scope msgs entries (Located _ (SLet name mParams body) : rest) =
+    go env scope msgs entries (CSLet name mParams body : rest) =
       let binding = case mParams of
-            Nothing -> bval (mkValue <$> runStmts env scope body)
+            Nothing -> bval (mkValue <$> runCompiledBlock env scope body)
             Just ps -> Binding (length ps) $ \args callerScope ->
-              mkValue <$> runStmts (bindParams ps args env) callerScope body
+              mkValue <$> runCompiledBlock (bindParams ps args env) callerScope body
       in go (Map.insert name binding env) scope msgs entries rest
-    go env scope msgs entries (Located _ (SIn e body) : rest) = do
-      newScope <- evalExpr env scope e
-      (m, es) <- runStmts env newScope body
+    go env scope msgs entries (CSIn e body : rest) = do
+      newScope <- runCompiledExpr env scope e
+      (m, es) <- runCompiledBlock env newScope body
       go env scope (m : msgs) (unionEntries es entries) rest
-    go env scope msgs entries (Located pos (SFor var srcExpr body) : rest) = do
-      srcVal <- evalExpr env scope srcExpr
+    go env scope msgs entries (CSFor var srcExpr body : rest) = do
+      srcVal <- runCompiledExpr env scope srcExpr
       let matches = map fst (valueEntries srcVal)
-      (m, es) <- foldM (runOneIteration pos var body) ([], entries) matches
+      (m, es) <- foldM (runOneIteration var body) ([], entries) matches
       go env scope (m : msgs) es rest
       where
         -- The loop variable's own default is still just the matched
@@ -558,141 +613,101 @@ runStmts env0 scope0 = go env0 scope0 [] []
         -- "force this Value's own entries" rule any other @read@
         -- argument uses, with no identifier-specific case needed at all
         -- (see 'ERead's own haddock).
-        runOneIteration p var' body' (msgsAcc, entriesAcc) matchedPath = do
+        runOneIteration var' body' (msgsAcc, entriesAcc) matchedPath = do
           let loopVar = Value (pure [User matchedPath]) [(matchedPath, forceAt scope matchedPath)] defaultMeta
               env'    = Map.insert var' (bval (pure loopVar)) env
-          (m1, es1) <- runStmts env' scope body'
+          (m1, es1) <- runCompiledBlock env' scope body'
           case filter ((`elem` map fst entriesAcc) . fst) es1 of
-            ((dup, _) : _) -> fail $ "duplicate 'as' name " <> show dup
-                                <> " across for-loop iterations, near line " <> show (posLine p)
+            ((dup, _) : _) -> fail $ "duplicate 'as' name " <> show dup <> " across for-loop iterations"
             []             -> pure ()
           pure (msgsAcc ++ m1, unionEntries es1 entriesAcc)
 
 bindParams :: [Name] -> [Action r (Value r)] -> Env r -> Env r
 bindParams ps args env = List.foldl' (\e (p, a) -> Map.insert p (bval a) e) env (zip ps args)
 
--- | Resolves an identifier against @env@ -- one lookup, not two layered
---   ones: 'compileDefinition' already folded 'Library'\'s every entry into
---   the starting @env@ once (see its own Haddock), so a @let@\/@for@-bound
---   local shadowing a library entry of the same name is exactly an
---   ordinary 'Map.insert' overwrite, the same shadowing a local variable
---   would give a same-named library entry in any ordinary language --
---   never a second table this function falls back to. A name this
---   definition's body references either was already proven to resolve by
---   'definitionBinding''s own check (see that function's Haddock) or fails
---   here; there is no third possibility this lookup could still discover
---   that check didn't already know about.
-resolveIdent :: Member Fail r => Env r -> Name -> Action r (Binding r)
-resolveIdent env name = case Map.lookup name env of
-  Just b  -> pure b
-  Nothing -> fail $ "unknown identifier: " <> T.unpack name
-
--- | 'resolveIdent', but reporting a miss as 'Nothing' rather than
---   failing -- what 'ERead' needs to tell "this identifier is bound" apart
---   from "this bare token was never bound anywhere, so read's own
---   fallback (treat its own text as a literal path) applies instead."
---   Nowhere else needs this: an unresolved identifier is a hard failure
---   everywhere else in the language (see the Grammar section of
---   @CONTEXT-DSL.md@) -- @read@ is the one primitive whose argument has no
---   other sensible meaning than a path, so an unbound bare token there
---   still means something, rather than being definitely a mistake.
-tryResolveIdent :: Env r -> Name -> Action r (Maybe (Binding r))
-tryResolveIdent env name = pure (Map.lookup name env)
-
-nameOf :: Member Fail r => Env r -> Value r -> Expr -> Action r Name
-nameOf env scope e = do
-  v <- evalExpr env scope e
+nameOfCompiled :: Member Fail r => Env r -> Value r -> CExpr r -> Action r Name
+nameOfCompiled env scope e = do
+  v <- runCompiledExpr env scope e
   messagesText <$> valueDefault v
 
-evalExpr :: Member Fail r => Env r -> Value r -> Expr -> Action r (Value r)
-evalExpr env scope e = case e of
-  EString Quoted parts -> leafValue . (: []) . User <$> interpText env scope parts
-  EString Bare   parts -> interpText env scope parts >>= globResolve scope
-  EAssistant inner -> do
-    v    <- evalExpr env scope inner
+-- | Runs one compiled expression. Every reference site is already a
+--   'CRef' -- 'resolveRef' is the only place any lookup happens at all,
+--   and for a 'CGlobal' it isn't a lookup, just reading a field. This is
+--   the direct executor for what 'compileExpr' produced; see that
+--   function's own Haddock for what each 'CExpr' constructor means and
+--   why its reference sites are already resolved.
+runCompiledExpr :: Member Fail r => Env r -> Value r -> CExpr r -> Action r (Value r)
+runCompiledExpr env scope e = case e of
+  CString Quoted parts -> leafValue . (: []) . User <$> runCompiledInterp env scope parts
+  CString Bare   parts -> runCompiledInterp env scope parts >>= globResolve scope
+  CAssistant inner -> do
+    v    <- runCompiledExpr env scope inner
     msgs <- valueDefault v
     pure v { valueDefault = pure (map (Assistant . messageText) msgs) }
-  EUser inner -> do
-    v    <- evalExpr env scope inner
+  CUser inner -> do
+    v    <- runCompiledExpr env scope inner
     msgs <- valueDefault v
     pure v { valueDefault = pure (map (User . messageText) msgs) }
-  EIdent name -> resolveIdent env name >>= \case
-    Binding 0 fn    -> fn [] scope
-    Binding arity _ -> fail $
-      T.unpack name <> " needs " <> show arity <> " argument(s), used with none"
-  -- | @read@'s argument is a general 'Expr' now, with two of its shapes
-  -- given @read@'s own reading rather than the ordinary one:
-  --
-  --   * A string literal (quoted or bare alike -- quoting always means
-  --     "definitely a path/glob, never a variable" here, deconflicting a
-  --     literal filename from a same-named local) resolves via the
-  --     identical glob machinery a bare expression-position glob already
-  --     uses, so @read *.md@ genuinely can match more than one file.
-  --   * A bare identifier that isn't bound *anywhere* (not a local, not
-  --     in the library -- see 'tryResolveIdent') still means a literal
-  --     path, the one place in the language an unresolved name isn't a
-  --     hard failure (see the Grammar section of @CONTEXT-DSL.md@): a
-  --     bound identifier (a parameter, a @let@, a @for@-loop variable --
-  --     whose own 'valueEntries' now carries its real content, see
-  --     'runStmts'\'s @SFor@ case -- or a library function) evaluates
-  --     normally instead.
-  --
-  -- Anything else (an application, a filter chain) evaluates normally
-  -- too. Whichever path produced it, if the resulting 'Value' has
-  -- entries, @read@ forces each one in order and folds their own content
-  -- into the result's own default, keeping 'valueEntries' itself intact;
-  -- a 'Value' with none (an already-resolved single leaf) is returned
-  -- unchanged.
-  ERead argExpr -> do
-    v <- case argExpr of
-      EString _ parts -> interpText env scope parts >>= globResolve scope
-      EIdent name -> tryResolveIdent env name >>= \case
-        Just _  -> evalExpr env scope argExpr
-        Nothing -> globResolve scope name
-      _ -> evalExpr env scope argExpr
+  CIdent ref -> resolveRef env ref >>= \case
+    Binding 0 fn -> fn [] scope
+    Binding arity _ -> fail $ "needs " <> show arity <> " argument(s), used with none"
+  -- @read@'s argument was compiled into one of three shapes by
+  -- 'compileExpr' (see its own Haddock and 'CReadArg's): a literal
+  -- path\/glob, resolved via the identical glob machinery a bare
+  -- expression-position glob already uses (so @read *.md@ genuinely can
+  -- match more than one file); a bare identifier that resolved to nothing
+  -- at compile time, still meaning a literal path (rule 3's one exception
+  -- -- see @CONTEXT-DSL.md@'s Grammar section); or a bare identifier that
+  -- did resolve, read through its own 'CRef' normally. Whichever shape,
+  -- if the resulting 'Value' has entries, @read@ forces each one in order
+  -- and folds their own content into the result's own default, keeping
+  -- 'valueEntries' itself intact; a 'Value' with none (an already-resolved
+  -- single leaf) is returned unchanged.
+  CRead readArg -> do
+    v <- case readArg of
+      CReadPath parts -> runCompiledInterp env scope parts >>= globResolve scope
+      CReadLocalOrPath name Nothing    -> globResolve scope name
+      CReadLocalOrPath _    (Just ref) -> resolveRef env ref >>= \case
+        Binding 0 fn    -> fn [] scope
+        Binding arity _ -> fail $ "needs " <> show arity <> " argument(s), used with none"
+      CReadExpr inner -> runCompiledExpr env scope inner
     if null (valueEntries v)
       then pure v
       else do
         forced   <- mapM snd (valueEntries v)
         combined <- concat <$> mapM valueDefault forced
         pure v { valueDefault = pure combined }
-  EApp headE argEs -> do
-    let args = map (evalExpr env scope) argEs
-    case headE of
-      EIdent name -> do
-        Binding arity fn <- resolveIdent env name
-        when (length args /= arity) $ fail $
-          T.unpack name <> ": expected " <> show arity <> " argument(s), got " <> show (length args)
-        fn args scope
-      _ -> fail "application head must be a plain identifier"
+  CApp ref argEs -> do
+    let args = map (runCompiledExpr env scope) argEs
+    Binding arity fn <- resolveRef env ref
+    when (length args /= arity) $ fail $
+      "expected " <> show arity <> " argument(s), got " <> show (length args)
+    fn args scope
   -- @without@\/@only@\/@exclude@\/@latest@ all decide *which keys
   -- survive* -- genuinely shrinking 'valueEntries', "like [a dropped key]
   -- was never there" (not just neutering a kept key's own content to
-  -- 'emptyValue', the old behaviour) -- so, like @branch@, they're
-  -- dispatched here rather than through the pure 'applyFilter'\/
-  -- 'FilterRegistry': deciding the surviving key set needs each
-  -- argument's own text forced first (see 'argCriteria'), which a pure
-  -- @Value -> [Value] -> Value@ filter structurally can't do. This is
-  -- what makes @exclude(lore)@ -- passing in another already-computed
-  -- definition's own result, not just a literal pattern -- actually work:
-  -- 'lore's own key *names* are known purely (no forcing needed at all),
-  -- and once matched keys are genuinely gone, a subsequent @for@\/glob
-  -- over the result can't resurrect them the way it used to.
-  EFilter inner "without" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+  -- 'emptyValue', the old behaviour) -- so, like every other filter that
+  -- needs a resolved argument's own content, this is what makes
+  -- @exclude(lore)@ -- passing in another already-computed definition's
+  -- own result, not just a literal pattern -- actually work: 'lore's own
+  -- key *names* are known purely (no forcing needed at all), and once
+  -- matched keys are genuinely gone, a subsequent @for@\/glob over the
+  -- result can't resurrect them the way it used to.
+  CFilterWithout inner argEs -> do
+    v    <- runCompiledExpr env scope inner
+    args <- mapM (runCompiledExpr env scope) argEs
     shrinkEntries (==) False v args
-  EFilter inner "only" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+  CFilterOnly inner argEs -> do
+    v    <- runCompiledExpr env scope inner
+    args <- mapM (runCompiledExpr env scope) argEs
     shrinkEntries (==) True v args
-  EFilter inner "exclude" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+  CFilterExclude inner argEs -> do
+    v    <- runCompiledExpr env scope inner
+    args <- mapM (runCompiledExpr env scope) argEs
     shrinkEntries globMatches False v args
-  EFilter inner "latest" argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+  CFilterLatest inner argEs -> do
+    v    <- runCompiledExpr env scope inner
+    args <- mapM (runCompiledExpr env scope) argEs
     case args of
       [nArg] -> do
         nMsgs <- valueDefault nArg
@@ -703,28 +718,26 @@ evalExpr env scope e = case e of
             let latestKeys = take n (List.sortBy (flip compare) (map fst (valueEntries v)))
             pure v { valueEntries = filter (\(k, _) -> k `elem` latestKeys) (valueEntries v) }
       _ -> fail $ "latest: expected exactly 1 argument, got " <> show (length args)
-  -- Every other filter name: the pure registry first (the common,
-  -- zero-capability case), then the shared library, exactly like an
-  -- ordinary identifier ('resolveIdent') -- @expr | name(args...)@ is
-  -- just @name expr args...@ with the piped value moved to the front, so
-  -- a filter needing real capability (@branch@, @charactersin@) is a
-  -- 'Storyteller.Context.DSL.Value.Binding' like any other library entry,
-  -- not a case hardcoded into this interpreter -- adding a new one only
-  -- ever touches "Storyteller.Context.DSL.Library" now, never this
-  -- module. 'EIdent'\/'EApp' already resolve a bare name the identical
-  -- way; this is that same fallback, just called with the piped value
-  -- prepended to whatever explicit arguments followed the pipe.
-  EFilter inner name argEs -> do
-    v    <- evalExpr env scope inner
-    args <- mapM (evalExpr env scope) argEs
+  -- @expr | filterName(args...)@ compiled to 'CFilterCore' for the pure,
+  -- zero-capability registry ('coreFilters') -- @EIdent@\/@EApp@ already
+  -- resolve a bare name the identical way this filter-position name did,
+  -- at compile time, once; this is that same fallthrough, just called
+  -- with the piped value prepended to whatever explicit arguments
+  -- followed the pipe.
+  CFilterCore name inner argEs -> do
+    v    <- runCompiledExpr env scope inner
+    args <- mapM (runCompiledExpr env scope) argEs
     case Map.lookup name coreFilters of
       Just impl -> impl v args
-      Nothing   -> resolveIdent env name >>= \case
-        Binding arity fn
-          | arity /= 1 + length args -> fail $
-              T.unpack name <> ": expected " <> show (arity - 1)
-                <> " argument(s) after the pipe, got " <> show (length args)
-          | otherwise -> fn (pure v : map pure args) scope
+      Nothing   -> fail ("unknown core filter: " <> T.unpack name) -- unreachable if compileExpr ran
+  CFilterUser ref inner argEs -> do
+    v    <- runCompiledExpr env scope inner
+    args <- mapM (runCompiledExpr env scope) argEs
+    resolveRef env ref >>= \case
+      Binding arity fn
+        | arity /= 1 + length args -> fail $
+            "expected " <> show (arity - 1) <> " argument(s) after the pipe, got " <> show (length args)
+        | otherwise -> fn (pure v : map pure args) scope
 
 -- | What a single @without@\/@only@\/@exclude@ argument contributes to the
 --   match set: another already-computed 'Value' with its own entries
@@ -750,14 +763,16 @@ shrinkEntries matches keep v args = do
   let isMatched k = any (matches k) criteria
   pure v { valueEntries = filter (\(k, _) -> isMatched k == keep) (valueEntries v) }
 
--- | Resolves every @%name%@ span against 'env' (a local binding's own
---   plain text -- see 'Storyteller.Context.DSL.Value.messagesText'),
---   leaving literal spans untouched.
-interpText :: Member Fail r => Env r -> Value r -> InterpText -> Action r Text
-interpText env scope = fmap T.concat . mapM part
+-- | Resolves every @%name%@ span (already a 'CRef', see 'compileExpr'\'s
+--   own @ceInterp@) against 'env', leaving literal spans untouched.
+runCompiledInterp :: Member Fail r => Env r -> Value r -> [CInterpPart r] -> Action r Text
+runCompiledInterp env scope = fmap T.concat . mapM part
   where
-    part (Lit t)    = pure t
-    part (Interp n) = messagesText <$> (valueDefault =<< evalExpr env scope (EIdent n))
+    part (CLit t)    = pure t
+    part (CInterp ref) = messagesText <$> (valueDefault =<< runIdentRef ref)
+    runIdentRef ref = resolveRef env ref >>= \case
+      Binding 0 fn    -> fn [] scope
+      Binding arity _ -> fail $ "needs " <> show arity <> " argument(s), used with none"
 
 -- | @read@'s own path resolution: a flat scope (a branch tree or a glob
 --   result -- see 'treeValueOfCommit') stores full paths as its own
