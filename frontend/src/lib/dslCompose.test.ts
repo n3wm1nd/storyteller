@@ -102,33 +102,42 @@ describe("renderLoreProgram / parseLoreProgram round-trip", () => {
 describe("toggleLorePathInProgram", () => {
   test("adds a path to an empty selection", () => {
     const next = toggleLorePathInProgram("", "lore/a.md");
-    expect(parseLoreProgram(next)).toEqual(["lore/a.md"]);
+    expect(next).not.toBeNull();
+    expect(parseLoreProgram(next!)).toEqual(["lore/a.md"]);
   });
 
   test("removes an already-checked path", () => {
     const program = renderLoreProgram(["lore/a.md", "lore/b.md"]);
     const next = toggleLorePathInProgram(program, "lore/a.md");
-    expect(parseLoreProgram(next)).toEqual(["lore/b.md"]);
+    expect(next).not.toBeNull();
+    expect(parseLoreProgram(next!)).toEqual(["lore/b.md"]);
   });
 
-  test("toggling against real (non-checkbox) DSL source starts a fresh selection, leaving that source as trailing text", () => {
+  // Superseded by the "go inert on unrecognized text" contract settled in
+  // a5d374b ("story lore toggle"): a program the checkboxes didn't
+  // generate (real compiled default source, hand-written DSL, anything
+  // without the recognized header) is no longer a valid base for a
+  // checkbox toggle to graft onto -- see parseEntryProgramPrefix's own
+  // Haddock ("there's no reliable insertion point without the header to
+  // anchor on") and isLoreProgramCheckboxOwned, which LoreRow uses to
+  // disable its checkboxes in exactly this case.
+  test("toggling against real (non-checkbox) DSL source returns null -- nothing truthful to toggle", () => {
     const defaultSource = "for f in lore/**/*:\n  read f\n";
-    const next = toggleLorePathInProgram(defaultSource, "lore/a.md");
-    expect(parseLoreProgram(next)).toEqual(["lore/a.md"]);
-    expect(next).toContain(defaultSource);
+    expect(toggleLorePathInProgram(defaultSource, "lore/a.md")).toBeNull();
   });
 
-  test("toggling against the real default source, which shares the generator's own banner line, still starts a fresh selection", () => {
-    const defaultSource = '"## Story background"\nfor f in lore/**/*:\n  x = loreEntry f\n  as f: x\n  x\n';
-    const next = toggleLorePathInProgram(defaultSource, "lore/a.md");
-    expect(parseLoreProgram(next)).toEqual(["lore/a.md"]);
-    expect(next).toContain(defaultSource);
+  test("toggling against the header alone (no generated lines after it) still works -- the header alone is checkbox-owned zero-selection, not disabled", () => {
+    const headerOnly = '"## Story background"\n';
+    const next = toggleLorePathInProgram(headerOnly, "lore/a.md");
+    expect(next).not.toBeNull();
+    expect(parseLoreProgram(next!)).toEqual(["lore/a.md"]);
   });
 
   test("toggling a path a hand-added suffix already references still preserves that suffix untouched", () => {
     const program = renderLoreProgram(["lore/a.md"]) + "\nread \"extra.md\"\n";
     const next = toggleLorePathInProgram(program, "lore/b.md");
-    expect(parseLoreProgram(next)).toEqual(["lore/a.md", "lore/b.md"]);
+    expect(next).not.toBeNull();
+    expect(parseLoreProgram(next!)).toEqual(["lore/a.md", "lore/b.md"]);
     expect(next).toContain('read "extra.md"');
   });
 });

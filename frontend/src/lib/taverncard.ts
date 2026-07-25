@@ -132,7 +132,7 @@ function normalizeCharacterBook(book: unknown): ParsedCard["characterBook"] {
       const keys = Array.isArray(entry.keys) ? entry.keys.filter((k): k is string => typeof k === "string") : [];
       return { keys, content, comment: asText(entry.comment) };
     })
-    .filter((e): e is { keys: string[]; content: string; comment?: string } => e !== null);
+    .filter((e): e is { keys: string[]; content: string; comment: string | undefined } => e !== null);
   if (entries.length === 0) return undefined;
   return { name: asText(b.name), entries };
 }

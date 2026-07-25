@@ -4,11 +4,11 @@
 // the InputBar. The casual user's entire exposure to "what the LLM will
 // see" -- reads as a status line, not as a DSL anything.
 //
-// Reflects the three independent per-call slots (see dslCompose.ts's own
-// header): a lore toggle, a past-chapters mode, and a list of pinned
-// snippet names -- plus the live @mention overlay. There's no more
-// "named function replaces everything" mode: pinning a saved snippet
-// just adds one more chip, same as any other pinned program.
+// Reflects the four independent per-call slots (see dslCompose.ts's own
+// header): a lore toggle, an other toggle, a past-chapters mode, and a
+// list of pinned snippet names -- plus the live @mention overlay. There's
+// no more "named function replaces everything" mode: pinning a saved
+// snippet just adds one more chip, same as any other pinned program.
 //
 // "Edit as code →" lives in the corner, behind an explicit click --
 // power-user territory, never the default surface.
@@ -21,7 +21,7 @@
 import { useMemo } from "react";
 import { BookOpen, FileText, Pin, X, Code2, Clock } from "lucide-react";
 import { useCallContext, isFileDirty, EMPTY_MENTIONS } from "@/lib/callContextStore";
-import { DEFAULT_EDITS } from "@/lib/dslCompose";
+import { DEFAULT_EDITS, isLoreProgramCheckboxOwned } from "@/lib/dslCompose";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { characterDisplayName } from "@/lib/utils";
 
@@ -113,7 +113,7 @@ export function ContextStrip({ path, onOpenPanel }: ContextStripProps) {
         <Chip
           key="lore"
           icon={<BookOpen style={{ width: 10, height: 10 }} />}
-          label={edits.loreOverrideHandEdited ? "Story lore: custom" : "Story lore: partial"}
+          label={isLoreProgramCheckboxOwned(edits.loreOverride) ? "Story lore: partial" : "Story lore: custom"}
           tone="added"
           onRemove={() => resetLore(path)}
         />,

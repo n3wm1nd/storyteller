@@ -607,7 +607,9 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
   const checkedPaths = parseLoreProgram(draft);
 
   function toggleEntry(entryPath: string) {
-    save(toggleLorePathInProgram(draft, entryPath));
+    const next = toggleLorePathInProgram(draft, entryPath);
+    if (next === null) return; // hand-edited text -- nothing truthful to toggle
+    save(next);
   }
 
   if (loadError) {

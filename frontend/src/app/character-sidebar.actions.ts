@@ -107,7 +107,10 @@ export async function openJournal(branch: string): Promise<void> {
       mirrorServerEvent((s) => {
         const prev = s.openJournals[branch];
         if (!prev) return {};
-        return { openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyFileUpdate(prev.ticks, evt), head: evt.head, absent: false }, preview: null } };
+        return {
+          openJournals: { ...s.openJournals, [branch]: { ...prev, ticks: applyFileUpdate(prev.ticks, evt), head: evt.head, absent: false } },
+          preview: null,
+        };
       });
     } else if (evt.type === "tick.remap") {
       handleContextRemap(evt.mapping);
