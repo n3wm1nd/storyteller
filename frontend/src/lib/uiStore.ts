@@ -104,6 +104,17 @@ interface UIState {
   pendingMention: { name: string; path: string; ts: number } | null;
   requestMention: (name: string, path: string) => void;
   clearPendingMention: () => void;
+
+  // InputBar's own sticky send-mode ("write"/"fix"/"append"/"note"/"regen"/
+  // "roleplay" — see fileview.tsx's AgentId), lifted out of InputBar's local
+  // state so other surfaces can read "what agent is currently selected"
+  // without prop-drilling through it — first reader is the Cost tab
+  // (context-cost-sidebar.tsx), which estimates context for whichever agent
+  // the user would actually send to right now. InputBar still owns writing
+  // it (cycling, clicking a mode, and the initial per-file seed all happen
+  // there); this is just the shared read/write cell.
+  writerMode: string;
+  setWriterMode: (mode: string) => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -151,6 +162,9 @@ export const useUI = create<UIState>((set) => ({
   pendingMention: null,
   requestMention: (name, path) => set({ pendingMention: { name, path, ts: Date.now() } }),
   clearPendingMention: () => set({ pendingMention: null }),
+
+  writerMode: "write",
+  setWriterMode: (mode) => set({ writerMode: mode }),
 }));
 
 // Selection is a temporary "about to act on this" marker, not a durable

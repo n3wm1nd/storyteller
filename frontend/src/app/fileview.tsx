@@ -2052,7 +2052,23 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
   // only (selection present → Fix, since that's the common case), not kept
   // in sync afterward: once you've picked a mode, it's yours until you pick
   // a different one, not silently swapped out from under you.
-  const [mode, setMode] = useState<AgentId>(() => (hasContext ? "fix" : "write"));
+  //
+  // Lives in uiStore (not local useState) so other surfaces can read
+  // "what agent is InputBar about to send to" without prop-drilling —
+  // the Cost tab (context-cost-sidebar.tsx) needs exactly that to know
+  // which agent's context to estimate. InputBar remains the sole writer.
+  const mode = useUI((s) => s.writerMode) as AgentId;
+  const setWriterMode = useUI((s) => s.setWriterMode);
+  const didSeedMode = useRef(false);
+  useEffect(() => {
+    if (didSeedMode.current) return;
+    didSeedMode.current = true;
+    setWriterMode(hasContext ? "fix" : "write");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const setMode = (updater: AgentId | ((m: AgentId) => AgentId)) => {
+    setWriterMode(typeof updater === "function" ? (updater as (m: AgentId) => AgentId)(mode) : updater);
+  };
 
   // Mentions only make sense for Write (see fileview.actions.ts's
   // chatWrite — a mention is just a readability nudge in the prompt text
