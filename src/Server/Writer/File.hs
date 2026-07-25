@@ -88,7 +88,7 @@ import qualified Storyteller.Context.DSL.Value as DSL
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Rendering as Rendering
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent.Context (WorldContext(..), Lore(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (WorldContext(..), Lore(..), Other(..), PinnedContext(..))
 import Storyteller.Core.Context (resolveContext0, resolveContext1, resolveAdhoc0, setContextOverride, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
@@ -101,35 +101,38 @@ data ActiveChar
 
 -- | Store a prompt tick then run Writer, or FlowWriter when 'mFlowTid' is
 --   set (the tick that was HEAD when the user started typing — see
---   'Storyteller.Writer.Agent.FlowWrite'). Only stages\/resolves the one
---   slot a client can override (@context.lore@, via 'mLore') and folds
---   'pinnedPrograms' into this call's pinned content -- chapters
---   (in @chaptersMode@'s chosen framing), @context.other@, @context.style@,
---   and every active character's summary are all agent-owned now, gathered
---   by 'Storyteller.Writer.Agent.Write.writeAgent'\/'flowWriteAgent'
+--   'Storyteller.Writer.Agent.FlowWrite'). Only stages\/resolves the two
+--   slots a client can override (@context.lore@ via 'mLore',
+--   @context.other@ via 'mOther') and folds 'pinnedPrograms' into this
+--   call's pinned content -- chapters (in @chaptersMode@'s chosen
+--   framing), @context.style@, and every active character's summary are
+--   all agent-owned now, gathered by 'Storyteller.Writer.Agent.Write.writeAgent'\/'flowWriteAgent'
 --   themselves rather than here (see the project chat that settled this:
 --   a caller's own parameters should only be the things a *user* can
---   meaningfully supply). 'mLore' is staged via
---   'Storyteller.Core.Context.setContextOverride' *before* @context.lore@
---   is resolved -- so it's indistinguishable from a project's own
---   committed 'Contexts'-branch override by the time the lookup runs.
---   'pinnedPrograms' are each resolved via
---   'Storyteller.Core.Context.resolveAdhoc0' (a bare 0-arity program, no
---   slot identity, no fallback) and folded into this call's pinned
---   content alongside 'pinnedItems''s own plain data.
+--   meaningfully supply). 'mLore'\/'mOther' are each staged via
+--   'Storyteller.Core.Context.setContextOverride' *before* the matching
+--   @context.lore@\/@context.other@ is resolved -- so each is
+--   indistinguishable from a project's own committed 'Contexts'-branch
+--   override by the time the lookup runs. 'pinnedPrograms' are each
+--   resolved via 'Storyteller.Core.Context.resolveAdhoc0' (a bare 0-arity
+--   program, no slot identity, no fallback) and folded into this call's
+--   pinned content alongside 'pinnedItems''s own plain data.
 chatWriter
   :: (FileOpen r, Member Splitter r, SessionEffects r)
   => FilePath -> T.Text -> [ContextItem]
-  -> Maybe T.Text -> PastChaptersMode -> [T.Text]
+  -> Maybe T.Text -> Maybe T.Text -> PastChaptersMode -> [T.Text]
   -> Maybe TickId -> Sem r ()
-chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = do
+chatWriter path prompt pinnedItems mLore mOther chaptersMode pinnedPrograms mFlowTid = do
   mapM_ (setContextOverride "context.lore") mLore
+  mapM_ (setContextOverride "context.other") mOther
   loreV               <- resolveContext0 @Main "context.lore"
+  otherV              <- resolveContext1 @Main "context.other" (T.pack path)
   pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
-  (lore, pinnedProgramCtxs) <- runContextValue @Main $ do
+  (lore, other, pinnedProgramCtxs) <- runContextValue @Main $ do
     l        <- Rendering.renderContext loreV
+    o        <- Rendering.renderContext otherV
     progCtxs <- mapM Rendering.renderContext pinnedProgramValues
-    pure (Lore l, progCtxs)
+    pure (Lore l, Other o, progCtxs)
   let pinned      = PinnedContext (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs))
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
@@ -146,13 +149,13 @@ chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = 
   case mFlowTid of
     Just flowTid -> do
       info $ "flow writer agent starting: " <> T.pack path
-      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid lore chaptersMode pinned instruction
+      (_reworked, Prose generated) <- flowWriteAgent @Main path flowTid lore other chaptersMode pinned instruction
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "flow writer agent done: " <> T.pack path
     Nothing -> do
       info $ "writer agent starting: " <> T.pack path
-      Prose generated <- writeAgent @Main path lore chaptersMode pinned instruction
+      Prose generated <- writeAgent @Main path lore other chaptersMode pinned instruction
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
@@ -293,15 +296,15 @@ roleplayWriter path prompt = do
 correctGroup
   :: (FileOpen r, Member Splitter r, SessionEffects r)
   => FilePath -> TickId -> [TickId] -> T.Text -> [ContextItem]
-  -> Maybe T.Text -> PastChaptersMode -> [T.Text]
+  -> Maybe T.Text -> Maybe T.Text -> PastChaptersMode -> [T.Text]
   -> Sem r ()
-correctGroup path promptTid targets prompt pinnedItems mLore chaptersMode pinnedPrograms = do
+correctGroup path promptTid targets prompt pinnedItems mLore mOther chaptersMode pinnedPrograms = do
   typed <- runStorage @Main (Tick.readTypesTick (Ops.ObjectHash (unTickId promptTid)))
   case tickParent typed of
     Nothing -> fail "correctGroup: prompt tick has no parent to rebase onto"
     Just parentTid -> do
       deleteFileTicks (promptTid : targets)
-      atGeneric @Main parentTid (chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms Nothing)
+      atGeneric @Main parentTid (chatWriter path prompt pinnedItems mLore mOther chaptersMode pinnedPrograms Nothing)
 
 -- | Store a prompt tick then run the Fixer agent against the given targets.
 --   With no targets, there's nothing to rework — that's a different policy
@@ -310,10 +313,10 @@ correctGroup path promptTid targets prompt pinnedItems mLore chaptersMode pinned
 --   'Storyteller.Writer.Agent.Fix.fixAgent'. 'chatFixer' itself never had
 --   any of 'chatWriter''s own per-call context slots (unlike 'chatWriter'\/
 --   'correctGroup') -- the fallthrough passes the all-default values
---   (@Nothing@ lore, 'FullChapters', no pinned programs), same as any
---   caller that never sent them at all.
+--   (@Nothing@ lore, @Nothing@ other, 'FullChapters', no pinned programs),
+--   same as any caller that never sent them at all.
 chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems Nothing FullChapters [] Nothing
+chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems Nothing Nothing FullChapters [] Nothing
 chatFixer path prompt _pinnedItems targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path

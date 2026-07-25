@@ -23,6 +23,8 @@ module Storyteller.Writer.Agent.ContextPreview
   ( PreviewNode(..)
   , buildPreview
   , buildAdhocPreview
+  , buildEntries0
+  , buildEntries1
   ) where
 
 import Data.Text (Text)
@@ -33,11 +35,11 @@ import Polysemy.Fail (Fail)
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..), renderContext)
-import Storyteller.Context.DSL.Value (messageText)
+import Storyteller.Context.DSL.Value (messageText, listPaths)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Branch (BranchOp)
 import Storyteller.Core.Context
-  (ContextStorage, resolveContext1, resolveAdhoc0, runContextValue, setContextOverride)
+  (ContextStorage, resolveContext0, resolveContext1, resolveAdhoc0, runContextValue, setContextOverride)
 import Storyteller.Core.ContentEffects (BranchResolve)
 
 -- | One node of a rendered program's result -- own text content (each
@@ -90,3 +92,42 @@ buildAdhocPreview
 buildAdhocPreview program = do
   v <- resolveAdhoc0 @branch program
   fromRendered <$> runContextValue @branch (renderContext v)
+
+-- | The flat, full file-path list a named context slot currently resolves
+--   to -- what a client-facing file-toggle list (e.g. "which lore files
+--   are currently included") needs, gotten from the real,
+--   possibly-overridden slot itself ('resolveContext0'\/'resolveContext1'
+--   -- the exact resolution 'Storyteller.Writer.Agent.Write.writeAgent'
+--   and 'Server.Writer.File.chatWriter' already use for
+--   @context.lore@\/@context.other@) via
+--   'Storyteller.Context.DSL.Value.listPaths', rather than a second,
+--   hand-rolled glob predicate that could silently drift from what a real
+--   send would actually include (the exact bug class
+--   'Storyteller.Context.DSL.Library.contextOtherDef''s own Haddock
+--   describes for the dotted-name-not-bare-alias discipline: if a project
+--   overrides @context.lore@\/@context.other@\/@context.chapters@, this
+--   list has to track that override transparently, not restate the
+--   compiled-in exclusion set as a second, driftable copy).
+--
+--   'buildEntries0' is @context.lore@'s own shape (0-arity, no @path@);
+--   'buildEntries1' is @context.other@'s (1-arity, framed against "the
+--   file about to be written" the same way @context.other@ itself is).
+--   Two functions, not one taking a @Maybe FilePath@, because a slot's
+--   arity is a fixed fact about it (see 'resolveContext0'\/
+--   'resolveContext1''s own split) -- there is no caller that could
+--   sensibly pick between them for the same name.
+buildEntries0
+  :: forall branch r
+  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Name -> Sem r [Text]
+buildEntries0 name = do
+  v <- resolveContext0 @branch name
+  runContextValue @branch (listPaths v)
+
+buildEntries1
+  :: forall branch r
+  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Name -> FilePath -> Sem r [Text]
+buildEntries1 name path = do
+  v <- resolveContext1 @branch name (T.pack path)
+  runContextValue @branch (listPaths v)

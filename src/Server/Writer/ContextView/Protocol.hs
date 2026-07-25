@@ -40,6 +40,19 @@
 --           -- resolved and rendered directly, never staged as a whole
 --           @context.writer@ override the way 'PreviewContext' works, since
 --           a slot editor isn't editing the writer's entire context.
+--
+--           'EntriesFor' — the flat file-path list a named 0-arity or
+--           1-arity context slot (@context.lore@, @context.other@)
+--           currently resolves to, via
+--           'Storyteller.Writer.Agent.ContextPreview.buildEntries0'\/
+--           'buildEntries1' -- what a casual file-toggle list (e.g.
+--           "which lore files are currently included") reads, live, so it
+--           can never drift from what a real @chat.writer@ send would
+--           actually include (see those functions' own Haddock). @path@ is
+--           optional -- present for a 1-arity slot like @context.other@,
+--           omitted for a 0-arity one like @context.lore@; sending it for
+--           a 0-arity slot is a no-op, not an error, since 'buildEntries0'
+--           simply never asks for it.
 -- Events:   'ContextPreviewed' — the resolved tree, pushed once per
 --           'PreviewContext'\/'PreviewAdhoc' and (for 'PreviewContext'
 --           only) again whenever the underlying branch changes
@@ -53,6 +66,14 @@
 --           recently submitted *preview* request is remembered for that
 --           purpose) — a cost estimate is a deliberate, one-off "show me
 --           now" action, not a live-updating view.
+--
+--           'ContextEntries' — the resolved path list, pushed once per
+--           'EntriesFor' and, unlike 'ContextCosted' but like
+--           'ContextPreviewed', again whenever the underlying branch
+--           changes -- a file-toggle list needs to reflect a file
+--           added/removed/renamed on the branch live, the same reason
+--           'ContextPreviewed' itself re-pushes (see
+--           'Server.Writer.ContextView.Connection').
 module Server.Writer.ContextView.Protocol
   ( PreviewNode(..)
   , LineCost(..)
@@ -86,6 +107,7 @@ data ContextViewCommand
   | PreviewAdhoc { cvId :: Maybe T.Text, cvProgram :: T.Text }
   | EstimateCost { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
   | EstimateAdhocCost { cvId :: Maybe T.Text, cvProgram :: T.Text }
+  | EntriesFor { cvId :: Maybe T.Text, cvName :: T.Text, cvEntriesPath :: Maybe FilePath }
   deriving (Show)
 
 instance FromJSON ContextViewCommand where
@@ -97,12 +119,14 @@ instance FromJSON ContextViewCommand where
       "context.preview.adhoc" -> PreviewAdhoc i <$> o .: "program"
       "context.cost"          -> EstimateCost  i <$> o .: "path" <*> o .: "program"
       "context.cost.adhoc"    -> EstimateAdhocCost i <$> o .: "program"
+      "context.entries"       -> EntriesFor i <$> o .: "name" <*> o .:? "path"
       _                       -> fail ("unknown context-view command: " <> T.unpack t)
 
 -- | Events the server sends on a context-view connection.
 data ContextViewEvent
   = ContextPreviewed { cveId :: Maybe T.Text, cveResult :: PreviewNode }
   | ContextCosted { cveId :: Maybe T.Text, cveCosts :: [LineCost] }
+  | ContextEntries { cveId :: Maybe T.Text, cveEntries :: [T.Text] }
   | ContextViewError T.Text
   deriving (Show)
 
@@ -117,6 +141,11 @@ instance ToJSON ContextViewEvent where
       object $
         [ "type"  .= ("context.cost" :: T.Text)
         , "costs" .= costs
+        ] <> maybe [] (\i -> ["id" .= i]) mid
+    ContextEntries mid entries ->
+      object $
+        [ "type"    .= ("context.entries" :: T.Text)
+        , "entries" .= entries
         ] <> maybe [] (\i -> ["id" .= i]) mid
     ContextViewError msg ->
       object [ "type" .= ("error" :: T.Text), "message" .= msg ]

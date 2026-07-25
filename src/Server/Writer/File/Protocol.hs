@@ -142,7 +142,7 @@ data FileCommand
   --   unrelated to context assembly, added as (mostly) plain text into the
   --   query, same field\/meaning on every constructor that carries it.
   --
-  --   Three independent, narrow slots replace the old single @fcContext@
+  --   Four independent, narrow slots replace the old single @fcContext@
   --   whole-program override (see the project chat that settled this:
   --   full DSL control over the *entire* writer context moved expertise
   --   away from the agent and doubled every piece of context-assembly
@@ -156,6 +156,11 @@ data FileCommand
   --     to nothing), a different thing from "no override sent" --
   --     collapsing the two would make "include no lore at all" and "use
   --     the default" indistinguishable.
+  --   * 'fcOther' -- 'fcLore''s own twin for @context.other@, the catch-all
+  --     "loose notes and drafts" bucket (anything not lore\/chapters\/
+  --     style.md\/chat scratch): an optional Context DSL program overriding
+  --     @context.other@ for this one call, same @Maybe Text@\/empty-string
+  --     distinction as 'fcLore'.
   --   * 'fcPastChaptersMode' -- full vs. compressed chapter framing, a
   --     fixed toggle (see 'PastChaptersMode'), never a program.
   --   * 'fcPinnedPrograms' -- zero or more bare 0-arity Context DSL
@@ -165,11 +170,11 @@ data FileCommand
   --     'fcPinned''s own plain items -- what lets a user say "include the
   --     magic rules this turn" without authoring the whole context.
   --
-  --   Style, character identity, and "other notes" stay entirely agent-
-  --   owned -- no client knob over any of them.
+  --   Style and character identity stay entirely agent-owned -- no client
+  --   knob over either.
   | ChatWriter
       { fcId :: Maybe T.Text, fcPromptText :: T.Text, fcPinned :: [ContextItem]
-      , fcLore :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
+      , fcLore :: Maybe T.Text, fcOther :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
       , fcFlowTid :: Maybe T.Text
       }
   -- | Roleplay writer: every character present on this file (see
@@ -221,12 +226,12 @@ data FileCommand
   --   atom before generation even started) for what's actually one atomic
   --   edit. See 'Server.Writer.File.Dispatch's handler and
   --   'frontend/src/app/fileview.actions.ts''s 'correctAtom'. Same
-  --   'fcPinned'\/'fcLore'\/'fcPastChaptersMode'\/'fcPinnedPrograms' shape
-  --   as 'ChatWriter' -- it rebases and re-runs exactly that command.
+  --   'fcPinned'\/'fcLore'\/'fcOther'\/'fcPastChaptersMode'\/'fcPinnedPrograms'
+  --   shape as 'ChatWriter' -- it rebases and re-runs exactly that command.
   | CorrectGroup
       { fcId :: Maybe T.Text, fcPromptTickId :: T.Text, fcTargets :: [T.Text], fcPromptText :: T.Text
       , fcPinned :: [ContextItem]
-      , fcLore :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
+      , fcLore :: Maybe T.Text, fcOther :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
       }
   -- | Split this file (a whole-story outline, @outline.md@ by convention)
   --   into per-chapter beat sheets. No prompt or targets — the outline text is
@@ -312,11 +317,12 @@ instance FromJSON FileCommand where
       "chat.writer" -> do
         pinned          <- fromMaybe [] <$> o .:? "pinned"
         lore            <- o .:? "lore"
+        other           <- o .:? "other"
         pastChaptersRaw <- o .:? "pastChaptersMode"
         pinnedPrograms  <- fromMaybe [] <$> o .:? "pinnedPrograms"
         flowTid         <- o .:? "flowTid"
         ChatWriter i <$> o .: "text" <*> pure pinned
-          <*> pure lore <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
+          <*> pure lore <*> pure other <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
           <*> pure flowTid
       "chat.roleplay" -> RoleplayWrite i . fromMaybe "" <$> o .:? "text"
       "chat.fixer"  -> do
@@ -330,11 +336,12 @@ instance FromJSON FileCommand where
       "correct.group" -> do
         pinned          <- fromMaybe [] <$> o .:? "pinned"
         lore            <- o .:? "lore"
+        other           <- o .:? "other"
         pastChaptersRaw <- o .:? "pastChaptersMode"
         pinnedPrograms  <- fromMaybe [] <$> o .:? "pinnedPrograms"
         targets         <- fromMaybe [] <$> o .:? "targets"
         CorrectGroup i <$> o .: "promptTickId" <*> pure targets <*> o .: "text"
-          <*> pure pinned <*> pure lore <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
+          <*> pure pinned <*> pure lore <*> pure other <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
       "chat.converse" -> ChatConverse i <$> o .: "text"
       "chat.converse.regen" ->
         ChatConverseSwipe i <$> o .: "promptTickId" <*> o .: "atomTickId" <*> o .: "text"

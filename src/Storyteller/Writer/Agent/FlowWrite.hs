@@ -34,7 +34,7 @@ import Storyteller.Core.Context (ContextStorage)
 import Storyteller.Core.ContentEffects (BranchResolve, fileTicksOf, runFileTicks)
 import Storyteller.Core.Storage (StoryStorage, ticksSince)
 import Storyteller.Writer.Agent (Instruction(..), Prose, PastChaptersMode)
-import Storyteller.Writer.Agent.Context (Lore, PinnedContext)
+import Storyteller.Writer.Agent.Context (Lore, Other, PinnedContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -59,11 +59,12 @@ flowWriteAgent
   => FilePath                    -- ^ file being continued
   -> TickId                      -- ^ flowTid: HEAD when the user started typing
   -> Lore                        -- ^ see 'writeAgent's own Haddock
+  -> Other                       -- ^ see 'writeAgent's own Haddock
   -> PastChaptersMode
   -> PinnedContext                -- ^ pinned/short-term context
   -> Instruction
   -> Sem r ([TickId], Prose)
-flowWriteAgent path flowTid lore chaptersMode pinned instruction = do
+flowWriteAgent path flowTid lore other chaptersMode pinned instruction = do
   inFlightIdxs <- runFileTicks @branch $ do
     allTicks <- fileTicksOf @branch path
     let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
@@ -72,7 +73,7 @@ flowWriteAgent path flowTid lore chaptersMode pinned instruction = do
     then return []
     else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs
 
-  generated <- writeAgent @branch path lore chaptersMode pinned instruction
+  generated <- writeAgent @branch path lore other chaptersMode pinned instruction
   return (reworkedTids, generated)
 
 -- | The atom under review was generated while this instruction was already

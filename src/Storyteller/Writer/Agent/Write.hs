@@ -22,20 +22,20 @@
 -- provider's @addConversationCacheControl@\/system-block caching, always
 -- on); nothing here manages a cache breakpoint by hand.
 --
--- __Gathers its own agent-owned context now__ (chapters, "other" files,
--- style, and who's present plus their own summaries) rather than
--- receiving them pre-assembled -- see the project chat that settled this:
--- @writeAgent@ decides both *where* each piece of content goes in the
--- final message sequence and *what counts* as each agent-owned piece,
--- reading @path@ and the branch directly for anything it can figure out
--- on its own (earlier chapters from the file's own chain, who's present
--- from presence ticks, their own context from their branches, "other"
--- files, style). Only 'Lore' stays a real parameter -- which lore is
--- *relevant* to this call is a judgment @writeAgent@ has no way to make
--- on its own; a caller (typically 'Server.Writer.File.chatWriter',
--- resolving a client's own @context.lore@ override or the compiled-in
--- default) supplies it, already resolved. This is the same "agent does
--- its own reading" shape 'Storyteller.Writer.Agent.Continuation.proseAgent'
+-- __Gathers its own agent-owned context now__ (chapters, style, and who's
+-- present plus their own summaries) rather than receiving them
+-- pre-assembled -- see the project chat that settled this: @writeAgent@
+-- decides both *where* each piece of content goes in the final message
+-- sequence and *what counts* as each agent-owned piece, reading @path@ and
+-- the branch directly for anything it can figure out on its own (earlier
+-- chapters from the file's own chain, who's present from presence ticks,
+-- their own context from their branches). 'Lore' and 'Other' stay real
+-- parameters -- which lore\/"other" files are *relevant* to this call is a
+-- judgment @writeAgent@ has no way to make on its own; a caller (typically
+-- 'Server.Writer.File.chatWriter', resolving a client's own
+-- @context.lore@\/@context.other@ override or the compiled-in default)
+-- supplies each, already resolved. This is the same "agent does its own
+-- reading" shape 'Storyteller.Writer.Agent.Continuation.proseAgent'
 -- already has for the single-shot case; @writeAgent@ didn't need a
 -- second, LLM-only core to share with it, since the two build genuinely
 -- different message shapes (a reconstructed multi-turn chapter
@@ -43,9 +43,10 @@
 -- stop being handed its own gathering as parameters, and to stop
 -- bundling 'Lore' together with agent-derived content into one
 -- 'WorldContext'-shaped blob the way an earlier pass here did.
--- 'Server.Writer.File.chatWriter' correspondingly shrank to: stage a lore
--- override if the caller sent one, resolve it, then call this with
--- @path@\/@lore@\/@instruction@\/the other caller-suppliable slots.
+-- 'Server.Writer.File.chatWriter' correspondingly shrank to: stage a
+-- lore\/other override if the caller sent one, resolve each, then call
+-- this with @path@\/@lore@\/@other@\/@instruction@\/the other
+-- caller-suppliable slots.
 --
 -- One thing the caller still has to get right for the cache-prefix
 -- discipline below to actually hold, not enforced by this module's own
@@ -89,7 +90,7 @@ import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Writer.Agent
   ( Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), CharSummary(..)
   , ContextBlock(..), PastChaptersMode(..) )
-import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 import Storyteller.Writer.Agent.Chat (historyFromFileTicks)
 import Storyteller.Writer.Agent.MessageWindow (injectAtWindow)
 import Storyteller.Writer.Agent.Continuation (defaultWriterSystemPrompt, defaultWriterConfig)
@@ -147,13 +148,14 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --   'Server.Writer.File.chatWriter' stages any client override via
 --   'Storyteller.Core.Context.setContextOverride' and resolves it before
 --   calling this, the same "just data, not something this agent
---   assembles" contract 'PinnedContext' already had), @pinned@ (the
---   user's own explicit selection plus resolved pinned programs, also
+--   assembles" contract 'PinnedContext' already had), @other@ ('Lore''s own
+--   twin for @context.other@, identical resolution discipline), @pinned@
+--   (the user's own explicit selection plus resolved pinned programs, also
 --   already-resolved), @chaptersMode@ (the one structural toggle a
 --   caller gets), and @instruction@. Everything else this function's own
---   Haddock lists above -- earlier chapters' content, "other" files,
---   style, which characters are present and their own summaries -- is
---   agent-owned: resolved here, from @path@ and the branch, the same way
+--   Haddock lists above -- earlier chapters' content, style, which
+--   characters are present and their own summaries -- is agent-owned:
+--   resolved here, from @path@ and the branch, the same way
 --   'Storyteller.Writer.Agent.Continuation.proseAgent' already reads
 --   nothing it wasn't handed but needs no *caller* to have gathered any
 --   of this either.
@@ -162,25 +164,23 @@ writeAgent
   .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, StoryStorage, Fail, Logging] r)
   => FilePath
   -> Lore                        -- ^ already resolved (branch override or compiled-in default; see 'Server.Writer.File.chatWriter')
+  -> Other                       -- ^ 'Lore''s own twin for @context.other@, already resolved the same way
   -> PastChaptersMode            -- ^ full vs. compressed chapter framing
   -> PinnedContext                -- ^ pinned/short-term context: the user's own explicit selection plus resolved pinned programs
   -> Instruction
   -> Sem r Prose
-writeAgent path (Lore lore) chaptersMode (PinnedContext pinned) instruction = do
+writeAgent path (Lore lore) (Other other) chaptersMode (PinnedContext pinned) instruction = do
   Prompt sysPrompt <- getPrompt "agent.writer" defaultWriterSystemPrompt
   configs          <- getConfig "agent.writer" defaultWriterConfig
-  let pathT = T.pack path
 
   chaptersV <- case chaptersMode of
     FullChapters       -> resolveContext0 @branch "context.chapters"
     CompressedChapters -> resolveContext0 @branch "context.chaptersCompressed"
-  otherV <- resolveContext1 @branch "context.other" pathT
   styleV <- resolveContext0 @branch "context.style"
-  (chapters, other, style) <- runContextValue @branch $ do
+  (chapters, style) <- runContextValue @branch $ do
     c <- renderContext chaptersV
-    o <- renderContext otherV
     s <- renderContext styleV
-    pure (c, o, s)
+    pure (c, s)
 
   chars <- activeCharacterContext @branch path
 

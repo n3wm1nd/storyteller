@@ -20,7 +20,10 @@
 // whole-context override mode.
 
 import { create } from "zustand";
-import { DEFAULT_EDITS, toggleLorePathInProgram, type ContextEdits, type PastChaptersMode } from "./dslCompose";
+import {
+  DEFAULT_EDITS, toggleLorePathInProgram, toggleOtherPathInProgram,
+  type ContextEdits, type PastChaptersMode,
+} from "./dslCompose";
 
 // A single stable empty array used by every selector that wants
 // `s.mentions[path] ?? []` without re-rendering on every store change --
@@ -62,6 +65,13 @@ interface CallContextState {
   // Clears the lore override back to "nothing touched" -- what "Reset to
   // default" in LoreRow calls.
   resetLore: (path: string) => void;
+  // 'setLoreEnabled'/'toggleLorePath'/'setLoreOverride'/'resetLore''s own
+  // twins for `context.other` -- identical contract, just against
+  // OtherRow's own candidate file set and `otherOverride`/`otherEnabled`.
+  setOtherEnabled: (path: string, enabled: boolean) => void;
+  toggleOtherPath: (filePath: string, base: string, entryPath: string) => void;
+  setOtherOverride: (path: string, program: string | null) => void;
+  resetOther: (path: string) => void;
   setPastChaptersMode: (path: string, mode: PastChaptersMode) => void;
   addPinnedProgram: (path: string, name: string) => void;
   removePinnedProgram: (path: string, name: string) => void;
@@ -108,6 +118,37 @@ export const useCallContext = create<CallContextState>((set) => ({
     set((s) => {
       const cur = s.files[path] ?? freshFileState();
       return { files: { ...s.files, [path]: { ...cur, loreOverride: null } } };
+    }),
+
+  setOtherEnabled: (path, enabled) =>
+    set((s) => ({
+      files: { ...s.files, [path]: { ...(s.files[path] ?? freshFileState()), otherEnabled: enabled } },
+    })),
+
+  toggleOtherPath: (filePath, base, entryPath) =>
+    set((s) => {
+      const cur = s.files[filePath] ?? freshFileState();
+      const otherOverride = toggleOtherPathInProgram(cur.otherOverride ?? base, entryPath);
+      if (otherOverride === null) return s; // hand-edited text -- nothing truthful to toggle
+      return { files: { ...s.files, [filePath]: { ...cur, otherOverride, otherEnabled: true } } };
+    }),
+
+  setOtherOverride: (path, program) =>
+    set((s) => ({
+      files: {
+        ...s.files,
+        [path]: {
+          ...(s.files[path] ?? freshFileState()),
+          otherOverride: program,
+          otherEnabled: program === null ? (s.files[path] ?? freshFileState()).otherEnabled : true,
+        },
+      },
+    })),
+
+  resetOther: (path) =>
+    set((s) => {
+      const cur = s.files[path] ?? freshFileState();
+      return { files: { ...s.files, [path]: { ...cur, otherOverride: null } } };
     }),
 
   setPastChaptersMode: (path, mode) =>
@@ -175,6 +216,8 @@ export function isFileDirty(path: string): boolean {
   return (
     edits.loreEnabled !== DEFAULT_EDITS.loreEnabled ||
     edits.loreOverride !== null ||
+    edits.otherEnabled !== DEFAULT_EDITS.otherEnabled ||
+    edits.otherOverride !== null ||
     edits.pastChaptersMode !== DEFAULT_EDITS.pastChaptersMode ||
     edits.pinnedProgramNames.length > 0 ||
     hasMentions

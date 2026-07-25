@@ -20,10 +20,11 @@
 // the cost is paid only when the user opens the library browser.
 
 import { useEffect, useState } from "react";
-import { branchFileUrl, contextDefaultUrl, saveRawFile, branchConn } from "./ws";
+import { branchFileUrl, contextDefaultUrl, saveRawFile, branchConn, contextViewConn } from "./ws";
 import type { BranchEvent } from "./ws";
 import { useCallContext } from "./callContextStore";
-import { DEFAULT_EDITS, synthesizeLoreOverride } from "./dslCompose";
+import { DEFAULT_EDITS, synthesizeLoreOverride, synthesizeOtherOverride } from "./dslCompose";
+import { setConnStatus, removeConn, bumpActivity } from "./uiStore";
 
 export const contextsBranchName = "contexts";
 const DSL_DIR = "context"; // matches Core.Context's dotted-name → path rule
@@ -131,6 +132,89 @@ export function useLoreDraft(path: string | null, branch: string | null): { draf
     // user unchecked "Story lore" would silently ignore that toggle).
     sendText: synthesizeLoreOverride(edits),
   };
+}
+
+// 'useLoreDraft''s own twin for `context.other` -- identical ground-truth
+// precedence (this call's own touched override, then a committed
+// `context/other.dsl`, then the compiled-in default's real source), just
+// against `otherOverride`/`synthesizeOtherOverride`.
+export function useOtherDraft(path: string | null, branch: string | null): { draft: string; resetTarget: string; hasOverride: boolean; sendText: string | null } {
+  const edits = useCallContext((s) => (path ? s.files[path] : undefined)) ?? DEFAULT_EDITS;
+  const [committedDefault, setCommittedDefault] = useState<string | null | undefined>(undefined);
+  const [compiledDefault, setCompiledDefault] = useState("");
+
+  useEffect(() => {
+    if (!branch) return;
+    let cancelled = false;
+    setCommittedDefault(undefined);
+    setCompiledDefault("");
+    readContextFunction("other")
+      .then((text) => { if (!cancelled) setCommittedDefault(text); })
+      .catch(() => { if (!cancelled) setCommittedDefault(null); });
+    readContextDefault("context.other")
+      .then((text) => { if (!cancelled) setCompiledDefault(text); })
+      .catch(() => {}); // no compiled-in default -- fine, nothing to seed from
+    return () => { cancelled = true; };
+  }, [branch]);
+
+  const resetTarget = committedDefault ?? compiledDefault;
+  return {
+    draft: edits.otherOverride ?? resetTarget,
+    resetTarget,
+    hasOverride: edits.otherOverride !== null,
+    sendText: synthesizeOtherOverride(edits),
+  };
+}
+
+// The flat file-path list a named context slot (`"context.lore"`,
+// `"context.other"`) currently resolves to for `path`, live -- what
+// LoreRow/OtherRow's own checkbox lists read, via the `context.entries`
+// command on the existing $context/{path} connection (see
+// Storyteller.Writer.Agent.ContextPreview.buildEntries0/buildEntries1 and
+// Server.Writer.ContextView.Connection's own `pushEntries`). Server-
+// authoritative and live-updating (re-pushed on every branch change, same
+// as `context.preview`) rather than a client-side glob guess — see
+// WS-PROTOCOL.md's "Backend-authoritative vs. frontend-advisory
+// duplication": which files a slot resolves to is something an agent
+// (writeAgent itself) acts on, so it must come from the server, not be
+// re-derived here.
+//
+// `entriesPath` is `context.other`'s own framing argument (the file about
+// to be written) -- omit it for a 0-arity slot like `context.lore`.
+export function useContextEntries(branch: string | null, name: string, entriesPath?: string | null): string[] {
+  const [entries, setEntries] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!branch) { setEntries([]); return; }
+    const connLabel = `context.entries:${branch}:${name}:${entriesPath ?? ""}`;
+    setConnStatus(connLabel, "connecting");
+    setEntries([]);
+
+    const conn = contextViewConn(branch, entriesPath ?? "");
+    conn.subscribe((evt) => {
+      bumpActivity(connLabel);
+      if (evt.type === "context.entries") {
+        setEntries(evt.entries);
+        setConnStatus(connLabel, "connected");
+      } else if (evt.type === "error") {
+        setConnStatus(connLabel, "error");
+      }
+    });
+    (async () => {
+      try {
+        await conn.connect();
+        conn.send({ type: "context.entries", name, path: entriesPath ?? undefined });
+      } catch {
+        setConnStatus(connLabel, "error");
+      }
+    })();
+    return () => {
+      conn.close();
+      removeConn(connLabel);
+    };
+  }, [branch, name, entriesPath]);
+
+  return entries;
 }
 
 export async function writeContextFunction(name: string, source: string): Promise<void> {

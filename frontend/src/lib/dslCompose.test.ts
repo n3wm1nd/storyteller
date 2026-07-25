@@ -2,11 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_EDITS,
   synthesizeLoreOverride,
+  synthesizeOtherOverride,
   composeWriterContextFields,
   isDirty,
   renderLoreProgram,
   parseLoreProgram,
   toggleLorePathInProgram,
+  renderOtherProgram,
+  parseOtherProgram,
+  isOtherProgramCheckboxOwned,
+  toggleOtherPathInProgram,
   type CallContext,
   type ContextEdits,
 } from "./dslCompose";
@@ -125,6 +130,86 @@ describe("toggleLorePathInProgram", () => {
     const next = toggleLorePathInProgram(program, "lore/b.md");
     expect(parseLoreProgram(next)).toEqual(["lore/a.md", "lore/b.md"]);
     expect(next).toContain('read "extra.md"');
+  });
+});
+
+describe("synthesizeOtherOverride", () => {
+  test("null when other is untouched (omit the wire field, server default runs)", () => {
+    expect(synthesizeOtherOverride(DEFAULT_EDITS)).toBeNull();
+  });
+
+  test("a real 1-arity (path:-wrapped) program when other is disabled", () => {
+    const program = synthesizeOtherOverride(dirtyEdits({ otherEnabled: false }));
+    expect(program).not.toBeNull();
+    expect(program).toMatch(/^path:\n/);
+  });
+});
+
+describe("renderOtherProgram / parseOtherProgram round-trip", () => {
+  test("the generated program is always path:-wrapped (context.other is 1-arity)", () => {
+    expect(renderOtherProgram([])).toMatch(/^path:\n/);
+    expect(renderOtherProgram(["notes/a.md"])).toMatch(/^path:\n/);
+  });
+
+  test("empty selection round-trips", () => {
+    const program = renderOtherProgram([]);
+    expect(parseOtherProgram(program)).toEqual([]);
+  });
+
+  test("a chosen path list round-trips exactly", () => {
+    const paths = ["notes/draft1.md", "misc/idea.md"];
+    const program = renderOtherProgram(paths);
+    expect(parseOtherProgram(program)).toEqual(paths);
+  });
+
+  // Regression: the real compiled-in `context.other` default, as actually
+  // pretty-printed server-side (GET /context-default/context.other) --
+  // `path:` header, a blank line, then the body indented one level. This
+  // is the untouched/no-override case every OtherRow mount starts from,
+  // and it must parse as zero-selection (checkboxes active, nothing
+  // checked), not go inert -- the live bug this test was added to catch:
+  // the parser had assumed `context.other`'s wire shape was bare/unindented
+  // like `context.lore`'s, when it's actually a path:-parameterized,
+  // one-level-indented definition (see this file's own arity discussion).
+  test("the real context.other default source parses as zero-selection, not disabled", () => {
+    const realDefault =
+      'path:\n  "## Other notes"\n\n  for f in [**/*] | exclude(context.lore, context.chapters, "style.md") ' +
+      '| exclude "chat/**/*" | exclude path:\n    x =\n      loreEntry f\n    as f:\n      x\n    x\n';
+    expect(isOtherProgramCheckboxOwned(realDefault)).toBe(true);
+    expect(parseOtherProgram(realDefault)).toEqual([]);
+  });
+
+  test("checking every real entry (all-selected) is distinguishable from none-selected", () => {
+    const none = renderOtherProgram([]);
+    const all = renderOtherProgram(["notes/a.md", "notes/b.md"]);
+    expect(none).not.toBe(all);
+    expect(parseOtherProgram(none)).toEqual([]);
+    expect(parseOtherProgram(all)).toEqual(["notes/a.md", "notes/b.md"]);
+  });
+});
+
+describe("toggleOtherPathInProgram", () => {
+  test("adds a path to an empty selection", () => {
+    const next = toggleOtherPathInProgram("", "notes/a.md");
+    expect(next).not.toBeNull();
+    expect(parseOtherProgram(next!)).toEqual(["notes/a.md"]);
+  });
+
+  test("removes an already-checked path", () => {
+    const program = renderOtherProgram(["notes/a.md", "notes/b.md"]);
+    const next = toggleOtherPathInProgram(program, "notes/a.md");
+    expect(next).not.toBeNull();
+    expect(parseOtherProgram(next!)).toEqual(["notes/b.md"]);
+  });
+
+  test("toggling against the real context.other default source starts a fresh, still path:-wrapped selection", () => {
+    const realDefault =
+      'path:\n  "## Other notes"\n\n  for f in [**/*] | exclude(context.lore, context.chapters, "style.md") ' +
+      '| exclude "chat/**/*" | exclude path:\n    x =\n      loreEntry f\n    as f:\n      x\n    x\n';
+    const next = toggleOtherPathInProgram(realDefault, "notes/a.md");
+    expect(next).not.toBeNull();
+    expect(next).toMatch(/^path:\n/);
+    expect(parseOtherProgram(next!)).toEqual(["notes/a.md"]);
   });
 });
 

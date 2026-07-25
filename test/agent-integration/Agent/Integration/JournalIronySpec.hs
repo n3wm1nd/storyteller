@@ -40,7 +40,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (enters)
 import Storyteller.Writer.Types (Character(..))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, emptyOther, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | Phantom tag for opening either character branch this scenario uses, one
@@ -120,7 +120,7 @@ spec runner = describe "an edited journal entry creating dramatic irony (real LL
       _ <- enters @Main sceneFile (Character keeperBranch)
       _ <- enters @Main sceneFile (Character samBranch)
 
-      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore emptyOther FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

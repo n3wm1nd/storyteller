@@ -45,7 +45,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
-import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 import Storyteller.Context.DSL.Rendering (RenderedContext(..))
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, interpretContextStorageFS)
@@ -85,6 +85,6 @@ writeAction
               , Logging, Fail] r)
   => FilePath -> Instruction -> Sem r T.Text
 writeAction outFile instruction = do
-  Prose generated <- writeAgent @Main outFile (Lore (Node [] [])) FullChapters (PinnedContext (Node [] [])) instruction
+  Prose generated <- writeAgent @Main outFile (Lore (Node [] [])) (Other (Node [] [])) FullChapters (PinnedContext (Node [] [])) instruction
   _ <- mapM (\c -> runStorage @Main (Ops.append outFile c)) =<< splitAtoms generated
   return generated

@@ -41,7 +41,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (enters)
 import Storyteller.Writer.Types (Character(..))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, emptyOther, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 data Char_
@@ -100,7 +100,7 @@ spec runner = describe "tasks.md reaching generation as ordinary character conte
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
       _ <- enters @Main sceneFile (Character lenaBranch)
 
-      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore emptyOther FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       Verdict pass reason <- judge @judgeModel text judgeQuestion

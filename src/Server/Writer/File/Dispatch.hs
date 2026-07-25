@@ -89,8 +89,8 @@ runCommand path cmd = case cmd of
   UnhideAtoms _mid targets ->
     [] <$ unhideFileAtoms (map TickId targets)
 
-  ChatWriter _mid prompt pinned lore chaptersMode pinnedPrograms flowTid ->
-    [] <$ chatWriter path prompt pinned lore chaptersMode pinnedPrograms (TickId <$> flowTid)
+  ChatWriter _mid prompt pinned lore other chaptersMode pinnedPrograms flowTid ->
+    [] <$ chatWriter path prompt pinned lore other chaptersMode pinnedPrograms (TickId <$> flowTid)
 
   RoleplayWrite _mid prompt ->
     [] <$ roleplayWriter path prompt
@@ -101,8 +101,8 @@ runCommand path cmd = case cmd of
   ChatRegen _mid prompt pinned byBeat ->
     [] <$ chatChapterRegen (if byBeat then RegenByBeat else RegenWhole) path prompt pinned
 
-  CorrectGroup _mid promptTid targets prompt pinned lore chaptersMode pinnedPrograms ->
-    [] <$ correctGroup path (TickId promptTid) (map TickId targets) prompt pinned lore chaptersMode pinnedPrograms
+  CorrectGroup _mid promptTid targets prompt pinned lore other chaptersMode pinnedPrograms ->
+    [] <$ correctGroup path (TickId promptTid) (map TickId targets) prompt pinned lore other chaptersMode pinnedPrograms
 
   ChatConverse _mid prompt ->
     [] <$ chatConverse path prompt

@@ -26,6 +26,7 @@ module Storyteller.Writer.Agent.Context
   , StyleContext(..)
   , PinnedContext(..)
   , Lore(..)
+  , Other(..)
   ) where
 
 import Storyteller.Context.DSL.Rendering (Context)
@@ -48,3 +49,13 @@ newtype PinnedContext = PinnedContext Context
 --   them in one type is exactly the mistake this newtype exists to avoid
 --   repeating.
 newtype Lore = Lore Context
+
+-- | 'Lore''s own twin for @context.other@ -- the catch-all "loose notes and
+--   drafts" bucket (anything not lore\/chapters\/style.md\/chat scratch).
+--   Which "other" files are relevant to this call is the same kind of
+--   judgment 'Lore' already carries, so it gets the identical treatment:
+--   a caller (typically 'Server.Writer.File.chatWriter', resolving a
+--   client's own @context.other@ override or the compiled-in default)
+--   supplies it, already resolved, rather than 'writeAgent' resolving
+--   @context.other@ internally the way it used to.
+newtype Other = Other Context

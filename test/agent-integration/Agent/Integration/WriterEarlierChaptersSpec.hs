@@ -38,7 +38,7 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, emptyOther, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 earlierChapter :: T.Text
@@ -80,7 +80,7 @@ spec runner = describe "earlier-chapter continuity reaching the writer (real LLM
     runExpect @judgeModel runner $ do
       _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" earlierChapter)
       _ <- runStorage @Main (Ops.addAtom newChapter "")
-      Prose text <- writeAgent @Main newChapter emptyLore FullChapters emptyPinnedContext instruction
+      Prose text <- writeAgent @Main newChapter emptyLore emptyOther FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

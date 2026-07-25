@@ -41,7 +41,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (enters)
 import Storyteller.Writer.Types (Character(..))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, emptyOther, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 -- | Phantom tag for opening the character branch's filesystem -- same role
@@ -127,7 +127,7 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
       _ <- runStorage @Main (Ops.addAtom sceneFile existingText)
       _ <- enters @Main sceneFile (Character miraBranch)
 
-      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore emptyOther FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
       Verdict pass reason <- judge @judgeModel text judgeQuestion
       info ("judge verdict: " <> T.pack (show pass) <> " -- " <> reason)

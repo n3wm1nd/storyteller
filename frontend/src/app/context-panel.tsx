@@ -11,15 +11,24 @@
 // whether the panel is open, so closing it doesn't lose edits.
 //
 // The casual editor's vocabulary is deliberately small now -- a lore
-// toggle, a past-chapters mode toggle, and a list of named pinned
-// snippets (e.g. "rules.magic") to fold into this call's authors-notes
-// content. Style, character identity, and "other notes" are entirely
-// agent-owned (see Server.Writer.File.Protocol's own Haddock on
-// `ChatWriter`'s three wire slots) -- there's no cast-list picker or
-// extra-file picker anymore; full per-call DSL control over the *entire*
-// writer context was rolled back (see dslCompose.ts's own header), and
-// those two pickers went with it. They may come back in a narrower form
-// later, but aren't part of this pass.
+// toggle, an "other" (loose notes/drafts) toggle, a past-chapters mode
+// toggle, and a list of named pinned snippets (e.g. "rules.magic") to
+// fold into this call's authors-notes content. Style and character
+// identity are entirely agent-owned (see Server.Writer.File.Protocol's
+// own Haddock on `ChatWriter`'s four wire slots) -- there's no cast-list
+// picker anymore; full per-call DSL control over the *entire* writer
+// context was rolled back (see dslCompose.ts's own header), and that
+// picker went with it. It may come back in a narrower form later, but
+// isn't part of this pass.
+//
+// `LoreRow`/`OtherRow` both source their checkbox candidate list from the
+// live, server-authoritative `context.entries` command (see
+// contextBranch.ts's `useContextEntries`) -- `context.lore`'s\/
+// `context.other`'s own real, possibly-overridden file sets, not a
+// client-side glob guess (see WS-PROTOCOL.md's "Backend-authoritative vs.
+// frontend-advisory duplication": which files a slot resolves to is
+// something `writeAgent` itself acts on, so it has to come from the
+// server).
 //
 // "Save as..." authors a small snippet (a single 0-arity Context DSL
 // definition, e.g. `"the rules of magic"` or a real `read`/`for` body) on
@@ -29,16 +38,21 @@
 
 import { useEffect, useState } from "react";
 import {
-  BookOpen, FileText, X, Save, Code2, ChevronLeft, ChevronRight, Pencil, Check,
+  BookOpen, FileText, StickyNote, X, Save, Code2, ChevronLeft, ChevronRight, Pencil, Check,
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
-import { DEFAULT_EDITS, parseLoreProgram, isLoreProgramCheckboxOwned, type PastChaptersMode } from "@/lib/dslCompose";
-import { writeContextFunction, slugifyFunctionName, isValidFunctionName, useLoreDraft } from "@/lib/contextBranch";
+import {
+  DEFAULT_EDITS, parseLoreProgram, isLoreProgramCheckboxOwned,
+  parseOtherProgram, isOtherProgramCheckboxOwned, type PastChaptersMode,
+} from "@/lib/dslCompose";
+import {
+  writeContextFunction, slugifyFunctionName, isValidFunctionName,
+  useLoreDraft, useOtherDraft, useContextEntries,
+} from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
 import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
 import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
-import { useLoreTree, flattenLore } from "./lore-selector";
 
 interface ContextPanelProps {
   path: string;
@@ -112,17 +126,13 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   const resetLore = useCallContext((s) => s.resetLore);
   const [expanded, setExpanded] = useState(false);
   const fetchCosts = useAdhocCostFetcher(expanded ? branch : null);
-  const loreTree = useLoreTree(expanded ? branch : null);
-  // The file currently being written is never a checkbox choice here --
-  // the server always excludes it from context.lore on its own (see
-  // Storyteller.Context.DSL.Library.contextLoreWithoutDef), since
-  // writeAgent already frames it separately as the file being continued.
-  // Offering it as an includable/excludable lore entry would be
-  // misleading either way: checked, it wouldn't actually add anything
-  // (already-excluded server-side); unchecked, there'd be nothing for
-  // toggling it to do.
-  const allEntries = flattenLore(loreTree).filter((e) => e.path !== path);
-  const allPaths = allEntries.map((e) => e.path);
+  // `context.lore`'s own real, live entry set (see contextBranch.ts's
+  // useContextEntries) -- 0-arity, so no `path` argument; excluded here
+  // client-side purely for display symmetry with `context.lore`'s own
+  // @path@-aware callers ('contextLoreWithoutDef'), even though the bare
+  // 0-arity slot itself has no notion of "the file being written."
+  const loreEntries = useContextEntries(expanded ? branch : null, "context.lore");
+  const allPaths = loreEntries.filter((p) => p !== path);
 
   // Ground truth for "no override touched yet" -- shared with
   // context-cost-sidebar.tsx (see contextBranch.ts's useLoreDraft) so both
@@ -184,9 +194,9 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
 
       {expanded && (
         <div style={{ padding: "0 6px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
-          {allEntries.length === 0 ? (
+          {allPaths.length === 0 ? (
             <div style={{ fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic", padding: "2px 2px" }}>
-              {loreTree.length === 0 ? "Loading lore entries…" : "No lore entries on this branch yet."}
+              No lore entries on this branch yet.
             </div>
           ) : (
             <div>
@@ -207,12 +217,12 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                     matches that shape) — edit the code directly, or clear it to start a fresh selection.
                   </div>
                 )}
-                {allEntries.map((entry) => {
-                  const included = checkedPaths.includes(entry.path);
+                {allPaths.map((entryPath) => {
+                  const included = checkedPaths.includes(entryPath);
                   return (
                     <label
-                      key={entry.path}
-                      title={entry.path}
+                      key={entryPath}
+                      title={entryPath}
                       style={{
                         display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3,
                         cursor: checkboxesActive ? "pointer" : "not-allowed",
@@ -223,7 +233,7 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                         type="checkbox"
                         checked={included}
                         disabled={!checkboxesActive}
-                        onChange={() => toggleLorePath(path, draft, entry.path)}
+                        onChange={() => toggleLorePath(path, draft, entryPath)}
                         style={{
                           accentColor: "var(--accent, var(--amber))",
                           cursor: checkboxesActive ? "pointer" : "not-allowed",
@@ -233,7 +243,7 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                         fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         color: included ? "var(--foreground)" : "var(--text-ghost)",
                       }}>
-                        {entry.path}
+                        {entryPath}
                       </span>
                     </label>
                   );
@@ -262,6 +272,164 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
           {hasOverride && (
             <button
               onClick={() => resetLore(path)}
+              style={{ ...dialogBtnStyle, alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <Check style={{ width: 10, height: 10 }} /> Reset to default
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Other row (toggle + inline expandable override editor) ──────────────
+//
+// 'LoreRow''s own twin for `context.other` -- the catch-all "loose notes
+// and drafts" bucket (anything not lore/**, chapters/**, style.md, or
+// chat/** scratch; see Storyteller.Context.DSL.Library's own
+// `contextOtherDef`). Identical mechanism throughout, just against
+// `otherEnabled`/`otherOverride`/`context.other`'s own live entry set --
+// `context.other` is 1-arity (framed against `path`, the file about to be
+// written, which the server already excludes from its own candidate set
+// via `contextOtherDef`'s own `exclude(path)` -- see that definition's
+// Haddock), unlike `context.lore`'s bare 0-arity slot.
+function OtherRow({ path, branch }: { path: string; branch: string }) {
+  const edits = useCallContext((s) => s.files[path]) ?? DEFAULT_EDITS;
+  const setOtherEnabled = useCallContext((s) => s.setOtherEnabled);
+  const setOtherOverride = useCallContext((s) => s.setOtherOverride);
+  const toggleOtherPath = useCallContext((s) => s.toggleOtherPath);
+  const resetOther = useCallContext((s) => s.resetOther);
+  const [expanded, setExpanded] = useState(false);
+  const fetchCosts = useAdhocCostFetcher(expanded ? branch : null);
+  const allPaths = useContextEntries(expanded ? branch : null, "context.other", path);
+
+  const { draft, resetTarget, hasOverride } = useOtherDraft(path, branch);
+  const checkboxesActive = isOtherProgramCheckboxOwned(draft);
+  const checkedPaths = checkboxesActive ? parseOtherProgram(draft) : [];
+
+  return (
+    <div style={{ borderRadius: 5, background: expanded ? "var(--card)" : "transparent", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input
+          type="checkbox"
+          checked={edits.otherEnabled}
+          onChange={(e) => setOtherEnabled(path, e.target.checked)}
+          style={{ accentColor: "var(--accent, var(--amber))", marginLeft: 4 }}
+        />
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? "Collapse" : "Choose which other files to include, or edit the block directly"}
+          style={{
+            display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0,
+            padding: "6px 4px", border: "none", background: "none", textAlign: "left", cursor: "pointer",
+            color: edits.otherEnabled ? "var(--foreground)" : "var(--text-dim)",
+          }}
+        >
+          <StickyNote style={{ width: 11, height: 11 }} />
+          <span>
+            <div style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+              Other notes
+              {hasOverride && (
+                <span style={{
+                  fontSize: 9, padding: "1px 5px", borderRadius: 7,
+                  background: "var(--accent-tint, var(--amber-tint))", color: "var(--accent, var(--amber))",
+                }}>
+                  {`${checkedPaths.length}/${allPaths.length}`}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-ghost)" }}>
+              {hasOverride ? "Some entries excluded for this call" : "This project's context.other"}
+            </div>
+          </span>
+          <ChevronRight style={{
+            width: 10, height: 10, marginLeft: "auto", flexShrink: 0,
+            transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s",
+          }} />
+        </button>
+      </div>
+
+      {expanded && (
+        <div style={{ padding: "0 6px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {allPaths.length === 0 ? (
+            <div style={{ fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic", padding: "2px 2px" }}>
+              No other files on this branch yet.
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 2px 4px" }}>
+                <span style={{ fontSize: 10, color: "var(--text-ghost)", flex: 1 }}>
+                  {checkedPaths.length} of {allPaths.length} included
+                </span>
+              </div>
+              <div style={{
+                display: "flex", flexDirection: "column", gap: 1, maxHeight: 130, overflowY: "auto",
+                border: "1px solid var(--border-subtle)", borderRadius: 5, padding: 3,
+              }}>
+                {!checkboxesActive && (
+                  <div style={{
+                    fontSize: 10, color: "var(--text-ghost)", fontStyle: "italic", padding: "3px 5px 6px",
+                  }}>
+                    This isn&apos;t a checkbox-generated selection (or the draft below no longer
+                    matches that shape) — edit the code directly, or clear it to start a fresh selection.
+                  </div>
+                )}
+                {allPaths.map((entryPath) => {
+                  const included = checkedPaths.includes(entryPath);
+                  return (
+                    <label
+                      key={entryPath}
+                      title={entryPath}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", borderRadius: 3,
+                        cursor: checkboxesActive ? "pointer" : "not-allowed",
+                        opacity: checkboxesActive ? 1 : 0.45,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={included}
+                        disabled={!checkboxesActive}
+                        onChange={() => toggleOtherPath(path, draft, entryPath)}
+                        style={{
+                          accentColor: "var(--accent, var(--amber))",
+                          cursor: checkboxesActive ? "pointer" : "not-allowed",
+                        }}
+                      />
+                      <span style={{
+                        fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        color: included ? "var(--foreground)" : "var(--text-ghost)",
+                      }}>
+                        {entryPath}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-ghost)",
+              padding: "2px 2px 5px",
+            }}>
+              <Pencil style={{ width: 9, height: 9 }} />
+              This call&apos;s <code style={{ fontFamily: "monospace" }}>other</code> wire field, generated from the
+              checkboxes above — edit directly to take full control instead.
+            </div>
+            <CodeCostEditor
+              value={draft}
+              onChange={(next) => setOtherOverride(path, next === resetTarget ? null : next)}
+              placeholder='e.g. read "notes/**"'
+              fetchCosts={fetchCosts}
+              minHeight="90px"
+            />
+          </div>
+          {hasOverride && (
+            <button
+              onClick={() => resetOther(path)}
               style={{ ...dialogBtnStyle, alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 4 }}
             >
               <Check style={{ width: 10, height: 10 }} /> Reset to default
@@ -432,6 +600,7 @@ export function ContextPanel({ path, branch, onClose }: ContextPanelProps) {
               <SectionLabel>Standing context</SectionLabel>
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <LoreRow path={path} branch={branch} />
+                <OtherRow path={path} branch={branch} />
                 <label style={{
                   display: "flex", alignItems: "center", gap: 8,
                   padding: "6px 4px", userSelect: "none",

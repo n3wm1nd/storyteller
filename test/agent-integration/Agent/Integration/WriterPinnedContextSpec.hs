@@ -42,7 +42,7 @@ import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..
 import Storyteller.Writer.Agent.Context (PinnedContext(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
 
-import Agent.Integration.Harness (Runner, emptyLore, runExpect)
+import Agent.Integration.Harness (Runner, emptyLore, emptyOther, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
 
 -- | The user's own short-term selection -- built directly as a
@@ -85,7 +85,7 @@ spec runner = describe "pinned/short-term context reaching the writer (real LLM,
   it "reflects a planted pinned scene-state fact that the instruction never repeats" $
     runExpect @judgeModel runner $ do
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
-      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters pinned instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore emptyOther FullChapters pinned instruction
       info ("writeAgent output:\n" <> text)
       embed $ text `shouldNotBe` ""
       judgeOrFail @judgeModel text judgeQuestion

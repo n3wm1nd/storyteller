@@ -45,7 +45,7 @@ import Runix.Git (Git)
 import Runix.LLM (Message)
 import Runix.Logging (Logging, info)
 
-import Agent.Integration.Harness (assertToolCallBudget, emptyPinnedContext, emptyLore)
+import Agent.Integration.Harness (assertToolCallBudget, emptyPinnedContext, emptyOther, emptyLore)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
@@ -180,7 +180,7 @@ writeChat
   .  JourneyEffects r
   => FilePath -> T.Text -> Sem r T.Text
 writeChat path prompt = do
-  Prose generated <- writeAgent @Main path emptyLore FullChapters emptyPinnedContext (Instruction prompt)
+  Prose generated <- writeAgent @Main path emptyLore emptyOther FullChapters emptyPinnedContext (Instruction prompt)
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   appendGenerated path generated
   return generated

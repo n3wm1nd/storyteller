@@ -444,12 +444,12 @@ export function unhideSelected(path: string) {
 // The Writer agent's own context shape (pinned selection plus the cleaned
 // prompt text) — shared by chatWrite and correctAtom, since "correct" is
 // the same agent/context, just landing back at the group's old position
-// instead of appending at file end. `writerFields` carries the three
-// independent per-call wire slots (lore override, past-chapters mode,
-// pinned programs — see lib/dslCompose.ts's own header and
-// Server.Writer.File.Protocol's `ChatWriter` Haddock) composed from the
-// casual context UI (lib/callContextStore.ts); each is its own optional
-// wire field, omitted whenever that slot hasn't been touched. The
+// instead of appending at file end. `writerFields` carries the four
+// independent per-call wire slots (lore override, other override,
+// past-chapters mode, pinned programs — see lib/dslCompose.ts's own
+// header and Server.Writer.File.Protocol's `ChatWriter` Haddock) composed
+// from the casual context UI (lib/callContextStore.ts); each is its own
+// optional wire field, omitted whenever that slot hasn't been touched. The
 // @mention overlay folds into `pinnedPrograms` in that same composition.
 //
 // `@mention` markup is still stripped to plain `@Name` text for

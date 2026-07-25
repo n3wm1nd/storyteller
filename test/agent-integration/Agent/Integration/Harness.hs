@@ -46,6 +46,7 @@ module Agent.Integration.Harness
   , runExpect
   , withKnownModel
   , emptyLore
+  , emptyOther
   , emptyPinnedContext
   , loreFromMessages
   ) where
@@ -81,13 +82,13 @@ import Storyteller.Core.Context (ContextStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 
 -- | The empty tree, wrapped for each of 'Storyteller.Writer.Agent.Write.writeAgent'\'s
---   two remaining caller-supplied DSL-context parameters ('Lore',
---   'PinnedContext') -- what a spec that doesn't care about either passes.
---   Chapters, "other" files, style, and who's present are agent-owned now
---   (read directly off the branch a spec's own @path@ lives on -- see
+--   remaining caller-supplied DSL-context parameters ('Lore', 'Other',
+--   'PinnedContext') -- what a spec that doesn't care about any of them
+--   passes. Chapters, style, and who's present are agent-owned now (read
+--   directly off the branch a spec's own @path@ lives on -- see
 --   'writeAgent's own Haddock), so there's no equivalent empty stand-in
 --   needed for those any more; a spec isolating one channel keeps every
 --   *other* channel empty simply by not seeding anything for it on the
@@ -95,6 +96,9 @@ import Storyteller.Writer.Agent.Context (Lore(..), PinnedContext(..))
 --   passing an empty parameter.
 emptyLore :: Lore
 emptyLore = Lore (Node [] [])
+
+emptyOther :: Other
+emptyOther = Other (Node [] [])
 
 emptyPinnedContext :: PinnedContext
 emptyPinnedContext = PinnedContext (Node [] [])

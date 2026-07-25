@@ -352,7 +352,7 @@ export type FileCommand =
   //
   // Style, character identity, and "other notes" stay entirely agent-
   // owned — no client knob over any of them.
-  | { type: "chat.writer"; id?: string; text: string; pinned?: ContextItem[]; lore?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[]; flowTid?: string }
+  | { type: "chat.writer"; id?: string; text: string; pinned?: ContextItem[]; lore?: string; other?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[]; flowTid?: string }
   // Roleplay: every character present on this file is interrogated, in
   // character, for what they'd do or say before one scene gets written and
   // appended — see Server.Writer.File.roleplayWriter. `text` is the
@@ -379,7 +379,7 @@ export type FileCommand =
   // vanishing tick-by-tick as N separate delete.atom round trips would).
   // Same `pinned`/`lore`/`pastChaptersMode`/`pinnedPrograms` shape as
   // chat.writer — it rebases and re-runs exactly that command.
-  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; pinned?: ContextItem[]; lore?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[] }
+  | { type: "correct.group"; id?: string; promptTickId: string; targets: string[]; text: string; pinned?: ContextItem[]; lore?: string; other?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[] }
   // Converse: discuss, don't write. Send a message to the chat agent — see
   // WRITER.md's chat/ convention. No context/targets: a chat file has no
   // atom-selection concept of its own.
@@ -493,11 +493,21 @@ export type CharacterEvent =
 // Every request is self-contained — resolved fresh each time, same
 // discipline an LLM call's full history follows. Nothing about a
 // submitted program persists across requests server-side.
+// `context.entries` asks for the flat file-path list a named context slot
+// (`"context.lore"`, `"context.other"`) currently resolves to — real,
+// possibly-overridden content (see Storyteller.Writer.Agent.ContextPreview's
+// `buildEntries0`/`buildEntries1`), not a client-side glob guess. `path` is
+// omitted for a 0-arity slot like `context.lore`, present for a 1-arity one
+// like `context.other` (framed against that file, the same way
+// `context.preview`'s own `path` is). Live-updating like `context.preview`:
+// re-pushed whenever the branch's files change under an already-submitted
+// request, not just request/response.
 export type ContextViewCommand =
   | { type: "context.preview"; id?: string; path: string; program: string }
   | { type: "context.preview.adhoc"; id?: string; program: string }
   | { type: "context.cost"; id?: string; path: string; program: string }
-  | { type: "context.cost.adhoc"; id?: string; program: string };
+  | { type: "context.cost.adhoc"; id?: string; program: string }
+  | { type: "context.entries"; id?: string; name: string; path?: string };
 
 // A node mirrors the DSL's own Value shape: its own text content (each
 // source Message flattened to its text, in order), then named child
@@ -525,6 +535,7 @@ export interface LineCost {
 export type ContextViewEvent =
   | { type: "context.preview"; id?: string; result: PreviewNode }
   | { type: "context.cost"; id?: string; costs: LineCost[] }
+  | { type: "context.entries"; id?: string; entries: string[] }
   | ErrorEvent;
 
 // ── Library protocol ──────────────────────────────────────────────────────────

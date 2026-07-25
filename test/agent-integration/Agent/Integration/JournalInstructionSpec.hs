@@ -46,7 +46,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Presence (enters)
 import Storyteller.Writer.Types (Character(..))
 
-import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
+import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, emptyOther, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
 
 -- | Phantom tag for opening either character branch this scenario uses.
@@ -110,12 +110,12 @@ spec runner = describe "a private journal resolve shaping the next scene (real L
 
       _ <- runStorage @Main (Ops.addAtom baselineSceneFile "")
       _ <- enters @Main baselineSceneFile (Character baselineBranch)
-      Prose baselineText <- writeAgent @Main baselineSceneFile emptyLore FullChapters emptyPinnedContext instruction
+      Prose baselineText <- writeAgent @Main baselineSceneFile emptyLore emptyOther FullChapters emptyPinnedContext instruction
       info ("baseline (no journal) output:\n" <> baselineText)
 
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
       _ <- enters @Main sceneFile (Character charBranch)
-      Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
+      Prose text <- writeAgent @Main sceneFile emptyLore emptyOther FullChapters emptyPinnedContext instruction
       info ("with-journal output:\n" <> text)
       embed $ text `shouldNotBe` ""
 
