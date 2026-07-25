@@ -310,8 +310,21 @@ function buildWriteProgram(path: string, loreProgram: string, activeCharNames: s
   return [
     loreProgram,
     "context.chapters",
-    `context.other ${JSON.stringify(path)}`,
+    // Bracket-glob, not a quoted string -- the DSL-source convention for
+    // a literal path (see the checkbox-generated lore block's own
+    // `loreEntry [path]`, dslCompose.ts). No DSL source anywhere calls
+    // context.other with a literal path (every real call site passes a
+    // bound `path` identifier -- Library.hs:458's `context.other path`),
+    // so this doesn't match an existing precedent either way, but
+    // `[...]` is what marks "this is a path" in this DSL's own surface
+    // syntax; `exclude(path)` inside contextOtherDef ends up matching
+    // the same text regardless of which syntax produced it, so this is a
+    // convention choice, not a behavior difference.
+    `context.other [${path}]`,
     "context.style",
+    // context.character's charname is a NAME, not a path -- a quoted
+    // string is the right kind of literal here, unrelated to the
+    // path/bracket-glob question above.
     ...activeCharNames.map((name) => `context.character ${JSON.stringify(name)}`),
     ...pinnedNames,
   ].join("\n");
@@ -343,7 +356,17 @@ export function ContextCostSidebar({ activeBranch, selectedFile, fileChainTicks,
   );
 
   const writeProgram = useMemo(
-    () => (mode === "write" && selectedFile ? buildWriteProgram(selectedFile, loreProgram, activeCharNames, pinnedNames) : null),
+    () => (mode === "write" && selectedFile
+      // selectedFile is a raw, still-URL-encoded path segment (see
+      // filetree.tsx/page.tsx's own decodeURIComponent calls) -- but
+      // context.other's `path` argument gets glob-matched against real,
+      // decoded entry keys in the tree (Storyteller.Context.DSL.Compile's
+      // globMatches), so an encoded path like "file%20with%20spaces.md"
+      // would silently match nothing. Decode once here, the same
+      // boundary every other display/use site in this app already
+      // decodes at.
+      ? buildWriteProgram(decodeURIComponent(selectedFile), loreProgram, activeCharNames, pinnedNames)
+      : null),
     [mode, selectedFile, loreProgram, activeCharNames, pinnedNames],
   );
   const writeProgramLines = useMemo(() => writeProgram?.split("\n") ?? [], [writeProgram]);
