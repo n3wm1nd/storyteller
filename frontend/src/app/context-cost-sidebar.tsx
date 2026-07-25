@@ -1,109 +1,78 @@
 "use client";
 
-// A right-sidebar panel that keeps a live per-line token/size estimate of
-// what the currently-selected InputBar agent (`useUI`'s `writerMode` —
-// see fileview.tsx's AgentId) would actually send as context, plus this
-// file's own pinned snippets (`pinnedProgramNames` — see
-// callContextStore.ts/dslCompose.ts's own header on the writer context's
-// three-slot model). Backed by
-// Storyteller.Writer.Agent.ContextCost.buildAdhocProgramCosts's ablation-
-// based estimate (see that module's own Haddock): each row is one
-// statement, its own cost measured by re-running the whole snippet with
-// just that statement removed and diffing the rendered size.
+// A right-sidebar panel showing a live token/size estimate of the FULL
+// context the currently-selected InputBar agent (`useUI`'s `writerMode`
+// — see fileview.tsx's AgentId) would actually send, plus this file's own
+// pinned snippets (`pinnedProgramNames` — see callContextStore.ts/
+// dslCompose.ts's own header on the writer context's three-slot model).
 //
-// This used to try to estimate the *entire* writer context as one
-// client-composed program — that broke once `chatWriter` moved
-// lore/chapters/other/characters into independently-resolved,
-// agent-owned slots (see the project chat that settled this). The fix
-// isn't to give up on the whole-context estimate, though: each of those
-// slots is *itself* a named, branch-override-aware Context DSL
-// definition (`context.lore`, `context.chapters`, `context.other`,
-// `context.style` — see `Storyteller.Writer.Agent.Write.writeAgent`), and
-// Context DSL programs are just appendable statement lists — so this
-// panel builds *one* representative program (see writeSlotsProgram) and
-// sends it through `context.cost.adhoc` as a single request; the
-// ablation is already per-*statement* (not per source line -- see
-// Storyteller.Writer.Agent.ContextCost.buildLineCosts, which ablates
-// parsed AST statements, not text lines), so each returned `LineCost`
-// lands on exactly the statement it came from with no need to ask
-// per-slot.
+// For "write" mode, this is ONE Context DSL program, sent as ONE
+// `context.cost.adhoc` request -- not several independent per-piece
+// queries. `writeAgent` (Storyteller.Writer.Agent.Write.hs) assembles
+// lore + chapters + other + style + every active character's own
+// context as one real call, so the estimate has to be one real
+// evaluation of that same combination. There is no "slot" concept on
+// this side once the program exists: a single program is just source
+// text, and the view below reads each returned `LineCost.line` straight
+// back against that same text to show its own real source line -- no
+// grouping, no per-piece labels standing in for what's actually there
+// (see buildWriteProgram). Backed by Storyteller.Writer.Agent.
+// ContextCost.buildAdhocProgramCosts's ablation-based estimate (see that
+// module's own Haddock): each row is one statement, its own cost measured
+// by re-running the whole program with just that statement removed and
+// diffing the rendered size.
 //
-// The lore line is never a bare `context.lore` reference -- that would
-// resolve the *branch's* default, blind to whatever the user has
-// actually toggled in the casual panel for this specific call. It's the
-// exact same text `context-panel.tsx`'s `LoreRow` computes and would send
-// as the `lore` wire field (`contextBranch.ts`'s `useLoreDraft`) --
-// there's no second, approximate notion of "the current lore program"
-// here; both surfaces read the one real derivation. Since that draft can
-// itself be several statements, slot boundaries are tracked by how many
-// of the program's own newlines each slot spans (see
-// `writeSlotsProgram`/`slotForLine`), not by a fixed line-number table --
-// a multi-line lore override must not misattribute its own internal
-// statements to "context.chapters" just because they happen to land on
-// the wrong line number.
+// The program (buildWriteProgram) is:
+//   <the live lore draft's own real text -- see useLoreDraft>
+//   context.chapters
+//   context.other "<path>"
+//   context.style
+//   context.character "<name>"   -- one call per currently-active character
+//   <pinned name>                -- one call per pinned program
 //
-// `context.chapters`/`context.other`/`context.style` have no per-call
-// override in this UI today, so they're always their fixed slot
-// reference -- faithful because nothing ever varies them, not because
-// they were left unexamined. Only the "write" agent is modeled this way
-// for now (see the project chat: fix/regen/roleplay reduce to other,
-// differently-shaped context paths — not worth replicating yet). What's
-// never included, agent-agnostic: character summaries and this file's
-// own conversation/tick history, which have no standalone named DSL
-// slot to point at — flagged as an explicit gap, not silently omitted.
+// Every line after the lore draft is a bare function-call reference --
+// safe to concatenate as sibling top-level statements, since each is
+// self-contained and doesn't carry its own competing "## Story
+// background"-shaped prelude the way a copy of the lore *default's own
+// source* would. The lore draft is different: it's real, possibly
+// multi-statement source text (the panel's checkbox-generated block, or a
+// hand-edit, or the compiled default's own body when untouched), so it's
+// spliced in as-is, not re-derived or reconstructed -- see useLoreDraft's
+// own header for why this must be the literal text LoreRow itself holds,
+// never a bare `context.lore` name reference (that would resolve the
+// *branch's* default, blind to any per-call override) and never a
+// hand-synthesized reconstruction of the checkbox state.
+//
+// Character summaries and this file's own conversation/tick history are
+// still not representable here: `context.character` per active character
+// closes the "each character's own context" gap, but `writeAgent` reshapes
+// that through `characterSummaryOf "journal"` and threads in real tick
+// history (Storage.Tick.fileTicksOf) that has no DSL form at all -- see
+// this component's own "Not included" note. Only the "write" agent is
+// modeled this way for now (see the project chat: fix/regen/roleplay
+// reduce to other, differently-shaped context paths — not worth
+// replicating yet).
 //
 // Owned locally (connect on mount, reconnect on branch change, close on
 // unmount) -- the same lifecycle lore-selector.tsx's `useLoreTree` already
 // established for this family of "one ad-hoc WS connection per open
-// panel" hooks. Requests are debounced against the pinned-name list (not
-// fired on every keystroke).
+// panel" hooks. The combined program is debounced (not re-sent on every
+// keystroke); pinned snippets (shown separately, any agent) keep their
+// own independent per-name requests since they're a genuinely separate
+// question ("what does this one saved snippet cost on its own") from
+// "what does this call cost as a whole".
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Gauge, RefreshCw, AlertCircle, Info } from "lucide-react";
 import { contextViewConn } from "@/lib/ws";
-import type { LineCost } from "@/lib/ws";
+import type { LineCost, WireTick } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError, useUI } from "@/lib/uiStore";
 import { useCallContext, EMPTY_PINNED_PROGRAMS } from "@/lib/callContextStore";
 import { useLoreDraft } from "@/lib/contextBranch";
+import { activeCharacterBranches } from "@/lib/utils";
+import { branchDisplayName } from "@/lib/branches";
 
 const DEBOUNCE_MS = 500;
-
-// The "write" agent's own context slots (writeAgent, Storyteller.Writer.
-// Agent.Write.hs), appended into one program: the real lore draft first
-// (`loreDraft` -- see this module's own header), then the three slots
-// with no per-call override in this UI (`context.chapters`, `context.
-// other` applied to this file's own path, `context.style`). Always the
-// "full chapters" framing: InputBar has no toggle for the compressed
-// variant today, so "full" is the one real callers ever actually send
-// (see lib/ws.ts's chat.writer default).
-//
-// Returns both the program text and each slot's own 1-indexed line span
-// within it, so a returned `LineCost.line` (a real statement position,
-// not a slot index) can be bucketed back to the slot it actually belongs
-// to -- necessary because `loreDraft` may itself be several statements
-// spanning several lines, which would otherwise shift every fixed slot
-// after it.
-interface WriteSlot { name: string; fromLine: number; toLine: number }
-function writeSlotsProgram(path: string, loreDraft: string): { program: string; slots: WriteSlot[] } {
-  const loreLines = loreDraft.length > 0 ? loreDraft.split("\n").length : 1;
-  const fixedSlots = [
-    { name: "context.chapters", text: "context.chapters" },
-    { name: "context.other", text: `context.other ${JSON.stringify(path)}` },
-    { name: "context.style", text: "context.style" },
-  ];
-  const slots: WriteSlot[] = [{ name: "context.lore", fromLine: 1, toLine: loreLines }];
-  let cursor = loreLines + 1;
-  for (const s of fixedSlots) {
-    slots.push({ name: s.name, fromLine: cursor, toLine: cursor });
-    cursor += 1;
-  }
-  const program = [loreDraft, ...fixedSlots.map((s) => s.text)].join("\n");
-  return { program, slots };
-}
-
-function slotForLine(slots: WriteSlot[], line: number): string {
-  return slots.find((s) => line >= s.fromLine && line <= s.toLine)?.name ?? `L${line}`;
-}
 
 interface SnippetCost {
   name: string;
@@ -111,101 +80,10 @@ interface SnippetCost {
   loading: boolean;
 }
 
-// Live-updating, per-`path`: connects to the same /$context/{path}
-// connection context-library.tsx's preview affordance would use, and asks
-// `context.cost.adhoc` for each of this file's own `pinnedProgramNames`,
-// whenever that list settles (debounced).
-function usePinnedSnippetCosts(branch: string | null, path: string | null) {
-  const pinnedNames = useCallContext((s) => (path ? s.files[path]?.pinnedProgramNames : undefined)) ?? EMPTY_PINNED_PROGRAMS;
-
-  const [bySnippet, setBySnippet] = useState<Record<string, SnippetCost>>({});
-  const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
-  const pendingNameRef = useRef<string | null>(null);
-
-  // Connection lifecycle: one per (branch, path), matching useLoreTree's
-  // own convention.
-  useEffect(() => {
-    if (!branch || !path) { connRef.current = null; return; }
-    const connLabel = `context.cost.adhoc:${branch}:${path}`;
-    setConnStatus(connLabel, "connecting");
-
-    const conn = contextViewConn(branch, path);
-    connRef.current = conn;
-    conn.onStatus((s) => {
-      if (s !== "connected") setConnStatus(connLabel, "connecting");
-    });
-    conn.subscribe((evt) => {
-      bumpActivity(connLabel);
-      if (evt.type === "context.cost") {
-        const name = pendingNameRef.current;
-        if (name) {
-          setBySnippet((prev) => ({ ...prev, [name]: { name, costs: evt.costs, loading: false } }));
-        }
-      } else if (evt.type === "error") {
-        setError(evt.message);
-        const name = pendingNameRef.current;
-        if (name) {
-          setBySnippet((prev) => ({ ...prev, [name]: { name, costs: null, loading: false } }));
-        }
-      }
-    });
-
-    (async () => {
-      try {
-        await conn.connect();
-        setConnStatus(connLabel, "connected");
-      } catch (err) {
-        setConnStatus(connLabel, "error");
-        setError(String(err));
-      }
-    })();
-
-    return () => {
-      conn.close();
-      connRef.current = null;
-      removeConn(connLabel);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branch, path]);
-
-  // Debounced: ask once per pinned name whenever the list settles.
-  // Requests are sent one at a time (the connection only tracks one
-  // "pending name" at a time) since this is a low-frequency, user-facing
-  // estimate, not a hot path -- simplicity over throughput here.
-  useEffect(() => {
-    if (pinnedNames.length === 0) { setBySnippet({}); return; }
-    const t = setTimeout(() => {
-      setBySnippet((prev) => {
-        const next: Record<string, SnippetCost> = {};
-        for (const name of pinnedNames) {
-          next[name] = prev[name] ?? { name, costs: null, loading: true };
-        }
-        return next;
-      });
-      (async () => {
-        for (const name of pinnedNames) {
-          pendingNameRef.current = name;
-          setBySnippet((prev) => ({ ...prev, [name]: { name, costs: prev[name]?.costs ?? null, loading: true } }));
-          connRef.current?.send({ type: "context.cost.adhoc", program: name });
-          // One in flight at a time -- the connection's own `id` isn't
-          // correlated per-request here, so overlapping asks would race
-          // on `pendingNameRef`. A short stagger keeps each response
-          // landing on the right snippet without needing that
-          // correlation machinery for what's normally a handful of names.
-          await new Promise((res) => setTimeout(res, 50));
-        }
-      })();
-    }, DEBOUNCE_MS);
-    return () => clearTimeout(t);
-  }, [pinnedNames.join(" ")]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return pinnedNames.map((name) => bySnippet[name] ?? { name, costs: null, loading: true });
-}
-
-// Single-program variant of the connection above: one `context.cost.adhoc`
-// request for the whole appended `program` (see writeSlotsProgram), not
-// one per name -- the ablation itself already reports one LineCost per
-// statement, so a single round trip is enough.
+// One `context.cost.adhoc` request for a whole program -- one round trip,
+// one settle, one loading state. Not a per-entry fan-out (see this
+// module's own header on why that was wrong for "what does this call, as
+// a whole, cost").
 function useProgramCost(branch: string | null, path: string | null, program: string | null) {
   const [costs, setCosts] = useState<LineCost[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -213,7 +91,7 @@ function useProgramCost(branch: string | null, path: string | null, program: str
 
   useEffect(() => {
     if (!branch || !path) { connRef.current = null; return; }
-    const connLabel = `context.cost.adhoc:writeSlots:${branch}:${path}`;
+    const connLabel = `context.cost.adhoc:writeAgent:${branch}:${path}`;
     setConnStatus(connLabel, "connecting");
 
     const conn = contextViewConn(branch, path);
@@ -252,7 +130,7 @@ function useProgramCost(branch: string | null, path: string | null, program: str
   }, [branch, path]);
 
   useEffect(() => {
-    if (!program) { setCosts(null); return; }
+    if (!program) { setCosts(null); setLoading(false); return; }
     setLoading(true);
     const t = setTimeout(() => {
       connRef.current?.send({ type: "context.cost.adhoc", program });
@@ -263,9 +141,135 @@ function useProgramCost(branch: string | null, path: string | null, program: str
   return { costs, loading };
 }
 
+// Live-updating, one request per pinned name -- kept as its own
+// independent per-snippet question (see this module's own header),
+// unrelated to the combined write-agent program above.
+function usePinnedSnippetCosts(branch: string | null, path: string | null) {
+  const pinnedNames = useCallContext((s) => (path ? s.files[path]?.pinnedProgramNames : undefined)) ?? EMPTY_PINNED_PROGRAMS;
+  const [bySnippet, setBySnippet] = useState<Record<string, SnippetCost>>({});
+  const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
+  const pendingNameRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!branch || !path) { connRef.current = null; return; }
+    const connLabel = `context.cost.adhoc:pinned:${branch}:${path}`;
+    setConnStatus(connLabel, "connecting");
+
+    const conn = contextViewConn(branch, path);
+    connRef.current = conn;
+    conn.onStatus((s) => {
+      if (s !== "connected") setConnStatus(connLabel, "connecting");
+    });
+    conn.subscribe((evt) => {
+      bumpActivity(connLabel);
+      if (evt.type === "context.cost") {
+        const name = pendingNameRef.current;
+        if (name) setBySnippet((prev) => ({ ...prev, [name]: { name, costs: evt.costs, loading: false } }));
+      } else if (evt.type === "error") {
+        setError(evt.message);
+        const name = pendingNameRef.current;
+        if (name) setBySnippet((prev) => ({ ...prev, [name]: { name, costs: null, loading: false } }));
+      }
+    });
+
+    (async () => {
+      try {
+        await conn.connect();
+        setConnStatus(connLabel, "connected");
+      } catch (err) {
+        setConnStatus(connLabel, "error");
+        setError(String(err));
+      }
+    })();
+
+    return () => {
+      conn.close();
+      connRef.current = null;
+      removeConn(connLabel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branch, path]);
+
+  useEffect(() => {
+    if (pinnedNames.length === 0) { setBySnippet({}); return; }
+    const t = setTimeout(() => {
+      setBySnippet((prev) => {
+        const next: Record<string, SnippetCost> = {};
+        for (const name of pinnedNames) next[name] = prev[name] ?? { name, costs: null, loading: true };
+        return next;
+      });
+      (async () => {
+        for (const name of pinnedNames) {
+          pendingNameRef.current = name;
+          setBySnippet((prev) => ({ ...prev, [name]: { name, costs: prev[name]?.costs ?? null, loading: true } }));
+          connRef.current?.send({ type: "context.cost.adhoc", program: name });
+          await new Promise((res) => setTimeout(res, 50));
+        }
+      })();
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [pinnedNames.join(" ")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return pinnedNames.map((name) => bySnippet[name] ?? { name, costs: null, loading: true });
+}
+
 interface ContextCostSidebarProps {
   activeBranch: string | null;
   selectedFile: string | null;
+  fileChainTicks: Record<string, WireTick>;
+  fileChainHead: string | null;
+}
+
+// One row per ablated statement on a source line -- `col` marks where
+// each statement's own text starts, so a line with two costed statements
+// (e.g. `as f: x`, where the `as f:` wrapper and its nested body `x` are
+// each independently ablatable -- see Storyteller.Writer.Agent.
+// ContextCost.positions's own Haddock on why nested-block positions are
+// real candidates too) shows two rows, each its own bar/percentage. Each
+// row shows the FULL line, every time, with only its own referenced span
+// highlighted (bold, full opacity) and the rest of the line dimmed --
+// extracting just the bare substring loses which part of the line it
+// was (two rows both reading bare "x" tell you nothing); showing it
+// in place, highlighted, tells you exactly where each cost center sits.
+function SourceLineRow({ sourceLine, costs, maxChars }: { sourceLine: string; costs: LineCost[]; maxChars: number }) {
+  const total = costs.reduce((sum, c) => sum + c.chars, 0);
+  return (
+    <>
+      {costs.map((c, i) => {
+        const start = c.col - 1;
+        const end = i + 1 < costs.length ? costs[i + 1].col - 1 : sourceLine.length;
+        const pct = total > 0 ? (c.chars / total) * 100 : 0;
+        return (
+          <div key={`${c.line}:${c.col}:${i}`} style={{ display: "flex", flexDirection: "column", gap: 2, padding: "3px 4px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-ghost)" }}>
+              <code style={{
+                flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis",
+                whiteSpace: "nowrap", fontFamily: "monospace",
+              }}>
+                {sourceLine.trim() === "" ? (
+                  <span style={{ fontStyle: "italic" }}>(blank line)</span>
+                ) : (
+                  <>
+                    <span style={{ color: "var(--text-ghost)", opacity: 0.5 }}>{sourceLine.slice(0, start)}</span>
+                    <span style={{ color: "var(--foreground)", fontWeight: 600 }}>{sourceLine.slice(start, end)}</span>
+                    <span style={{ color: "var(--text-ghost)", opacity: 0.5 }}>{sourceLine.slice(end)}</span>
+                  </>
+                )}
+              </code>
+              <span style={{ flexShrink: 0 }}>{Math.round(c.chars / 4).toLocaleString()} tok</span>
+              <span style={{ flexShrink: 0 }}>{pct.toFixed(0)}%</span>
+            </div>
+            <div style={{ height: 3, borderRadius: 2, background: "var(--surface)", overflow: "hidden" }}>
+              <div style={{
+                height: "100%", width: maxChars > 0 ? `${Math.max(2, (c.chars / maxChars) * 100)}%` : "0%",
+                background: "var(--accent, var(--amber))", borderRadius: 2,
+              }} />
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 function CostRows({ costs, maxChars }: { costs: LineCost[]; maxChars: number }) {
@@ -294,26 +298,52 @@ function CostRows({ costs, maxChars }: { costs: LineCost[]; maxChars: number }) 
   );
 }
 
-export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSidebarProps) {
+// The combined write-agent program's own source, built once from real
+// per-piece text -- lore's own live draft (verbatim), then one bare
+// function-call line per remaining piece `writeAgent` itself resolves.
+// This is genuinely ONE program from here on: no slot bookkeeping, no
+// name labels standing in for pieces of it -- the cost view below reads
+// each returned `LineCost.line` straight back against this same text to
+// show its own real source, exactly like any other source-mapped
+// diagnostic would.
+function buildWriteProgram(path: string, loreProgram: string, activeCharNames: string[], pinnedNames: readonly string[]): string {
+  return [
+    loreProgram,
+    "context.chapters",
+    `context.other ${JSON.stringify(path)}`,
+    "context.style",
+    ...activeCharNames.map((name) => `context.character ${JSON.stringify(name)}`),
+    ...pinnedNames,
+  ].join("\n");
+}
+
+export function ContextCostSidebar({ activeBranch, selectedFile, fileChainTicks, fileChainHead }: ContextCostSidebarProps) {
   const mode = useUI((s) => s.writerMode);
+  const pinnedNames = useCallContext((s) => (selectedFile ? s.files[selectedFile]?.pinnedProgramNames : undefined)) ?? EMPTY_PINNED_PROGRAMS;
   const pinned = usePinnedSnippetCosts(activeBranch, selectedFile);
 
-  // The exact same lore text a real send would put on the wire -- see
-  // this module's own header on why this can never be a bare
-  // `context.lore` reference. `sendText` is `null` only when nothing's
-  // been touched (field omitted, server resolves its own context.lore --
-  // `resetTarget` is the client-side stand-in for that exact resolution);
-  // when the user has unchecked "Story lore", `sendText` is an explicit
-  // empty program, never `resetTarget`'s default text -- see
-  // useLoreDraft's own header on why reusing synthesizeLoreOverride here
-  // matters.
+  // The exact same lore text a real send would put on the wire -- never a
+  // bare `context.lore` reference, never a reconstruction (see
+  // useLoreDraft's own header).
   const { resetTarget: loreDefault, sendText: loreSendText } =
     useLoreDraft(selectedFile, mode === "write" ? activeBranch : null);
-  const loreDraft = loreSendText ?? loreDefault;
-  const { program: writeProgram, slots: writeSlots } =
-    mode === "write" && selectedFile ? writeSlotsProgram(selectedFile, loreDraft) : { program: null, slots: [] as WriteSlot[] };
-  const { costs: writeCosts, loading: writeLoading } =
-    useProgramCost(activeBranch, selectedFile, writeProgram);
+  const loreProgram = loreSendText ?? loreDefault;
+
+  // Presence is scoped to the open file (a scene), same as
+  // writeAgent/activeCharacterContext itself (activeCharactersFor) --
+  // reusing the same activeCharacterBranches util the file view's own
+  // presence bars already use, not a second derivation.
+  const activeCharNames = useMemo(
+    () => activeCharacterBranches(fileChainTicks, fileChainHead).map(branchDisplayName),
+    [fileChainTicks, fileChainHead],
+  );
+
+  const writeProgram = useMemo(
+    () => (mode === "write" && selectedFile ? buildWriteProgram(selectedFile, loreProgram, activeCharNames, pinnedNames) : null),
+    [mode, selectedFile, loreProgram, activeCharNames, pinnedNames],
+  );
+  const writeProgramLines = useMemo(() => writeProgram?.split("\n") ?? [], [writeProgram]);
+  const { costs: writeCosts, loading: writeLoading } = useProgramCost(activeBranch, selectedFile, writeProgram);
 
   if (!selectedFile) {
     return (
@@ -325,14 +355,22 @@ export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSi
 
   const writeTotal = writeCosts?.reduce((sum, c) => sum + c.chars, 0) ?? 0;
   const writeMax = writeCosts?.reduce((m, c) => Math.max(m, c.chars), 0) ?? 0;
-  // Group each returned statement by which slot's line span it falls in --
-  // lore's own draft can be several statements, so this is never a
-  // 1-line-per-slot lookup (see writeSlotsProgram's own header).
-  const writeBySlot = new Map<string, LineCost[]>();
-  for (const c of writeCosts ?? []) {
-    const slot = slotForLine(writeSlots, c.line);
-    writeBySlot.set(slot, [...(writeBySlot.get(slot) ?? []), c]);
-  }
+  // Grouped by source line, in source order -- a line can carry more than
+  // one ablated statement (e.g. `as f: x` has its own cost for the `as f:`
+  // wrapper and a separate one for `x`, the nested body it binds), so a
+  // line renders once with each of its own statements as its own span
+  // (see SourceLineRow) rather than one row per LineCost duplicating the
+  // full line text. Source order, not the ablation's own descending-cost
+  // order: each span's own opacity already shows relative weight at a
+  // glance, and reading top to bottom in program order (lore first, then
+  // chapters/other/style/characters/pinned) is easier to place.
+  const writeLinesGrouped = useMemo(() => {
+    const byLine = new Map<number, LineCost[]>();
+    for (const c of writeCosts ?? []) {
+      byLine.set(c.line, [...(byLine.get(c.line) ?? []), c].sort((a, b) => a.col - b.col));
+    }
+    return [...byLine.entries()].sort(([a], [b]) => a - b);
+  }, [writeCosts]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -353,7 +391,7 @@ export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSi
               display: "flex", alignItems: "center", gap: 6, fontSize: 10.5,
               color: "var(--text-dim)", padding: "2px 2px 8px",
             }}>
-              <span>Estimated slots the writer agent assembles</span>
+              <span>One combined call, as writeAgent assembles it</span>
               {writeCosts && !writeLoading && (
                 <span style={{ marginLeft: "auto", fontWeight: 500, color: "var(--foreground)" }}>
                   ~{Math.round(writeTotal / 4).toLocaleString()} tok total
@@ -361,33 +399,23 @@ export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSi
               )}
               {writeLoading && <RefreshCw className="animate-spin" style={{ width: 10, height: 10, color: "var(--text-ghost)" }} />}
             </div>
-            {writeCosts && writeSlots.map(({ name }) => {
-              const slotCosts = writeBySlot.get(name) ?? [];
-              const slotTotal = slotCosts.reduce((sum, c) => sum + c.chars, 0);
-              return (
-                <div key={name} style={{ marginBottom: 10 }}>
-                  <div style={{
-                    display: "flex", alignItems: "center", gap: 6, fontSize: 11,
-                    color: "var(--foreground)", marginBottom: 3,
-                  }}>
-                    <code style={{ fontFamily: "monospace", color: "var(--accent, var(--amber))" }}>{name}</code>
-                    <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-ghost)" }}>
-                      ~{Math.round(slotTotal / 4).toLocaleString()} tok
-                    </span>
-                  </div>
-                  <CostRows costs={slotCosts} maxChars={writeMax} />
-                </div>
-              );
-            })}
+            {writeCosts && writeLinesGrouped.map(([lineNo, lineCosts]) => (
+              <SourceLineRow
+                key={lineNo}
+                sourceLine={writeProgramLines[lineNo - 1] ?? ""}
+                costs={lineCosts}
+                maxChars={writeMax}
+              />
+            ))}
             <div style={{
               display: "flex", gap: 6, fontSize: 10, color: "var(--text-ghost)",
               padding: "6px 4px", borderTop: "1px solid var(--border-subtle)", marginTop: 4,
             }}>
               <Info style={{ width: 11, height: 11, flexShrink: 0, marginTop: 1 }} />
               <span>
-                Not included: active characters&apos; summaries and this file&apos;s own
-                conversation history — both agent-gathered per call with no standalone
-                context slot to estimate here.
+                Not included: each active character&apos;s own journal-summary reshaping
+                and this file&apos;s own conversation history — both computed by the agent
+                itself, not representable as DSL source to preview here.
               </span>
             </div>
           </>
@@ -398,7 +426,7 @@ export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSi
           </div>
         )}
 
-        {pinned.length > 0 && (
+        {pinned.length > 0 && mode !== "write" && (
           <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--border-subtle)" }}>
             <div style={{ fontSize: 10.5, color: "var(--text-dim)", padding: "2px 2px 8px" }}>
               Pinned snippets (any agent)
@@ -416,7 +444,7 @@ export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSi
                     {loading && <RefreshCw className="animate-spin" style={{ width: 10, height: 10, color: "var(--text-ghost)" }} />}
                     {costs && (
                       <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-ghost)" }}>
-                        ~{Math.round(total / 4).toLocaleString()} tok · {total.toLocaleString()} ch
+                        ~{Math.round(total / 4).toLocaleString()} tok
                       </span>
                     )}
                   </div>
@@ -434,7 +462,7 @@ export function ContextCostSidebar({ activeBranch, selectedFile }: ContextCostSi
         flexShrink: 0,
       }}>
         <AlertCircle style={{ width: 10, height: 10, flexShrink: 0 }} />
-        Estimated by re-running each snippet with each line removed -- an approximation, not a real tokenizer.
+        Estimated by re-running each statement removed -- an approximation, not a real tokenizer.
       </div>
     </div>
   );

@@ -1118,7 +1118,10 @@ export default function Home() {
               ) : rightTab === "codex" ? (
                 <CodexTab activeBranch={activeBranch} selectedFile={selectedFile} />
               ) : (
-                <ContextCostSidebar activeBranch={activeBranch} selectedFile={selectedFile} />
+                <ContextCostSidebar
+                  activeBranch={activeBranch} selectedFile={selectedFile}
+                  fileChainTicks={fileChainTicks} fileChainHead={fileChainHead}
+                />
               )}
             </div>
           </div>

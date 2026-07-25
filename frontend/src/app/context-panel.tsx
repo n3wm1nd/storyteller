@@ -129,13 +129,19 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   // surfaces resolve the exact same text, never two independently-drifting
   // copies of the same derivation.
   const { draft, resetTarget, hasOverride } = useLoreDraft(path, branch);
-  // parseLoreProgram matches a checkbox-generated PREFIX of the draft --
-  // an exact generated block, or nothing at all (zero paths). There is no
-  // "conflict"/disabled state: real default source (contextLoreDef's own
-  // glob-walking body included) that happens to share the generator's
-  // banner line just reads as zero paths, same as any other text with no
-  // recognized prefix -- see dslCompose.ts's own header.
-  const checkedPaths = parseLoreProgram(draft);
+  // Checkboxes only have something truthful to show/toggle when there's
+  // either no override yet (checking a box starts a FRESH checkbox
+  // program from `""`, never from `resetTarget`'s real default text --
+  // see toggleLorePath's own call below) or the override itself is
+  // entirely checkbox-owned (empty, or an exact generated block -- see
+  // dslCompose.ts's own header on parseLoreProgramPrefix). A hand-edited
+  // override that doesn't match that shape makes the checkboxes go
+  // inert: there's no truthful "toggle one file" reading of arbitrary
+  // DSL, and building on top of it is exactly what produced a duplicated
+  // "## Story background" block before this was fixed (that block came
+  // from treating the compiled default's own body as safe to build on).
+  const checkedPaths = hasOverride ? parseLoreProgram(draft) : [];
+  const checkboxesActive = !hasOverride || draft === "" || checkedPaths.length > 0;
 
   return (
     <div style={{ borderRadius: 5, background: expanded ? "var(--card)" : "transparent", overflow: "hidden" }}>
@@ -210,7 +216,8 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
                       <input
                         type="checkbox"
                         checked={included}
-                        onChange={() => toggleLorePath(path, resetTarget, entry.path)}
+                        disabled={!checkboxesActive}
+                        onChange={() => toggleLorePath(path, "", entry.path)}
                         style={{ accentColor: "var(--accent, var(--amber))" }}
                       />
                       <span style={{

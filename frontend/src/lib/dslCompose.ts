@@ -135,22 +135,27 @@ export function renderLoreProgram(includedPaths: string[]): string {
 }
 
 // Recovers the chosen path list AND whatever text follows the generated
-// prefix. Only an EXACT match of a real generated block -- the header
-// followed by one or more well-formed `loreEntry [path]` lines -- counts
-// as checkbox-owned; anything else falls through to the trivial
-// zero-selection match (`{ paths: [], rest: program }`), the same as text
-// with no recognizable prefix at all. This never fails/returns `null`:
-// the header line ("## Story background") is not, on its own, meaningful
-// "claimed" territory -- `renderLoreProgramPrefix([])` is the empty
-// string, not the header alone, so real default/hand-written source that
-// happens to start with the same banner (contextLoreDef does) is not a
-// conflict, just ordinary text the checkboxes have nothing to say about
-// yet. Re-checking a box regenerates just the recognized prefix (if any)
-// and re-appends `rest` verbatim.
-function parseLoreProgramPrefix(program: string): { paths: string[]; rest: string } {
-  if (!program.startsWith(LORE_PROGRAM_HEADER + "\n")) {
-    return { paths: [], rest: program };
-  }
+// prefix -- but ONLY when `program` is itself entirely checkbox-owned:
+// either empty (zero selections, the checkboxes' own starting point) or an
+// exact generated block (the header followed by one or more well-formed
+// `loreEntry [path]` lines, optionally with more checkbox-owned lines
+// after -- "rest" only ever holds trailing text the checkboxes still
+// recognize as their own shape, via the same recursive match, never
+// arbitrary prose). Anything else -- most importantly the real compiled
+// default's own body (`contextLoreDef`'s `for f in lore/**/*: ...`, which
+// happens to start with the identical "## Story background" banner) or
+// any hand-written program -- returns `null`: there is no truthful
+// "toggle one file" operation on source the checkboxes didn't generate,
+// since blindly prepending a fresh block in front of it would either
+// duplicate that banner or silently graft checkbox state onto content
+// with completely different semantics (see the project chat: this was
+// exactly the bug that produced two "## Story background" blocks
+// concatenated when a first checkbox click started from the compiled
+// default text). A caller with `null` here must disable its checkboxes
+// entirely, not fall back to a best-effort zero-selection reading.
+function parseLoreProgramPrefix(program: string): { paths: string[]; rest: string } | null {
+  if (program === "") return { paths: [], rest: "" };
+  if (!program.startsWith(LORE_PROGRAM_HEADER + "\n")) return null;
   let cursor = LORE_PROGRAM_HEADER.length + 1;
   const paths: string[] = [];
   // Each generated line is `loreEntry [<path>]\n` -- `]` can't appear
@@ -166,27 +171,29 @@ function parseLoreProgramPrefix(program: string): { paths: string[]; rest: strin
     paths.push(program.slice(openIdx, closeIdx));
     cursor = closeIdx + 2;
   }
-  if (paths.length === 0) return { paths: [], rest: program }; // header alone (or followed by non-generated text) -- zero-path match
+  if (paths.length === 0) return null; // header alone, or followed by non-generated text -- not checkbox-owned
   const rest = program.slice(cursor);
   return { paths, rest };
 }
 
-// The caller-facing form: just the chosen paths, or `null` if the draft
-// currently checked (possibly empty -- there's no "conflict" state:
-// every draft has a well-defined checkbox reading, since only an exact
-// generated block ever contributes any paths at all -- see
-// `parseLoreProgramPrefix`'s own header). Used where a caller only needs
-// to know what's checked, not the trailing text (see
-// `toggleLorePathInProgram` for the mutation that needs both).
+// The caller-facing form: the chosen paths, or `[]` if `program` isn't
+// checkbox-owned at all (see `parseLoreProgramPrefix`'s own header) --
+// callers that need to distinguish "zero selected" from "not ours to
+// parse" (to disable checkboxes) should call `parseLoreProgramPrefix`
+// directly instead.
 export function parseLoreProgram(program: string): string[] {
-  return parseLoreProgramPrefix(program).paths;
+  return parseLoreProgramPrefix(program)?.paths ?? [];
 }
 
 // Toggle one path's membership in the draft's own checkbox-owned prefix,
-// leaving anything the user wrote after that prefix (or, if there was no
-// recognized prefix at all, the entire original draft) untouched.
-export function toggleLorePathInProgram(program: string, entryPath: string): string {
+// leaving anything the user wrote after that prefix untouched. Returns
+// `null` when `program` isn't checkbox-owned at all -- nothing truthful
+// for a checkbox click to update (see `parseLoreProgramPrefix`'s own
+// header); the caller must treat this the same as its own disabled state,
+// never fall back to prepending onto unrecognized text.
+export function toggleLorePathInProgram(program: string, entryPath: string): string | null {
   const parsed = parseLoreProgramPrefix(program);
+  if (parsed === null) return null;
   const nextPaths = parsed.paths.includes(entryPath)
     ? parsed.paths.filter((p) => p !== entryPath)
     : [...parsed.paths, entryPath];
