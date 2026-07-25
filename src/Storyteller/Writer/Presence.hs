@@ -145,11 +145,17 @@ toTickId (Ops.ObjectHash t) = TickId t
 -- | Apply several presence decisions to @file@ in one go — what a caller
 --   retroactively tagging a whole scene's worth of entrances\/exits wants
 --   (e.g. 'Storyteller.Writer.Agent.PresenceTrack.trackPresenceFor'), as a
---   single 'BranchOp' dispatch instead of one round trip per decision.
---   Each @(anchor, character, event, beforeAnchor)@ entry names the atom to
---   anchor at (typically one 'Storage.Tick.FileTick.ftTickId'), whether to
---   land before it (the 'entered' shape) or after (the 'enters'\/'leaves'
---   shape via @beforeAnchor = False@), and the event itself.
+--   single 'BranchOp' dispatch instead of one round trip per decision. Each
+--   entry names the atom the decision is about directly (a
+--   'Storage.Tick.FileTick', e.g. one already picked out by
+--   'Storage.Tick.atomMatchingText') -- resolving *which* atom a decision
+--   refers to is entirely the caller's job, this only ever places relative
+--   to one already given. An @Enter@ lands strictly *before* its atom (the
+--   character is already present as of that atom), a @Leave@ strictly
+--   *after* it (still present *in* that atom, only gone as of the next
+--   one) — the same direction 'entered'\/'enters'\/'leaves' each commit to
+--   by name, decided here from the event instead since one call handles
+--   both.
 --
 --   Applied oldest-anchor-first via nested 'Storage.Ops.at' calls, each one
 --   built on the last -- the same "insert once, replay the tail forward"
@@ -164,19 +170,20 @@ toTickId (Ops.ObjectHash t) = TickId t
 recordPresenceForFile
   :: forall branch r
   .  Members '[BranchOp branch, StoryStorage, Fail] r
-  => FilePath -> [(TickId, Character, PresenceEvent, Bool)] -> Sem r [Maybe TickId]
+  => FilePath -> [(FileTick, Character, PresenceEvent)] -> Sem r [Maybe TickId]
 recordPresenceForFile file decisions = do
-  mapM_ (\(_, character, _, _) -> withCharacterBranch character (pure ())) decisions
+  mapM_ (\(_, character, _) -> withCharacterBranch character (pure ())) decisions
   runStorage @branch (mapM applyOne decisions)
   where
-    applyOne (TickId atTick, character, event, beforeAnchor) = do
-      anchor <- if beforeAnchor
-        then do
-          (cd, _) <- lift (Core.readCommitTick (Ops.ObjectHash atTick))
+    applyOne (atom, character, event) = do
+      let atTick = Ops.ObjectHash (ftTickId atom)
+      anchor <- case event of
+        Leave -> pure atTick
+        Enter -> do
+          (cd, _) <- lift (Core.readCommitTick atTick)
           case Core.commitParents cd of
             (p : _) -> pure p
             []      -> fail "recordPresenceForFile: no position precedes the branch's own root"
-        else pure (Ops.ObjectHash atTick)
       Ops.at anchor (writeIfChanged anchor file character event)
 
 -- | Every character active as of the end of @ticks@ -- the "list everyone

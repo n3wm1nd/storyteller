@@ -22,6 +22,7 @@ module Storage.Tick
   , findTick
   , FileTick(..)
   , fileTicksOf
+  , atomsMatchingText
   , relatedTicksOf
   , recentAtomsOf
   , encodeTickData
@@ -383,6 +384,31 @@ fileTicksOf path = do
         , ftContent ft /= Nothing || lookup "file" (ftFields ft) == Just fileHint
         ]
   return (relinkParents included Nothing allTicks)
+
+-- | Every atom (from @ticks@ -- typically 'fileTicksOf's own result) whose
+--   content contains @needle@ -- a caller-supplied quote of some real part
+--   of a file (a chapter's own prose, say), matched against real atom
+--   content rather than a position the caller would otherwise have to
+--   already know. Plural, not "the one atom": whether zero, one, or
+--   several matches is fine is entirely the caller's own judgement call
+--   (an LLM naming where in a scene something happens, e.g.
+--   'Storyteller.Writer.Agent.PresenceTrack', wants exactly one and treats
+--   anything else as unresolvable — the same exact-match-once discipline
+--   'Storyteller.Writer.Agent.ReplaceTool.replaceOnce' already applies
+--   within one atom, extended here to "which atom" across a whole file's
+--   history — but a caller with a different tolerance is free to have one).
+--
+--   Matched with whitespace normalized on both sides -- prose is read the
+--   way a person reads it, soft-wrapped, with no reason to reproduce the
+--   stored text's exact line breaks; a literal byte-for-byte match would
+--   spuriously fail whenever a quote happens to straddle a wrap point in
+--   the stored text, even though the quote is a perfectly correct,
+--   unambiguous identification of the right atom.
+atomsMatchingText :: Text -> [FileTick] -> [FileTick]
+atomsMatchingText needle ticks =
+  [ ft | ft <- ticks, Just t <- [ftContent ft], squashed needle `T.isInfixOf` squashed t ]
+  where
+    squashed = T.unwords . T.words
 
 -- | @ticks@ (typically 'fileTicksOf's own result), plus every tick in
 --   @path@'s current lifetime that transitively references one of its

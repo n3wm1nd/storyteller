@@ -106,7 +106,8 @@ import Runix.LLM (queryLLM)
 import Runix.LLM.ToolExecution (executeTool)
 import Runix.LLM.ToolInstances ()
 import Runix.Logging (Logging, info, warning)
-import Storage.Tick (FileTick(..))
+import qualified Storage.Tick as Tick
+import Storage.Tick (FileTick)
 import UniversalLLM (Message(..), ModelConfig(..))
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
@@ -118,7 +119,7 @@ import Storyteller.Core.Git (BranchOp, BranchTag)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Core.Types (BranchName(..), TickId(..))
+import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Library (buildLibraryTree, narrativeUnits, UnitInfo(..))
 import Storyteller.Writer.Presence (activeCharactersFor, recordPresenceForFile)
@@ -349,48 +350,31 @@ defaultPresenceConfig = [MaxTokens 4096, Temperature 0.2]
 -- ---------------------------------------------------------------------------
 
 -- | Turn one 'PresenceDecision''s quoted 'pdAtText' into a real anchored
---   edit -- @(anchor tick, character, event, beforeAnchor)@, the shape
---   'Storyteller.Writer.Presence.recordPresenceForFile' wants -- by finding
---   the one atom (from @ticks@ -- typically
---   'Storyteller.Core.ContentEffects.fileTicksOf's own result) whose text
---   contains 'pdAtText'. An 'Enter' lands *before* the matched atom
---   (@beforeAnchor = True@ -- the character is already present as of that
---   atom), a 'Leave' *after* it (@beforeAnchor = False@ -- they're still
---   present *in* that atom, only gone as of the next one).
---
---   Logs and drops (returns 'Nothing') if the match against @path@'s
---   atoms is missing or ambiguous, the same "an unresolvable
---   model-supplied span is a real problem, not silently ignorable" stance
---   'Storyteller.Writer.Agent.ReplaceTool.replaceOnce' takes for a
---   within-one-atom span (this is the cross-atom, "which atom" version of
---   the same judgement call).
---
---   Matched with whitespace normalized on both sides ('squashWhitespace') --
---   the model reads prose the way a person does, soft-wrapped, and quotes a
---   span the same way, with no reason to reproduce the source's exact line
---   breaks; a literal byte-for-byte match would spuriously fail whenever a
---   quote happens to straddle a wrap point in the stored text, even though
---   the quote is a perfectly correct, unambiguous identification of the
---   right span.
+--   edit -- @(atom, character, event)@, the shape
+--   'Storyteller.Writer.Presence.recordPresenceForFile' wants -- via
+--   'Storage.Tick.atomsMatchingText' against @ticks@ (typically
+--   'Storyteller.Core.ContentEffects.fileTicksOf's own result). This
+--   caller's own tolerance is exactly one atom: logs and drops (returns
+--   'Nothing') if the match is missing or ambiguous, the same "an
+--   unresolvable model-supplied span is a real problem, not silently
+--   ignorable" stance 'Storyteller.Writer.Agent.ReplaceTool.replaceOnce'
+--   takes for a within-one-atom span (this is the cross-atom, "which atom"
+--   version of the same judgement call) -- 'atomsMatchingText' itself
+--   stays plural and leaves that call to each caller.
 resolveAnchor
   :: forall r
   .  Member Logging r
-  => FilePath -> [FileTick] -> PresenceDecision -> Sem r (Maybe (TickId, Character, PresenceEvent, Bool))
+  => FilePath -> [FileTick] -> PresenceDecision -> Sem r (Maybe (FileTick, Character, PresenceEvent))
 resolveAnchor path ticks (PresenceDecision charBranch event atText) =
-  case [ ft | ft <- atoms, Just t <- [ftContent ft], squashWhitespace atText `T.isInfixOf` squashWhitespace t ] of
+  case Tick.atomsMatchingText atText ticks of
     [matched] -> do
       info $ "resolveAnchor: " <> T.pack path <> ": " <> unBranchName charBranch <> " "
            <> T.pack (show event) <> " at \"" <> atText <> "\""
-      pure (Just (TickId (ftTickId matched), Character charBranch, event, event == Enter))
+      pure (Just (matched, Character charBranch, event))
     [] -> Nothing <$ warning ("resolveAnchor: " <> T.pack path <> ": at_text \"" <> atText
                    <> "\" for " <> unBranchName charBranch <> " didn't match any atom, skipping")
     _  -> Nothing <$ warning ("resolveAnchor: " <> T.pack path <> ": at_text \"" <> atText
                    <> "\" for " <> unBranchName charBranch <> " matched more than one atom, skipping")
-  where
-    atoms = [ ft | ft <- ticks, ftContent ft /= Nothing ]
-
-squashWhitespace :: T.Text -> T.Text
-squashWhitespace = T.unwords . T.words
 
 -- ---------------------------------------------------------------------------
 -- Effectful wrapper: one file

@@ -52,6 +52,7 @@ import Polysemy.Fail (Fail)
 
 import Storage.Tick (FileTick(..))
 import qualified Storage.Tick as Tick
+import Storage.Tick (atomsMatchingText)
 
 import Storyteller.Core.Branch (BranchOp)
 import Storyteller.Core.Git (atGeneric, runStorage)
@@ -81,14 +82,12 @@ atAtomText path atText action = send @(Timetravel branch) (AtAtomText path atTex
 --   are already live in @r@, nothing 'Timetravel'-specific), and
 --   'atGeneric' does the actual descend\/run\/replay.
 --
---   'AtAtomText' resolves its span against @path@'s current atoms (via
+--   'AtAtomText' resolves its span against @path@'s current atoms via
+--   'Storage.Tick.atomsMatchingText' (fetched once via
 --   'Storage.Tick.fileTicksOf', one 'BranchOp' dispatch) before delegating
 --   to the same 'atGeneric' call 'At' uses — matching, not positioning, is
---   the only thing it adds. Whitespace is normalized on both sides before
---   comparing ('squashWhitespace'): a caller quoting prose reads it the way
---   a person would, soft-wrapped, with no reason to reproduce the stored
---   text's exact line breaks, so a literal byte-for-byte match would
---   spuriously fail whenever a quote happens to straddle a wrap point.
+--   the only thing it adds, and this caller's own tolerance is exactly one
+--   match: anything else fails rather than guessing.
 runTimetravel
   :: forall branch r a
   .  Members '[BranchOp branch, StoryStorage, Fail] r
@@ -99,11 +98,7 @@ runTimetravel = interpretH $ \case
 
   AtAtomText path atText inner -> do
     ticks <- raise (runStorage @branch (Tick.fileTicksOf path))
-    let atoms = [ ft | ft <- ticks, ftContent ft /= Nothing ]
-    case [ ft | ft <- atoms, Just t <- [ftContent ft], squashWhitespace atText `T.isInfixOf` squashWhitespace t ] of
+    case atomsMatchingText atText ticks of
       [matched] -> atGeneric @branch (TickId (ftTickId matched)) (runTSimple inner)
       []  -> raise $ fail $ "atAtomText: \"" <> T.unpack atText <> "\" didn't match any atom in " <> path
       _   -> raise $ fail $ "atAtomText: \"" <> T.unpack atText <> "\" matched more than one atom in " <> path
-
-squashWhitespace :: T.Text -> T.Text
-squashWhitespace = T.unwords . T.words
