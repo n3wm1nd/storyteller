@@ -91,7 +91,7 @@ valueMessagesSpec = describe "valueMessages (via contextChapters' own default)" 
         , ("chapters/ch2.md", "chapter two prose")
         ]
       runDslOn (BranchName "main")
-        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters @Main (buildContextLibrary @Main Map.empty))))
+        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters @Main (fst (buildContextLibrary @Main Map.empty)))))
     `shouldBe` Right
       [ (LLM.User,      "## Chapters written so far")
       , (LLM.User,      "## Chapter: chapters/ch2.md")
@@ -108,7 +108,7 @@ valueBlocksSpec = describe "valueBlocks (via contextLore's own default)" $
         [ ("lore/places/tavern.md", "the tavern")
         , ("lore/notes.md", "a note")
         ]
-      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore @Main (buildContextLibrary @Main Map.empty))))
+      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore @Main (fst (buildContextLibrary @Main Map.empty)))))
     `shouldBe` Right
       [ ContextBlock "## Story background"
       , ContextBlock "## lore/notes.md"

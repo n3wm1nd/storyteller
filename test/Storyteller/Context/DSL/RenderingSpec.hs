@@ -58,7 +58,7 @@ runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 --   defaults, same as 'buildContextLibrary' would build from an empty
 --   override map.
 emptyLib :: forall r. Members '[BranchResolve, Fail] r => Library (ContextRow Main r)
-emptyLib = buildContextLibrary @Main Map.empty
+emptyLib = fst (buildContextLibrary @Main Map.empty)
 
 describeMessage :: LLM.Message m -> (LLM.MessageDirection, Text)
 describeMessage msg@(LLM.UserText t)      = (LLM.messageDirection msg, t)

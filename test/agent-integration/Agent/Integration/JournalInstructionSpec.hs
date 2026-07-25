@@ -103,7 +103,7 @@ spec runner = describe "a private journal resolve shaping the next scene (real L
       -- journal entry really is what characterSummaryOf's "journal" bucket
       -- would read back.
       withJournal <- runBranchAndFS @Char_ charBranch $ do
-        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "marisol"
+        charVal <- resolveContext1 @Char_ "context.character" "marisol"
         runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
       info $ "csJournal blocks (with journal): " <> T.pack (show (length (csJournal withJournal)))
       embed $ csJournal withJournal `shouldNotBe` []

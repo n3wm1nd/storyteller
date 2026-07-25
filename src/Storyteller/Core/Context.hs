@@ -63,6 +63,7 @@ import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -84,7 +85,7 @@ import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (BranchName(..))
 
 import Storyteller.Context.DSL.AST (Definition(..), Name)
-import Storyteller.Context.DSL.Compile (Binding(..), Library, bval, runDefinition)
+import Storyteller.Context.DSL.Compile (Library, bval, runDefinition, runNamed)
 import qualified Storyteller.Context.DSL.Compile as Compile
 import Storyteller.Context.DSL.Library (defaultLibraryOrder, defaultLibrarySource, hostLibrary)
 import Storyteller.Context.DSL.Parser (parseDefinition)
@@ -139,21 +140,19 @@ type ContextRow branch r =
 contextsBranchName :: BranchName
 contextsBranchName = BranchName "contexts"
 
--- | Parses @src@ and checks its arity against @expectedArity@ before
---   accepting it -- pure, shared by every call site that needs "is there a
---   valid override for this name" (each knows its own expected arity, so
---   the check lives here once rather than duplicated per caller). 'Nothing'
---   input (no override committed) and a parse\/arity failure are both
---   "use the default," kept as one 'Maybe' rather than distinguishing them
---   -- the caller already has its own default in hand either way.
-resolveOverrideDefinition :: Int -> Maybe Text -> Maybe Definition
-resolveOverrideDefinition _ Nothing = Nothing
-resolveOverrideDefinition expectedArity (Just src) =
-  case parseDefinition "<context override>" src of
-    Left _ -> Nothing
-    Right parsedDef
-      | length (defParams parsedDef) /= expectedArity -> Nothing
-      | otherwise -> Just parsedDef
+-- | Parses @src@ -- pure, shared by every call site that needs "is this
+--   valid DSL text at all." Unlike its own previous shape, this no longer
+--   also checks arity against some expected value: arity mismatches (and
+--   every other way an override can break something that references it)
+--   are caught by 'buildContextLibrary' actually recompiling the whole
+--   sequence with the override in place, not by a narrower pre-check here
+--   that could only ever see the override in isolation. A parse failure
+--   is the one thing genuinely decidable from @src@ alone, with nothing
+--   else in scope.
+resolveOverrideDefinition :: Maybe Text -> Maybe Definition
+resolveOverrideDefinition Nothing = Nothing
+resolveOverrideDefinition (Just src) =
+  either (const Nothing) Just (parseDefinition "<context override>" src)
 
 -- | Real interpreter: reads every override on the dedicated 'Contexts'
 --   branch *once* up front (creating the branch on first use), not one
@@ -184,83 +183,88 @@ interpretContextStorageFS action = do
   where
     pathToName = T.replace "/" "." . fromMaybe "" . T.stripSuffix ".dsl"
 
--- | 'Storyteller.Context.DSL.Library.defaultLibraryOrder', compiled as a
---   single left-to-right fold, with @overrides@ replacing a slot's
---   definition by name wherever one exists and matches arity (same
---   "override, don't guess" precedence 'resolveOverrideDefinition' already
---   gives a single named query, just applied per slot as the fold walks
---   forward) -- seeded with 'Storyteller.Context.DSL.Library.hostLibrary'
---   (real Haskell closures, never override-addressable, safe to seed first
---   since none of them reference another library name), then any
---   genuinely new override-only names appended last.
+-- | Splices @overrides@ into 'Storyteller.Context.DSL.Library.defaultLibraryOrder'
+--   by name -- a name matching an existing slot gets *both* entries at
+--   that position, default immediately followed by override, sharing one
+--   'Name' (see 'Compile.Library''s own Haddock: this is exactly what two
+--   entries sharing a key already means, not a special case). This is
+--   what lets an override's own reference to its own name resolve to the
+--   compiled default rather than failing outright -- 'Compile.buildLibrary'
+--   folds left to right, so the override entry closes over a 'Library'
+--   that already has the default sitting at this same name, one slot
+--   behind it, the identical "compile default, then override, same key"
+--   order the pre-sequence design used, just expressed as what the
+--   sequence itself already contains rather than as two separate
+--   'Map.insert' calls at build time.
 --
---   __This is the compile step that makes self-reference safe__: a slot
---   with no override just compiles the default against the table
---   accumulated so far, same as always. A slot *with* an override compiles
---   the *default* into the table first (at this same slot -- an extra,
---   otherwise-unused 'Compile.definitionBinding' call, cheap since
---   'Binding' construction never touches 'Sem'), then compiles the
---   override itself against that updated table, overwriting the same key.
---   A name inside the override's own body that refers to its own name
---   therefore resolves to the compiled default sitting one insert behind
---   it -- never to itself, so it can never loop. A genuinely new
---   override-only name (no default to seed first) that self-references has
---   nothing to land on at all, and fails to resolve the same way any other
---   unbound identifier does. The same reasoning makes mutual reference
---   between two distinct new override-only names a resolution failure too:
---   whichever is folded first can't see the other, which hasn't been
---   compiled yet. See 'defaultLibraryOrder''s own Haddock for why the
---   order itself is load-bearing project policy, not an implementation
---   detail.
+--   A name matching nothing already in the default sequence, and not a
+--   'Storyteller.Context.DSL.Library.hostLibrary' name either (a host
+--   binding is a real Haskell closure, never override-addressable), is a
+--   project genuinely adding a new one, appended after every default so
+--   it can reference the whole default graph, plus any other new name
+--   earlier in this same @overrides@ map. Parse failures are silently
+--   skipped here, not spliced in at all -- 'buildContextLibrary' is what
+--   actually decides pass/fail per name; a name whose own text doesn't
+--   even parse can't be a candidate for that decision at all.
+spliceOverrides
+  :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
+  => Map Name Text -> [(Name, Definition)]
+spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEntries
+  where
+    applyOverride (name, defaultDef) = case resolveOverrideDefinition (Map.lookup name overrides) of
+      Nothing         -> [(name, defaultDef)]
+      Just overrideDef -> [(name, defaultDef), (name, overrideDef)]
+    hostNames  = Set.fromList (map fst (Compile.libraryEntries (hostLibrary @branch @r)))
+    newSource  = overrides `Map.difference` defaultLibrarySource `Map.withoutKeys` hostNames
+    newEntries = mapMaybe (\(name, src) -> (,) name <$> resolveOverrideDefinition (Just src)) (Map.toList newSource)
+
+-- | Compiles @overrides@ against 'Storyteller.Context.DSL.Library.defaultLibraryOrder'
+--   via 'spliceOverrides' \/ 'Compile.buildLibrary', and __rejects__ (not
+--   silently discards, see below) any override that breaks compilation --
+--   whether the override's own body doesn't resolve, or it changes some
+--   name's arity out from under a *later* default definition that still
+--   calls it at the old one. There is no separate arity pre-check
+--   anywhere in this module any more: recompiling the whole spliced
+--   sequence and seeing whether it succeeds __is__ the check, complete,
+--   for the same reason 'Compile.definitionBinding' itself no longer
+--   defers reference-checking into the closure it builds -- the language
+--   has no @if@\/recursion, so a body's set of references is exactly its
+--   text, and the full, already-parsed sequence is sitting right here to
+--   walk, with nothing left to discover later that isn't already knowable
+--   now.
 --
---   Three cases for a pure-DSL name, matching 'resolveOverrideDefinition''s
---   own: a name already in the default library only accepts an override
---   whose arity matches the default it would replace (a parse failure or
---   an arity mismatch both just keep the default -- "missing, not
---   broken"); a name with *no* compiled-in default (and not a
---   'hostLibrary' one) is a project genuinely adding a new one, accepted
---   at whatever arity it parses to; a name that collides with a
---   'hostLibrary' entry is simply ignored -- the host entry always wins.
---   Called locally by 'runContextValue'\/'resolveContext0'\/
---   'resolveContext1', at whatever @branch@\/@r@ its own local
---   content-effects interpretation already provides -- never wired as its
---   own 'ContextStorage' operation (see that effect's own Haddock for
---   why).
+--   On a rejection, the offending @name@ is dropped from @overrides@ and
+--   the whole sequence is retried -- from scratch, with the remaining
+--   overrides, __never__ a partially-applied library with only the
+--   surviving overrides patched in ad hoc: recompiling from
+--   'defaultLibraryOrder' again is what guarantees every accepted
+--   override is checked against the *final* accepted set, not against
+--   whatever happened to be in the table when it was first tried. This
+--   always terminates, because @overrides@ strictly shrinks by one name
+--   each retry and the base case -- no overrides, or none left -- is
+--   'defaultLibraryOrder' by itself, which always compiles (a closed,
+--   already-verified graph over 'hostLibrary', unaffected by anything any
+--   project could ever commit). Returns the accepted library alongside
+--   every rejected name, so a caller can surface *which* commits didn't
+--   take instead of the previous silent fallback.
 buildContextLibrary
   :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
-  => Map Name Text -> Library r
-buildContextLibrary overrides = foldl' stepNew known newDefs
-  where
-    seeded  = hostLibrary @branch @r
-    known   = foldl' step seeded defaultLibraryOrder
-    -- | When @name@ is genuinely overridden, the *default* definition is
-    --   compiled into @tbl@ first, at this same slot, and only then does
-    --   the override itself get compiled against the table that now
-    --   includes it -- this is what gives an override's own self-reference
-    --   somewhere to land (the compiled default), rather than treating
-    --   "override present" as "no prior binding existed here at all."
-    --   Compiling the unused default costs nothing extra beyond one more
-    --   'Compile.definitionBinding' call -- 'Binding' construction is pure,
-    --   never touching 'Sem', and the wasted table slot is immediately
-    --   overwritten with the override's own binding right after.
-    step tbl (name, defaultDef) = case Map.lookup name overrides of
-      Nothing  -> Map.insert name (Compile.definitionBinding tbl defaultDef) tbl
-      Just src -> case resolveOverrideDefinition (length (defParams defaultDef)) (Just src) of
-        Nothing        -> Map.insert name (Compile.definitionBinding tbl defaultDef) tbl
-        Just overrideDef ->
-          let tblWithDefault = Map.insert name (Compile.definitionBinding tbl defaultDef) tbl
-          in Map.insert name (Compile.definitionBinding tblWithDefault overrideDef) tblWithDefault
-
-    newSource = overrides `Map.difference` defaultLibrarySource `Map.difference` hostLibrary @branch @r
-    newDefs   = mapMaybe parseNamed (Map.toList newSource)
-    stepNew tbl (name, def) = Map.insert name (Compile.definitionBinding tbl def) tbl
-    parseNamed (name, src) = (,) name <$> resolveOverrideDefinition (arityOf src) (Just src)
-    -- | 'resolveOverrideDefinition' needs an expected arity to check
-    --   *against* -- for a genuinely new name (no compiled-in default to
-    --   match), whatever the source itself parses to is the expected
-    --   arity, so this always accepts (barring a parse failure, which
-    --   'resolveOverrideDefinition' still catches via its own 'Left' case).
-    arityOf src = either (const (-1)) (length . defParams) (parseDefinition "<library>" src)
+  => Map Name Text -> (Library r, [Name])
+buildContextLibrary overrides =
+  case Compile.buildLibrary (hostLibrary @branch @r) (spliceOverrides @branch @r overrides) of
+    Right lib             -> (lib, [])
+    Left (badName, _err)
+      | Map.member badName overrides ->
+          let (lib, rejected) = buildContextLibrary @branch (Map.delete badName overrides)
+          in (lib, badName : rejected)
+      -- A default itself can't fail to compile (see this function's own
+      -- Haddock) -- if 'badName' isn't one of @overrides@'s own keys,
+      -- something is wrong with 'defaultLibraryOrder' itself, not with
+      -- anything a project committed, and retrying by deleting an
+      -- override that was never the cause would loop forever without
+      -- ever converging. Fails loudly instead.
+      | otherwise -> error ("buildContextLibrary: default library itself failed to compile at "
+                              <> T.unpack badName <> ": " <> _err)
 
 -- | Test/pure interpreter: resolves from a fixed map of override source
 --   text as the starting point, falling back to the caller's default on
@@ -306,48 +310,34 @@ runContextValue act =
   . runTreeAccess @branch
   $ runAction act
 
--- | 'getContextOverrides' immediately followed by "compile the override
---   if there is one, else run the default" -- mirrors
---   'Storyteller.Core.Prompt.getPrompt' exactly: @name@ and its own
---   readable, compiled-in @def@ travel together, at the call site, the same
---   way @getPrompt "agent.writer" defaultWriterSystemPrompt@ does. No
---   central "every context and its default" registry -- there's no more a
---   'Storyteller.Context.DSL.Library.defaultLibrarySource'-shaped list for
---   0-\/1-arity externally-resolved definitions than 'Storyteller.Core.Prompt'
---   has one for prompts. Whether @name@'s override came from the 'Contexts'
---   branch or a same-request 'SetContextOverride' is invisible here -- both
---   already landed in the same store by the time this looks.
---
---   Builds the compile-time table once, here, via 'buildContextLibrary',
---   and applies it directly to @def@ (or to the override definition, via
---   'runDefinition') -- this is the one place a plain, not-yet-applied
---   'Storyteller.Context.DSL.Library' wrapper function actually gets its
---   table.
+-- | Runs the already-compiled library entry @name@ -- mirrors
+--   'Storyteller.Core.Prompt.getPrompt''s "look this key up, once" shape,
+--   but with no @def@ parameter to pass any more: 'buildContextLibrary'
+--   always leaves @name@ bound to *something* (the default, or an accepted
+--   override -- see 'spliceOverrides''s own Haddock), so the compiled-in
+--   Haskell fallback 'resolveContext0' used to take as an explicit
+--   argument was never anything other than what @table@'s own @name@ slot
+--   already evaluates to. Looking that slot up directly (via 'runNamed')
+--   and calling it __is__ running the default when there's no accepted
+--   override, with no second, parallel "or call this Haskell function
+--   instead" path needed.
 resolveContext0
   :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Name -> (Library (ContextRow branch r) -> Action (ContextRow branch r) (Value (ContextRow branch r))) -> Sem r (Value (ContextRow branch r))
-resolveContext0 name def = do
+  => Name -> Sem r (Value (ContextRow branch r))
+resolveContext0 name = do
   overrides <- getContextOverrides
-  let table = buildContextLibrary @branch overrides
-  runContextValue @branch $ case resolveOverrideDefinition 0 (Map.lookup name overrides) of
-    Just overrideDef -> runDefinition @branch table overrideDef []
-    Nothing          -> def table
+  let (table, _rejected) = buildContextLibrary @branch overrides
+  runContextValue @branch (runNamed @branch table name [])
 
 -- | 'resolveContext0''s 1-arity counterpart -- what every real
---   @context.character@\/@context.writer@ call site wants. @def@ is the
---   plain compiled-in definition itself (@Library r -> Text -> Action
---   Value@), the ordinary Haskell function, no 'Binding' wrapping needed
---   on this side any more -- the table is applied here, so no external
---   caller (which still just passes @contextWriter \@Main@, say) sees it.
+--   @context.character@\/@context.writer@ call site wants.
 resolveContext1
   :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Name -> (Library (ContextRow branch r) -> Text -> Action (ContextRow branch r) (Value (ContextRow branch r))) -> Text -> Sem r (Value (ContextRow branch r))
-resolveContext1 name def arg = do
+  => Name -> Text -> Sem r (Value (ContextRow branch r))
+resolveContext1 name arg = do
   overrides <- getContextOverrides
-  let table = buildContextLibrary @branch overrides
-  runContextValue @branch $ case resolveOverrideDefinition 1 (Map.lookup name overrides) of
-    Just overrideDef -> runDefinition @branch table overrideDef [bval (pure (leafValue [User arg]))]
-    Nothing          -> def table arg
+  let (table, _rejected) = buildContextLibrary @branch overrides
+  runContextValue @branch (runNamed @branch table name [pure (leafValue [User arg])])
 
 -- | Runs a raw, caller-supplied 0-arity Context DSL program against the
 --   compiled library, with no name of its own and no default to fall back
@@ -369,7 +359,10 @@ resolveAdhoc0
   => Text -> Sem r (Value (ContextRow branch r))
 resolveAdhoc0 src = do
   overrides <- getContextOverrides
-  let table = buildContextLibrary @branch overrides
-  case resolveOverrideDefinition 0 (Just src) of
+  let (table, _rejected) = buildContextLibrary @branch overrides
+  case resolveOverrideDefinition (Just src) of
     Nothing  -> fail ("resolveAdhoc0: not a valid 0-arity program: " <> T.unpack src)
-    Just def -> runContextValue @branch (runDefinition @branch table def [])
+    Just def
+      | not (null (defParams def)) ->
+          fail ("resolveAdhoc0: expected a 0-arity program, got " <> show (length (defParams def)) <> " parameter(s)")
+      | otherwise -> runContextValue @branch (runDefinition @branch table def [])

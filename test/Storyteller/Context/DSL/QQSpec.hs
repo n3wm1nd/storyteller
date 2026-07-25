@@ -34,7 +34,7 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Context.DSL.Compile (runDefinition)
+import Storyteller.Context.DSL.Compile (emptyLibrary, runDefinition)
 import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
@@ -78,4 +78,4 @@ spec = describe "[dsl| ... |]" $ do
     manualDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
     manualDsl = case parseDefinition "<test>" (T.unlines ["as \"injury\": read status/injury.md"]) of
       Left err  -> fail (T.unpack (renderParseErr err))
-      Right def -> runDefinition @branch Map.empty def []
+      Right def -> runDefinition @branch emptyLibrary def []

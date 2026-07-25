@@ -40,6 +40,7 @@ module Storyteller.Writer.Agent.ContextCost
   ) where
 
 import Data.List (sortOn)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -51,6 +52,7 @@ import qualified Data.Map.Strict as Map
 import Storyteller.Context.DSL.AST (Block, Definition(..), Located(..), Pos(..), Stmt(..))
 import Storyteller.Context.DSL.Compile (Binding, Library, runDefinition)
 import Storyteller.Context.DSL.Library (contextWriterDef)
+import Storyteller.Context.DSL.Parser (parseDefinition)
 import Storyteller.Context.DSL.Rendering (renderContext, renderText)
 import Storyteller.Context.DSL.Value (Message(User), bval, leafValue)
 import Storyteller.Core.Branch (BranchOp)
@@ -186,21 +188,28 @@ buildLineCosts lib def args = do
 --   (@program@ is a full, self-contained @context.writer@ override, run
 --   against @path@), so "preview this program" and "estimate its line
 --   costs" can never disagree about what the program even resolves to: a
---   parse failure or an arity mismatch in @program@ falls back to the
---   compiled-in 'contextWriterDef' exactly the way a real send would
---   (see 'Storyteller.Core.Context.buildContextLibrary''s own Haddock),
---   rather than this module inventing its own, second notion of "invalid
---   program."
+--   broken @program@ (parse failure, or an arity mismatch against
+--   whatever else in the library still calls @context.writer@) is
+--   rejected by 'Storyteller.Core.Context.buildContextLibrary' itself,
+--   the identical check\/fallback a real send would apply, rather than
+--   this module inventing its own, second notion of "invalid program."
+--   'buildLineCosts' still needs the actual 'Definition' (line-level
+--   ablation walks its parsed body), not just the ability to run it, so
+--   this reads @overrides'@'s own rejection list to tell "@program@ was
+--   accepted" apart from "the compiled-in default is what's actually
+--   live" -- the same verdict 'buildContextLibrary' already reached,
+--   never a second, independent check of @program@ on its own.
 buildProgramCosts
   :: forall branch r
   .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
   => FilePath -> Text -> Sem r [LineCost]
 buildProgramCosts path program = do
   overrides <- getContextOverrides
-  let overrides' = Map.insert "context.writer" program overrides
-      table      = buildContextLibrary @branch overrides'
-      def        = maybe contextWriterDef id
-                     (resolveOverrideDefinition (length (defParams contextWriterDef)) (Just program))
+  let overrides'         = Map.insert "context.writer" program overrides
+      (table, rejected)  = buildContextLibrary @branch overrides'
+      def = if "context.writer" `elem` rejected
+              then contextWriterDef
+              else fromMaybe contextWriterDef (either (const Nothing) Just (parseDefinition "<context override>" program))
   buildLineCosts @branch table def [bval (pure (leafValue [User (T.pack path)]))]
 
 -- | 'buildLineCosts', but for a bare 0-arity ad-hoc snippet -- what a
@@ -221,7 +230,10 @@ buildAdhocProgramCosts
   => Text -> Sem r [LineCost]
 buildAdhocProgramCosts program = do
   overrides <- getContextOverrides
-  let table = buildContextLibrary @branch overrides
-  case resolveOverrideDefinition 0 (Just program) of
-    Nothing  -> fail ("buildAdhocProgramCosts: not a valid 0-arity program: " <> T.unpack program)
-    Just def -> buildLineCosts @branch table def []
+  let (table, _rejected) = buildContextLibrary @branch overrides
+  case resolveOverrideDefinition (Just program) of
+    Nothing  -> fail ("buildAdhocProgramCosts: not a valid program: " <> T.unpack program)
+    Just def
+      | not (null (defParams def)) ->
+          fail ("buildAdhocProgramCosts: expected a 0-arity program, got " <> show (length (defParams def)) <> " parameter(s)")
+      | otherwise -> buildLineCosts @branch table def []

@@ -84,7 +84,7 @@ type JourneyEffects r =
 --   through now, instead of a local 'gatherFileContext' read.
 flatMainContext :: JourneyEffects r => FilePath -> Sem r [ContextBlock]
 flatMainContext path = do
-  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
+  writerVal <- resolveContext1 @Main "context.writer" (T.pack path)
   map Render.messageToBlock <$> runContextValue @Main (valueDefault writerVal)
 
 -- | The three requests a Writer-tab session issues, and what each produced.

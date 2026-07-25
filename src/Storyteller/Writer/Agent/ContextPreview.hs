@@ -66,7 +66,7 @@ buildPreview
   => FilePath -> Text -> Sem r PreviewNode
 buildPreview path program = do
   setContextOverride "context.writer" program
-  writerV <- resolveContext1 @branch "context.writer" (CtxLibrary.contextWriter @branch) (T.pack path)
+  writerV <- resolveContext1 @branch "context.writer" (T.pack path)
   fromRendered <$> runContextValue @branch (renderContext writerV)
 
 -- | 'buildPreview', but for a bare 0-arity snippet with no @path@ of its

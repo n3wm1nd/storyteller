@@ -70,7 +70,7 @@ runDslOn
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname $ do
   overrides <- getContextOverrides
-  runContextValue @Main (act (buildContextLibrary @Main overrides))
+  runContextValue @Main (act (fst (buildContextLibrary @Main overrides)))
 
 -- | 'runDslOn', but against a library assembled with the given committed
 --   overrides -- what 'contextCharacterBlurbOverrideSpec' uses to prove an
@@ -86,7 +86,7 @@ runDslOnWith
 runDslOnWith overrides bname act =
   runBranchAndFS @Main bname $ interpretContextStorageMap overrides $ do
     ovr <- getContextOverrides
-    runContextValue @Main (act (buildContextLibrary @Main ovr))
+    runContextValue @Main (act (fst (buildContextLibrary @Main ovr)))
 
 entryTexts :: Value r -> Action r (Map Text Text)
 entryTexts v = Map.fromList <$>
@@ -246,7 +246,7 @@ contextStyleSelfReferenceOverrideSpec =
     overrides = Map.fromList
       [ ("context.style", "\"prefix: %context.style%\"") ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
-    go table = case Map.lookup "context.style" table of
+    go table = case lookup "context.style" (Compile.libraryEntries table) of
       Just (Binding 0 fn) -> do
         scope <- Compile.currentScope @Main
         messagesText <$> (valueDefault =<< fn [] scope)
@@ -271,7 +271,7 @@ newNameSelfReferenceOverrideSpec =
     overrides = Map.fromList
       [ ("context.brandNew", "context.brandNew") ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
-    go table = case Map.lookup "context.brandNew" table of
+    go table = case lookup "context.brandNew" (Compile.libraryEntries table) of
       Just (Binding 0 fn) -> messagesText <$> (valueDefault =<< fn [] (emptyValue @(ContextRow Main r)))
       _                   -> fail "expected context.brandNew to be a 0-arity binding"
 
@@ -299,7 +299,7 @@ mutualReferenceOverrideSpec =
       , ("context.mutualB", "context.mutualA")
       ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
-    go table = case Map.lookup "context.mutualA" table of
+    go table = case lookup "context.mutualA" (Compile.libraryEntries table) of
       Just (Binding 0 fn) -> messagesText <$> (valueDefault =<< fn [] (emptyValue @(ContextRow Main r)))
       _                   -> fail "expected context.mutualA to be a 0-arity binding"
 

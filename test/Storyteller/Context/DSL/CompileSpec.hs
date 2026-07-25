@@ -756,7 +756,7 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
   where
     go :: forall r. DslR r => Action (ContextRow Main r) (Text, Text, Text, [Name], Text, Text)
     go = do
-      v <- CtxLibrary.contextCharacter @Main (buildContextLibrary @Main Map.empty) "jenny"
+      v <- CtxLibrary.contextCharacter @Main (fst (buildContextLibrary @Main Map.empty)) "jenny"
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

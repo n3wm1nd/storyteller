@@ -51,7 +51,7 @@ askCharacterAgent
   .  (LLMs r, Members '[BranchOp branch, BranchResolve, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
-  charVal <- resolveContext1 @branch "context.character" (CtxLibrary.contextCharacter @branch) charname
+  charVal <- resolveContext1 @branch "context.character" charname
   summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journalFull" charVal)
   let blocks = flattenCharSummary summary
   configsWithPrompt <- getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt defaultAskConfig

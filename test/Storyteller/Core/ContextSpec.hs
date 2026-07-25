@@ -12,14 +12,22 @@
 
 -- | 'Storyteller.Core.Context.ContextStorage' -- the Context DSL's
 --   'Storyteller.Core.Prompt.PromptStorage' equivalent. Checks the pure
---   override-resolution decision ('resolveOverrideDefinition') directly,
---   then 'resolveContext0'\/'resolveContext1' end to end against both
---   interpreters: a missing override falls back to the caller's own
---   compiled-in default unchanged, and a real committed override on the
---   dedicated 'Contexts' branch actually takes over -- run from the
---   *caller's* ambient branch position (not the Contexts branch itself),
---   the same "whatever I'm already in" contract every other Context DSL
---   definition gets.
+--   parse-only decision ('resolveOverrideDefinition') directly, then
+--   'resolveContext0'\/'resolveContext1' end to end against both
+--   interpreters: a missing override falls back to the compiled-in default
+--   unchanged, and a real committed override on the dedicated 'Contexts'
+--   branch actually takes over -- run from the *caller's* ambient branch
+--   position (not the Contexts branch itself), the same "whatever I'm
+--   already in" contract every other Context DSL definition gets.
+--
+--   'resolveContext0'\/'resolveContext1' no longer take a caller-supplied
+--   Haskell default (see 'Storyteller.Core.Context.buildContextLibrary'
+--   and 'Storyteller.Context.DSL.Compile.runNamed''s own Haddocks) -- a
+--   name only ever resolves against 'defaultLibraryOrder''s real compiled
+--   graph now, so these tests exercise real slots (@context.style@,
+--   @context.character@) rather than the test-local
+--   @context.greeting@\/@context.greeting1@ stand-ins the previous
+--   fallback-taking design needed.
 module Storyteller.Core.ContextSpec (spec) where
 
 import qualified Data.Map.Strict as Map
@@ -36,8 +44,9 @@ import qualified Storage.Ops as Ops
 import Storyteller.Core.LLM.Role (ProseModel)
 import Storyteller.Core.Context
   ( contextsBranchName, setContextOverride, interpretContextStorageFS, interpretContextStorageMap
-  , resolveOverrideDefinition, ContextRow, ContextStorage, resolveContext0, resolveContext1, resolveAdhoc0, runContextValue )
-import Storyteller.Core.ContentEffects (BranchResolve, TreeAccess)
+  , resolveOverrideDefinition, ContextRow, ContextStorage, resolveContext0, resolveContext1, resolveAdhoc0, runContextValue
+  , buildContextLibrary, getContextOverrides )
+import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -45,8 +54,8 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
+import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Library)
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Rendering (renderContext, renderText, renderMessages, namedChild)
 import Storyteller.Context.DSL.Value
 import Storyteller.Writer.Presence (enters)
@@ -66,6 +75,7 @@ spec = do
   resolveAdhoc0Spec
   clientSubmittedContextProgramSpec
   frontendSynthesizedProgramShapeSpec
+  buildContextLibrarySpec
 
 -- | The actual point of the whole override mechanism, end to end, against
 --   the real production definition and the real rendering pipeline --
@@ -89,7 +99,7 @@ clientSubmittedContextProgramSpec = describe "a client-submitted context.writer 
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runBranchAndFS @Main (BranchName "main") $ do
-        writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) "target.md"
+        writerV <- resolveContext1 @Main "context.writer" "target.md"
         renderText <$> runContextValue @Main (renderContext writerV))
     `shouldBe` Right "## Story background\n\n## lore/notes.md\n\na hand-authored note\n\n## Chapters written so far\n\n## Other notes"
 
@@ -98,7 +108,7 @@ clientSubmittedContextProgramSpec = describe "a client-submitted context.writer 
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runBranchAndFS @Main (BranchName "main") $ do
         setContextOverride "context.writer" "path:\n  \"a client-submitted override, replacing everything\"\n"
-        writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) "target.md"
+        writerV <- resolveContext1 @Main "context.writer" "target.md"
         ctx <- runContextValue @Main (renderContext writerV)
         pure (renderText ctx, map describeMessage (renderMessages ctx :: [LLM.Message ProseModel])))
     `shouldBe` Right
@@ -134,7 +144,7 @@ frontendSynthesizedProgramShapeSpec =
         runBranchAndFS @Main (BranchName "main") $ do
           _ <- enters @Main "chapters/ch2.md" (Character (BranchName "character/aria"))
           setContextOverride "context.writer" frontendProgram
-          writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) "chapters/ch2.md"
+          writerV <- resolveContext1 @Main "context.writer" "chapters/ch2.md"
           runContextValue @Main $ do
             rc <- renderContext writerV
             pure (renderText rc, renderText <$> namedChild "aria" rc))
@@ -163,82 +173,81 @@ describeMessage msg@(LLM.UserText t)      = (LLM.messageDirection msg, t)
 describeMessage msg@(LLM.AssistantText t) = (LLM.messageDirection msg, t)
 describeMessage msg                       = (LLM.messageDirection msg, "<unsupported in this test>")
 
--- | An arity-0 default -- what @context.lore@\/@context.chapters@\/
---   @context.style@-style definitions actually have. Takes (and ignores)
---   the compile-time 'Library' table 'resolveContext0' now always applies
---   to its @def@ argument -- this stub references no other library name,
---   so it never needs to consult it.
-defaultGreeting :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
-defaultGreeting _table = pure (leafValue [User "default text"])
-
--- | An arity-1 default -- the shape @context.character@-style definitions
---   actually have (real production callers now resolve @context.character@
---   through exactly this same machinery, see
---   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent') -- echoes
---   its own argument's text back, wrapped, so a caller can tell whether
---   the argument it passed in actually reached the running definition.
-defaultEcho :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-defaultEcho _table arg = pure (leafValue [User ("default: " <> arg)])
-
 resolveOverrideDefinitionSpec :: Spec
 resolveOverrideDefinitionSpec = describe "resolveOverrideDefinition" $ do
   it "returns Nothing when there's no override" $
-    resolveOverrideDefinition 0 Nothing `shouldBe` Nothing
+    resolveOverrideDefinition Nothing `shouldBe` Nothing
 
   it "returns Nothing on a malformed override" $
-    resolveOverrideDefinition 0 (Just "as \"unterminated:") `shouldBe` Nothing
+    resolveOverrideDefinition (Just "as \"unterminated:") `shouldBe` Nothing
 
-  it "returns Nothing when the override's own arity doesn't match" $
-    resolveOverrideDefinition 0 (Just "charname:\n  charname\n") `shouldBe` Nothing
-
-  it "returns Just the parsed Definition when it parses and the arity matches" $
-    case resolveOverrideDefinition 1 (Just "charname:\n  charname\n") of
+  it "returns Just the parsed Definition, at whatever arity it parses to, when it parses" $
+    case resolveOverrideDefinition (Just "charname:\n  charname\n") of
       Just _  -> pure ()
-      Nothing -> expectationFailure "expected a valid arity-1 override to parse"
+      Nothing -> expectationFailure "expected a valid override to parse"
 
--- | 'resolveContext0' end to end, against both real interpreters. Each
---   case is two steps: 'resolveContext0' itself (a plain 'Sem' call,
---   already fully run) hands back a 'Value', which still needs a
---   *second*, separate 'runContextValue' call to force its own
---   'valueDefault' -- exactly the two-call shape the old
---   'runContextBinding0' used to wrap into one.
+-- | 'resolveContext0' end to end, against both real interpreters, using
+--   @context.style@ (@read \"style.md\" | orifempty \"\"@, see
+--   'Storyteller.Context.DSL.Library.contextStyleDef') -- a real
+--   'defaultLibraryOrder' slot, so this exercises the actual production
+--   resolution path rather than a caller-supplied Haskell stand-in (see
+--   this module's own Haddock on why the old @context.greeting@ test name
+--   is gone). Each case is two steps: 'resolveContext0' itself (a plain
+--   'Sem' call, already fully run) hands back a 'Value', which still
+--   needs a *second*, separate 'runContextValue' call to force its own
+--   'valueDefault'.
 resolveContext0Spec :: Spec
 resolveContext0Spec = describe "resolveContext0" $ do
-  it "falls through to the caller's own default when nothing is staged" $
+  it "falls through to the compiled-in default when nothing is staged" $
     run (testStack $ do
-      _ <- createBranch (BranchName "empty")
-      runBranchAndFS @Main (BranchName "empty") $ do
-        v <- resolveContext0 @Main "context.greeting" (defaultGreeting @Main)
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        v <- resolveContext0 @Main "context.style"
         runContextValue @Main (messagesText <$> valueDefault v))
-    `shouldBe` Right "default text"
+    `shouldBe` Right ""
 
   it "a staged override is visible to a lookup in the same interpretation" $
     run (testStack $ do
-      _ <- createBranch (BranchName "empty")
-      runBranchAndFS @Main (BranchName "empty") $ do
-        setContextOverride "context.greeting" "\"staged text\"\n"
-        v <- resolveContext0 @Main "context.greeting" (defaultGreeting @Main)
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "\"staged text\"\n"
+        v <- resolveContext0 @Main "context.style"
         runContextValue @Main (messagesText <$> valueDefault v))
     `shouldBe` Right "staged text"
 
-  it "a staged override still only wins when its arity matches -- same silent-fallback rule as a branch commit" $
-    run (testStack $ do
-      _ <- createBranch (BranchName "empty")
-      runBranchAndFS @Main (BranchName "empty") $ do
-        setContextOverride "context.greeting" "charname:\n  charname\n"
-        v <- resolveContext0 @Main "context.greeting" (defaultGreeting @Main)
+  -- | An override at the wrong arity for a name's own external contract
+  --   (@resolveContext0@ always calls @context.style@ with zero
+  --   arguments) still *compiles*, and still lands in the library --
+  --   there is no DSL-internal caller of @context.style@ to catch the
+  --   mismatch during compilation, so nothing rejects the override up
+  --   front (see 'Storyteller.Core.Context.buildContextLibrary''s own
+  --   Haddock: it only ever rejects a compile *failure*, and an
+  --   isolated 1-arity body compiles fine on its own terms). What fails,
+  --   correctly, is the actual call: @resolveContext0@ is a lookup that
+  --   expects a 0-arity binding at this name and gets a 1-arity one --
+  --   exactly the same "wrong number of arguments" failure calling any
+  --   mismatched function would give, not a silent fallback.
+  it "a staged override at the wrong arity for context.style's own contract fails the lookup, not silently" $
+    (run (testStack $ do
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "charname:\n  charname\n"
+        v <- resolveContext0 @Main "context.style"
         runContextValue @Main (messagesText <$> valueDefault v))
-    `shouldBe` Right "default text"
+      :: Either String Text)
+    `shouldSatisfy` \case
+      Left _  -> True
+      Right _ -> False
 
   it "a staged override takes priority over a same-named branch commit" $
     run (testStack $ do
       seedBranch "main" []
       seedBranch (unBranchName contextsBranchName)
-        [("context/greeting.dsl", "\"from the branch\"\n")]
+        [("context/style.dsl", "\"from the branch\"\n")]
       runBranchAndFS @Main (BranchName "main") $
         interpretContextStorageFS $ do
-          setContextOverride "context.greeting" "\"staged text\"\n"
-          v <- resolveContext0 @Main "context.greeting" (defaultGreeting @Main)
+          setContextOverride "context.style" "\"staged text\"\n"
+          v <- resolveContext0 @Main "context.style"
           runContextValue @Main (messagesText <$> valueDefault v))
     `shouldBe` Right "staged text"
 
@@ -246,39 +255,37 @@ resolveContext0Spec = describe "resolveContext0" $ do
     run (testStack $ do
       seedBranch "main" [("greeting.md", "hello from main")]
       seedBranch (unBranchName contextsBranchName)
-        [("context/greeting.dsl", "< read \"greeting.md\"\n")]
+        [("context/style.dsl", "< read \"greeting.md\"\n")]
       runBranchAndFS @Main (BranchName "main") $
         interpretContextStorageFS $ do
-          v <- resolveContext0 @Main "context.greeting" (defaultGreeting @Main)
+          v <- resolveContext0 @Main "context.style"
           runContextValue @Main (messagesText <$> valueDefault v))
     `shouldBe` Right "hello from main"
 
--- | 'resolveContext1' end to end -- the 1-arity counterpart, e.g.
---   @context.character@'s own shape. Regression for the real gap the
---   project chat found: every real character-context caller used to call
---   'Storyteller.Context.DSL.Library.contextCharacter' directly, never
---   through this machinery, so a project committing an override for
---   @context.character@ was silently ignored.
+-- | 'resolveContext1' end to end -- the 1-arity counterpart, using
+--   @context.other@ (a real 1-arity slot: @path@, then every non-lore\/
+--   chapters file except @path@ itself -- see 'contextOtherDef'), for the
+--   same reason 'resolveContext0Spec' moved off its own test-local stand-in.
 resolveContext1Spec :: Spec
 resolveContext1Spec = describe "resolveContext1" $ do
-  it "falls back to the 1-arity default (echoing its own argument) when no override is committed" $
+  it "falls back to the compiled-in default when no override is committed" $
     run (testStack $ do
       seedBranch "main" []
       runBranchAndFS @Main (BranchName "main") $ do
-        v <- resolveContext1 @Main "context.greeting1" (defaultEcho @Main) "Aria"
+        v <- resolveContext1 @Main "context.other" "target.md"
         runContextValue @Main (messagesText <$> valueDefault v))
-    `shouldBe` Right "default: Aria"
+    `shouldBe` Right "## Other notes"
 
   it "resolves and runs a real 1-arity override too, with the real argument reaching it" $
     run (testStack $ do
       seedBranch "main" []
       seedBranch (unBranchName contextsBranchName)
-        [("context/greeting1.dsl", "name:\n  \"overridden for %name%\"\n")]
+        [("context/other.dsl", "name:\n  \"overridden for %name%\"\n")]
       runBranchAndFS @Main (BranchName "main") $
         interpretContextStorageFS $ do
-          v <- resolveContext1 @Main "context.greeting1" (defaultEcho @Main) "Aria"
+          v <- resolveContext1 @Main "context.other" "target.md"
           runContextValue @Main (messagesText <$> valueDefault v))
-    `shouldBe` Right "overridden for Aria"
+    `shouldBe` Right "overridden for target.md"
 
 -- | 'resolveAdhoc0' -- what a per-call @pinnedPrograms@ entry
 --   ('Server.Writer.File.chatWriter''s own wire field) resolves through:
@@ -357,3 +364,65 @@ resolveAdhoc0Spec = describe "resolveAdhoc0" $ do
       , "loreEntry [lore/a.md]"
       , "loreEntry [lore/b.md]"
       ]
+
+-- | 'buildContextLibrary' end to end -- the headline behavior of the
+--   compile-the-whole-sequence-and-reject redesign, not yet exercised
+--   directly by anything above (those tests all go through
+--   'resolveContext0'\/'resolveContext1', which only ever surface a
+--   rejection indirectly, as "the default ran instead").
+buildContextLibrarySpec :: Spec
+buildContextLibrarySpec = describe "buildContextLibrary" $ do
+  it "rejects an override whose own body references an unresolvable name, reporting it, and the default still runs" $
+    run (testStack $ do
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "\"prefix: %this.does.not.exist%\"\n"
+        rejected <- rejectedOverrides @Main
+        v <- resolveContext0 @Main "context.style"
+        text <- runContextValue @Main (messagesText <$> valueDefault v)
+        pure (rejected, text))
+    `shouldBe` Right (["context.style"], "")
+
+  it "accepts an override with no bad references, reporting nothing rejected" $
+    run (testStack $ do
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "\"a fine override\"\n"
+        rejectedOverrides @Main)
+    `shouldBe` Right []
+
+  -- | An override interpolating its own name (@%context.style%@, not just
+  --   a bare 'EIdent' reference -- the same resolution rule, just reached
+  --   through string interpolation instead) resolves to the compiled
+  --   default sitting one slot behind it in the sequence, not itself and
+  --   not a rejection -- see 'Storyteller.Core.Context.spliceOverrides''s
+  --   own Haddock on why a default-then-override pair at one name is what
+  --   makes this work, and 'Storyteller.Context.DSL.Compile.definitionBinding''s
+  --   Haddock for why @%name%@ spans are checked the identical way a bare
+  --   'EIdent' already is.
+  it "an override interpolating its own name resolves to the compiled default, not itself" $
+    run (testStack $ do
+      seedBranch "main" [("style.md", "write in past tense")]
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "\"prefix: %context.style%\"\n"
+        rejected <- rejectedOverrides @Main
+        v <- resolveContext0 @Main "context.style"
+        text <- runContextValue @Main (messagesText <$> valueDefault v)
+        pure (rejected, text))
+    `shouldBe` Right ([], "prefix: write in past tense")
+
+-- | Just the rejected-name half of 'buildContextLibrary''s result, forced
+--   inside a real 'runContextValue' call -- 'buildContextLibrary' needs
+--   'branch'\'s full content-effects row resolved to build its dictionaries
+--   at all (see its own Haddock), which a bare 'Map Name Text -> (Library
+--   r, [Name])' call sitting outside that interpreted row can't supply on
+--   its own; the accepted 'Library' half is still thrown away unused, only
+--   the effect row itself needs to be concrete.
+rejectedOverrides
+  :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Sem r [Name]
+rejectedOverrides = do
+  overrides <- getContextOverrides
+  let (_lib, rejected) = buildContextLibrary @branch overrides
+        :: (Library (ContextRow branch r), [Name])
+  runContextValue @branch (pure rejected)

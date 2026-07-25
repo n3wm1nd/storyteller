@@ -119,7 +119,7 @@ chapterAction mode sheetPath outFile activeChars = do
   -- as real, model-agnostic Context DSL messages (not flattened
   -- 'ContextBlock' text) all the way into 'chapterProse'\/'chapterProseByBeat',
   -- which now bind them to a concrete model only inside 'proseAgent'.
-  writerVal <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack outFile)
+  writerVal <- resolveContext1 @Main "context.writer" (T.pack outFile)
   fileCtx <- map Render.dslMessageToLLM <$> runContextValue @Main (valueDefault writerVal)
   existing <- fileExists @(BranchTag Main) outFile >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile

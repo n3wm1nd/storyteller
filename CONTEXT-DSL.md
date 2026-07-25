@@ -282,116 +282,156 @@ the verification story below.
 
 ## Library, compilation, and override
 
-There is no separate `compile`/`Library` type or `dslwith` quoter — an
-earlier draft of this design proposed both, reasoning (correctly, in the
-abstract) that override resolution needs to be "one function, given an
-explicit environment." Reading the actual implementation
-(`Storyteller.Context.DSL.Value`/`Compile`) turned up that this was already
-built, just under different names, and more elegantly than the abstract
-proposal: `ContextLibrary` (`newtype ContextLibrary = ContextLibrary (Map
-Name Binding)`) travels as a plain Reader-shaped parameter on **every**
-`Action`, regardless of which quoter produced it:
+**A `Library` is an ordered sequence, not a `Map`** — the one representation
+decision that actually matters here, settled after the `Map`-based design
+(described in earlier revisions of this section) turned out to have no way
+to express what the language actually needed:
 
 ```haskell
-newtype Action a = Action
-  { runAction :: forall m. (Core.StoreM m, MonadBranch m) => ContextLibrary -> Core.StoreT m a }
+newtype Library r = Library { libraryEntries :: [(Name, Binding r)] }
 ```
 
-Cross-definition reference (`EIdent`/`EApp`) resolves through
-`Storyteller.Context.DSL.Compile.resolveIdent`: check the current
-definition's own local `Env` (parameters, `let`s, loop variables) first,
-fall back to `Storyteller.Context.DSL.Value.lookupLibrary` (which reads
-whatever `ContextLibrary` the *currently running* `Action` was handed) on a
-local miss. Since every `Action`, built-in or override, resolves against
-whatever `ContextLibrary` it's actually run with — never one fixed at the
-point it was written — **there is only one quoter that matters for this**:
-`[dsl| ... |]` still parses at GHC compile time and still splices a curried
-function of the definition's own arity, but the library its body's
-cross-references resolve against was never fixed by the quoter at all; it
-was always going to be "whatever's ambient when this runs." A speculative
-`dslwith` quoter taking an explicit `Library` argument would have been
-solving a problem this already didn't have.
+The same `Name` genuinely means *different* `Binding`s at different points
+in the sequence — an override replaces what a name means from its own
+position onward, but everything compiled *before* that position still
+resolves the name to whatever it meant there. "The library" isn't one fixed
+table with entries mutated in place; it's a sequence of tables, one per
+position, that happen to share a representation. A `Map` can only answer
+"what does this name mean in the finished table" — precisely the question
+that has no single right answer here. A list answers the question this
+language actually needs: "what does this name mean as of *this* slot,"
+resolved by walking from that slot toward the entries compiled before it.
 
-`Storyteller.Context.DSL.Compile.definitionBinding :: Definition -> Binding`
-is what turns a parsed `Definition` (built-in, or freshly parsed from a
-project's committed override text) into the `Binding` shape `ContextLibrary`
-holds — the same function either way, so a compiled-in default and a
-project's override are genuinely the same kind of table entry, not two
-mechanisms.
+**Compiling is one left-to-right fold**
+(`Storyteller.Context.DSL.Compile.buildLibrary`): each definition in the
+input sequence is compiled — its body's every `EIdent`/`EApp`/`EFilter`
+reference (including `%name%` string interpolation, which resolves through
+the identical rule) checked and resolved — against exactly the `Library`
+built from every entry *before* it, then consed onto the front. A
+definition can only ever see what was compiled earlier, never what comes
+later or shares its own slot.
 
-**Override = define-new, same operation.** `Storyteller.Core.Context.buildContextLibrary`
-resolves "what's bound to this name right now" — there's no gate requiring a
-name to already exist before a project can bind it. A project committing
-`contexts/glossary.dsl` under a name we never shipped is exactly as valid as
-one committing `contexts/character/blurb.dsl` to replace `character.blurb`.
+**An override doesn't replace its default's entry in the sequence — it
+sits right after it, both sharing one `Name`.** Two entries sharing a key is
+exactly what the type above already means, not a special case:
+`Storyteller.Core.Context.spliceOverrides` builds the input sequence as
+`[..., (name, defaultDef), (name, overrideDef), ...]` for an overridden
+slot. This is what lets an override's own reference to its own name resolve
+to the compiled default sitting one slot behind it, rather than failing or
+looping — the identical "previous version, never itself" rule a `let`
+shadowing an outer binding already has in any ordinary language, now simply
+falling out of the sequence's own order instead of needing a special
+self-reference case. True self-reference (a name with no earlier occurrence
+at all — a brand-new project-only name referencing itself, or two new names
+referencing each other) still has nothing to resolve to and fails to
+compile, exactly as it should: the language was never meant to support
+recursion (see Non-goals).
 
-**One real asymmetry, and one real subtlety about naming, both worth being
-precise about:**
+**Resolution happens exactly once, at the moment a `Binding` would be
+constructed — `evalExpr` never consults `Library` at all, at any point,
+for any reference.** This is a real distinction, not phrasing: an earlier
+version of this design merely *checked* that every name would resolve
+before constructing a `Binding`, then discarded that work and had the
+running `Action` redo the identical `Library` lookup from scratch on every
+single evaluation of every `EIdent`/`EApp`/`EFilter` — "checked once,
+resolved every time it runs" is still deferred, repeated work, just with
+an extra up-front validation pass bolted on. The actual fix:
+`Storyteller.Context.DSL.Compile.compileDefinition` folds every one of
+`Library`'s entries directly into the starting `Env` a single time, so a
+name resolves to its real `Binding` (not just "confirmed resolvable") the
+moment `Env` is built, and every later `let`/`for`-bound local shadows a
+library entry of the same name through the exact same map, by ordinary
+`Map.insert` — one lookup mechanism, not two layered ones, and no
+`Library` parameter left anywhere in `runStmts`/`evalExpr`/`resolveIdent`
+to consult again. `Storyteller.Context.DSL.Compile.definitionBinding`
+still walks a `Definition`'s whole body first (mirroring `resolveIdent`'s
+own resolution rules exactly, including the closed
+`without`/`only`/`exclude`/`latest`/`coreFilters` carve-outs that never
+touch `Library` at all, and `read`'s own narrow "unbound bare token means a
+literal path" exemption), and only constructs the `Binding` if every
+reference resolves — but that walk is what makes folding `Library`
+straight into `Env` *safe* (every name accepted by the walk is guaranteed
+present in the merged map by construction, so a plain `Map.lookup` on `Env`
+alone can never miss something the check already confirmed exists), not a
+separate mechanism from actually resolving those names.
 
-- Our compiled-in defaults form a closed graph that can never reference a
-  name a project hasn't invented yet (built at a point in time before any
-  project's overrides exist); a project's own new name can reference
-  anything in that graph, plus anything else the project has defined. The
-  dependency edge only ever points from project-authored text toward the
-  built-in graph, never the reverse.
-- `buildContextLibrary` checks a project's committed override text against
-  `defaultLibrarySource`'s own keys **independently, per key**. A
-  definition registered under two keys pointing at the *same* underlying
-  `Definition` (a bare name, and a dotted override address) would **not**
-  automatically move together under one committed override — overriding the
-  dotted key wouldn't thereby change what the bare name (used by some other
-  default's own body) resolves to. This was a real bug in `character.blurb`,
-  fixed by giving it only the dotted key and having every reference —
-  including its own use inside `contextCharacter` — go through that same
-  dotted name. `context.lore`/`context.chapters`/`context.other` have since
-  been given the identical one-key treatment (see
-  `Storyteller.Context.DSL.Library.defaultLibraryOrder`) — no two-key
-  default is currently registered anywhere in the library, so this is a bug
-  class the codebase now avoids by convention, not a live gap (see Open
-  questions).
+This is possible in one pass, exhaustively, because the language has **no
+`if` and no recursion** — a definition's body references exactly the names
+its text contains, with no data-dependent branching that could make the
+answer depend on a runtime value. There is no separate "verification" pass
+alongside ordinary compilation; resolving a reference *is* what compiling a
+definition now does — and it happens only there, never again.
 
-## Verification
+**One representation subtlety worth being precise about, since it broke
+silently once already:** `Library`'s own list is consed front-to-back as
+`buildLibrary` compiles left to right, so its head is the *most recently
+compiled* entry for any name occurring more than once (an override sitting
+right after its default, see `spliceOverrides` above) — `lookup`'s
+first-match semantics pick that correctly wherever this module reads
+`libraryEntries` directly. Folding that list into a `Map` via `Map.fromList`
+needs the list **reversed** first: `Map.fromList` keeps whichever
+occurrence comes *last* in the list it's given, which, fed the list
+unreversed, would silently pick the earliest-compiled entry (the default)
+over a later override sharing its name — inverting the whole point of the
+default-then-override pairing. `compileDefinition` reverses before folding
+for exactly this reason.
 
-**Not yet implemented** — this section describes the intended design; there
-is no closure-check test in the codebase yet (see Open questions). Worth
-building once the graph is large enough that a broken reference is a real,
-recurring risk rather than a hypothetical.
+**A broken override is rejected outright, not silently discarded into "use
+the default."** `Storyteller.Core.Context.buildContextLibrary` splices
+`overrides` into the default sequence and tries to compile the whole thing;
+if any slot fails — the override's own body doesn't resolve, or it changes
+an arity some other definition still calls at the old one — that one
+override is dropped and the whole sequence is recompiled from scratch
+without it, repeating until everything compiles. This always terminates:
+`overrides` strictly shrinks each retry, and the base case (no overrides at
+all) is the default sequence alone, which — being a closed, already-checked
+graph over `hostLibrary` — always compiles regardless of what any project
+could ever commit. The function returns both the accepted `Library` and the
+list of every name whose override was rejected, so a caller can report
+*which* commits didn't take, rather than the previous design's fully silent
+fallback.
 
-The language has **no `if` and no recursion** (see Non-goals) — every
-statement in a definition's body always executes when that body runs, so
-the full set of names a definition *could* call is identical to the set it
-*will* call. That's what makes exhaustive static checking meaningful rather
-than approximate. Now that bare-vs-glob disambiguation is known to be purely
-lexical (see Grammar above), this is simpler than the original proposal: an
-`EIdent`/`EApp` is *always* a name reference, checkable exhaustively, with
-no "bare tokens get a softer guarantee" carve-out — that carve-out was only
-ever needed under the (incorrect) assumption that bare-token resolution
-involved a runtime glob fallback.
+**An override at the wrong arity for its own name's external contract still
+compiles and still lands in the library, if nothing inside the DSL calls it
+at the old arity to catch the mismatch.** A definition with no DSL-internal
+callers (`context.style`, say) has nothing inside the compiled graph to
+reject a wrong-arity override on its behalf — the override's own body is
+checked in isolation and, if it's otherwise valid text, accepted. What then
+fails is the actual call: `Storyteller.Core.Context.resolveContext0`/
+`resolveContext1` (`Storyteller.Context.DSL.Compile.runNamed` underneath)
+are a lookup expecting a specific arity at that name, and a mismatch there
+is exactly the same "wrong number of arguments" failure calling any
+mismatched function would give — not a gap to engineer around, and not
+something `buildContextLibrary` should guess at ahead of time: a project
+committing a different arity for a name is semantically discouraged, but
+mechanically permitted, and the failure belongs at the one place that
+actually knows what arity was expected.
 
-Verification would not be a separate mechanism from ordinary resolution —
-the same `resolveIdent`/`lookupLibrary` walk, run structurally against a
-fixed `ContextLibrary` snapshot instead of lazily inside a running `Action`:
+**Override = define-new, same operation, otherwise.**
+`Storyteller.Core.Context.buildContextLibrary` resolves "what's bound to
+this name right now" — there's no gate requiring a name to already exist
+before a project can bind it. A project committing `contexts/glossary.dsl`
+under a name we never shipped is exactly as valid as one committing
+`contexts/character/blurb.dsl` to replace `character.blurb`; a genuinely new
+name is simply appended once, after the whole default sequence, with no
+default-then-override pair (there is no default to pair it with).
 
-- **Our own defaults**: walk every default `Definition`'s body and check
-  every referenced name exists in `defaultLibrarySource` (∪ that
-  definition's own parameters) at the right arity, for every `EIdent`/`EApp`
-  found. Exhaustive, because the graph is finite, known, and provably
-  non-recursive. Run on every `cabal test`/CI — this is the actual
-  "compile-time verification" ask, delivered as a test over the whole graph
-  rather than a per-quote GHC check (which, even where it existed, only
-  ever covered Haskell-side call sites and never checked the bare-name
-  DSL-to-DSL references that are the *primary* composition mechanism).
-- **A live library snapshot** (defaults + whatever a project has currently
-  committed, assembled once per interpretation via
-  `Storyteller.Core.Context.buildContextLibrary`) could be walked the
-  identical way, before serving any request against it — catching a broken
-  override up front rather than discovering it mid-query. Still open:
-  should a broken override be rejected/flagged **at commit time**, or only
-  discovered opportunistically the next time something resolves it (see
-  Open questions)?
-- **Structural checking never forces content.** It walks the parsed AST —
-  names and arities — never runs an `Action`, so it costs nothing in
-  storage reads regardless of how deep or wide the graph is.
+**One real asymmetry, still true:** our compiled-in defaults form a closed
+graph that can never reference a name a project hasn't invented yet (fixed
+before any project's overrides exist); a project's own new name can
+reference anything in that graph, plus anything else the project has
+defined earlier in the same commit. The dependency edge only ever points
+from project-authored text toward the built-in graph, never the reverse.
+
+**Naming note, resolved:** an earlier revision of this section described a
+live bug class — a `Definition` registered under two keys (a bare alias and
+a dotted override address) not moving together under one committed
+override, since only the dotted key was actually override-addressable. That
+was real for `character.blurb` (fixed) and was, for a while, still latent
+for `context.lore`/`context.chapters`/`context.other`. All of them now carry
+only their dotted key in `Storyteller.Context.DSL.Library.defaultLibraryOrder`
+— no two-key default exists anywhere in the library any more, so this bug
+class is now avoided by convention across the whole graph, not a live gap.
 
 ## Rendering
 
@@ -614,9 +654,12 @@ Unchanged in spirit from the original design:
   `character.blurb`-style bug. Left here struck through rather than deleted,
   since it's exactly the kind of claim worth re-checking against the code
   before trusting again.
-- **Override failure mode**: reject/flag loudly at commit time, or only
-  fail (falling back to default) opportunistically when something resolves
-  it? Leaning loud, not confirmed.
+- ~~**Override failure mode**~~ — **resolved**: `buildContextLibrary`
+  rejects a broken override loudly, at the moment the whole sequence is
+  compiled (which happens once per interpretation, before anything
+  resolves against it), reporting exactly which name was rejected — never
+  a silent, opportunistic discovery the next time something happens to
+  resolve it. See "Library, compilation, and override" above.
 - **Subtree- vs leaf-level dropping** in `renderWithBudget` — can a whole
   named bucket be discarded as a unit under budget pressure, or does
   `Meta` only ever act at the leaf?

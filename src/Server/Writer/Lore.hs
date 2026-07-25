@@ -50,6 +50,7 @@ import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, buildContextLibrary, getContextOverrides, resolveOverrideDefinition, runContextValue)
 import Storyteller.Core.Git (BranchTag)
+import Storyteller.Context.DSL.AST (defParams)
 import Storyteller.Context.DSL.Compile (bval, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value (Value(..), defaultMeta, leafValue)
@@ -90,9 +91,10 @@ activeMentionAliases aliasNames = do
         , valueMeta = defaultMeta
         }
   overrides <- getContextOverrides
-  let table = buildContextLibrary @Main overrides
+  let (table, _rejected) = buildContextLibrary @Main overrides
   result <- runContextValue @Main $
-    case resolveOverrideDefinition 1 (Map.lookup "context.mentionFilter" overrides) of
-      Just overrideDef -> runDefinition @Main table overrideDef [bval (pure candidate)]
-      Nothing          -> CtxLibrary.contextMentionFilter @Main (bval (pure candidate))
+    case resolveOverrideDefinition (Map.lookup "context.mentionFilter" overrides) of
+      Just overrideDef
+        | length (defParams overrideDef) == 1 -> runDefinition @Main table overrideDef [bval (pure candidate)]
+      _ -> CtxLibrary.contextMentionFilter @Main (bval (pure candidate))
   pure (Set.fromList (map fst (valueEntries result)))

@@ -111,7 +111,7 @@ spec runner = describe "an edited journal entry creating dramatic irony (real LL
       -- bucket would read back, before trusting writeAgent's own internal
       -- resolution of the same thing.
       rosaSummary <- runBranchAndFS @Char_ keeperBranch $ do
-        charVal <- resolveContext1 @Char_ "context.character" (CtxLibrary.contextCharacter @Char_) "rosa"
+        charVal <- resolveContext1 @Char_ "context.character" "rosa"
         runContextValue @Char_ (CtxLibrary.characterSummaryOf "journal" charVal)
       info $ "Rosa's csJournal blocks: " <> T.pack (show (length (csJournal rosaSummary)))
       embed $ csJournal rosaSummary `shouldNotBe` []

@@ -178,7 +178,7 @@ askCharacter
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
-  charVal    <- resolveContext1 @Main "context.character" (CtxLibrary.contextCharacter @Main) ident
+  charVal    <- resolveContext1 @Main "context.character" ident
   ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
   answer <- runBranchAndFS @RoleplayChar (BranchName branchName) $
     characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question

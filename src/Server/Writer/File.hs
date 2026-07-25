@@ -124,7 +124,7 @@ chatWriter
   -> Maybe TickId -> Sem r ()
 chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = do
   mapM_ (setContextOverride "context.lore") mLore
-  loreV               <- resolveContext0 @Main "context.lore" (CtxLibrary.contextLore @Main)
+  loreV               <- resolveContext0 @Main "context.lore"
   pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
   (lore, pinnedProgramCtxs) <- runContextValue @Main $ do
     l        <- Rendering.renderContext loreV
@@ -175,7 +175,7 @@ chatWriter path prompt pinnedItems mLore chaptersMode pinnedPrograms mFlowTid = 
 --   reads that could quietly drift from @context.writer@'s own policy.
 flatMainMessages :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [DSL.Message]
 flatMainMessages path = do
-  writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
+  writerV <- resolveContext1 @Main "context.writer" (T.pack path)
   runContextValue @Main (valueDefault writerV)
 
 -- | 'flatMainMessages', but rendered into a
@@ -191,7 +191,7 @@ flatMainMessages path = do
 --   aren't part of this pass.
 flatMainContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r Rendering.Context
 flatMainContext path = do
-  writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) (T.pack path)
+  writerV <- resolveContext1 @Main "context.writer" (T.pack path)
   runContextValue @Main (Rendering.renderContext writerV)
 
 -- | The roleplay writer: rather than one call producing the scene directly
@@ -264,7 +264,7 @@ roleplayWriter path prompt = do
       -- the same override-aware way 'activeCharacterContext' does.
     reflectFor narrative sceneRef character@(Character (BranchName name)) = do
       let ident = branchDisplayName name
-      charVal    <- resolveContext1 @Main "context.character" (CtxLibrary.contextCharacter @Main) ident
+      charVal    <- resolveContext1 @Main "context.character" ident
       ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
       runBranchAndFS @ActiveChar (BranchName name) $ do
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative

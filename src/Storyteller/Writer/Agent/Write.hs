@@ -172,10 +172,10 @@ writeAgent path (Lore lore) chaptersMode (PinnedContext pinned) instruction = do
   let pathT = T.pack path
 
   chaptersV <- case chaptersMode of
-    FullChapters       -> resolveContext0 @branch "context.chapters" (CtxLibrary.contextChapters @branch)
-    CompressedChapters -> resolveContext0 @branch "context.chaptersCompressed" (CtxLibrary.contextChaptersCompressed @branch)
-  otherV <- resolveContext1 @branch "context.other" (CtxLibrary.contextOther @branch) pathT
-  styleV <- resolveContext0 @branch "context.style" (CtxLibrary.contextStyle @branch)
+    FullChapters       -> resolveContext0 @branch "context.chapters"
+    CompressedChapters -> resolveContext0 @branch "context.chaptersCompressed"
+  otherV <- resolveContext1 @branch "context.other" pathT
+  styleV <- resolveContext0 @branch "context.style"
   (chapters, other, style) <- runContextValue @branch $ do
     c <- renderContext chaptersV
     o <- renderContext otherV
@@ -217,7 +217,7 @@ activeCharacterContext path = do
   where
     summarize (Character (BranchName name)) = do
       let ident = branchDisplayName name
-      charVal <- resolveContext1 @branch "context.character" (CtxLibrary.contextCharacter @branch) ident
+      charVal <- resolveContext1 @branch "context.character" ident
       summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journal" charVal)
       pure (CharLabel ident, summary)
 

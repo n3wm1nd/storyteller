@@ -62,7 +62,6 @@
 --   before quasiquotes existed.
 module Storyteller.Context.DSL.QQ (dsl, dslWith, defQuote) where
 
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -71,7 +70,7 @@ import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Haskell.TH.Syntax (Lift(lift), Loc(..), location)
 
 import Storyteller.Context.DSL.AST (Definition(..))
-import Storyteller.Context.DSL.Compile (runDefinition)
+import Storyteller.Context.DSL.Compile (emptyLibrary, runDefinition)
 import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
 
@@ -99,7 +98,7 @@ dslWith = QuasiQuoter
   }
 
 -- | Which shape 'curriedRunner' should splice -- 'dsl' always compiles
---   against @Map.empty@; 'dslWith' takes the table as a fresh leading
+--   against 'emptyLibrary'; 'dslWith' takes the table as a fresh leading
 --   lambda parameter instead.
 data TableSource = NoTable | LeadingTableArg
 
@@ -111,7 +110,7 @@ compileDsl tblSrc src = do
     Left err  -> fail (T.unpack (renderParseErr err))
     Right def -> curriedRunner tblSrc def
 
--- | Splices to @\\a1 ... an -> 'runDefinition' \@branch Map.empty def
+-- | Splices to @\\a1 ... an -> 'runDefinition' \@branch 'emptyLibrary' def
 --   [toBinding a1, ..., toBinding an]@ ('dsl'), or @\\tbl a1 ... an ->
 --   'runDefinition' \@branch tbl def [toBinding a1, ..., toBinding an]@
 --   ('dslWith') -- 'defParams' contributes the trailing @a1 ... an@
@@ -152,7 +151,7 @@ curriedRunner tblSrc def = do
   let toBindingArg n = AppE (VarE 'toBinding) (VarE n)
       runDefinitionAtBranch = AppTypeE (VarE 'runDefinition) (VarT (mkName "branch"))
       tblExpr = case tblName of
-        Nothing -> AppE (VarE 'Map.fromList) (ListE [])
+        Nothing -> VarE 'emptyLibrary
         Just n  -> VarE n
       call = AppE (AppE (AppE runDefinitionAtBranch tblExpr) defExpr) (ListE (map toBindingArg argNames))
       lamParams = maybe [] ((: []) . VarP) tblName ++ map VarP argNames
