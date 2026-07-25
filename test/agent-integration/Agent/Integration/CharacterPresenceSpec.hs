@@ -17,7 +17,7 @@
 --
 --   Two character branches, each with one distinctive, checkable fact on
 --   their @sheet.md@. Both enter the same scene file via
---   'Storyteller.Writer.Presence.recordPresence'; the scene is then
+--   'Storyteller.Writer.Presence.enters'; the scene is then
 --   written with a plain 'writeAgent' call, nothing about characters
 --   threaded through explicitly. A real LLM call, cached under
 --   test/fixtures/llm-agent-cache/agent/.
@@ -39,8 +39,8 @@ import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
-import Storyteller.Writer.Presence (activeCharactersFor, recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
+import Storyteller.Writer.Presence (activeCharactersFor, enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
@@ -104,8 +104,8 @@ spec runner = describe "characters present in a scene (real LLM, cached)" $
       -- same requirement.
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
 
-      _ <- recordPresence @Main sceneFile (Character rennickBranch) Enter
-      _ <- recordPresence @Main sceneFile (Character oyelaranBranch) Enter
+      _ <- enters @Main sceneFile (Character rennickBranch)
+      _ <- enters @Main sceneFile (Character oyelaranBranch)
       active <- activeCharactersFor @Main sceneFile
       info $ "active characters: " <> T.pack (show active)
       embed $ length active `shouldBe` 2

@@ -43,8 +43,8 @@ import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharSummary(..), Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
@@ -109,12 +109,12 @@ spec runner = describe "a private journal resolve shaping the next scene (real L
       embed $ csJournal withJournal `shouldNotBe` []
 
       _ <- runStorage @Main (Ops.addAtom baselineSceneFile "")
-      _ <- recordPresence @Main baselineSceneFile (Character baselineBranch) Enter
+      _ <- enters @Main baselineSceneFile (Character baselineBranch)
       Prose baselineText <- writeAgent @Main baselineSceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("baseline (no journal) output:\n" <> baselineText)
 
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
-      _ <- recordPresence @Main sceneFile (Character charBranch) Enter
+      _ <- enters @Main sceneFile (Character charBranch)
       Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("with-journal output:\n" <> text)
       embed $ text `shouldNotBe` ""

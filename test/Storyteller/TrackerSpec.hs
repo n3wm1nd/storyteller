@@ -24,8 +24,8 @@ import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
+import Storyteller.Writer.Presence (enters, leaves)
+import Storyteller.Writer.Types (Character(..))
 import Server.Writer.Branch (onlyWhilePresent)
 
 -- ---------------------------------------------------------------------------
@@ -199,9 +199,9 @@ spec = do
     it "copies only the atom written while the character was present" $ do
       let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
-            _ <- recordPresence @Source "story.md" character Enter
+            _ <- enters @Source "story.md" character
             _ <- runStorage @Source (Ops.addAtom "story.md" "she arrived.")
-            _ <- recordPresence @Source "story.md" character Leave
+            _ <- leaves @Source "story.md" character
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\nmeanwhile, elsewhere.")
             tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent @Source character) "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
@@ -224,7 +224,7 @@ spec = do
       let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
             _ <- runStorage @Source (Ops.addAtom "story.md" "absent.")
-            _ <- recordPresence @Source "story.md" character Enter
+            _ <- enters @Source "story.md" character
             _ <- runStorage @Source (Ops.addAtom "story.md" "\n\npresent.")
             tids <- trackBranch @Source @Tracker (Just "story.md") (onlyWhilePresent @Source character) "story.md"
             content <- readFile @(BranchTag Tracker) "story.md"
@@ -247,7 +247,7 @@ spec = do
     it "presence doesn't carry across files: a character present at the end of one file starts absent in the next" $ do
       let character = Character (BranchName "tracker")
       let result = runTwoTrack $ do
-            _ <- recordPresence @Source "ch1.md" character Enter
+            _ <- enters @Source "ch1.md" character
             _ <- runStorage @Source (Ops.addAtom "ch1.md" "present in ch1.")
             _ <- runStorage @Source (Ops.addAtom "ch2.md" "not present in ch2.")
             tids <- trackBranch @Source @Tracker Nothing (onlyWhilePresent @Source character) "journal.md"

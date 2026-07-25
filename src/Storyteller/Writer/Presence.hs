@@ -11,8 +11,10 @@
 -- same relationship to 'Storyteller.Writer.Types' as
 -- 'Storyteller.Common.Annotation' has to 'Storyteller.Common.Types'.
 module Storyteller.Writer.Presence
-  ( recordPresence
-  , recordPresenceAtAtom
+  ( entered
+  , enters
+  , leaves
+  , recordPresenceForFile
   , activeCharacters
   , activeCharactersFor
   , presentOn
@@ -37,27 +39,58 @@ import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick)
 import Storyteller.Writer.Types (Character(..), Presence(..), PresenceEvent(..))
 
--- | Record a character entering or leaving the scene on @file@, on
---   @branch@'s chain — see 'Storyteller.Writer.Types.Presence' for why this
---   is file-scoped (an association, not a hard reference — see
---   DATA-MODEL.md's "Associations" section), not branch-global. Fails if
---   the character branch doesn't exist — this is a reference to another
---   branch, not a tick within this one, so there's no chain-walk integrity
---   check to lean on; this is the one check available.
+-- | Record @character@ entering, already present as of *before* the
+--   branch's current position (the ambient 'BranchOp' head — see the
+--   module Haddock's own note on positioning) — the backfill shape:
+--   "as of right here, they were already in the scene," not "they walk in
+--   right now." A caller wanting this at a specific historical point (not
+--   the live head) wraps the call in
+--   'Storyteller.Core.Timetravel.at'\/'Storyteller.Core.Timetravel.atAtomText'
+--   itself; this function has no position parameter of its own and never
+--   will — see the module Haddock.
 --
---   Guards against chain noise from redundant/colliding events: an Enter
---   for an already-active character, a Leave for an already-inactive one,
---   or an Enter/Leave pair with no atom written in between (nothing
---   narrative happened while that state was nominally in effect) all
---   collapse to a no-op — 'Nothing' is returned and no new tick is written.
---   A pending tick that becomes redundant this way (the "trailing" event
---   for this character since the file's last atom, if any) is deleted
---   rather than left in the chain; see 'trailingPresenceFor'.
-recordPresence
+--   Resolved via the raw chain parent of the current head (read straight
+--   off its own 'Storage.Core.CommitData', the same field
+--   'Storage.Core.at''s own tail-replay walk already follows), since there
+--   is nowhere on *this* position to insert "before" other than one step
+--   back on the branch's whole chain — fails outright only if head is the
+--   branch's very root (nothing precedes it at all).
+entered
   :: forall branch r
   .  Members '[BranchOp branch, StoryStorage, Fail] r
-  => FilePath -> Character -> PresenceEvent -> Sem r (Maybe TickId)
-recordPresence file character event =
+  => FilePath -> Character -> Sem r (Maybe TickId)
+entered file character =
+  withCharacterBranch character $ runStorage @branch $ do
+    current <- Ops.headHash
+    (cd, _) <- lift (Core.readCommitTick current)
+    case Core.commitParents cd of
+      []      -> fail "entered: no position precedes the branch's own root"
+      (p : _) -> Ops.at p (writeIfChanged p file character Enter)
+
+-- | Record @character@ entering the scene right now, at the branch's
+--   current position — the live-write shape
+--   'Server.Writer.File.setPresence' already uses turn by turn, appended
+--   plainly at head. See 'entered' for "already present as of here"
+--   instead.
+enters
+  :: forall branch r
+  .  Members '[BranchOp branch, StoryStorage, Fail] r
+  => FilePath -> Character -> Sem r (Maybe TickId)
+enters = presenceEventAtHead @branch Enter
+
+-- | Record @character@ leaving the scene right now, at the branch's
+--   current position — see 'enters'.
+leaves
+  :: forall branch r
+  .  Members '[BranchOp branch, StoryStorage, Fail] r
+  => FilePath -> Character -> Sem r (Maybe TickId)
+leaves = presenceEventAtHead @branch Leave
+
+presenceEventAtHead
+  :: forall branch r
+  .  Members '[BranchOp branch, StoryStorage, Fail] r
+  => PresenceEvent -> FilePath -> Character -> Sem r (Maybe TickId)
+presenceEventAtHead event file character =
   withCharacterBranch character $ runStorage @branch (do
     mTrailing <- trailingPresenceFor file character
     priorActive <- case mTrailing of
@@ -70,70 +103,24 @@ recordPresence file character event =
       then pure Nothing
       else Just . toTickId <$> Tick.storeAs (Presence file character event))
 
--- | Like 'recordPresence', but placed relative to a specific atom
---   (@atTick@, e.g. one 'Storage.Tick.FileTick.ftTickId' from
---   'Storage.Tick.fileTicksOf') instead of always at the branch's current
---   head. What retroactive, per-atom ingestion needs (see
---   'Storyteller.Writer.Agent.PresenceTrack''s module Haddock for the full
---   argument): a character who enters partway through an
---   already-fully-written, multi-atom scene has to be marked present
---   starting exactly at the atom where they actually appear, not from the
---   file's start, or a caller replaying history at an earlier atom (via
---   'presentAt') would see them there too, when they aren't.
---
---   The direction follows from @event@, not a caller-supplied choice — an
---   @Enter@ has to land strictly *before* @atTick@ (the character is
---   already present as of that atom, so a reader replaying history at
---   @atTick@ itself must see it), an @Leave@ strictly *after* it (they're
---   still present *in* that atom, only gone as of the next one). Getting
---   this backwards would put an Enter one atom too late or a Leave one atom
---   too early, silently wrong for exactly the atom this call is about — see
---   'presentAt'.
---
---   "Before @atTick@" has nowhere on this file's own lifetime to anchor
---   after if @atTick@ is the file's very first tick (no earlier position on
---   *this file* exists) — resolved via the raw chain parent (read straight
---   off @atTick@'s own 'Storage.Core.CommitData', the same field
---   'Storage.Core.at''s own tail-replay walk already follows) instead,
---   whatever tick precedes @atTick@ on the branch overall, file-relevant or
---   not; 'Storage.Ops.at' operates on the whole chain, not just this file's
---   own ticks, so anchoring there is just as valid. Fails outright only if
---   @atTick@ is the branch's very root (nothing precedes it at all) — a
---   character can't be present before the branch itself begins.
---
---   Built on 'Storage.Ops.at' -- the same "insert a new tick right after
---   this position, replaying everything after it forward" primitive
---   'Storage.Reconcile.emitStandaloneGap' already uses for inserting a
---   standalone gap-atom mid-chain, not a fresh mechanism. Redundancy is
---   checked the same way 'recordPresence' checks it at head -- collapsed to
---   a no-op if @event@ wouldn't actually change this character's state as
---   of the resolved anchor -- except there is no "trailing tick since head"
---   to delete here: an insertion strictly before the current head has no
---   such notion, since anything already after the anchor is real,
---   already-written history this call must never disturb, only insert
---   relative to.
-recordPresenceAtAtom
-  :: forall branch r
-  .  Members '[BranchOp branch, StoryStorage, Fail] r
-  => TickId -> FilePath -> Character -> PresenceEvent -> Sem r (Maybe TickId)
-recordPresenceAtAtom (TickId atTick) file character event =
-  withCharacterBranch character $ runStorage @branch $ do
-    anchor <- case event of
-      Leave -> pure (Ops.ObjectHash atTick)
-      Enter -> do
-        (cd, _) <- lift (Core.readCommitTick (Ops.ObjectHash atTick))
-        case Core.commitParents cd of
-          (p : _) -> pure p
-          []      -> fail "recordPresenceAtAtom: no position precedes the branch's own root"
-    Ops.at anchor (do
-      priorActive <- presentAsOf anchor file character
-      let wantsActive = event == Enter
-      if wantsActive == priorActive
-        then pure Nothing
-        else Just . toTickId <$> Tick.storeAs (Presence file character event))
+-- | The write 'entered' makes once positioned at the right anchor —
+--   redundancy-checked the same way 'presenceEventAtHead' checks it at
+--   head, just against @anchor@'s own state instead: collapses to a no-op
+--   if the character is already present as of @anchor@, since nothing
+--   would change. Unlike 'presenceEventAtHead', there is no "trailing tick
+--   since head" to delete here — an insertion strictly before the current
+--   head has no such notion, since everything already after @anchor@ is
+--   real, already-written history this must never disturb.
+writeIfChanged :: Ops.StoreM m => Ops.ObjectHash -> FilePath -> Character -> PresenceEvent -> Ops.StoreT m (Maybe TickId)
+writeIfChanged anchor file character event = do
+  priorActive <- presentAsOf anchor file character
+  let wantsActive = event == Enter
+  if wantsActive == priorActive
+    then pure Nothing
+    else Just . toTickId <$> Tick.storeAs (Presence file character event)
 
--- | Shared branch-existence guard 'recordPresence'\/'recordPresenceAt' both
---   need — a character is referenced by branch name, not by tick id (see
+-- | Shared branch-existence guard every write here needs — a character is
+--   referenced by branch name, not by tick id (see
 --   'Storyteller.Writer.Types.Presence'), so there's no chain-walk
 --   integrity check to lean on; this is the one check available.
 withCharacterBranch
@@ -150,6 +137,47 @@ toHash (TickId t) = Ops.ObjectHash t
 
 toTickId :: Ops.ObjectHash -> TickId
 toTickId (Ops.ObjectHash t) = TickId t
+
+-- ---------------------------------------------------------------------------
+-- Bulk update: several decisions against one file, one StoreT dispatch
+-- ---------------------------------------------------------------------------
+
+-- | Apply several presence decisions to @file@ in one go — what a caller
+--   retroactively tagging a whole scene's worth of entrances\/exits wants
+--   (e.g. 'Storyteller.Writer.Agent.PresenceTrack.trackPresenceFor'), as a
+--   single 'BranchOp' dispatch instead of one round trip per decision.
+--   Each @(anchor, character, event, beforeAnchor)@ entry names the atom to
+--   anchor at (typically one 'Storage.Tick.FileTick.ftTickId'), whether to
+--   land before it (the 'entered' shape) or after (the 'enters'\/'leaves'
+--   shape via @beforeAnchor = False@), and the event itself.
+--
+--   Applied oldest-anchor-first via nested 'Storage.Ops.at' calls, each one
+--   built on the last -- the same "insert once, replay the tail forward"
+--   mechanics 'entered'\/'presenceEventAtHead' each use singly, just kept
+--   inside one 'StoreT' computation (and so one commit-tail replay overall)
+--   rather than triggering @n@ independent replays for @n@ decisions
+--   against the same file. A caller applying several decisions through
+--   'entered'\/'enters'\/'leaves' one at a time would instead pay for @n@
+--   separate tail rebases, each redoing work the previous one already did —
+--   this is the efficient path 'Storage.Core.at's own nesting already makes
+--   possible, exposed here as the one function that actually needs it.
+recordPresenceForFile
+  :: forall branch r
+  .  Members '[BranchOp branch, StoryStorage, Fail] r
+  => FilePath -> [(TickId, Character, PresenceEvent, Bool)] -> Sem r [Maybe TickId]
+recordPresenceForFile file decisions = do
+  mapM_ (\(_, character, _, _) -> withCharacterBranch character (pure ())) decisions
+  runStorage @branch (mapM applyOne decisions)
+  where
+    applyOne (TickId atTick, character, event, beforeAnchor) = do
+      anchor <- if beforeAnchor
+        then do
+          (cd, _) <- lift (Core.readCommitTick (Ops.ObjectHash atTick))
+          case Core.commitParents cd of
+            (p : _) -> pure p
+            []      -> fail "recordPresenceForFile: no position precedes the branch's own root"
+        else pure (Ops.ObjectHash atTick)
+      Ops.at anchor (writeIfChanged anchor file character event)
 
 -- | Every character active as of the end of @ticks@ -- the "list everyone
 --   present" counterpart to 'presentOn's "is this one character present":

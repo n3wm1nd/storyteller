@@ -43,8 +43,8 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (CharLabel(..), Prompt(..), Prose(..))
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
@@ -249,8 +249,8 @@ spec runner = describe "the roleplay writer against a mid-story scenario with es
       _ <- runStorage @Main (Tick.storeAs (Prompt scenePath beat2Prompt))
       _ <- runStorage @Main (Ops.append scenePath beat2Prose)
 
-      _ <- recordPresence @Main scenePath (Character renBranch) Enter
-      _ <- recordPresence @Main scenePath (Character iskraBranch) Enter
+      _ <- enters @Main scenePath (Character renBranch)
+      _ <- enters @Main scenePath (Character iskraBranch)
 
       (Prose narrative, entries) <- runRoleplayTurn scenePath direction
       info ("roleplay narrative:\n" <> narrative)

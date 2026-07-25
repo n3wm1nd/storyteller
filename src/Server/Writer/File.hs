@@ -74,8 +74,8 @@ import Storyteller.Writer.Agent.Outline
   ( BeatSheet(..), CurrentProse(..), OutlineDoc(..), ChapterBeats(..)
   , reconcileChapter, reconcileChapterByBeat, splitOutlineFreeform )
 import Storyteller.Writer.Branches (branchDisplayName)
-import Storyteller.Writer.Presence (recordPresence, activeCharactersFor)
-import Storyteller.Writer.Types (Character(..), CharacterAnswer(..), PresenceEvent)
+import Storyteller.Writer.Presence (enters, leaves, activeCharactersFor)
+import Storyteller.Writer.Types (Character(..), CharacterAnswer(..), PresenceEvent(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
@@ -531,9 +531,12 @@ pinnedContext items = Rendering.Node
 
 -- | Record a character entering or leaving the scene on @path@ — presence
 --   is scoped to the file (the scene), not the whole branch, see
---   'Storyteller.Writer.Types.Presence' and WRITER.md.
+--   'Storyteller.Writer.Types.Presence' and WRITER.md. Always a live,
+--   right-now event (never backfilled "already present") -- the UI's own
+--   enter\/leave button, clicked in real time as the scene is written.
 setPresence :: FileOpen r => FilePath -> Character -> PresenceEvent -> Sem r ()
-setPresence path character event = void $ recordPresence @Main path character event
+setPresence path character Enter = void $ enters @Main path character
+setPresence path character Leave = void $ leaves @Main path character
 
 -- | Ask @character@ a question, answered from only their own branch (see
 --   'Storyteller.Writer.Agent.AskCharacter.askCharacterAgent') -- not the

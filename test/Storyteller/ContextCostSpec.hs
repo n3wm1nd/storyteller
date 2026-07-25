@@ -24,7 +24,7 @@ import Control.Monad (void)
 import Storyteller.Core.Git (runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Presence (enters, leaves)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 import qualified Storage.Ops as Ops
 
@@ -111,7 +111,7 @@ buildProgramCostsSpec = describe "buildProgramCosts" $ do
         (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
       runBranchAndFS @Main (BranchName "main") $ do
         runBranchOpGit @Main (BranchName "main") $
-          void (recordPresence @Main "chapters/ch2.md" (Character (BranchName "character/aria")) Enter)
+          void (enters @Main "chapters/ch2.md" (Character (BranchName "character/aria")))
         buildProgramCosts @Main "chapters/ch2.md"
           "path:\n  for c in (charactersin path):\n    as c: context.character c\n")
     `shouldBe`

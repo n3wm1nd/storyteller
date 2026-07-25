@@ -37,8 +37,8 @@ import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharSummary(..), Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
@@ -117,8 +117,8 @@ spec runner = describe "an edited journal entry creating dramatic irony (real LL
       embed $ csJournal rosaSummary `shouldNotBe` []
 
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
-      _ <- recordPresence @Main sceneFile (Character keeperBranch) Enter
-      _ <- recordPresence @Main sceneFile (Character samBranch) Enter
+      _ <- enters @Main sceneFile (Character keeperBranch)
+      _ <- enters @Main sceneFile (Character samBranch)
 
       Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)

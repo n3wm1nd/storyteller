@@ -42,8 +42,8 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (CharLabel(..), Prose(..))
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, runExpect)
 import Agent.Integration.Judge (judgeOrFail)
@@ -114,8 +114,8 @@ spec runner = describe "the roleplay writer's per-character knowledge separation
       -- presence ticks below to. See CharacterPresenceSpec's own note.
       _ <- runStorage @Main (Ops.addAtom scenePath "")
 
-      _ <- recordPresence @Main scenePath (Character nadiaBranch) Enter
-      _ <- recordPresence @Main scenePath (Character owenBranch) Enter
+      _ <- enters @Main scenePath (Character nadiaBranch)
+      _ <- enters @Main scenePath (Character owenBranch)
 
       (Prose narrative, entries) <- runRoleplayTurn scenePath direction
       info ("roleplay narrative:\n" <> narrative)

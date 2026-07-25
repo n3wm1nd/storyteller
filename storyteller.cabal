@@ -29,6 +29,7 @@ library
                   , Storyteller.Core.ContentEffects
                   , Storyteller.Core.Undo
                   , Storyteller.Core.Git
+                  , Storyteller.Core.Timetravel
                   , Storyteller.Core.Runtime
                   , Storyteller.Core.Prompt
                   , Storyteller.Core.Context

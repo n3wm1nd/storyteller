@@ -55,7 +55,7 @@ import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
 import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
-import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Presence (enters, leaves)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 -- | Creates a branch and seeds it with files, all in one short-lived
@@ -289,7 +289,7 @@ forOverBindingResultSpec = describe "for iterates a Binding call's result direct
       seedBranch "main" [("scene.md", "")]
       _ <- createBranch (BranchName "character/aria")
       runBranchOpGit @Main (BranchName "main") $
-        void (recordPresence @Main "scene.md" (Character (BranchName "character/aria")) Enter)
+        void (enters @Main "scene.md" (Character (BranchName "character/aria")))
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["aria"]
   where
@@ -322,7 +322,7 @@ charactersinIgnoresBranchRedirectionSpec =
         seedBranch "main" [("scene.md", "")]
         _ <- createBranch (BranchName "character/aria")
         runBranchOpGit @Main (BranchName "main") $
-          void (recordPresence @Main "scene.md" (Character (BranchName "character/aria")) Enter)
+          void (enters @Main "scene.md" (Character (BranchName "character/aria")))
         runDslOn (BranchName "main") go)
       `shouldBe` Right ["aria"]
   where

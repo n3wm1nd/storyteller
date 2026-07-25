@@ -49,7 +49,7 @@ import Storyteller.Context.DSL.Library
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value
 import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
-import Storyteller.Writer.Presence (recordPresence)
+import Storyteller.Writer.Presence (enters, leaves)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
@@ -394,7 +394,7 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       runBranchOpGit @Main (BranchName "character/aria")
         (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
       runBranchOpGit @Main (BranchName "main") $
-        void (recordPresence @Main "chapters/ch2.md" (Character (BranchName "character/aria")) Enter)
+        void (enters @Main "chapters/ch2.md" (Character (BranchName "character/aria")))
       runDslOn (BranchName "main") goWithCharacter)
     `shouldBe` Right
       ( [ User "## Story background"

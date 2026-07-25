@@ -38,8 +38,8 @@ import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
@@ -98,7 +98,7 @@ spec runner = describe "tasks.md reaching generation as ordinary character conte
         pure ()
 
       _ <- runStorage @Main (Ops.addAtom sceneFile "")
-      _ <- recordPresence @Main sceneFile (Character lenaBranch) Enter
+      _ <- enters @Main sceneFile (Character lenaBranch)
 
       Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)

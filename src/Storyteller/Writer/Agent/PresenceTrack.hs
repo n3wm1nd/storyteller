@@ -10,7 +10,7 @@
 -- | Retroactive presence tracking: given a scene's whole prose and the
 --   story's known cast, ask the model which characters enter or leave over
 --   the course of it, and record the result as ordinary
---   'Storyteller.Writer.Presence.recordPresenceAtAtom' ticks, each inserted at
+--   'Storyteller.Writer.Presence.recordPresenceForFile' ticks, each inserted at
 --   the exact chain position it actually happened — the same tick kind
 --   'Server.Writer.File.setPresence' writes by hand today, just placed
 --   where it actually belongs instead of always at the branch's current
@@ -52,8 +52,9 @@
 --   exact-match-once discipline
 --   'Storyteller.Writer.Agent.ReplaceTool.replaceOnce'\/@Runix.Tools.editFile@
 --   already apply to a model-supplied span — then hands the matched atom's
---   own tick id to 'Storyteller.Writer.Presence.recordPresenceAtAtom',
---   which decides Enter-before\/Leave-after placement itself.
+--   own tick id and the right before\/after direction to
+--   'Storyteller.Writer.Presence.recordPresenceForFile', applied to every
+--   decision in the file at once.
 --
 --   'presenceAgent' is the pure decision core, same shape as
 --   'Storyteller.Writer.Agent.ReplaceTool.reworkAtom': only 'LLM'\/'Fail',
@@ -73,7 +74,7 @@
 --   current text and the story's full cast (via
 --   'Storyteller.Core.ContentEffects.knownCast'), hands both to
 --   'presenceAgent', and resolves\/applies every decision via
---   'resolveAnchor'\/'Storyteller.Writer.Presence.recordPresenceAtAtom'. Safe
+--   'resolveAnchor'\/'Storyteller.Writer.Presence.recordPresenceForFile'. Safe
 --   to re-run: a decision that's already reflected in the file's state as
 --   of its own anchor is a no-op there (see that function's own Haddock),
 --   so nothing here needs to track "have I already processed this file"
@@ -120,7 +121,7 @@ import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Library (buildLibraryTree, narrativeUnits, UnitInfo(..))
-import Storyteller.Writer.Presence (activeCharactersFor, recordPresenceAtAtom)
+import Storyteller.Writer.Presence (activeCharactersFor, recordPresenceForFile)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
 import Prelude hiding (readFile)
@@ -347,14 +348,18 @@ defaultPresenceConfig = [MaxTokens 4096, Temperature 0.2]
 -- Resolving a quoted span to a real chain position
 -- ---------------------------------------------------------------------------
 
--- | Turn one 'PresenceDecision''s quoted 'pdAtText' into a real atom and
---   apply it via 'Storyteller.Writer.Presence.recordPresenceAtAtom' --
---   which decides before-vs-after placement from the event itself (see its
---   own Haddock); this only has to find *which* atom. Finds the one atom
---   (from @ticks@ -- typically
+-- | Turn one 'PresenceDecision''s quoted 'pdAtText' into a real anchored
+--   edit -- @(anchor tick, character, event, beforeAnchor)@, the shape
+--   'Storyteller.Writer.Presence.recordPresenceForFile' wants -- by finding
+--   the one atom (from @ticks@ -- typically
 --   'Storyteller.Core.ContentEffects.fileTicksOf's own result) whose text
---   contains 'pdAtText'; fails loudly (logged, not applied) if the match is
---   missing or ambiguous across atoms, the same "an unresolvable
+--   contains 'pdAtText'. An 'Enter' lands *before* the matched atom
+--   (@beforeAnchor = True@ -- the character is already present as of that
+--   atom), a 'Leave' *after* it (@beforeAnchor = False@ -- they're still
+--   present *in* that atom, only gone as of the next one).
+--
+--   Logs and drops (returns 'Nothing') if the match against @path@'s
+--   atoms is missing or ambiguous, the same "an unresolvable
 --   model-supplied span is a real problem, not silently ignorable" stance
 --   'Storyteller.Writer.Agent.ReplaceTool.replaceOnce' takes for a
 --   within-one-atom span (this is the cross-atom, "which atom" version of
@@ -368,20 +373,19 @@ defaultPresenceConfig = [MaxTokens 4096, Temperature 0.2]
 --   the quote is a perfectly correct, unambiguous identification of the
 --   right span.
 resolveAnchor
-  :: forall branch r
-  .  Members '[BranchOp branch, StoryStorage, Fail, Logging] r
-  => FilePath -> [FileTick] -> PresenceDecision -> Sem r ()
+  :: forall r
+  .  Member Logging r
+  => FilePath -> [FileTick] -> PresenceDecision -> Sem r (Maybe (TickId, Character, PresenceEvent, Bool))
 resolveAnchor path ticks (PresenceDecision charBranch event atText) =
   case [ ft | ft <- atoms, Just t <- [ftContent ft], squashWhitespace atText `T.isInfixOf` squashWhitespace t ] of
     [matched] -> do
       info $ "resolveAnchor: " <> T.pack path <> ": " <> unBranchName charBranch <> " "
            <> T.pack (show event) <> " at \"" <> atText <> "\""
-      _ <- recordPresenceAtAtom @branch (TickId (ftTickId matched)) path (Character charBranch) event
-      pure ()
-    [] -> warning $ "resolveAnchor: " <> T.pack path <> ": at_text \"" <> atText
-                   <> "\" for " <> unBranchName charBranch <> " didn't match any atom, skipping"
-    _  -> warning $ "resolveAnchor: " <> T.pack path <> ": at_text \"" <> atText
-                   <> "\" for " <> unBranchName charBranch <> " matched more than one atom, skipping"
+      pure (Just (TickId (ftTickId matched), Character charBranch, event, event == Enter))
+    [] -> Nothing <$ warning ("resolveAnchor: " <> T.pack path <> ": at_text \"" <> atText
+                   <> "\" for " <> unBranchName charBranch <> " didn't match any atom, skipping")
+    _  -> Nothing <$ warning ("resolveAnchor: " <> T.pack path <> ": at_text \"" <> atText
+                   <> "\" for " <> unBranchName charBranch <> " matched more than one atom, skipping")
   where
     atoms = [ ft | ft <- ticks, ftContent ft /= Nothing ]
 
@@ -395,12 +399,15 @@ squashWhitespace = T.unwords . T.words
 -- | Track presence for one scene file already committed on @branch@: reads
 --   its current whole text, the story's full cast (via
 --   'Storyteller.Core.ContentEffects.knownCast'), and who's already marked
---   present, hands all three to 'presenceAgent', then resolves and applies
---   every decision via 'resolveAnchor'. Safe to re-run: a decision that's
---   already reflected in the file's state as of its own resolved anchor is
---   a no-op there (see 'Storyteller.Writer.Presence.recordPresenceAtAtom's own
---   Haddock), so nothing here needs to track "have I already processed
---   this file" itself.
+--   present, hands all three to 'presenceAgent', resolves every decision's
+--   quoted span to a real anchor via 'resolveAnchor', then applies them all
+--   in one 'Storyteller.Writer.Presence.recordPresenceForFile' call — a
+--   single 'BranchOp' dispatch for the whole file rather than one round
+--   trip per decision (see that function's own Haddock on why that
+--   matters). Safe to re-run: a decision that's already reflected in the
+--   file's state as of its own resolved anchor is a no-op there, so
+--   nothing here needs to track "have I already processed this file"
+--   itself.
 trackPresenceFor
   :: forall branch r
   .  ( LLMs r
@@ -420,7 +427,8 @@ trackPresenceFor path = do
       info $ "trackPresenceFor: " <> T.pack path <> ": " <> T.pack (show (length cast)) <> " known character(s)"
       decisions <- presenceAgent cast present sceneText
       ticks     <- runFileTicks @branch (fileTicksOf @branch path)
-      mapM_ (resolveAnchor @branch path ticks) decisions
+      anchored  <- mapMaybe id <$> mapM (resolveAnchor path ticks) decisions
+      _ <- recordPresenceForFile @branch path anchored
       return decisions
 
 -- ---------------------------------------------------------------------------

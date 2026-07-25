@@ -49,8 +49,8 @@ import Storyteller.Context.DSL.Compile (Library)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Rendering (renderContext, renderText, renderMessages, namedChild)
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
 seedBranch name files = do
@@ -132,7 +132,7 @@ frontendSynthesizedProgramShapeSpec =
         runBranchOpGit @Main (BranchName "character/aria")
           (runStorage @Main (Ops.addAtom "sheet.md" "# Aria\n\nA wandering rogue."))
         runBranchAndFS @Main (BranchName "main") $ do
-          _ <- recordPresence @Main "chapters/ch2.md" (Character (BranchName "character/aria")) Enter
+          _ <- enters @Main "chapters/ch2.md" (Character (BranchName "character/aria"))
           setContextOverride "context.writer" frontendProgram
           writerV <- resolveContext1 @Main "context.writer" (CtxLibrary.contextWriter @Main) "chapters/ch2.md"
           runContextValue @Main $ do

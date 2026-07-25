@@ -9,7 +9,7 @@
 --   what gets written? A real character branch (Mira, with a distinctive,
 --   checkable fact on a non-@sheet.md@ file -- the "full" bucket
 --   'writeAgent's own identity block reads, per its Haddock) enters the
---   scene via a real 'Storyteller.Writer.Presence.recordPresence' tick;
+--   scene via a real 'Storyteller.Writer.Presence.enters' tick;
 --   'writeAgent' reads her back for itself, the same as
 --   'Agent.Integration.CharacterPresenceSpec' -- not just "the call
 --   succeeded", but "the context was legible to the model and shaped its
@@ -38,8 +38,8 @@ import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (ExistingContent(..), Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Write (writeAgent)
-import Storyteller.Writer.Presence (recordPresence)
-import Storyteller.Writer.Types (Character(..), PresenceEvent(Enter))
+import Storyteller.Writer.Presence (enters)
+import Storyteller.Writer.Types (Character(..))
 
 import Agent.Integration.Harness (Runner, emptyPinnedContext, emptyLore, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
@@ -125,7 +125,7 @@ spec runner = describe "writeAgent with character context (real LLM, cached)" $
       seedMira
       let ExistingContent existingText = existingContent
       _ <- runStorage @Main (Ops.addAtom sceneFile existingText)
-      _ <- recordPresence @Main sceneFile (Character miraBranch) Enter
+      _ <- enters @Main sceneFile (Character miraBranch)
 
       Prose text <- writeAgent @Main sceneFile emptyLore FullChapters emptyPinnedContext instruction
       info ("writeAgent output:\n" <> text)
