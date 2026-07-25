@@ -19,7 +19,7 @@
 // Kept as an opt-in hook (the library component calls it on mount) so
 // the cost is paid only when the user opens the library browser.
 
-import { branchFileUrl, saveRawFile, branchConn } from "./ws";
+import { branchFileUrl, contextDefaultUrl, saveRawFile, branchConn } from "./ws";
 import type { BranchEvent } from "./ws";
 
 export const contextsBranchName = "contexts";
@@ -30,12 +30,6 @@ function dslPath(name: string): string {
 }
 
 // ─── Single-file read/write ───────────────────────────────────────────────
-//
-// The compiled-in default for each overridable context slot (used only
-// when NOTHING has ever been committed to `context/<name>.dsl`) lives in
-// lib/contextDefaults.ts's `CONTEXT_DEFAULT_SOURCE` -- a hand-kept JS
-// mirror of Storyteller.Context.DSL.Library's own `defQuote` bodies, not
-// something this module fetches (see that file's own header for why).
 
 export function contextFunctionUrl(name: string): string {
   return branchFileUrl(contextsBranchName, dslPath(name));
@@ -48,6 +42,22 @@ export async function readContextFunction(name: string): Promise<string> {
   const res = await fetch(contextFunctionUrl(name));
   if (!res.ok) {
     if (res.status === 404) throw new Error(`No saved context function named "${name}"`);
+    throw new Error(`read failed: ${res.status} ${name}`);
+  }
+  return res.text();
+}
+
+// A compiled-in context slot's own default source (e.g. `context.lore`),
+// the real thing -- pretty-printed server-side from the actual parsed
+// Definition (see app/Server.hs's `GET /context-default/{name}` and
+// Storyteller.Context.DSL.PrettyPrint), not a hand-kept JS copy. `name`
+// is the dotted slot name, distinct from `readContextFunction`'s bare
+// saved-snippet name. A 404 means the name has no compiled-in default at
+// all (a hostLibrary-only or project-only name).
+export async function readContextDefault(name: string): Promise<string> {
+  const res = await fetch(contextDefaultUrl(name));
+  if (!res.ok) {
+    if (res.status === 404) throw new Error(`No compiled-in default for "${name}"`);
     throw new Error(`read failed: ${res.status} ${name}`);
   }
   return res.text();

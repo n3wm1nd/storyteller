@@ -33,8 +33,7 @@ import {
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
 import { DEFAULT_EDITS, parseLoreProgram, type PastChaptersMode } from "@/lib/dslCompose";
-import { writeContextFunction, readContextFunction, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
-import { CONTEXT_DEFAULT_SOURCE } from "@/lib/contextDefaults";
+import { writeContextFunction, readContextFunction, readContextDefault, slugifyFunctionName, isValidFunctionName } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
 import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
@@ -93,9 +92,10 @@ function ToggleRow({
 //
 // The source file is ground truth: with no per-call override yet, the
 // draft starts from this project's own committed `context/lore.dsl` if
-// one exists, else the compiled-in default's mirrored source (see
-// lib/contextDefaults.ts's own header on why that's a hand-kept JS copy,
-// not something fetched live). Checking a box regenerates `loreOverride`
+// one exists, else the compiled-in default's real source, fetched from
+// `GET /context-default/context.lore` (readContextDefault,
+// pretty-printed server-side -- see
+// Storyteller.Context.DSL.PrettyPrint). Checking a box regenerates `loreOverride`
 // via `renderLoreProgram` (dslCompose.ts) and shows the generated code
 // live -- "quick toggle" and "see/edit the code" are the same surface.
 // Checkbox state itself is never separately stored: it's recovered by
@@ -125,20 +125,25 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   const allPaths = allEntries.map((e) => e.path);
 
   // Ground truth for "no override touched yet": the committed project
-  // file, or (only if nothing was ever committed) the mirrored default
-  // source -- never a bare `context.lore` name reference, which resolves
-  // correctly server-side at send time but can't be shown/edited here as
-  // if it were real content of its own (see contextDefaults.ts).
+  // file, or (only if nothing was ever committed) the real compiled-in
+  // default source -- never a bare `context.lore` name reference, which
+  // resolves correctly server-side at send time but can't be
+  // shown/edited here as if it were real content of its own.
   const [committedDefault, setCommittedDefault] = useState<string | null | undefined>(undefined);
+  const [compiledDefault, setCompiledDefault] = useState("");
   useEffect(() => {
     let cancelled = false;
     setCommittedDefault(undefined);
+    setCompiledDefault("");
     readContextFunction("lore")
       .then((text) => { if (!cancelled) setCommittedDefault(text); })
       .catch(() => { if (!cancelled) setCommittedDefault(null); });
+    readContextDefault("context.lore")
+      .then((text) => { if (!cancelled) setCompiledDefault(text); })
+      .catch(() => {}); // no compiled-in default -- fine, nothing to seed from
     return () => { cancelled = true; };
   }, [branch]);
-  const resetTarget = committedDefault ?? CONTEXT_DEFAULT_SOURCE.lore ?? "";
+  const resetTarget = committedDefault ?? compiledDefault;
 
   const hasOverride = edits.loreOverride !== null;
   const draft = edits.loreOverride ?? resetTarget;

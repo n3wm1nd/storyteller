@@ -46,6 +46,7 @@ import qualified Storyteller.ContextCostSpec
 import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
 import qualified Storyteller.Context.DSL.ParserSpec
+import qualified Storyteller.Context.DSL.PrettyPrintSpec
 import qualified Storyteller.Context.DSL.CompileSpec
 import qualified Storyteller.Context.DSL.ContextSpec
 import qualified Storyteller.Context.DSL.LibrarySpec
@@ -113,6 +114,7 @@ main = hspec $ do
   describe "Storyteller.Writer.Agent.Outline" Storyteller.OutlineSpec.spec
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec
   describe "Storyteller.Context.DSL.Parser" Storyteller.Context.DSL.ParserSpec.spec
+  describe "Storyteller.Context.DSL.PrettyPrint" Storyteller.Context.DSL.PrettyPrintSpec.spec
   describe "Storyteller.Context.DSL.Compile" Storyteller.Context.DSL.CompileSpec.spec
   describe "Storyteller.Context.DSL.Context" Storyteller.Context.DSL.ContextSpec.spec
   describe "Storyteller.Context.DSL.Library" Storyteller.Context.DSL.LibrarySpec.spec

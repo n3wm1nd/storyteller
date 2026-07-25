@@ -76,6 +76,7 @@ library
                   , Storyteller.Writer.Lore
                   , Storyteller.Context.DSL.AST
                   , Storyteller.Context.DSL.Parser
+                  , Storyteller.Context.DSL.PrettyPrint
                   , Storyteller.Context.DSL.Value
                   , Storyteller.Context.DSL.Compile
                   , Storyteller.Context.DSL.Context
@@ -296,6 +297,7 @@ test-suite storyteller-test
                   , Storyteller.ContextPreviewSpec
                   , Storyteller.ContextCostSpec
                   , Storyteller.Context.DSL.ParserSpec
+                  , Storyteller.Context.DSL.PrettyPrintSpec
                   , Storyteller.Context.DSL.CompileSpec
                   , Storyteller.Context.DSL.ContextSpec
                   , Storyteller.Context.DSL.LibrarySpec

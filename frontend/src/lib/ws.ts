@@ -46,6 +46,17 @@ export function branchFileUrl(branch: string, path: string) {
   return `${httpBase()}/branch/${encodeURIComponent(branch)}/file/${encodePath(path)}`;
 }
 
+// GET /context-default/{name} (see app/Server.hs) — a compiled-in Context
+// DSL slot's own default source, pretty-printed server-side from its real
+// parsed Definition (Storyteller.Context.DSL.PrettyPrint). Branch-
+// independent (a compiled-in default doesn't vary per branch), unlike
+// every other URL here. `name` is the dotted slot name (`context.lore`),
+// not the bare slot name `contextBranch.ts`'s `context/<name>.dsl`
+// convention uses -- this is a different, backend-defined namespace.
+export function contextDefaultUrl(name: string) {
+  return `${httpBase()}/context-default/${encodeURIComponent(name)}`;
+}
+
 // Upload/replace a branch file's content directly from its bytes — the PUT
 // counterpart to 'branchFileUrl'. Replaces the old WS 'upload' command: a
 // dropped file's bytes go straight over HTTP instead of being read as text,

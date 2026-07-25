@@ -46,6 +46,20 @@
 --                                 carried forward. "?newPath=..." alongside
 --                                 it forks to a different file; absent, it
 --                                 defaults to this same path.
+--   GET /context-default/{name} — a compiled-in Context DSL slot's own
+--                                 default source, pretty-printed back from
+--                                 its parsed 'Definition' (see
+--                                 'Storyteller.Context.DSL.PrettyPrint') --
+--                                 what a client-facing editor shows/seeds
+--                                 from when nothing's been committed to
+--                                 override that slot yet. Branch-independent
+--                                 (a compiled-in default is the same for
+--                                 every branch), so this is a plain lookup
+--                                 against
+--                                 'Storyteller.Context.DSL.Library.defaultLibrarySource',
+--                                 not a branch-scoped action. 404 for a name
+--                                 with no compiled-in default (a
+--                                 hostLibrary-only or project-only name).
 --   /                           — the built frontend, if STATIC_DIR is set
 --                                 (see 'staticApp'); otherwise a plain
 --                                 placeholder response, unchanged from before
@@ -61,6 +75,7 @@ import Network.HTTP.Types (Header, status200, status400, status404, hContentType
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as LBC
+import qualified Data.Map.Strict as Map
 import Network.HTTP.Types (urlDecode)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>), takeExtension, takeFileName)
@@ -70,6 +85,8 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Server.Core.File (readFileContent)
 import Server.Writer.Branch (uploadFile, uploadImage, saveFile, saveFileAsNew)
+import Storyteller.Context.DSL.Library (defaultLibrarySource)
+import Storyteller.Context.DSL.PrettyPrint (prettyDefinition)
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort, envStaticDir)
 import Server.Writer.Branch.Connection (runBranch)
 import Server.Writer.File.Connection (runFile)
@@ -127,6 +144,13 @@ httpApp env req respond
   | requestMethod req == methodOptions =
       respond $ responseLBS status200 (corsHeaders req) ""
   | otherwise = case (requestMethod req, pathInfo req) of
+      (m, ["context-default", name]) | m == methodGet ->
+        case Map.lookup name defaultLibrarySource of
+          Nothing  -> respond $ responseLBS status404 (corsHeaders req) "no compiled-in default for this name"
+          Just def -> respond $ responseLBS status200
+            ((hContentType, "text/plain; charset=utf-8") : corsHeaders req)
+            (LBC.fromStrict (TE.encodeUtf8 (prettyDefinition def)))
+
       -- A branch's real file paths all live under "file/" (never bare at
       -- the branch's own root) so a file that happens to be *named* "$raw",
       -- "$image", etc. can never be mistaken for one of the reserved

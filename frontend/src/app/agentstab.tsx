@@ -21,14 +21,17 @@
 // An overridden prompt/context slot's text is expandable and editable in
 // place; a default prompt isn't, because its text only exists as a
 // literal in Haskell source, unreachable over the wire — there's nothing
-// to fetch. A default context slot IS expandable/editable: it starts from
-// CONTEXT_DEFAULT_SOURCE (lib/contextDefaults.ts), a hand-kept JS copy of
-// the same Haskell literal, so editing one reads as "customize the
-// default" instead of "start from a blank, unexplained box." Saving
-// either kind of slot writes through saveRawFile (contextBranch.ts's
-// writeContextFunction wraps the DSL editor/panel's own saves the same
-// way) so the file lands as an ordinary atom-tracked text file, not the
-// opaque binary blob uploadBranchFile would leave behind.
+// to fetch. A default context slot IS expandable/editable: it fetches
+// its own real source from `GET /context-default/{dottedName}`
+// (lib/contextBranch.ts's readContextDefault, pretty-printed
+// server-side from the actual parsed Definition -- see
+// Storyteller.Context.DSL.PrettyPrint), so editing one reads as
+// "customize the default" instead of "start from a blank, unexplained
+// box." Saving either kind of slot writes through saveRawFile
+// (contextBranch.ts's writeContextFunction wraps the DSL editor/panel's
+// own saves the same way) so the file lands as an ordinary atom-tracked
+// text file, not the opaque binary blob uploadBranchFile would leave
+// behind.
 
 import { useEffect, useState } from "react";
 import {
@@ -38,8 +41,7 @@ import {
 import { AGENTS, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
 import { branchConn, branchFileUrl, uploadBranchFile } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { contextFunctionUrl, contextsBranchName, writeContextFunction } from "@/lib/contextBranch";
-import { CONTEXT_DEFAULT_SOURCE } from "@/lib/contextDefaults";
+import { contextFunctionUrl, contextsBranchName, writeContextFunction, readContextDefault } from "@/lib/contextBranch";
 import { parseLoreProgram, toggleLorePathInProgram } from "@/lib/dslCompose";
 import { useLoreTree, flattenLore } from "./lore-selector";
 import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
@@ -431,17 +433,19 @@ function ConfigOverride({ agent, files, onJumpToPrompt }: {
 // Same fetch/edit/save shape as PromptEditor, against the "contexts"
 // branch instead of "prompts" — a Context DSL slot's compiled-in default
 // (Storyteller.Core.Context.buildContextLibrary) works exactly like a
-// PromptStorage default, except its text CAN be shown: unlike a prompt,
-// every context slot's default source has a hand-kept JS copy in
-// CONTEXT_DEFAULT_SOURCE (lib/contextDefaults.ts), since the compiled DSL
-// only keeps a parsed AST at runtime with no source/pretty-printer to
-// fetch instead. `committed` tracks the real saved baseline (null = no
-// override file yet) separately from `draft`, which seeds from the
-// default source so "expand and edit" reads as "customize the default,"
-// not "start from blank and guess the syntax" — same posture LoreRow
-// already takes for the per-call editor (context-panel.tsx).
+// PromptStorage default, except its text CAN be shown: fetched from
+// `GET /context-default/{dottedName}` (lib/contextBranch.ts's
+// readContextDefault), the real source pretty-printed server-side from
+// the actual parsed Definition (Storyteller.Context.DSL.PrettyPrint) --
+// no hand-kept JS copy anymore. `committed` tracks the real saved
+// baseline (null = no override file yet) separately from `draft`, which
+// seeds from the default source so "expand and edit" reads as "customize
+// the default," not "start from blank and guess the syntax" — same
+// posture LoreRow already takes for the per-call editor
+// (context-panel.tsx).
 function ContextSlotEditor({ path, branch }: { path: string; branch: string | null }) {
   const [committed, setCommitted] = useState<string | null | undefined>(undefined); // undefined = loading
+  const [defaultSource, setDefaultSource] = useState("");
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -450,17 +454,21 @@ function ContextSlotEditor({ path, branch }: { path: string; branch: string | nu
   useEffect(() => {
     let cancelled = false;
     setCommitted(undefined);
+    setDefaultSource("");
     setLoadError(null);
-    fetch(contextFunctionUrl(path))
-      .then((res) => {
+    Promise.all([
+      fetch(contextFunctionUrl(path)).then((res) => {
         if (res.status === 404) return null; // no override yet
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         return res.text();
-      })
-      .then((text) => {
+      }),
+      readContextDefault(`context.${path}`).catch(() => ""), // no compiled-in default for this slot -- fine, just nothing to seed from
+    ])
+      .then(([text, def]) => {
         if (cancelled) return;
         setCommitted(text);
-        setDraft(text ?? CONTEXT_DEFAULT_SOURCE[path] ?? "");
+        setDefaultSource(def);
+        setDraft(text ?? def);
       })
       .catch((err) => { if (!cancelled) setLoadError(String(err)); });
     return () => { cancelled = true; };
@@ -489,7 +497,7 @@ function ContextSlotEditor({ path, branch }: { path: string; branch: string | nu
     );
   }
 
-  const dirty = draft !== (committed ?? CONTEXT_DEFAULT_SOURCE[path] ?? "");
+  const dirty = draft !== (committed ?? defaultSource);
   return (
     <div style={{ padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
       <CodeCostEditor
@@ -514,15 +522,15 @@ function ContextSlotEditor({ path, branch }: { path: string; branch: string | nu
         </button>
         {dirty && !saving && (
           <button
-            onClick={() => setDraft(committed ?? CONTEXT_DEFAULT_SOURCE[path] ?? "")}
+            onClick={() => setDraft(committed ?? defaultSource)}
             style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
           >
             revert
           </button>
         )}
-        {path in CONTEXT_DEFAULT_SOURCE && draft !== CONTEXT_DEFAULT_SOURCE[path] && (
+        {defaultSource !== "" && draft !== defaultSource && (
           <button
-            onClick={() => setDraft(CONTEXT_DEFAULT_SOURCE[path])}
+            onClick={() => setDraft(defaultSource)}
             title="Load the compiled-in default's own source into the draft (still requires Save to actually commit it)"
             style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
           >
@@ -543,6 +551,7 @@ function ContextSlotEditor({ path, branch }: { path: string; branch: string | nu
 // a user is setting the project default here or a one-off override there.
 function LoreSlotEditor({ branch }: { branch: string | null }) {
   const [committed, setCommitted] = useState<string | null | undefined>(undefined); // undefined = loading
+  const [defaultSource, setDefaultSource] = useState("");
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -554,17 +563,21 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
   useEffect(() => {
     let cancelled = false;
     setCommitted(undefined);
+    setDefaultSource("");
     setLoadError(null);
-    fetch(contextFunctionUrl("lore"))
-      .then((res) => {
+    Promise.all([
+      fetch(contextFunctionUrl("lore")).then((res) => {
         if (res.status === 404) return null; // no override yet
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         return res.text();
-      })
-      .then((text) => {
+      }),
+      readContextDefault("context.lore").catch(() => ""),
+    ])
+      .then(([text, def]) => {
         if (cancelled) return;
         setCommitted(text);
-        setDraft(text ?? CONTEXT_DEFAULT_SOURCE.lore ?? "");
+        setDefaultSource(def);
+        setDraft(text ?? def);
       })
       .catch((err) => { if (!cancelled) setLoadError(String(err)); });
     return () => { cancelled = true; };
@@ -608,7 +621,7 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
     );
   }
 
-  const dirty = draft !== (committed ?? CONTEXT_DEFAULT_SOURCE.lore ?? "");
+  const dirty = draft !== (committed ?? defaultSource);
   return (
     <div style={{ padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
       {!branch ? (
@@ -683,15 +696,15 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
         </button>
         {dirty && !saving && (
           <button
-            onClick={() => setDraft(committed ?? CONTEXT_DEFAULT_SOURCE.lore ?? "")}
+            onClick={() => setDraft(committed ?? defaultSource)}
             style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
           >
             revert
           </button>
         )}
-        {draft !== CONTEXT_DEFAULT_SOURCE.lore && (
+        {defaultSource !== "" && draft !== defaultSource && (
           <button
-            onClick={() => setDraft(CONTEXT_DEFAULT_SOURCE.lore)}
+            onClick={() => setDraft(defaultSource)}
             title="Load the compiled-in default's own source into the draft (still requires Save to actually commit it)"
             style={{ fontSize: 10.5, padding: "3px 10px", borderRadius: 4, border: "none", background: "none", color: "var(--text-ghost)", cursor: "pointer" }}
           >
