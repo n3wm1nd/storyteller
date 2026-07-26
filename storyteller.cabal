@@ -25,6 +25,7 @@ library
                   , Storyteller.Writer.Agent
                   , Storyteller.Writer.Agent.Context
                   , Storyteller.Core.Storage
+                  , Storyteller.Core.Snapshot
                   , Storyteller.Core.Branch
                   , Storyteller.Core.ContentEffects
                   , Storyteller.Core.Undo
@@ -263,6 +264,7 @@ test-suite storyteller-test
                   , Storage.ChainEditSpec
                   , Storage.TickSpec
                   , Storage.QuerySpec
+                  , Storyteller.SnapshotSpec
                   , Storyteller.FileAtomsSpec
                   , Storyteller.AtGenericSpec
                   , Storyteller.BranchScopeSpec

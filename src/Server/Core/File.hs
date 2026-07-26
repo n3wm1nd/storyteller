@@ -1,6 +1,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -47,14 +48,13 @@ import Control.Monad (void)
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import Polysemy (Member, Members, Sem)
-import Polysemy.Error (Error)
+import Polysemy.Error (Error, throw)
 import Polysemy.Fail (Fail)
 import Runix.Git (Git)
 import Runix.Logging (Logging, info)
 
 import Server.Core.Protocol (Update(..), toWireTick)
 import Server.Core.Run (SessionEffects)
-import Server.Core.Util (withBranch)
 
 import qualified Storyteller.Core.Create as Create
 import qualified Storyteller.Common.Annotation as Annotation
@@ -64,14 +64,14 @@ import Storyteller.Core.Atom (Atom(..))
 import Storyteller.Core.Image (Image(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
-import Storyteller.Core.Storage (StoryStorage)
+import Storyteller.Core.Storage (StoryStorage, getBranch)
+import Storyteller.Core.Snapshot (readSnapshotFile)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
-import Storyteller.Core.Types (TickId(..), fromTick)
+import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..), fromTick)
 import Storyteller.Core.Git (BranchTag, BranchOp, runStorage)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
-import qualified Runix.FileSystem as FS
 
 -- | The effects live once a file connection has entered its branch's scope —
 --   one 'BranchOp'/filesystem instance for the connection's whole
@@ -308,10 +308,35 @@ referenceImage path assetPath caption = do
 
 -- | Raw current content of a file, for the HTTP download/embed endpoint —
 --   a one-shot fetch outside any connection's lifetime, so (unlike the
---   other operations here) it opens its own branch scope rather than
---   assuming 'FileOpen' is already live.
+--   other operations here) it can't assume 'FileOpen' is already live and
+--   has to say where to read from itself.
+--
+--   A positioned, read-only snapshot read ('Storyteller.Core.Snapshot'),
+--   not a branch scope. This used to be @withBranch \@Main branch
+--   (FS.readFile ...)@, which is a genuinely bigger claim than the
+--   operation makes: opening a scope builds a whole mutable ambient
+--   working tree up front ('Storage.Core.freshScope') and gives every
+--   dispatch through it the full mutation apparatus — head re-resolution
+--   on the way in, a 'setRef' publish if head moved, and a closing
+--   'Storyteller.Core.Git.withStorage' boundary that can cascade across
+--   branches and notify every connected client. A GET for an image needs
+--   none of it, and now can't reach any of it: 'FileSystemWrite' is a
+--   separate effect and simply isn't in the row, so "this endpoint cannot
+--   mutate story state" is a property of the type rather than of nobody
+--   having added a write yet.
+--
+--   Same two failure modes as before, from the same two places: a missing
+--   branch is an 'Error' ('withBranch' threw it), a missing file is a
+--   'Fail' ('Runix.FileSystem.readFile' failed on it).
 readFileContent :: (Members '[StoryStorage, Error String, Git, Fail] r) => T.Text -> FilePath -> Sem r BS.ByteString
-readFileContent branch path = withBranch @Main branch (FS.readFile @(BranchTag Main) path)
+readFileContent branch path =
+  getBranch (BranchName branch) >>= \case
+    Nothing -> throw ("branch not found: " <> T.unpack branch)
+    Just b  -> readSnapshotFile (branchCommit b) path >>= \case
+      Just bs -> pure bs
+      Nothing -> fail (path <> ": not found")
+  where
+    branchCommit b = Ops.ObjectHash (unTickId (branchHead b))
 
 -- ---------------------------------------------------------------------------
 -- Internal

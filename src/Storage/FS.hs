@@ -6,6 +6,19 @@
 --   'getAmbientTree'\/'modifyAmbientTree' seam "Storage.Core" exports for
 --   this module.
 --
+--   The *query* half is split in two: a pure @*In@ function taking a
+--   'WorkingTree' outright ('listIn'\/'existsIn'\/'isDirectoryIn'\/
+--   'listChildrenIn'\/'listUnderIn'), and the ambient wrapper that just
+--   feeds it 'getAmbientTree'. Nothing about "is this path a directory"
+--   or "what's directly under here" depends on the tree being the
+--   *ambient* one -- that's the caller's choice of which tree to ask --
+--   so a reader positioned at some other tree entirely (a committed
+--   snapshot: see 'Storyteller.Core.Snapshot') answers all of these from
+--   the identical pure code rather than a second, drifting copy of the
+--   same path arithmetic. The mutations ('createDirectory'\/'remove'\/
+--   'removeRecursive') get no such split: they only make sense against
+--   ambient state, since that's the only tree there is to mutate.
+--
 --   Re-exports the related core operations ('readFile'\/'writeFile'\/
 --   'reset'\/'inWorktree' and the 'WorkingTree' types) so a caller needs
 --   only @"import Storage.FS"@ for the full ambient-file interface. The
@@ -21,6 +34,13 @@ module Storage.FS
   , exists
   , isDirectory
   , listChildren
+
+    -- * The pure query core, over any 'WorkingTree'
+  , listIn
+  , existsIn
+  , isDirectoryIn
+  , listChildrenIn
+  , listUnderIn
 
     -- * Re-exported from "Storage.Core": essential file I/O and the
     -- ambient-tree lifecycle these operations live within
@@ -73,36 +93,49 @@ removeRecursive path = modifyAmbientTree (Map.filterWithKey keep)
 
 -- | Every file path currently in the ambient tree (directories excluded).
 list :: Monad m => StoreT m [FilePath]
-list = do
-  wt <- getAmbientTree
-  return [ p | (p, FSFile _) <- Map.toList wt ]
+list = listIn <$> getAmbientTree
 
 -- | Whether @path@ currently exists as a *file* in the ambient tree --
 --   one map lookup, never a scan of 'list'. A directory entry answers
 --   'False'; that's 'isDirectory's question.
 exists :: Monad m => FilePath -> StoreT m Bool
-exists path = do
-  wt <- getAmbientTree
-  return $ case Map.lookup path wt of
-    Just (FSFile _) -> True
-    _               -> False
+exists path = existsIn path <$> getAmbientTree
 
 -- | Whether @path@ is an explicit directory entry in the ambient tree.
 isDirectory :: Monad m => FilePath -> StoreT m Bool
-isDirectory path = do
-  wt <- getAmbientTree
-  return $ case Map.lookup path wt of
-    Just FSDir -> True
-    _          -> False
+isDirectory path = isDirectoryIn path <$> getAmbientTree
 
 -- | Every file *and* directory entry immediately under @dir@ (its direct
 --   children only -- unlike 'list', which is every file anywhere,
 --   recursively, with no directories at all). @"/"@\/@"."@\/@""@ all mean
 --   the ambient tree's own root.
 listChildren :: Monad m => FilePath -> StoreT m [FilePath]
-listChildren dir = do
-  wt <- getAmbientTree
-  return [ p | p <- Map.keys wt, isDirectChild dir p ]
+listChildren dir = listChildrenIn dir <$> getAmbientTree
+
+-- ---------------------------------------------------------------------------
+-- The pure query core -- see the module Haddock for why these are split
+-- out from their ambient wrappers above.
+-- ---------------------------------------------------------------------------
+
+-- | 'list', over any tree.
+listIn :: WorkingTree -> [FilePath]
+listIn wt = [ p | (p, FSFile _) <- Map.toList wt ]
+
+-- | 'exists', over any tree.
+existsIn :: FilePath -> WorkingTree -> Bool
+existsIn path wt = case Map.lookup path wt of
+  Just (FSFile _) -> True
+  _               -> False
+
+-- | 'isDirectory', over any tree.
+isDirectoryIn :: FilePath -> WorkingTree -> Bool
+isDirectoryIn path wt = case Map.lookup path wt of
+  Just FSDir -> True
+  _          -> False
+
+-- | 'listChildren', over any tree.
+listChildrenIn :: FilePath -> WorkingTree -> [FilePath]
+listChildrenIn dir wt = [ p | p <- Map.keys wt, isDirectChild dir p ]
   where
     isDirectChild d p
       | d `elem` ["/", ".", ""] = length (splitDirectories p) == 1
@@ -111,6 +144,16 @@ listChildren dir = do
               pathParts = splitDirectories p
           in List.take (length dirParts) pathParts == dirParts
              && length pathParts == length dirParts + 1
+
+-- | Every file path at or under @root@ (recursively, directories
+--   excluded) -- 'listIn' plus the root-scoping a glob needs.
+--   @"/"@\/@"."@\/@""@ all mean the whole tree.
+listUnderIn :: FilePath -> WorkingTree -> [FilePath]
+listUnderIn root = filter isRootOrUnder . listIn
+  where
+    isRootOrUnder p
+      | root `elem` ["/", ".", ""] = True
+      | otherwise                  = p == root || List.isPrefixOf (root <> "/") p
 
 keepExisting :: FSNode -> FSNode -> FSNode
 keepExisting _ old = old
