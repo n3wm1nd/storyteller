@@ -369,6 +369,14 @@ export type FileCommand =
   // Style, character identity, and "other notes" stay entirely agent-
   // owned — no client knob over any of them.
   | { type: "chat.writer"; id?: string; text: string; pinned?: ContextItem[]; lore?: string; other?: string; pastChaptersMode?: "full" | "compressed"; pinnedPrograms?: string[]; flowTid?: string }
+  // A user-defined agent (see lib/customAgents.ts and
+  // Storyteller.Writer.Agent.Custom): `agent` is the slug naming the two
+  // branch files that *are* the agent — there's no server-side registry to
+  // validate it against, so an unknown slug fails on context resolution.
+  // Carries the composer's own per-call context controls (`pinned`,
+  // `pinnedPrograms`) but none of the writer's override slots: a custom
+  // agent's whole context is its own program.
+  | { type: "chat.custom"; id?: string; agent: string; text: string; pinned?: ContextItem[]; pinnedPrograms?: string[] }
   // Roleplay: every character present on this file is interrogated, in
   // character, for what they'd do or say before one scene gets written and
   // appended — see Server.Writer.File.roleplayWriter. `text` is the
@@ -520,9 +528,9 @@ export type CharacterEvent =
 // request, not just request/response.
 export type ContextViewCommand =
   | { type: "context.preview"; id?: string; path: string; program: string }
-  | { type: "context.preview.adhoc"; id?: string; program: string }
+  | { type: "context.preview.adhoc"; id?: string; program: string; path?: string }
   | { type: "context.cost"; id?: string; path: string; program: string }
-  | { type: "context.cost.adhoc"; id?: string; program: string }
+  | { type: "context.cost.adhoc"; id?: string; program: string; path?: string }
   | { type: "context.entries"; id?: string; name: string; path?: string };
 
 // A node mirrors the DSL's own Value shape: its own text content (each

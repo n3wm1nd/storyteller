@@ -72,12 +72,18 @@ export function useAdhocCostFetcher(branch: string | null | undefined) {
     };
   }, [branch]);
 
-  return async (program: string): Promise<LineCost[] | null> => {
+  // `path` is what a program's own declared parameter gets bound to (see
+  // Storyteller.Core.Context.resolveAdhoc): the surface that knows which
+  // file the program would run against passes it, and a surface with no
+  // meaningful file passes the empty glob "[]" rather than omitting it —
+  // omitting it means a `path:`-headed program has no argument to bind
+  // and can only fail, which is what an empty cost estimate used to be.
+  return async (program: string, path?: string): Promise<LineCost[] | null> => {
     const conn = connRef.current;
     if (!conn) return null;
     return new Promise((resolve) => {
       pendingRef.current = { resolve };
-      conn.send({ type: "context.cost.adhoc", program });
+      conn.send({ type: "context.cost.adhoc", program, ...(path !== undefined ? { path } : {}) });
     });
   };
 }
@@ -128,12 +134,15 @@ export function useAdhocPreviewFetcher(branch: string | null | undefined) {
     };
   }, [branch]);
 
-  return async (program: string): Promise<PreviewNode | null> => {
+  // `path`: same contract as useAdhocCostFetcher's above — the two have to
+  // agree about what they're resolving, or a preview and its own cost
+  // breakdown would describe different programs.
+  return async (program: string, path?: string): Promise<PreviewNode | null> => {
     const conn = connRef.current;
     if (!conn) return null;
     return new Promise((resolve) => {
       pendingRef.current = { resolve };
-      conn.send({ type: "context.preview.adhoc", program });
+      conn.send({ type: "context.preview.adhoc", program, ...(path !== undefined ? { path } : {}) });
     });
   };
 }

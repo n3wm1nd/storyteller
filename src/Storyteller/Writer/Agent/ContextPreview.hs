@@ -39,7 +39,7 @@ import Storyteller.Context.DSL.Value (messageText, listPaths)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Branch (BranchOp)
 import Storyteller.Core.Context
-  (ContextStorage, resolveContext0, resolveContext1, resolveAdhoc0, runContextValue, setContextOverride)
+  (ContextStorage, resolveContext0, resolveContext1, resolveAdhoc, runContextValue, setContextOverride)
 import Storyteller.Core.ContentEffects (BranchResolve)
 
 -- | One node of a rendered program's result -- own text content (each
@@ -71,26 +71,33 @@ buildPreview path program = do
   writerV <- resolveContext1 @branch "context.writer" (T.pack path)
   fromRendered <$> runContextValue @branch (renderContext writerV)
 
--- | 'buildPreview', but for a bare 0-arity snippet with no @path@ of its
---   own -- the same distinction 'Storyteller.Writer.Agent.ContextCost.
---   buildAdhocProgramCosts' draws from 'buildProgramCosts', and via the
---   identical resolution primitive ('Storyteller.Core.Context.
---   resolveAdhoc0'): a project-default context slot (@context.lore@,
---   @context.chaptersCompressed@, ...) or a saved pinned snippet is never
---   staged as a whole @context.writer@ override the way 'buildPreview'
---   works -- it's compiled and resolved directly against the live
---   library table, so a name reference inside it (@context.lore@ itself,
---   say) sees this project's own committed override the identical way a
---   real send would. There's no @path@ for this to frame against, so
---   nothing here excludes "the file currently being written" the way
---   'contextWriterDef' does -- exactly the same caveat 'resolveAdhoc0'
---   already documents for its own callers.
+-- | 'buildPreview', but for a program submitted on its own rather than as
+--   a whole @context.writer@ override -- the same distinction
+--   'Storyteller.Writer.Agent.ContextCost.buildAdhocProgramCosts' draws
+--   from 'buildProgramCosts', and via the identical resolution primitive
+--   ('Storyteller.Core.Context.resolveAdhoc'): a project-default context
+--   slot (@context.lore@, @context.chaptersCompressed@, ...), a saved
+--   pinned snippet, or a user-defined agent's own program is compiled and
+--   resolved directly against the live library table, so a name reference
+--   inside it (@context.lore@ itself, say) sees this project's own
+--   committed override the identical way a real send would.
+--
+--   @mPath@ is the editing surface's own answer to "which file would this
+--   run against", passed through to a program that declares a parameter
+--   and ignored by one that doesn't (see 'resolveAdhoc'). A surface with
+--   no meaningful file — the standalone @.dsl@ editor — still has an
+--   honest answer available: the empty glob, which resolves to nothing
+--   rather than to some arbitrary file. What it must not do is send
+--   nothing at all: a @path:@-headed program (every custom agent's, and
+--   @context.other@'s) would then have no argument to bind and could only
+--   fail, which is exactly what "preview shows nothing" looked like
+--   before this parameter existed.
 buildAdhocPreview
   :: forall branch r
   .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Text -> Sem r PreviewNode
-buildAdhocPreview program = do
-  v <- resolveAdhoc0 @branch program
+  => Text -> Maybe FilePath -> Sem r PreviewNode
+buildAdhocPreview program mPath = do
+  v <- resolveAdhoc @branch program (maybe [] (pure . T.pack) mPath)
   fromRendered <$> runContextValue @branch (renderContext v)
 
 -- | The flat, full file-path list a named context slot currently resolves

@@ -1,10 +1,10 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square, Users } from "lucide-react";
+import { ChevronDown, ChevronUp, History, Sparkles, Wrench, RefreshCw, EyeOff, Square, Users, Bot } from "lucide-react";
 import { StickyNote, HelpCircle, Image as ImageIcon } from "lucide-react";
-import { cancelGeneration, referenceImage } from "./fileview.actions";
+import { cancelGeneration, referenceImage, chatCustom } from "./fileview.actions";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
@@ -13,6 +13,10 @@ import { type WireTick, useServerCache } from "@/lib/serverCacheStore";
 import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand, COMMANDS } from "@/lib/commands";
+import {
+  useCustomAgents, customAgentCommands, customAgentLabel, customAgentId,
+  isCustomAgentId, slugOfAgentId,
+} from "@/lib/customAgents";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
 import { useMentionAutocomplete } from "./mention-autocomplete";
 import { useLoreTree, flattenLore } from "./lore-selector";
@@ -1899,14 +1903,18 @@ export function ChatPreviewStrip() {
 // nothing selected) on the file's HEAD tick. 'regen' still covers beat-by-
 // beat via the "/regen @beat" command (lib/commands.ts) — that's a command
 // parameter, not a separate mode, so it doesn't get its own pill.
-type AgentId = "write" | "fix" | "append" | "note" | "regen" | "roleplay";
+// A user-defined agent (lib/customAgents.ts) is a mode too, discovered at
+// runtime from the contexts branch — hence the open-ended arm. Everything
+// below that used to index a fixed Record by mode now goes through
+// modeColor/agentMeta, which answer for both kinds.
+type AgentId = "write" | "fix" | "append" | "note" | "regen" | "roleplay" | `custom:${string}`;
 
 // One color per mode so the input bar's own border/pill tells you where a
 // plain (non-"/command") send will land, without having to check anything
 // else. 'note' reuses the blue already used for annotation ticks elsewhere
 // in this file (see WireTickList); the rest are fresh hues not otherwise
 // claimed in the app's palette.
-const MODE_COLOR: Record<AgentId, string> = {
+const MODE_COLOR: Record<string, string> = {
   write:    "0.78 0.10 65",
   fix:      "0.68 0.12 200",
   append:   "0.62 0.02 60",
@@ -1914,13 +1922,21 @@ const MODE_COLOR: Record<AgentId, string> = {
   regen:    "0.68 0.15 300",
   roleplay: "0.72 0.14 20",
 };
+// One shared hue for every user-defined agent, rather than a generated
+// per-agent one: the colour's job is "you are not sending to the writer",
+// and a project with six custom agents would otherwise get six
+// near-identical hues that say nothing about which is which — the label
+// already does that, unambiguously.
+const CUSTOM_MODE_COLOR = "0.70 0.13 145";
+
 function modeColor(id: AgentId, alpha?: number): string {
-  return alpha === undefined ? `oklch(${MODE_COLOR[id]})` : `oklch(${MODE_COLOR[id]} / ${alpha})`;
+  const c = MODE_COLOR[id] ?? CUSTOM_MODE_COLOR;
+  return alpha === undefined ? `oklch(${c})` : `oklch(${c} / ${alpha})`;
 }
 
-const MODE_ORDER: AgentId[] = ["write", "fix", "append", "note", "regen", "roleplay"];
+const BUILTIN_MODE_ORDER: AgentId[] = ["write", "fix", "append", "note", "regen", "roleplay"];
 
-const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof Sparkles | null }> = {
+const AGENT_META: Record<string, { label: string; title: string; icon: typeof Sparkles | null }> = {
   write:    { label: "Write",    title: "Send to writer agent",               icon: Sparkles },
   fix:      { label: "Fix",      title: "Send to fixer agent (edit targets)",  icon: Wrench },
   append:   { label: "Append",   title: "Append verbatim, instant",            icon: null },
@@ -1928,6 +1944,16 @@ const AGENT_META: Record<AgentId, { label: string; title: string; icon: typeof S
   regen:    { label: "Regen",    title: "Regenerate this chapter to fit its beat sheet", icon: RefreshCw },
   roleplay: { label: "Roleplay", title: "Interrogate every character present, then write the scene", icon: Users },
 };
+
+// The same metadata for either kind of mode. A custom agent's is derived
+// from its slug (see lib/customAgents.ts's customAgentLabel) rather than
+// stored — the slug is the whole identity a project gives it.
+function agentMeta(id: AgentId): { label: string; title: string; icon: typeof Sparkles | null } {
+  const builtin = AGENT_META[id];
+  if (builtin) return builtin;
+  const slug = slugOfAgentId(id);
+  return { label: customAgentLabel(slug), title: `Send to "${slug}" (a user-defined agent)`, icon: Bot };
+}
 
 export function InputBar({ enabled, activeBranch, path, contextAtomCount, contextAnnotationCount, rebasing, onClearRebase, onClearContext, onAppend, onWrite, onFix, onNote, onRegen, onRoleplay, onAsk, onInform, onSummarize }: {
   enabled: boolean;
@@ -1982,7 +2008,16 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
     middleware: [offset(4), flip(), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   });
-  const auto = useCommandAutocomplete(text, setText);
+  // Custom agents are discovered from the contexts branch, so both the
+  // mode dropdown and "/" completion pick them up the moment one is
+  // created in the Agents tab — no reload, no registration step.
+  const { slugs: customSlugs, agents: customAgents } = useCustomAgents();
+  const modeOrder: AgentId[] = [
+    ...BUILTIN_MODE_ORDER,
+    ...customAgents.filter((a) => a.appliesTo(path ?? "")).map((a) => a.id as AgentId),
+  ];
+  const commands = useMemo(() => [...COMMANDS, ...customAgentCommands(customSlugs)], [customSlugs]);
+  const auto = useCommandAutocomplete(text, setText, commands);
 
   const hasContext = contextAtomCount > 0 || contextAnnotationCount > 0;
 
@@ -2082,18 +2117,35 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
 
   function cycleMode(dir: 1 | -1) {
     setMode((m) => {
-      const i = MODE_ORDER.indexOf(m);
-      return MODE_ORDER[(i + dir + MODE_ORDER.length) % MODE_ORDER.length];
+      const i = modeOrder.indexOf(m);
+      return modeOrder[(i + dir + modeOrder.length) % modeOrder.length];
     });
   }
 
-  const actionFor: Record<AgentId, (t: string) => void> = {
-    write: onWrite, fix: onFix, append: onAppend, note: onNote, regen: (t) => onRegen(t, false),
-    roleplay: onRoleplay,
-  };
+  // Every mode's dispatch, built-in or discovered. A custom agent isn't in
+  // any table here — it's `chatCustom(path, slug, text)`, called directly
+  // rather than prop-drilled through FileContentView the way the built-in
+  // callbacks are: unlike those, there is nothing per-view to vary (no
+  // selection to resolve, no rebase target, no view-local handler), so a
+  // prop chain would carry the same closure through three components to
+  // arrive unchanged. Same direct-import shape cancelGeneration and
+  // referenceImage already use in this file.
+  function runMode(id: AgentId, t: string) {
+    if (isCustomAgentId(id)) {
+      if (path) chatCustom(path, slugOfAgentId(id), t);
+      return;
+    }
+    const builtin: Record<string, (x: string) => void> = {
+      write: onWrite, fix: onFix, append: onAppend, note: onNote,
+      regen: (x) => onRegen(x, false), roleplay: onRoleplay,
+    };
+    builtin[id]?.(t);
+  }
 
   // A recognized leading "/command" always wins over the currently selected
-  // mode — see lib/commands.ts.
+  // mode — see lib/commands.ts. A custom agent's own slug is a command
+  // name (`/critic tighten this`), resolved against the live agent list
+  // rather than this fixed table, so it can never shadow a built-in one.
   const commandActions: Record<string, (t: string, params: Record<string, string>) => void> = {
     write: (t) => onWrite(t), fix: (t) => onFix(t), append: (t) => onAppend(t), note: (t) => onNote(t),
     regen: (t, p) => onRegen(t, p.beat !== undefined),
@@ -2103,16 +2155,22 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
     summarize: () => onSummarize(),
   };
 
+  function commandAction(name: string): ((t: string, params: Record<string, string>) => void) | undefined {
+    if (commandActions[name]) return commandActions[name];
+    if (customSlugs.includes(name)) return (t) => runMode(customAgentId(name), t);
+    return undefined;
+  }
+
   function fire() {
     const raw = text.trim();
     if (!raw) return;
     const parsed = parseCommand(raw);
-    const action = parsed && commandActions[parsed.name];
+    const action = parsed && commandAction(parsed.name);
     const noText = parsed && COMMANDS.find((c) => c.name === parsed.name)?.noText;
     if (parsed && action) {
       if (parsed.text || noText) action(parsed.text, parsed.params);
     } else {
-      actionFor[mode](raw);
+      runMode(mode, raw);
     }
     setText("");
     setMenuOpen(false);
@@ -2193,7 +2251,7 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
               if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleMode(1); return; }
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); fire(); }
             }}
-            placeholder={enabled ? `⌘↵ send as ${AGENT_META[mode].label.toLowerCase()} · shift-tab cycles mode · "/" for commands` : "Open a file to write"}
+            placeholder={enabled ? `⌘↵ send as ${agentMeta(mode).label.toLowerCase()} · shift-tab cycles mode · "/" for commands` : "Open a file to write"}
             style={{
               flex: 1, resize: "none", fontFamily: "Georgia, serif", fontSize: 12,
               background: "var(--card)", border: `1px solid ${modeColor(mode, 0.35)}`, borderRadius: 6,
@@ -2213,14 +2271,14 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
             </button>
           ) : (
           <div style={{ display: "flex", gap: 2 }}>
-            <button onClick={() => fire()} title={`${AGENT_META[mode].title} (⌘↵) — shift-tab to change mode`} style={{
+            <button onClick={() => fire()} title={`${agentMeta(mode).title} (⌘↵) — shift-tab to change mode`} style={{
               flex: 1, padding: "4px 10px",
               background: modeColor(mode, 0.15), border: `1px solid ${modeColor(mode, 0.4)}`,
               borderRadius: "5px 0 0 5px", color: modeColor(mode), fontWeight: 600, fontSize: 11, cursor: "pointer",
               display: "flex", alignItems: "center", gap: 4, justifyContent: "center",
             }}>
-              {(() => { const Icon = AGENT_META[mode].icon; return Icon ? <Icon style={{ width: 10, height: 10 }} /> : null; })()}
-              {AGENT_META[mode].label}
+              {(() => { const Icon = agentMeta(mode).icon; return Icon ? <Icon style={{ width: 10, height: 10 }} /> : null; })()}
+              {agentMeta(mode).label}
             </button>
             <button ref={modeMenu.refs.setReference} onClick={() => setMenuOpen((o) => !o)} title="Choose mode (shift-tab cycles)" style={{
               padding: "4px 5px",
@@ -2240,8 +2298,8 @@ export function InputBar({ enabled, activeBranch, path, contextAtomCount, contex
               background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6,
               boxShadow: "0 4px 16px oklch(0 0 0 / 0.4)", overflow: "hidden", minWidth: 120,
             }}>
-              {MODE_ORDER.map((id) => {
-                const meta = AGENT_META[id];
+              {modeOrder.map((id) => {
+                const meta = agentMeta(id);
                 const Icon = meta.icon;
                 return (
                   <button key={id} onClick={() => { setMode(id); setMenuOpen(false); }} title={meta.title} style={{

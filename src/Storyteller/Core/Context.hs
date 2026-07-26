@@ -54,6 +54,8 @@ module Storyteller.Core.Context
   , resolveContext0
   , resolveContext1
   , resolveAdhoc0
+  , resolveAdhoc
+  , adhocArgs
   , buildContextLibrary
   ) where
 
@@ -233,6 +235,18 @@ spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEn
 --   walk, with nothing left to discover later that isn't already knowable
 --   now.
 --
+--   The failing slot is usually the override itself, but needn't be: an
+--   override can break a *default* that references it (a wrong-arity
+--   @context.style@ breaking @context.custom@, which calls it), in which
+--   case the reported name is the default's. Either way what gets dropped
+--   is an override -- see the implementation for how the responsible one
+--   is identified when the report names a default. This used to be a hard
+--   @error@ instead, on the reasoning that "a default can't fail, so this
+--   must be our bug" -- true of the *default sequence alone*, but not of
+--   the spliced sequence a project's overrides actually compile in, which
+--   is what made an ordinary wrong-arity commit crash every request that
+--   resolved any context at all.
+--
 --   On a rejection, the offending @name@ is dropped from @overrides@ and
 --   the whole sequence is retried -- from scratch, with the remaining
 --   overrides, __never__ a partially-applied library with only the
@@ -251,20 +265,49 @@ buildContextLibrary
   :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
   => Map Name Text -> (Library r, [Name])
 buildContextLibrary overrides =
-  case Compile.buildLibrary (hostLibrary @branch @r) (spliceOverrides @branch @r overrides) of
-    Right lib             -> (lib, [])
-    Left (badName, _err)
-      | Map.member badName overrides ->
-          let (lib, rejected) = buildContextLibrary @branch (Map.delete badName overrides)
-          in (lib, badName : rejected)
-      -- A default itself can't fail to compile (see this function's own
-      -- Haddock) -- if 'badName' isn't one of @overrides@'s own keys,
-      -- something is wrong with 'defaultLibraryOrder' itself, not with
-      -- anything a project committed, and retrying by deleting an
-      -- override that was never the cause would loop forever without
-      -- ever converging. Fails loudly instead.
-      | otherwise -> error ("buildContextLibrary: default library itself failed to compile at "
-                              <> T.unpack badName <> ": " <> _err)
+  case compileWith overrides of
+    Right lib -> (lib, [])
+    Left (badName, err)
+      | Map.member badName overrides -> reject badName
+      -- The failing slot is a *default*, which can't be at fault on its
+      -- own (the default sequence is a closed graph over 'hostLibrary',
+      -- already checked, and compiles with no overrides at all by
+      -- construction) -- so an override of some *other* name it
+      -- references broke it. The commonest shape: a project commits
+      -- @context.style@ at 1-arity, and @context.custom@, which calls it
+      -- with none, is what actually fails to compile.
+      --
+      -- The offending override is found by experiment rather than by
+      -- attribution -- drop each candidate in turn and keep the first
+      -- whose removal makes the whole sequence compile. That needs no
+      -- second, parallel "which names does this body reference" walk
+      -- alongside the compiler's own (which would be one more thing that
+      -- can silently disagree with what compilation actually resolves),
+      -- and it is exactly as authoritative as compiling is, because it
+      -- *is* compiling. Cost is bounded by the number of committed
+      -- overrides, squared, on an error path only -- each compile being
+      -- a pure walk over ~15 small definitions.
+      --
+      -- No candidate working alone means several overrides are
+      -- implicated together; dropping the first and recursing still
+      -- converges on the same answer, one name at a time. Either way
+      -- @overrides@ strictly shrinks, so this terminates in the base
+      -- case (no overrides left), which always compiles.
+      | otherwise -> case [ k | k <- Map.keys overrides, isRight (compileWith (Map.delete k overrides)) ] of
+          culprit : _ -> reject culprit
+          []          -> case Map.keys overrides of
+            culprit : _ -> reject culprit
+            -- Genuinely nothing committed, and a default still didn't
+            -- compile: this is our bug, not a project's, and there is
+            -- nothing to drop that could fix it.
+            []          -> error ("buildContextLibrary: default library itself failed to compile at "
+                                    <> T.unpack badName <> ": " <> err)
+  where
+    compileWith os = Compile.buildLibrary (hostLibrary @branch @r) (spliceOverrides @branch @r os)
+    reject name =
+      let (lib, rejected) = buildContextLibrary @branch (Map.delete name overrides)
+      in (lib, name : rejected)
+    isRight = either (const False) (const True)
 
 -- | Test/pure interpreter: resolves from a fixed map of override source
 --   text as the starting point, falling back to the caller's default on
@@ -357,12 +400,48 @@ resolveContext1 name arg = do
 resolveAdhoc0
   :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
   => Text -> Sem r (Value (ContextRow branch r))
-resolveAdhoc0 src = do
+resolveAdhoc0 src = resolveAdhoc @branch src []
+
+-- | 'resolveAdhoc0' generalized to a program that declares parameters:
+--   @available@ is what the caller /can/ supply, in order (today, exactly
+--   one thing — the open file's path), and the program takes however many
+--   of them its own @defParams@ actually declares, none included.
+--
+--   This is what lets one editing surface preview or cost a program
+--   without knowing its arity in advance — which is the normal case now
+--   that a program's arity is a property of /user-authored text/ (a
+--   custom agent's own @path:@-headed program, see
+--   'Storyteller.Writer.Agent.Custom') rather than of a fixed slot the UI
+--   was compiled against. Supplying more than a program takes is not an
+--   error (the extras simply go unused, exactly as an unused parameter
+--   would); supplying fewer still is, since there's nothing to bind the
+--   declared name to and the resulting failure would otherwise be a
+--   confusing "unknown identifier" from inside the body.
+resolveAdhoc
+  :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  => Text -> [Text] -> Sem r (Value (ContextRow branch r))
+resolveAdhoc src available = do
   overrides <- getContextOverrides
   let (table, _rejected) = buildContextLibrary @branch overrides
   case resolveOverrideDefinition (Just src) of
-    Nothing  -> fail ("resolveAdhoc0: not a valid 0-arity program: " <> T.unpack src)
-    Just def
-      | not (null (defParams def)) ->
-          fail ("resolveAdhoc0: expected a 0-arity program, got " <> show (length (defParams def)) <> " parameter(s)")
-      | otherwise -> runContextValue @branch (runDefinition @branch table def [])
+    Nothing  -> fail ("resolveAdhoc: not a valid program: " <> T.unpack src)
+    Just def -> case adhocArgs def available of
+      Left err   -> fail ("resolveAdhoc: " <> err)
+      Right args -> runContextValue @branch
+        (runDefinition @branch table def [ bval (pure (leafValue [User a])) | a <- args ])
+
+-- | The arity-matching rule shared by every caller-supplied-program entry
+--   point ('resolveAdhoc' and, because line-level ablation needs the
+--   parsed 'Definition' itself rather than just the ability to run it,
+--   'Storyteller.Writer.Agent.ContextCost.buildAdhocProgramCosts'): take
+--   as many of @available@ as @def@ declares. Pure, and shared rather than
+--   written twice, so "cost this program" and "preview this program" can
+--   never disagree about how many arguments it gets — the same reasoning
+--   'Storyteller.Writer.Agent.ContextCost.buildProgramCosts' already
+--   documents for staging.
+adhocArgs :: Definition -> [Text] -> Either String [Text]
+adhocArgs def available
+  | length available >= arity = Right (take arity available)
+  | otherwise = Left ("program declares " <> show arity <> " parameter(s), but only "
+                        <> show (length available) <> " are available here")
+  where arity = length (defParams def)

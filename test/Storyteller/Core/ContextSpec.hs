@@ -215,29 +215,60 @@ resolveContext0Spec = describe "resolveContext0" $ do
         runContextValue @Main (messagesText <$> valueDefault v))
     `shouldBe` Right "staged text"
 
-  -- | An override at the wrong arity for a name's own external contract
-  --   (@resolveContext0@ always calls @context.style@ with zero
-  --   arguments) still *compiles*, and still lands in the library --
-  --   there is no DSL-internal caller of @context.style@ to catch the
-  --   mismatch during compilation, so nothing rejects the override up
-  --   front (see 'Storyteller.Core.Context.buildContextLibrary''s own
-  --   Haddock: it only ever rejects a compile *failure*, and an
-  --   isolated 1-arity body compiles fine on its own terms). What fails,
-  --   correctly, is the actual call: @resolveContext0@ is a lookup that
-  --   expects a 0-arity binding at this name and gets a 1-arity one --
-  --   exactly the same "wrong number of arguments" failure calling any
-  --   mismatched function would give, not a silent fallback.
-  it "a staged override at the wrong arity for context.style's own contract fails the lookup, not silently" $
-    (run (testStack $ do
+  -- | An override at the wrong arity for a name some *default* calls is
+  --   rejected during compilation, and the default stands.
+  --
+  --   @context.style@ is called with no arguments by @context.custom@
+  --   (the starting template for a user-defined agent, see
+  --   'Storyteller.Context.DSL.Library.contextCustomDef'), so a 1-arity
+  --   override of it can't compile — and 'buildContextLibrary' drops the
+  --   override rather than the default, which is the only choice that
+  --   leaves a working library.
+  --
+  --   This used to assert the opposite (the override landed, and the
+  --   *lookup* failed) and was correct when written: nothing inside the
+  --   DSL called @context.style@ then, so there was nothing to catch the
+  --   mismatch up front. Adding a caller moved it into the class every
+  --   other @context.*@ name has always been in. Worth being precise
+  --   about, since the two behaviours are easy to conflate: a name with
+  --   no DSL-internal caller still accepts a wrong-arity override and
+  --   still fails at the call (see 'resolveContext0''s own contract) --
+  --   that class just no longer has @context.style@ in it.
+  it "a staged override at the wrong arity for a name a default calls is rejected, leaving the default" $
+    run (testStack $ do
       seedBranch "main" []
       runBranchAndFS @Main (BranchName "main") $ do
         setContextOverride "context.style" "charname:\n  charname\n"
         v <- resolveContext0 @Main "context.style"
         runContextValue @Main (messagesText <$> valueDefault v))
-      :: Either String Text)
-    `shouldSatisfy` \case
-      Left _  -> True
-      Right _ -> False
+    `shouldBe` Right ""   -- the compiled-in default: `read "style.md" | orifempty ""`
+
+  -- The crash this replaced: a wrong-arity override used to surface as a
+  -- pure `error` call from inside 'buildContextLibrary' (reporting the
+  -- *default* it broke, which is not something a project can act on),
+  -- taking down every request that resolved any context at all, not just
+  -- ones touching the overridden name. An unrelated slot has to keep
+  -- resolving normally with that same broken override staged.
+  it "an unrelated slot still resolves while a wrong-arity override is staged" $
+    run (testStack $ do
+      seedBranch "main" [("lore/a.md", "lore content")]
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "charname:\n  charname\n"
+        v <- resolveContext0 @Main "context.lore"
+        runContextValue @Main (messagesText <$> valueDefault v))
+    `shouldSatisfy` either (const False) (T.isInfixOf "lore content")
+
+  -- A good override committed alongside a bad one must survive: rejection
+  -- is per-name, never "give up on this project's overrides".
+  it "keeps a valid override while rejecting a wrong-arity one" $
+    run (testStack $ do
+      seedBranch "main" []
+      runBranchAndFS @Main (BranchName "main") $ do
+        setContextOverride "context.style" "charname:\n  charname\n"
+        setContextOverride "context.lore" "\"my own lore\"\n"
+        v <- resolveContext0 @Main "context.lore"
+        runContextValue @Main (messagesText <$> valueDefault v))
+    `shouldBe` Right "my own lore"
 
   it "a staged override takes priority over a same-named branch commit" $
     run (testStack $ do

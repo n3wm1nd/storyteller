@@ -104,9 +104,18 @@ instance ToJSON LineCost where
 -- | Commands the client may send on a context-view connection.
 data ContextViewCommand
   = PreviewContext { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
-  | PreviewAdhoc { cvId :: Maybe T.Text, cvProgram :: T.Text }
+  -- | A program submitted on its own (not staged as a @context.writer@
+  --   override). 'cvAdhocPath' is the submitting surface's own answer to
+  --   "which file would this run against", supplied to a program that
+  --   declares a parameter and ignored by one that doesn't (see
+  --   'Storyteller.Core.Context.resolveAdhoc'): the Agents tab sends the
+  --   open file, the standalone @.dsl@ editor sends the empty glob
+  --   @[]@ (nothing, honestly, rather than an arbitrary file). Optional
+  --   for compatibility with a client that sends neither -- which then
+  --   only works for a 0-arity program, the previous behaviour exactly.
+  | PreviewAdhoc { cvId :: Maybe T.Text, cvProgram :: T.Text, cvAdhocPath :: Maybe FilePath }
   | EstimateCost { cvId :: Maybe T.Text, cvPath :: FilePath, cvProgram :: T.Text }
-  | EstimateAdhocCost { cvId :: Maybe T.Text, cvProgram :: T.Text }
+  | EstimateAdhocCost { cvId :: Maybe T.Text, cvProgram :: T.Text, cvAdhocPath :: Maybe FilePath }
   | EntriesFor { cvId :: Maybe T.Text, cvName :: T.Text, cvEntriesPath :: Maybe FilePath }
   deriving (Show)
 
@@ -116,9 +125,9 @@ instance FromJSON ContextViewCommand where
     i <- o .:? "id"
     case t of
       "context.preview"       -> PreviewContext i <$> o .: "path" <*> o .: "program"
-      "context.preview.adhoc" -> PreviewAdhoc i <$> o .: "program"
+      "context.preview.adhoc" -> PreviewAdhoc i <$> o .: "program" <*> o .:? "path"
       "context.cost"          -> EstimateCost  i <$> o .: "path" <*> o .: "program"
-      "context.cost.adhoc"    -> EstimateAdhocCost i <$> o .: "program"
+      "context.cost.adhoc"    -> EstimateAdhocCost i <$> o .: "program" <*> o .:? "path"
       "context.entries"       -> EntriesFor i <$> o .: "name" <*> o .:? "path"
       _                       -> fail ("unknown context-view command: " <> T.unpack t)
 

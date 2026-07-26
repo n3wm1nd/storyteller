@@ -29,8 +29,22 @@ import { setConnStatus, removeConn, bumpActivity } from "./uiStore";
 export const contextsBranchName = "contexts";
 const DSL_DIR = "context"; // matches Core.Context's dotted-name → path rule
 
-function dslPath(name: string): string {
-  return `${DSL_DIR}/${name}.dsl`;
+// A definition's name -> its file on the contexts branch, by the backend's
+// own rule: dots are path separators (Storyteller.Core.Context's
+// `pathToName` is literally the inverse, replacing "/" with "."). `name`
+// here is the part after the leading `context.` — so `custom.critic`
+// lands at `context/custom/critic.dsl` and resolves back to the slot
+// `context.custom.critic`.
+//
+// The dot->slash step is load-bearing for any *nested* name and was
+// missing until user-defined agents introduced the first one: every slot
+// that existed before (`lore`, `other`, `chaptersCompressed`) is a single
+// segment, where the two rules coincide. Note it's name-preserving either
+// way — a file written flat at `context/a.b.dsl` resolves to the same
+// `context.a.b` the nested layout does — so this changes where files land,
+// never what they're called.
+export function dslPath(name: string): string {
+  return `${DSL_DIR}/${name.split(".").join("/")}.dsl`;
 }
 
 // ─── Single-file read/write ───────────────────────────────────────────────
@@ -276,6 +290,12 @@ export async function listContextFunctions(): Promise<SavedContextFunction[]> {
       clearTimeout(timer);
       const fns = evt.files
         .filter((p) => p.startsWith(`${DSL_DIR}/`) && p.endsWith(".dsl"))
+        // `context/custom/*` is a user-defined agent's own program, not a
+        // pinnable snippet (see lib/customAgents.ts): it takes the open
+        // file's path as a parameter, so pinning it — which sends a bare
+        // 0-arity program — could only ever fail. Agents have their own
+        // surfaces (the Agents tab, the composer's mode list).
+        .filter((p) => !p.startsWith(`${DSL_DIR}/custom/`))
         .map((p) => ({
           path: p,
           name: p.slice(DSL_DIR.length + 1, -".dsl".length),

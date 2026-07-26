@@ -57,7 +57,7 @@ import Storyteller.Context.DSL.Rendering (renderContext, renderText)
 import Storyteller.Context.DSL.Value (Message(User), bval, leafValue)
 import Storyteller.Core.Branch (BranchOp)
 import Storyteller.Core.Context
-  ( ContextRow, ContextStorage, buildContextLibrary, getContextOverrides
+  ( ContextRow, ContextStorage, adhocArgs, buildContextLibrary, getContextOverrides
   , resolveOverrideDefinition, runContextValue
   )
 import Storyteller.Core.ContentEffects (BranchResolve)
@@ -220,20 +220,28 @@ buildProgramCosts path program = do
 --   'buildProgramCosts') now that @context.writer@ no longer accepts a
 --   whole-program override to estimate against -- see the project chat
 --   that settled the writer context's three-slot model. A parse failure
---   or non-zero declared arity is a real error here (mirroring
---   'Storyteller.Core.Context.resolveAdhoc0': there's no slot default to
---   silently fall back to for a program that was never a named slot to
---   begin with).
+--   is a real error here (mirroring 'Storyteller.Core.Context.resolveAdhoc':
+--   there's no slot default to silently fall back to for a program that
+--   was never a named slot to begin with).
+--
+--   @mPath@ is the editing surface's own "which file would this run
+--   against", matched against the program's declared parameters by the
+--   shared 'Storyteller.Core.Context.adhocArgs' rule -- so a @path:@-headed
+--   program (a custom agent's, @context.other@'s) costs correctly instead
+--   of being rejected outright for having an argument, which is what used
+--   to make its estimate come back empty. See
+--   'Storyteller.Writer.Agent.ContextPreview.buildAdhocPreview', which
+--   takes the identical argument for the identical reason -- the two must
+--   agree about what they're measuring.
 buildAdhocProgramCosts
   :: forall branch r
   .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
-  => Text -> Sem r [LineCost]
-buildAdhocProgramCosts program = do
+  => Text -> Maybe FilePath -> Sem r [LineCost]
+buildAdhocProgramCosts program mPath = do
   overrides <- getContextOverrides
   let (table, _rejected) = buildContextLibrary @branch overrides
   case resolveOverrideDefinition (Just program) of
     Nothing  -> fail ("buildAdhocProgramCosts: not a valid program: " <> T.unpack program)
-    Just def
-      | not (null (defParams def)) ->
-          fail ("buildAdhocProgramCosts: expected a 0-arity program, got " <> show (length (defParams def)) <> " parameter(s)")
-      | otherwise -> buildLineCosts @branch table def []
+    Just def -> case adhocArgs def (maybe [] (pure . T.pack) mPath) of
+      Left err   -> fail ("buildAdhocProgramCosts: " <> err)
+      Right args -> buildLineCosts @branch table def [ bval (pure (leafValue [User a])) | a <- args ]

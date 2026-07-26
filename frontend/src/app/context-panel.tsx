@@ -265,7 +265,11 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
               value={draft}
               onChange={(next) => setLoreOverride(path, next === resetTarget ? null : next)}
               placeholder='e.g. read "lore/**"'
-              fetchCosts={fetchCosts}
+              // Bound to the open file, so a `path:`-headed draft (every
+              // `context.other` program) actually resolves instead of
+              // failing for want of an argument. Harmless for a 0-arity
+              // draft: a program takes only what it declares.
+              fetchCosts={(program) => fetchCosts(program, path)}
               minHeight="90px"
             />
           </div>
@@ -423,7 +427,11 @@ function OtherRow({ path, branch }: { path: string; branch: string }) {
               value={draft}
               onChange={(next) => setOtherOverride(path, next === resetTarget ? null : next)}
               placeholder='e.g. read "notes/**"'
-              fetchCosts={fetchCosts}
+              // Bound to the open file, so a `path:`-headed draft (every
+              // `context.other` program) actually resolves instead of
+              // failing for want of an argument. Harmless for a 0-arity
+              // draft: a program takes only what it declares.
+              fetchCosts={(program) => fetchCosts(program, path)}
               minHeight="90px"
             />
           </div>

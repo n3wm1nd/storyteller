@@ -177,6 +177,30 @@ data FileCommand
       , fcLore :: Maybe T.Text, fcOther :: Maybe T.Text, fcPastChaptersMode :: PastChaptersMode, fcPinnedPrograms :: [T.Text]
       , fcFlowTid :: Maybe T.Text
       }
+  -- | Run a user-defined agent -- one a project invented by committing a
+  --   context program (@context\/custom\/\<slug\>.dsl@ on the @contexts@
+  --   branch) and, optionally, a system prompt
+  --   (@agent\/custom\/\<slug\>.md@ on @prompts@). 'fcAgent' is that slug;
+  --   there is no compiled-in agent behind it and no server-side registry
+  --   of valid slugs -- the two branch files /are/ the agent, so an
+  --   unknown slug fails at context resolution rather than being validated
+  --   against some list here (see 'Storyteller.Writer.Agent.Custom').
+  --
+  --   Its own command rather than a flag on 'ChatWriter', because it is a
+  --   genuinely different agent with a different context source and a
+  --   different prompt key -- see @feedback_wire_command_tracks_intent@:
+  --   "send to the writer" and "send to the critic I wrote" are different
+  --   user intents even though both end in appended atoms.
+  --
+  --   Carries 'fcPinned'\/'fcPinnedPrograms' (the composer's own per-call
+  --   context controls, honoured identically to 'ChatWriter') but none of
+  --   'fcLore'\/'fcOther'\/'fcPastChaptersMode': those override slots the
+  --   built-in writer's Haskell decides to consult, and a custom agent's
+  --   whole context is its own program instead.
+  | ChatCustom
+      { fcId :: Maybe T.Text, fcAgent :: T.Text, fcPromptText :: T.Text
+      , fcPinned :: [ContextItem], fcPinnedPrograms :: [T.Text]
+      }
   -- | Roleplay writer: every character present on this file (see
   --   'Storyteller.Writer.Presence.activeCharactersFor') is interrogated,
   --   in character, for what they'd do or say before one scene gets
@@ -324,6 +348,10 @@ instance FromJSON FileCommand where
         ChatWriter i <$> o .: "text" <*> pure pinned
           <*> pure lore <*> pure other <*> pure (parsePastChaptersMode pastChaptersRaw) <*> pure pinnedPrograms
           <*> pure flowTid
+      "chat.custom" -> do
+        pinned         <- fromMaybe [] <$> o .:? "pinned"
+        pinnedPrograms <- fromMaybe [] <$> o .:? "pinnedPrograms"
+        ChatCustom i <$> o .: "agent" <*> o .: "text" <*> pure pinned <*> pure pinnedPrograms
       "chat.roleplay" -> RoleplayWrite i . fromMaybe "" <$> o .:? "text"
       "chat.fixer"  -> do
         pinned  <- fromMaybe [] <$> o .:? "pinned"
@@ -382,6 +410,7 @@ commandKind = \case
   HideAtoms {}    -> "hide.atoms"
   UnhideAtoms {}  -> "unhide.atoms"
   ChatWriter {}   -> "chat.writer"
+  ChatCustom {}   -> "chat.custom"
   RoleplayWrite {} -> "chat.roleplay"
   ChatFixer {}    -> "chat.fixer"
   ChatRegen {}    -> "chat.regen"

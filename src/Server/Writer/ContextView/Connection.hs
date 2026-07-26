@@ -100,13 +100,13 @@ commandLoop branch conn reqVar entriesVar = loop
             embed $ atomically $ writeTVar reqVar (Just (path, program))
             pushPreview branch conn mid path program
             loop
-          Just (PreviewAdhoc mid program) -> do
+          Just (PreviewAdhoc mid program mPath) -> do
             -- Deliberately doesn't touch 'reqVar' -- same reasoning as
             -- 'EstimateAdhocCost' just below: a bare-snippet preview has
             -- no @path@ of its own for the notify thread to re-resolve
             -- against, and (like the adhoc cost case) is a one-off
             -- "show me now" request, not a live-updating view.
-            pushAdhocPreview branch conn mid program
+            pushAdhocPreview branch conn mid program mPath
             loop
           Just (EstimateCost mid path program) -> do
             -- Deliberately doesn't touch 'reqVar' -- unlike a preview
@@ -115,8 +115,8 @@ commandLoop branch conn reqVar entriesVar = loop
             -- change (see this module's own Protocol-facing Haddock).
             pushCost branch conn mid path program
             loop
-          Just (EstimateAdhocCost mid program) -> do
-            pushAdhocCost branch conn mid program
+          Just (EstimateAdhocCost mid program mPath) -> do
+            pushAdhocCost branch conn mid program mPath
             loop
           Just (EntriesFor mid name mPath) -> do
             embed $ atomically $ writeTVar entriesVar (Just (name, mPath))
@@ -156,9 +156,9 @@ pushPreview branch conn mid path program = do
 
 pushAdhocPreview
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> Maybe T.Text -> T.Text -> Sem r ()
-pushAdhocPreview branch conn mid program = do
-  result <- withBranch @Main branch (buildAdhocPreview @Main program)
+  => T.Text -> WS.Connection -> Maybe T.Text -> T.Text -> Maybe FilePath -> Sem r ()
+pushAdhocPreview branch conn mid program mPath = do
+  result <- withBranch @Main branch (buildAdhocPreview @Main program mPath)
   embed $ WS.sendTextData conn (encode (ContextPreviewed mid result))
 
 pushCost
@@ -170,9 +170,9 @@ pushCost branch conn mid path program = do
 
 pushAdhocCost
   :: (SessionEffects r, Member (Embed IO) r)
-  => T.Text -> WS.Connection -> Maybe T.Text -> T.Text -> Sem r ()
-pushAdhocCost branch conn mid program = do
-  costs <- withBranch @Main branch (buildAdhocProgramCosts @Main program)
+  => T.Text -> WS.Connection -> Maybe T.Text -> T.Text -> Maybe FilePath -> Sem r ()
+pushAdhocCost branch conn mid program mPath = do
+  costs <- withBranch @Main branch (buildAdhocProgramCosts @Main program mPath)
   embed $ WS.sendTextData conn (encode (ContextCosted mid costs))
 
 -- | @name@'s own arity decides which of 'buildEntries0'\/'buildEntries1' to

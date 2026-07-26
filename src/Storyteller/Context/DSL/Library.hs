@@ -58,6 +58,8 @@ module Storyteller.Context.DSL.Library
   , contextOther
   , contextWriter
   , contextWriterDef
+  , contextCustom
+  , contextCustomDef
   , contextCharacter
   , characterBlurb
   , characterSummaryOf
@@ -82,7 +84,7 @@ import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
-import Storyteller.Core.ContentEffects (TreeAccess, Summarized)
+import Storyteller.Core.ContentEffects (ConversationAccess, JournalAccess, Presence, TreeAccess, Summarized)
 import Storyteller.Writer.Agent (CharSummary(..))
 
 -- | The one reserved standing-instruction file, if a project has one --
@@ -465,6 +467,82 @@ path:
 contextWriter :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
 contextWriter lib p = runDefinition @branch lib contextWriterDef [toBinding p]
 
+-- | The starting point for a user-defined agent
+--   ('Storyteller.Writer.Agent.Custom.customAgent'): everything
+--   'Storyteller.Writer.Agent.Write.writeAgent' assembles for itself,
+--   written out in the DSL instead of in Haskell.
+--
+--   __Deliberately spelled out rather than delegated to @context.writer@__,
+--   which is what it originally was. A one-line body would have been the
+--   same context, but a starting template's job is to be /read/: someone
+--   opening their first agent's program should be able to see that the
+--   style guide, world lore, past chapters, loose notes, present
+--   characters and this file's own conversation are six separate,
+--   individually removable decisions -- and delete or reorder any one of
+--   them -- without first having to know that @context.writer@ exists and
+--   go read what it expands to. Each line names exactly what it
+--   contributes, which is the only self-documentation available here
+--   (comments parse but don't survive
+--   'Storyteller.Context.DSL.PrettyPrint.prettyDefinition', and this
+--   definition is served /as pretty-printed source/ to seed a new agent's
+--   file -- see below).
+--
+--   Line by line, matching @writeAgent@'s own numbered Haddock list:
+--
+--     * @context.style@ -- the standing style guide. Note this is the one
+--       piece @context.writer@ itself does /not/ carry: @writeAgent@
+--       splices style into its own system prompt rather than its context
+--       ('Storyteller.Writer.Agent.Write.writeAgent'), and a custom agent
+--       has no such compiled-in splice, so leaving it to @context.writer@
+--       would have silently dropped the project's style guide from every
+--       user-defined agent.
+--     * @context.loreWithout path@ \/ @context.chaptersWithout path@ \/
+--       @context.other path@ -- hand-authored lore, every chapter written
+--       so far, and loose notes, each with @path@ itself excluded so the
+--       file being written never appears twice (once as background, once
+--       as the conversation below).
+--     * the @for@ loop -- every character present in this scene
+--       (@charactersin@ reads presence ticks, the same sole source of
+--       truth 'Storyteller.Writer.Presence.activeCharactersFor' uses).
+--     * @readconversation path@ -- the volatile tail: this file's own tick
+--       history replayed as real user\/assistant turns, the exact
+--       @"prompt"@\/@"atom"@ pairing @writeAgent@ reconstructs internally
+--       via 'Storyteller.Writer.Agent.Chat.historyFromFileTicks'.
+--
+--   The one piece of @writeAgent@ deliberately /not/ mirrored here is its
+--   mid-depth splice ('Storyteller.Writer.Agent.MessageWindow.injectAtWindow',
+--   available in the DSL as @embedshallow@): that's a prompt-cache tuning
+--   decision, not a statement about what a story needs, and putting it in
+--   a starter template would ask someone to understand cache-prefix
+--   arithmetic before making their first edit. An agent that wants it
+--   writes @embedshallow (readconversation path) extra@ in place of the
+--   bare read -- which is exactly the shape of the line it replaces.
+--
+--   Registered as an ordinary library name (@context.custom@ -- the
+--   namespace root of every @context.custom.\<slug\>@ a project commits,
+--   the same root-is-the-default convention 'Storyteller.Core.Prompt' uses
+--   for prompt keys), for two reasons: a project's own agent program can
+--   reference it directly (@path: context.custom path@, then narrow), and
+--   the frontend seeds a newly created agent's @.dsl@ by fetching this
+--   definition's real, pretty-printed source over
+--   @GET \/context-default\/context.custom@ -- so the starting template a
+--   user sees is this definition, never a hand-kept copy of it in
+--   TypeScript that could quietly drift.
+contextCustomDef :: Definition
+contextCustomDef = [defQuote|
+path:
+  context.style
+  context.loreWithout path
+  context.chaptersWithout path
+  context.other path
+  for c in (charactersin path):
+    context.character c
+  readconversation path
+|]
+
+contextCustom :: forall branch r. Members '[TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
+contextCustom lib p = runDefinition @branch lib contextCustomDef [toBinding p]
+
 -- | The "and this is the character" acquaintance-level line -- the
 --   header @sheet.md@ is required to open with (its display name, see
 --   @WRITER.md@), plus whatever paragraph follows it, by convention
@@ -744,6 +822,7 @@ defaultLibraryOrder =
   , ("character.blurb",   characterBlurbDef)
   , ("context.character", contextCharacterDef)  -- needs character.blurb (above), characterJournal (hostLibrary)
   , ("context.writer",    contextWriterDef)     -- needs context.loreWithout/chaptersWithout/other/character (all above)
+  , ("context.custom",    contextCustomDef)     -- needs context.writer (above), readconversation (hostLibrary)
   ]
 
 -- | 'defaultLibraryOrder', as the plain 'Map' shape callers that only care

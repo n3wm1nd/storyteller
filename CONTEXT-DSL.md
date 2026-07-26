@@ -391,21 +391,52 @@ list of every name whose override was rejected, so a caller can report
 *which* commits didn't take, rather than the previous design's fully silent
 fallback.
 
+**The slot a compile failure is reported at needn't be the override that
+caused it.** An override can break a *default* that references it — a
+1-arity `context.style` breaking `context.custom`, which calls it with
+none — and `buildLibrary` reports the slot that failed, which is the
+default's name. Dropping *that* would be dropping a default and is not
+even possible; what has to go is the override. `buildContextLibrary` finds
+which one by experiment: remove each committed override in turn and keep
+the first whose removal lets the whole sequence compile. Deliberately not
+by a separate "which names does this body reference" walk over the AST —
+that would be a second, parallel resolver alongside the compiler's own,
+free to disagree with what compilation actually resolves; recompiling *is*
+the authority, and this only ever runs on an already-failing path, where
+the cost (bounded by the number of committed overrides, squared, each a
+pure walk over ~15 small definitions) is irrelevant.
+
+This used to be a hard `error` — "a default can't fail to compile, so this
+must be our bug." True of the default sequence *alone*; false of the
+spliced sequence a project's overrides actually compile in, which is the
+one being built. The consequence was that an ordinary wrong-arity commit
+crashed every request that resolved any context at all, not just ones
+touching the overridden name.
+
 **An override at the wrong arity for its own name's external contract still
 compiles and still lands in the library, if nothing inside the DSL calls it
 at the old arity to catch the mismatch.** A definition with no DSL-internal
-callers (`context.style`, say) has nothing inside the compiled graph to
-reject a wrong-arity override on its behalf — the override's own body is
-checked in isolation and, if it's otherwise valid text, accepted. What then
-fails is the actual call: `Storyteller.Core.Context.resolveContext0`/
-`resolveContext1` (`Storyteller.Context.DSL.Compile.runNamed` underneath)
-are a lookup expecting a specific arity at that name, and a mismatch there
-is exactly the same "wrong number of arguments" failure calling any
-mismatched function would give — not a gap to engineer around, and not
-something `buildContextLibrary` should guess at ahead of time: a project
-committing a different arity for a name is semantically discouraged, but
-mechanically permitted, and the failure belongs at the one place that
-actually knows what arity was expected.
+callers has nothing inside the compiled graph to reject a wrong-arity
+override on its behalf — the override's own body is checked in isolation
+and, if it's otherwise valid text, accepted. What then fails is the actual
+call: `Storyteller.Core.Context.resolveContext0`/`resolveContext1`
+(`Storyteller.Context.DSL.Compile.runNamed` underneath) are a lookup
+expecting a specific arity at that name, and a mismatch there is exactly
+the same "wrong number of arguments" failure calling any mismatched
+function would give — not a gap to engineer around, and not something
+`buildContextLibrary` should guess at ahead of time: a project committing a
+different arity for a name is semantically discouraged, but mechanically
+permitted, and the failure belongs at the one place that actually knows
+what arity was expected.
+
+This paragraph used to cite `context.style` as its example. That stopped
+being true the moment `context.custom` was added and called it — which is
+worth recording rather than quietly editing, because it's the general
+shape: a name's membership in this class is a property of *who currently
+calls it*, not of the name, and adding one caller anywhere moves it into
+the class above. The class itself is not empty (`context.chaptersCompressed`,
+among others, still has no DSL-internal caller); it just has no
+stable, citable member.
 
 **Override = define-new, same operation, otherwise.**
 `Storyteller.Core.Context.buildContextLibrary` resolves "what's bound to

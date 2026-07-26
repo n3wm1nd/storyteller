@@ -42,6 +42,7 @@ import qualified Storyteller.SnapshotSpec
 import qualified Storyteller.LoreSpec
 import qualified Storyteller.BranchesSpec
 import qualified Storyteller.ContextPreviewSpec
+import qualified Storyteller.CustomAgentSpec
 import qualified Storyteller.ContextCostSpec
 import qualified Storyteller.OutlineSpec
 import qualified Storyteller.Common.SwipeSpec
@@ -110,6 +111,7 @@ main = hspec $ do
   Storyteller.SnapshotSpec.spec
   describe "Storyteller.Writer.Branches"   Storyteller.BranchesSpec.spec
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
+  describe "Storyteller.Writer.Agent.Custom" Storyteller.CustomAgentSpec.spec
   describe "Storyteller.Writer.Agent.ContextCost" Storyteller.ContextCostSpec.spec
   describe "Storyteller.Writer.Agent.Outline" Storyteller.OutlineSpec.spec
   describe "Storyteller.Common.Swipe"    Storyteller.Common.SwipeSpec.spec

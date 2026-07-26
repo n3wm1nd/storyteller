@@ -47,6 +47,7 @@ library
                   , Storyteller.Writer.Agent.Tracker
                   , Storyteller.Writer.Agent.CharGen
                   , Storyteller.Writer.Agent.Write
+                  , Storyteller.Writer.Agent.Custom
                   , Storyteller.Writer.Agent.MessageWindow
                   , Storyteller.Writer.Agent.FlowWrite
                   , Storyteller.Writer.Agent.Outline
@@ -295,6 +296,7 @@ test-suite storyteller-test
                   , Storyteller.LoreSpec
                   , Storyteller.BranchesSpec
                   , Storyteller.ContextPreviewSpec
+                  , Storyteller.CustomAgentSpec
                   , Storyteller.ContextCostSpec
                   , Storyteller.Context.DSL.ParserSpec
                   , Storyteller.Context.DSL.PrettyPrintSpec

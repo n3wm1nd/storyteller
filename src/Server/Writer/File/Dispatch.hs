@@ -31,7 +31,7 @@ import Polysemy (Member, Sem, raise)
 import qualified Data.Text as T
 
 import Server.Core.File (FileOpen, createFile, deleteFile, renameFile, checkpointFile, appendToFile, editFileAtom, deleteFileTicks, moveFileTick, mergeFileAtoms, splitFileAtoms, hideFileAtoms, unhideFileAtoms, chatNote, cycleAtomSwipe, referenceImage)
-import Server.Writer.File (chatWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup, summarizePath, summarizePathManual)
+import Server.Writer.File (chatWriter, customWriter, roleplayWriter, chatFixer, chatConverse, chatConverseSwipe, editChatPrompt, chatChapterRegen, chatSplitOutline, RegenMode(..), setPresence, askCharacter, correctGroup, summarizePath, summarizePathManual)
 import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..))
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
@@ -91,6 +91,9 @@ runCommand path cmd = case cmd of
 
   ChatWriter _mid prompt pinned lore other chaptersMode pinnedPrograms flowTid ->
     [] <$ chatWriter path prompt pinned lore other chaptersMode pinnedPrograms (TickId <$> flowTid)
+
+  ChatCustom _mid agent prompt pinned pinnedPrograms ->
+    [] <$ customWriter path agent prompt pinned pinnedPrograms
 
   RoleplayWrite _mid prompt ->
     [] <$ roleplayWriter path prompt

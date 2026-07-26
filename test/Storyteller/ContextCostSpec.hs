@@ -124,27 +124,53 @@ buildProgramCostsSpec = describe "buildProgramCosts" $ do
 -- | 'buildAdhocProgramCosts' -- what a per-call @pinnedPrograms@ entry
 --   (Server.Writer.File.Protocol's own @ChatWriter@) is actually measured
 --   through now that @context.writer@ no longer accepts a whole-program
---   override: no @path@, no slot identity, just the bare 0-arity
---   program's own rendered size, broken down per statement, the same
---   ablation logic 'buildProgramCosts' uses underneath.
+--   override: no slot identity, just the submitted program's own rendered
+--   size, broken down per statement, the same ablation logic
+--   'buildProgramCosts' uses underneath.
+--
+--   The @Maybe FilePath@ is the submitting surface's own "which file would
+--   this run against" (see 'Storyteller.Core.Context.adhocArgs'): a
+--   program takes as many arguments as it declares, so a 0-arity one
+--   ignores it and a @path:@-headed one -- every user-defined agent's, and
+--   @context.other@'s -- finally costs correctly instead of being rejected
+--   for having a parameter at all.
 buildAdhocProgramCostsSpec :: Spec
 buildAdhocProgramCostsSpec = describe "buildAdhocProgramCosts" $ do
   it "measures a bare 0-arity literal the same way buildProgramCosts measures a 1-arity one" $
     (run . testStack $ do
       _ <- createBranch (BranchName "story")
       runBranchAndFS @Main (BranchName "story") $
-        buildAdhocProgramCosts @Main "\"aaaa\"\n\"bb\"\n")
+        buildAdhocProgramCosts @Main "\"aaaa\"\n\"bb\"\n" Nothing)
     `shouldBe`
       Right
         [ LineCost { lcLine = 1, lcCol = 1, lcChars = 6 }
         , LineCost { lcLine = 2, lcCol = 1, lcChars = 4 }
         ]
 
-  it "fails on a 1-arity program -- there is no slot default to fall back to" $
+  it "ignores a supplied path when the program declares no parameter" $
     (run . testStack $ do
       _ <- createBranch (BranchName "story")
       runBranchAndFS @Main (BranchName "story") $
-        buildAdhocProgramCosts @Main "name:\n  \"got %name%\"\n")
+        buildAdhocProgramCosts @Main "\"aaaa\"\n" (Just "chapters/ch1.md"))
+    `shouldBe`
+      Right [ LineCost { lcLine = 1, lcCol = 1, lcChars = 4 } ]
+
+  -- The regression this parameter exists for: costing a `path:`-headed
+  -- program used to fail outright, which the UI showed as an empty
+  -- estimate -- indistinguishable from "this program costs nothing".
+  it "binds a supplied path to a 1-arity program's own parameter" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $
+        buildAdhocProgramCosts @Main "name:\n  \"got %name%\"\n" (Just "ch1.md"))
+    `shouldBe`
+      Right [ LineCost { lcLine = 2, lcCol = 3, lcChars = 10 } ]  -- "got ch1.md"
+
+  it "still fails on a 1-arity program when the caller has no argument to give" $
+    (run . testStack $ do
+      _ <- createBranch (BranchName "story")
+      runBranchAndFS @Main (BranchName "story") $
+        buildAdhocProgramCosts @Main "name:\n  \"got %name%\"\n" Nothing)
     `shouldSatisfy` \case
       Left _  -> True
       Right _ -> False

@@ -15,6 +15,7 @@
 -- 'Server.Core.File': plain 'Sem' functions, no JSON/WebSocket.
 module Server.Writer.File
   ( chatWriter
+  , customWriter
   , roleplayWriter
   , chatFixer
   , chatConverse
@@ -67,6 +68,7 @@ import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks, activeCharacterContext)
+import Storyteller.Writer.Agent.Custom (customAgent)
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
@@ -159,6 +161,45 @@ chatWriter path prompt pinnedItems mLore mOther chaptersMode pinnedPrograms mFlo
       _ <- storePrompt
       _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
       info $ "writer agent done: " <> T.pack path
+
+-- | Run a user-defined agent (see
+--   'Storyteller.Writer.Agent.Custom.customAgent') against @path@ and
+--   append what it produced, exactly as 'chatWriter' does for the built-in
+--   writer: prompt tick stored after the agent has read whatever it needs,
+--   output through the same 'Storyteller.Common.Splitter.splitAtoms', same
+--   'Storage.Ops.append'. Deliberately the identical landing behaviour --
+--   a custom agent is a different /context and persona/, not a different
+--   kind of result, so its output is an ordinary run of atoms that
+--   swipes, corrects, undoes, and summarizes like any other.
+--
+--   The only per-call plumbing here is pinned content: 'pinnedItems'
+--   (the user's explicit atom selection and @\@mention@s) and
+--   'pinnedPrograms' (the context pull-up's own ad-hoc 0-arity programs,
+--   resolved via 'Storyteller.Core.Context.resolveAdhoc0'), folded
+--   together exactly the way 'chatWriter' folds them. No @context.lore@\/
+--   @context.other@ staging, unlike 'chatWriter': those are slots the
+--   built-in writer's own Haskell decides to consult, and a custom agent
+--   has no such compiled-in policy to override -- if its program reads
+--   @context.lore@, it does so by name, and a project-wide override of
+--   that name is already in the library it compiles against.
+customWriter
+  :: (FileOpen r, Member Splitter r, SessionEffects r)
+  => FilePath -> T.Text -> T.Text -> [ContextItem] -> [T.Text] -> Sem r ()
+customWriter path slug prompt pinnedItems pinnedPrograms = do
+  pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
+  pinnedProgramCtxs   <- runContextValue @Main (mapM Rendering.renderContext pinnedProgramValues)
+  let pinned = PinnedContext (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs))
+  info $ "custom agent (" <> slug <> ") starting: " <> T.pack path
+  Prose generated <- customAgent @Main path slug pinned (Instruction prompt)
+  -- Same read-before-store ordering 'chatWriter' documents: nothing here
+  -- reads tick history directly, but the agent's own program can
+  -- (@readconversation path@ -- see
+  -- 'Storyteller.Context.DSL.Library.contextCustomDef', which is the
+  -- default template), so storing the prompt first would show this turn's
+  -- not-yet-answered instruction twice.
+  _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
+  _ <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms generated
+  info $ "custom agent (" <> slug <> ") done: " <> T.pack path
 
 -- | The writer agent's own default background, as one flat, ordered
 --   @['Storyteller.Context.DSL.Value.Message']@ stream -- @path@'s own

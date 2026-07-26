@@ -37,16 +37,19 @@
 // paragraph-shaped atoms an ordinary reconciled save would mint in a file
 // that has no paragraphs worth tracking.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  ChevronRight, FileText, Sliders, BookOpen,
+  ChevronRight, FileText, Sliders, BookOpen, Plus,
   PenLine, Wrench, RefreshCw, Split, MessageSquare, Bot,
 } from "lucide-react";
-import { AGENTS, agentsForSurface, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
+import { AGENTS, filterAgents, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
 import type { FileSurface } from "@/lib/fileSurface";
-import { branchConn, branchFileUrl, saveRawFileWhole } from "@/lib/ws";
-import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { contextFunctionUrl, contextsBranchName, writeContextFunction, readContextDefault } from "@/lib/contextBranch";
+import { branchFileUrl, saveRawFileWhole } from "@/lib/ws";
+import { useBranchFiles } from "@/lib/branchFiles";
+import { customAgentSlugs, customAgentDef, createCustomAgent } from "@/lib/customAgents";
+import { isValidFunctionName, slugifyFunctionName } from "@/lib/contextBranch";
+import { setError } from "@/lib/uiStore";
+import { contextFunctionUrl, contextsBranchName, writeContextFunction, readContextDefault, dslPath } from "@/lib/contextBranch";
 import { parseLoreProgram, toggleLorePathInProgram } from "@/lib/dslCompose";
 import { useLoreTree, flattenLore } from "./lore-selector";
 import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
@@ -62,38 +65,10 @@ const AGENT_ICONS: Record<string, typeof PenLine> = {
 // One connection per branch for the whole tab — every agent's prompt (or
 // context-slot) list reads the same branch file list, just checks
 // different paths in it. Shared by usePromptFiles ("prompts") and
-// useContextFiles ("contexts") below.
-function useBranchFiles(branchName: string) {
-  const [files, setFiles] = useState<string[] | null>(null);
-
-  useEffect(() => {
-    const label = `branch:${branchName}`;
-    setConnStatus(label, "connecting");
-    const conn = branchConn(branchName);
-
-    conn.subscribe((evt) => {
-      bumpActivity(label);
-      if (evt.type === "branch.ready") setFiles(evt.files);
-      else if (evt.type === "file.added") setFiles((fs) => (fs ? [...fs, evt.path] : fs));
-      else if (evt.type === "file.removed") setFiles((fs) => (fs ? fs.filter((f) => f !== evt.path) : fs));
-    });
-
-    (async () => {
-      try {
-        await conn.connect();
-        setConnStatus(label, "connected");
-      } catch {
-        setConnStatus(label, "error");
-      }
-    })();
-
-    return () => { conn.close(); removeConn(label); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchName]);
-
-  return files;
-}
-
+// useContextFiles ("contexts") below; the "contexts" one does double duty
+// as the source user-defined agents are discovered from (see
+// lib/customAgents.ts), which is why that discovery opens no connection of
+// its own here.
 function usePromptFiles() {
   return useBranchFiles("prompts");
 }
@@ -448,7 +423,12 @@ function ConfigOverride({ agent, files, onJumpToPrompt }: {
 // the default," not "start from blank and guess the syntax" — same
 // posture LoreRow already takes for the per-call editor
 // (context-panel.tsx).
-function ContextSlotEditor({ path, branch }: { path: string; branch: string | null }) {
+// `path` is the *slot's* bare name (`lore`, `custom.critic`); `filePath`
+// is the story file currently open behind this settings surface, bound to
+// the program's own declared parameter when previewing/costing it (see
+// Storyteller.Core.Context.resolveAdhoc). A slot whose program takes no
+// parameter simply never uses it.
+function ContextSlotEditor({ path, filePath, branch }: { path: string; filePath: string; branch: string | null }) {
   const [committed, setCommitted] = useState<string | null | undefined>(undefined); // undefined = loading
   const [defaultSource, setDefaultSource] = useState("");
   const [draft, setDraft] = useState("");
@@ -508,8 +488,8 @@ function ContextSlotEditor({ path, branch }: { path: string; branch: string | nu
       <CodeCostEditor
         value={draft}
         onChange={setDraft}
-        placeholder={'A 0-arity Context DSL program, e.g.:\n\nread "lore/**"'}
-        fetchCosts={fetchCosts}
+        placeholder={'A Context DSL program, e.g.:\n\nread "lore/**"'}
+        fetchCosts={(program) => fetchCosts(program, filePath)}
         minHeight="90px"
       />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -728,10 +708,13 @@ function LoreSlotEditor({ branch }: { branch: string | null }) {
 // the "contexts" branch. Unlike prompts, a slot with no override yet is
 // still clickable (opens ContextSlotEditor blank) rather than needing a
 // file-view jump first, since there's no file-view surface for these.
-function ContextSlotOverrides({ contextSlots, files, branch }: {
+function ContextSlotOverrides({ contextSlots, files, branch, filePath }: {
   contextSlots: string[];
   files: string[] | null;
   branch: string | null;
+  // The story file this settings surface is open over — the argument a
+  // slot's own program gets previewed/costed against (see ContextSlotEditor).
+  filePath: string;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -751,7 +734,11 @@ function ContextSlotOverrides({ contextSlots, files, branch }: {
     <div style={{ padding: "0 14px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
       {contextSlots.map((key) => {
         const bareName = key.startsWith("context.") ? key.slice("context.".length) : key;
-        const path = `context/${bareName}.dsl`;
+        // Via dslPath, not rebuilt inline: a nested name (`custom.critic`)
+        // is a nested *path* (`context/custom/critic.dsl`), and a second
+        // copy of that rule here is exactly how this managed to disagree
+        // with the file the editor below actually reads and writes.
+        const path = dslPath(bareName);
         const active = files?.includes(path) ?? false;
         const open = expanded.has(key);
         return (
@@ -785,11 +772,91 @@ function ContextSlotOverrides({ contextSlots, files, branch }: {
             {open && (
               bareName === "lore"
                 ? <LoreSlotEditor branch={branch} />
-                : <ContextSlotEditor path={bareName} branch={branch} />
+                : <ContextSlotEditor path={bareName} filePath={filePath} branch={branch} />
             )}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Creating an agent is creating a file: one `.dsl` on the contexts branch,
+// seeded with the compiled-in template (`context.custom` — the built-in
+// Writer's own context, written in DSL, fetched from the server so what
+// lands here is the real definition rather than a copy kept in this
+// codebase). No prompt file is written: its absence means "runs on the
+// backend's default system prompt", which is a meaningful, editable state
+// the Prompts section below already renders — writing an empty one instead
+// would silently make the agent say nothing about itself.
+//
+// The agent then exists, everywhere, immediately: this tab and the
+// composer both read the same branch listing.
+function NewAgentButton({ existing, onCreated }: { existing: string[]; onCreated: (agentId: string) => void }) {
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function create() {
+    const slug = slugifyFunctionName(name);
+    if (!slug || !isValidFunctionName(slug)) {
+      setError(`"${name}" isn't a usable agent name — letters, digits, dashes and underscores only.`);
+      return;
+    }
+    if (existing.includes(`custom:${slug}`)) {
+      setError(`An agent called "${slug}" already exists.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      await createCustomAgent(slug);
+      setNaming(false);
+      setName("");
+      onCreated(`custom:${slug}`);
+    } catch (e) {
+      setError(`Could not create agent: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!naming) {
+    return (
+      <button
+        onClick={() => setNaming(true)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+          padding: "7px 9px", marginTop: 4, border: "none", borderRadius: 5, cursor: "pointer",
+          background: "transparent", color: "var(--text-dim)",
+        }}
+      >
+        <Plus style={{ width: 13, height: 13, flexShrink: 0 }} />
+        <span style={{ fontSize: 12 }}>New agent</span>
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ padding: "6px 9px", marginTop: 4 }}>
+      <input
+        autoFocus
+        value={name}
+        disabled={busy}
+        placeholder="agent name"
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); void create(); }
+          if (e.key === "Escape") { setNaming(false); setName(""); }
+        }}
+        onBlur={() => { if (!busy && !name.trim()) setNaming(false); }}
+        style={{
+          width: "100%", padding: "5px 7px", fontSize: 11.5, borderRadius: 4,
+          background: "var(--card)", border: "1px solid var(--border)", color: "var(--text)",
+        }}
+      />
+      <div style={{ fontSize: 9.5, color: "var(--text-ghost)", marginTop: 4, lineHeight: 1.5 }}>
+        ↵ to create · starts from the Writer&rsquo;s own context
+      </div>
     </div>
   );
 }
@@ -821,10 +888,19 @@ export function AgentsTab({ path, branch, surface, onJumpToPrompt }: {
   surface: FileSurface;
   onJumpToPrompt: (path: string) => void;
 }) {
-  const applicable = agentsForSurface(surface, path);
-  const [selectedId, setSelectedId] = useState<string | null>(applicable[0]?.id ?? null);
   const promptFiles = usePromptFiles();
   const contextFiles = useContextFiles();
+  // Discovered, not registered: every `context/custom/*.dsl` on the
+  // contexts branch is an agent (see lib/customAgents.ts). Derived from
+  // the list this tab already holds open, so creating one below makes it
+  // appear here — and in the composer — with no refresh and no second
+  // connection.
+  const customAgents = useMemo(
+    () => (contextFiles ? customAgentSlugs(contextFiles).map(customAgentDef) : []),
+    [contextFiles],
+  );
+  const applicable = filterAgents([...AGENTS, ...customAgents], surface, path);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   if (applicable.length === 0) {
     return (
@@ -873,6 +949,7 @@ export function AgentsTab({ path, branch, surface, onJumpToPrompt }: {
             })}
           </div>
         ))}
+        {surface === "prose" && <NewAgentButton existing={customAgents.map((a) => a.id)} onCreated={(id) => setSelectedId(id)} />}
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto" }}>
@@ -890,7 +967,7 @@ export function AgentsTab({ path, branch, surface, onJumpToPrompt }: {
         {selected.contextSlots && selected.contextSlots.length > 0 && (
           <>
             <SectionLabel icon={BookOpen}>Context defaults</SectionLabel>
-            <ContextSlotOverrides contextSlots={selected.contextSlots} files={contextFiles} branch={branch} />
+            <ContextSlotOverrides contextSlots={selected.contextSlots} files={contextFiles} branch={branch} filePath={path} />
           </>
         )}
       </div>

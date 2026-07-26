@@ -90,7 +90,7 @@ import UniversalLLM.Settings (GApplySettings, toModelConfigs)
 --   any one agent's name on purpose — a shared key like
 --   @"text.summarization"@ is just as valid as an agent-specific one.
 newtype PromptKey = PromptKey Text
-  deriving (Eq, Ord, IsString)
+  deriving (Eq, Ord, Show, IsString)
 
 -- | Text sourced from (or destined for) prompt storage. Kept distinct from
 --   the many other 'Text'-shaped values passed around here ('Instruction',

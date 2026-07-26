@@ -86,7 +86,17 @@ export interface AgentDef {
 // shared by the Agents tab and the input bar's own send-mode dropdown, so
 // they can't disagree about what's available.
 export function agentsForSurface(surface: FileSurface, path: string): AgentDef[] {
-  return AGENTS.filter((a) => (a.surfaces ?? ["prose"]).includes(surface) && a.appliesTo(path));
+  return filterAgents(AGENTS, surface, path);
+}
+
+// The same question asked of an arbitrary agent list rather than the
+// static registry — what a surface showing user-defined agents alongside
+// the built-in ones needs (see lib/customAgents.ts: those are discovered
+// from a branch at runtime, so they can't live in AGENTS). Split out so
+// "is this agent worth showing here" stays one predicate, applied
+// identically to both kinds.
+export function filterAgents(agents: AgentDef[], surface: FileSurface, path: string): AgentDef[] {
+  return agents.filter((a) => (a.surfaces ?? ["prose"]).includes(surface) && a.appliesTo(path));
 }
 
 export const AGENTS: AgentDef[] = [

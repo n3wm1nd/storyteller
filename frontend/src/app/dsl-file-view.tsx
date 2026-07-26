@@ -44,6 +44,17 @@ function resolvableBranches(branches: string[]): string[] {
   return branches.filter((b) => classifyBranch(b) === "story" && b !== contextsBranchName);
 }
 
+// What a program's own declared parameter is bound to when previewing or
+// costing here (see Storyteller.Core.Context.resolveAdhoc). A `.dsl` file
+// is edited on its own, against no particular story file, so the honest
+// answer is the empty glob: it resolves to nothing, rather than to some
+// arbitrary file the user never chose. Sending nothing at all is the one
+// wrong answer — a `path:`-headed program (every custom agent's, and
+// `context.other`'s) would have no argument to bind, and its preview and
+// cost would both come back empty for a reason that has nothing to do
+// with what it says.
+const ADHOC_PATH_ARG = "[]";
+
 export function DslFileView({ branch, path }: {
   branch: string;
   path: string;
@@ -79,7 +90,7 @@ export function DslFileView({ branch, path }: {
   // Same per-statement costs the gutter draws, summed for the header — one
   // request, two readers, rather than a second estimate of its own.
   const fetchAndTotal = useCallback(async (program: string): Promise<LineCost[] | null> => {
-    const costs = await fetchCosts(program);
+    const costs = await fetchCosts(program, ADHOC_PATH_ARG);
     setTotalChars(costs ? costs.reduce((sum, c) => sum + Math.max(0, c.chars), 0) : null);
     return costs;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,7 +265,7 @@ export function DslSidebar({ branch, path }: { branch: string; path: string }) {
     setStale(true);
     const requestId = ++requestIdRef.current;
     const t = setTimeout(async () => {
-      const result = await fetchPreview(program);
+      const result = await fetchPreview(program, ADHOC_PATH_ARG);
       if (requestId !== requestIdRef.current) return;
       setStale(false);
       setFailed(result === null);

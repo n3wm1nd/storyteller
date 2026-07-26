@@ -470,6 +470,25 @@ export function chatWrite(path: string, text: string) {
   } as FileCommand));
 }
 
+// Send to a user-defined agent (lib/customAgents.ts) — `slug` names the
+// context program and prompt that are its entire definition.
+//
+// Reuses writerCommandContext for the composer-level context controls it
+// does share with Write (the pinned selection, @mentions folded into
+// pinnedPrograms, mention markup stripped from the prompt text), and
+// deliberately drops `writerFields` — lore/other/past-chapters are
+// overrides of slots the *built-in* writer consults, and a custom agent
+// has no such compiled-in policy to override: its program either reads
+// those names or doesn't. Sending them would silently do nothing, which is
+// worse than not offering them.
+export function chatCustom(path: string, slug: string, text: string) {
+  const { cleanText, pinned, writerFields } = writerCommandContext(path, text);
+  sendChatCommand(path, () => ({
+    type: "chat.custom", agent: slug, text: cleanText, pinned,
+    ...(writerFields.pinnedPrograms ? { pinnedPrograms: writerFields.pinnedPrograms } : {}),
+  } as FileCommand));
+}
+
 // Roleplay writer — every character present on this file is interrogated,
 // in character, before one scene gets written (see Server.Writer.File.
 // roleplayWriter). No pinned context/layout of its own yet — each

@@ -186,7 +186,11 @@ export function DSLEditor({ path, branch }: DSLEditorProps) {
         onChange={onChange}
         disabled={loading || saving}
         placeholder="# A 0-arity Context DSL snippet.&#10;# See CONTEXT-DSL.md for the full syntax."
-        fetchCosts={fetchCosts}
+        // A saved snippet is written against no particular file, so the
+        // honest argument for a program that declares one is the empty
+        // glob -- resolving to nothing, rather than to some arbitrary
+        // file the user never named.
+        fetchCosts={(program) => fetchCosts(program, "[]")}
       />
       <div style={{ fontSize: 9.5, color: "var(--text-ghost)", lineHeight: 1.4 }}>
         Saved snippets are stored on the <code>contexts</code> branch as <code>context/&lt;name&gt;.dsl</code>,
