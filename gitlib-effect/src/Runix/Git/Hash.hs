@@ -23,11 +23,10 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import Data.Text (Text)
-import qualified Data.Text.Encoding as TE
+import qualified Data.Text as T
 
 import Crypto.Hash (hashWith, Digest)
 import Crypto.Hash.Algorithms (SHA1(..))
-import Data.ByteArray.Encoding (convertToBase, Base(Base16))
 
 -- | The object types git computes hashes for. Trees and commits are
 -- hashed the same way as blobs -- only the type tag in the preimage
@@ -51,4 +50,16 @@ hashObject :: ObjectKind -> ByteString -> Text
 hashObject kind content =
   let header = objectKindTag kind <> " " <> BS8.pack (show (BS.length content)) <> "\0"
       digest = hashWith SHA1 (header <> content) :: Digest SHA1
-  in TE.decodeUtf8 (convertToBase Base16 digest)
+  -- crypton's 'Show' instance for 'Digest' *is* the lowercase hex digest,
+  -- and is the only hex rendering that doesn't go through a
+  -- 'Data.ByteArray' class. That matters: crypton 1.1 swapped its
+  -- byte-array library from @memory@ to @ram@, so hexing the digest with
+  -- either package's 'convertToBase' only compiles against the crypton
+  -- major it happens to match (the instance for 'Digest' lives in
+  -- crypton's dependency, not ours). Going through 'show' keeps this
+  -- module compiling either side of that split -- nixpkgs still ships
+  -- crypton 1.0.6 while Hackage's solver now picks 1.1.x -- with no
+  -- version bound on crypton at all. GitHashSpec's property tests check
+  -- the result against real @git hash-object@, so a rendering that ever
+  -- stopped being plain hex would fail there rather than silently.
+  in T.pack (show digest)
