@@ -11,16 +11,18 @@
 // (a CodeMirror gutter keyed by `LineCost.line`) plus its own debounced
 // fetch, so it works standalone without the sidebar mounted.
 //
-// No language support is registered -- the DSL is small enough that
-// bracket-matching/indent rules aren't worth a language package yet;
-// this is plain-text CodeMirror, chosen over a bare <textarea> purely
-// for gutter/line-decoration support.
+// Syntax highlighting comes from lib/dslLanguage.ts (a stream tokenizer
+// mirroring Storyteller.Context.DSL.Parser's own lexer). Still no full
+// language package -- bracket matching and indent rules would mean
+// modelling the DSL's indentation-sensitive layout, which highlighting
+// doesn't need and nothing has asked for yet.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorView, gutter, GutterMarker } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
 import { contextViewConn } from "@/lib/ws";
+import { contextDslHighlighting } from "@/lib/dslLanguage";
 import type { LineCost, PreviewNode } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity } from "@/lib/uiStore";
 
@@ -240,7 +242,10 @@ export function CodeCostEditor({
   const [loading, setLoading] = useState(false);
   const requestIdRef = useRef(0);
 
-  const extensions = useMemo(() => [costGutter, costsField, baseTheme, EditorView.lineWrapping], []);
+  const extensions = useMemo(
+    () => [contextDslHighlighting, costGutter, costsField, baseTheme, EditorView.lineWrapping],
+    [],
+  );
 
   useEffect(() => {
     if (!value.trim()) {
