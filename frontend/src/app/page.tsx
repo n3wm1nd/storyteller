@@ -23,6 +23,7 @@ import { addNote, moveTick, deleteTickEntry } from "./ticksview.actions";
 import { tickChain, statusColor, presentDuringAtoms, allPresentCharacters, characterColor, summaryCoverageFor, type AnnotationMode } from "@/lib/utils";
 import { LeftSidebar } from "./sidebar";
 import { FileContentView, SummarySplitView, RawEditPanel, TextEditPanel, SummarizeMenu, type PresenceBar } from "./fileview";
+import { DslFileView, isDslFile } from "./dsl-file-view";
 import { summaryKindsFor } from "@/lib/library";
 import { ChatView } from "./chatview";
 import { TicksView } from "./ticksview";
@@ -819,7 +820,11 @@ export default function Home() {
           />
 
           {centerTab === "file" && <>
-            {selectedFile && !isAbsent && fileTicks.length > 0 && (
+            {/* Every control in this strip acts on atoms (select/merge/split/
+                hide, annotations, presence, the blocks/text/source modes) —
+                all meaningless for a .dsl, which is one atom by construction
+                and edited as source only (see dsl-file-view.tsx). */}
+            {selectedFile && !isDslFile(selectedFile) && !isAbsent && fileTicks.length > 0 && (
               <div style={{ flexShrink: 0, padding: "3px 14px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center" }}>
                 {(contextAtoms.size + contextAnnotations.size) > 0 && (
                   <button
@@ -937,6 +942,11 @@ export default function Home() {
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
                 Select a file or create a new one
               </div>
+            ) : isDslFile(selectedFile) ? (
+              // Ahead of every other case, including the summary/absent
+              // ones: a .dsl has no atom-shaped view to fall back to, and
+              // an absent one is simply an empty new program to write.
+              <DslFileView branch={activeBranch} path={selectedFile} />
             ) : viewingSummary !== null ? (
               !activeConn ? (
                 <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>

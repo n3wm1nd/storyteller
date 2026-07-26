@@ -429,3 +429,93 @@ spec = do
               NonAtom _ raw | raw /= "type:root\n" -> (raw : acc, True)
               _                                     -> (acc, True))
       result `shouldBe` Right ["type:presence\nfile:other.md\ncharacter:alice\nevent:enter\n\n"]
+
+  -- A file whose atomic unit is the whole file (a Context DSL program --
+  -- see 'Storage.Ops.saveWholeFile') rather than a sequence of prose
+  -- paragraphs. The invariant every test here checks is the same one:
+  -- after any save, the lifetime is exactly one atom, and it holds exactly
+  -- the content that was saved.
+  describe "saveWholeFile" $ do
+    -- The behaviour being overridden, stated first so the contrast is a
+    -- checked fact rather than a claim in a comment: the ordinary
+    -- reconciler leaves the surviving atom alone and mints a second one
+    -- for the addition, which is right for prose and wrong for a program.
+    it "(contrast) plain saveFile splits an appended line into a second atom" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "context/lore.dsl" "\"the rules of magic\"\n"
+            saveFile "context/lore.dsl" "\"the rules of magic\"\nsummarized [lore/*.md]\n"
+            length <$> lifetimeAtoms "context/lore.dsl")
+      result `shouldBe` Right 2
+
+    it "keeps the lifetime at a single atom when a line is appended" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "context/lore.dsl" "\"the rules of magic\"\n"
+            saveWholeFile "context/lore.dsl" "\"the rules of magic\"\nsummarized [lore/*.md]\n"
+            n       <- length <$> lifetimeAtoms "context/lore.dsl"
+            chain   <- committedContent "context/lore.dsl"
+            ambient <- readFile "context/lore.dsl"
+            return (n, chain, ambient))
+      result `shouldBe` Right (1, "\"the rules of magic\"\nsummarized [lore/*.md]\n"
+                                , "\"the rules of magic\"\nsummarized [lore/*.md]\n")
+
+    -- Introducing the path is 'commitFile's own storeNewFile path (an
+    -- empty presence marker, then the content) -- two atoms, which this
+    -- collapses like any other multi-atom shape.
+    it "creates a file that had no history at all as one atom, not marker-plus-content" $ do
+      let result = fst <$> runChain (do
+            saveWholeFile "context/lore.dsl" "\"the rules of magic\"\n"
+            n     <- length <$> lifetimeAtoms "context/lore.dsl"
+            chain <- committedContent "context/lore.dsl"
+            return (n, chain))
+      result `shouldBe` Right (1, "\"the rules of magic\"\n")
+
+    it "stays at one atom across repeated saves, including a shrinking one" $ do
+      let result = fst <$> runChain (do
+            saveWholeFile "context/lore.dsl" "a\n"
+            saveWholeFile "context/lore.dsl" "a\nb\n"
+            saveWholeFile "context/lore.dsl" "a\nb\nc\n"
+            saveWholeFile "context/lore.dsl" "a\nc\n"
+            n     <- length <$> lifetimeAtoms "context/lore.dsl"
+            chain <- committedContent "context/lore.dsl"
+            return (n, chain))
+      result `shouldBe` Right (1, "a\nc\n")
+
+    it "collapses a file that already accumulated several atoms" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "context/lore.dsl" "a\n"
+            _ <- addAtom "context/lore.dsl" "b\n"
+            _ <- addAtom "context/lore.dsl" "c\n"
+            saveWholeFile "context/lore.dsl" "a\nb\nc\nd\n"
+            n     <- length <$> lifetimeAtoms "context/lore.dsl"
+            chain <- committedContent "context/lore.dsl"
+            return (n, chain))
+      result `shouldBe` Right (1, "a\nb\nc\nd\n")
+
+    -- The collapse rewinds past other files' ticks to reach this file's
+    -- own oldest atom; they have to come back out of the replay exactly as
+    -- they went in.
+    it "leaves an interleaved unrelated file's own atoms untouched" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "context/lore.dsl" "a\n"
+            _ <- addAtom "scene.md"         "p1\n"
+            _ <- addAtom "context/lore.dsl" "b\n"
+            _ <- addAtom "scene.md"         "p2\n"
+            saveWholeFile "context/lore.dsl" "a\nb\nc\n"
+            dslAtoms   <- length <$> lifetimeAtoms "context/lore.dsl"
+            sceneAtoms <- length <$> lifetimeAtoms "scene.md"
+            scene      <- committedContent "scene.md"
+            return (dslAtoms, sceneAtoms, scene))
+      result `shouldBe` Right (1, 2, "p1\np2\n")
+
+    -- Same forward-only rule every other whole-lifetime operation follows:
+    -- an earlier, already-deleted life of the same path is history, not
+    -- something a later save reaches back into.
+    it "does not reach back into an earlier, deleted lifetime of the same path" $ do
+      let result = fst <$> runChain (do
+            _ <- addAtom "context/lore.dsl" "old life\n"
+            _ <- deleteFile "context/lore.dsl"
+            saveWholeFile "context/lore.dsl" "new life\n"
+            n     <- length <$> lifetimeAtoms "context/lore.dsl"
+            chain <- committedContent "context/lore.dsl"
+            return (n, chain))
+      result `shouldBe` Right (1, "new life\n")

@@ -46,6 +46,7 @@ module Storage.Ops
   , renameFile
   , checkpointFile
   , saveFileAsNew
+  , saveWholeFile
 
     -- * Re-exported: read-only chain queries, worktree reconciliation,
     -- and the ambient existence check they share
@@ -588,3 +589,50 @@ saveFileAsNew oldPath newPath content = do
   _ <- deleteFile oldPath
   _ <- addAtom newPath content
   return ()
+
+-- | Save @content@ as @path@'s whole content, keeping its lifetime at
+--   exactly one atom -- for a file whose atomic unit genuinely *is* the
+--   file, with no meaningful internal structure to track piece by piece
+--   (a Context DSL program, see "Storyteller.Core.Context" -- an atom
+--   boundary drawn somewhere inside a program says nothing true about it).
+--
+--   Contrast 'saveFile', the ordinary reconciler, which is right for prose:
+--   it preserves whatever atoms didn't change and mints new ones for what
+--   was added, so a file saved through it repeatedly accumulates one atom
+--   per addition. Contrast 'saveFileAsNew' too -- that's "this is a
+--   different file now", a fresh lifetime behind a removal marker; this one
+--   is an ordinary edit of the same, continuing file, just at whole-file
+--   granularity.
+--
+--   Built as 'saveFile' followed by a collapse, deliberately: everything
+--   about *introducing* a path correctly (the presence marker for a file
+--   with no history, ambient-tree sync, the not-valid-UTF8 and
+--   already-opaque cases) is 'commitFile's job and is not restated here.
+--   The collapse then folds the lifetime's own atoms into its oldest one,
+--   which is always the one that can carry the whole content: an 'Atom's
+--   content is a suffix appended to its parent commit's own content
+--   ('Storage.Core.store'), and the oldest atom of a lifetime is by
+--   definition one whose parent tree has no @path@ at all (see
+--   'Storage.Query.lifetimeAtoms''s stopping rule), so its suffix *is* the
+--   file. Nothing runs at all in the common case -- an already-single-atom
+--   file that 'foldInto' just edited in place is already the target shape.
+--
+--   Earlier lifetimes are untouched, same as every other operation here.
+--   Annotations on the atoms this collapses away are left pointing at ids
+--   that no longer exist, exactly as 'deleteTick' already leaves them --
+--   no worse, and no caller of this has notes on its atoms to begin with.
+saveWholeFile :: StoreM m => FilePath -> Text -> StoreT m ()
+saveWholeFile path content = do
+  saveFile path content
+  atoms <- lifetimeAtoms path
+  case atoms of
+    []                 -> return ()   -- nothing tracked (binary/opaque): 'saveFile' already decided that
+    [_]                -> return ()   -- already exactly one atom, and it already holds @content@
+    ((keep, _) : rest) -> do
+      -- 'lifetimeAtoms' is oldest-first, so the reverse is the
+      -- descendants-first, mutually-related order 'deleteTicksSorted'
+      -- requires -- already known here, no 'deleteTicks' regrouping walk
+      -- needed. @keep@ sits below every one of them, so its own id
+      -- survives the deletion untouched.
+      deleteTicksSorted (reverse (map fst rest))
+      () <$ editAtomAt keep content

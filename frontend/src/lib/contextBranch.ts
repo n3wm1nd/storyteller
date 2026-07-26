@@ -20,7 +20,7 @@
 // the cost is paid only when the user opens the library browser.
 
 import { useEffect, useState } from "react";
-import { branchFileUrl, contextDefaultUrl, saveRawFile, branchConn, contextViewConn } from "./ws";
+import { branchFileUrl, contextDefaultUrl, saveRawFileWhole, branchConn, contextViewConn } from "./ws";
 import type { BranchEvent } from "./ws";
 import { useCallContext } from "./callContextStore";
 import { DEFAULT_EDITS, synthesizeLoreOverride, synthesizeOtherOverride } from "./dslCompose";
@@ -218,15 +218,17 @@ export function useContextEntries(branch: string | null, name: string, entriesPa
 }
 
 export async function writeContextFunction(name: string, source: string): Promise<void> {
-  // $raw reconciles against the path's existing atom chain (see
-  // ws.ts's saveRawFile) so the file gets ordinary Atom ticks -- the
-  // same thing 'file.create'/edits produce for any other text file.
-  // uploadBranchFile's plain PUT deposits an opaque, untracked blob
-  // instead, which is what made every saved .dsl file show up in the
-  // library tree flagged binary (see Server.Writer.Library's
-  // lfcTracked / withBinaryFlags -- "binary" there means "never had
-  // an atom tick", not an actual content/mime check).
-  await saveRawFile(contextsBranchName, dslPath(name), source);
+  // $raw?whole keeps the file atom-tracked -- so it never shows up in the
+  // library tree flagged binary the way uploadBranchFile's opaque PUT made
+  // it (see Server.Writer.Library's lfcTracked / withBinaryFlags: "binary"
+  // there means "never had an atom tick", not a content/mime check) --
+  // while keeping it at exactly *one* atom holding the whole program.
+  // Plain $raw (saveRawFile) would reconcile it paragraph by paragraph
+  // like prose, accumulating an atom per added stanza; an atom boundary
+  // inside a DSL program says nothing true about it. Same write the .dsl
+  // file editor uses (app/dsl-file-view.tsx), so a snippet saved from
+  // either surface has the same shape.
+  await saveRawFileWhole(contextsBranchName, dslPath(name), source);
 }
 
 export async function deleteContextFunction(name: string): Promise<void> {

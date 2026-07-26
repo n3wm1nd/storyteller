@@ -115,6 +115,16 @@ interface UIState {
   // there); this is just the shared read/write cell.
   writerMode: string;
   setWriterMode: (mode: string) => void;
+
+  // Which branch the .dsl file editor (app/dsl-file-view.tsx) resolves the
+  // program against for its cost gutter — never the branch the file itself
+  // lives on, which for a `context/*.dsl` is the contexts branch and has no
+  // story content to resolve against at all. Sticky across file switches
+  // (same reasoning as writerMode above: it's a standing "which branch am I
+  // tuning this for" choice, not a per-file one), and validated against the
+  // live branch list by its reader rather than kept in sync here.
+  dslResolveBranch: string | null;
+  setDslResolveBranch: (branch: string) => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -165,6 +175,9 @@ export const useUI = create<UIState>((set) => ({
 
   writerMode: "write",
   setWriterMode: (mode) => set({ writerMode: mode }),
+
+  dslResolveBranch: null,
+  setDslResolveBranch: (branch) => set({ dslResolveBranch: branch }),
 }));
 
 // Selection is a temporary "about to act on this" marker, not a durable

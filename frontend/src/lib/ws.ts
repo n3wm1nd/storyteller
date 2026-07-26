@@ -101,6 +101,22 @@ export async function saveRawFile(branch: string, path: string, content: string)
 // that shouldn't be tracked atom-by-atom). `newPath` forks to a different
 // file instead of replacing this one in place; omitted, it defaults to
 // `path` itself server-side.
+// The same PUT /$raw/{path} resource once more, with "?whole" (see
+// app/Server.hs and Server.Writer.Branch.saveWholeFile/Storage.Ops.
+// saveWholeFile): still an ordinary continuing edit of the same file, but
+// the file is kept as exactly one atom instead of being diffed into
+// paragraph-shaped ones. For a file whose unit of change genuinely is the
+// whole file -- a Context DSL program (app/dsl-file-view.tsx, and every
+// `context/<name>.dsl` written by lib/contextBranch.ts) -- where an atom
+// boundary drawn somewhere inside the source would be meaningless.
+// Contrast 'saveRawFileAsNew', which also lands a single atom but as a
+// *new lifetime* behind a removal marker, breaking continuity on purpose.
+export async function saveRawFileWhole(branch: string, path: string, content: string) {
+  const url = `${httpBase()}/branch/${encodeURIComponent(branch)}/$raw/${encodePath(path)}?whole`;
+  const res = await fetch(url, { method: "PUT", body: content });
+  if (!res.ok) throw new Error(`save failed: ${res.status} ${path}`);
+}
+
 export async function saveRawFileAsNew(branch: string, path: string, content: string, newPath?: string) {
   const url = `${httpBase()}/branch/${encodeURIComponent(branch)}/$raw/${encodePath(path)}?asNew${newPath ? `&newPath=${encodeURIComponent(newPath)}` : ""}`;
   const res = await fetch(url, { method: "PUT", body: content });

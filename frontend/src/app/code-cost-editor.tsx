@@ -221,6 +221,12 @@ interface CodeCostEditorProps {
   disabled?: boolean;
   placeholder?: string;
   minHeight?: string;
+  // Fill the parent instead of sitting in a fixed 160–320px box — for a
+  // whole-pane instance (dsl-file-view.tsx) rather than one embedded in a
+  // panel among other controls (dsl-editor.tsx, context-panel.tsx). The
+  // parent must be a flex column with a bounded height of its own; the
+  // editor owns the scrolling either way.
+  fill?: boolean;
   // Fetches costs for `program` (the current draft) — the caller owns the
   // WS connection (see dsl-editor.tsx), this component only decides when
   // to ask and how to render what comes back.
@@ -228,7 +234,7 @@ interface CodeCostEditorProps {
 }
 
 export function CodeCostEditor({
-  value, onChange, disabled, placeholder, minHeight = "160px", fetchCosts,
+  value, onChange, disabled, placeholder, minHeight = "160px", fill, fetchCosts,
 }: CodeCostEditorProps) {
   const viewRef = useRef<EditorView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -258,7 +264,9 @@ export function CodeCostEditor({
   }, [value]);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div style={fill
+      ? { position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+      : { position: "relative" }}>
       <CodeMirror
         value={value}
         onChange={onChange}
@@ -267,11 +275,14 @@ export function CodeCostEditor({
         extensions={extensions}
         theme="none"
         basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }}
-        style={{
-          minHeight, maxHeight: 320, overflow: "auto",
-          border: "1px solid var(--border-subtle)", borderRadius: 5,
-          background: "var(--card)",
-        }}
+        height={fill ? "100%" : undefined}
+        style={fill
+          ? { flex: 1, minHeight: 0, overflow: "auto", background: "transparent" }
+          : {
+              minHeight, maxHeight: 320, overflow: "auto",
+              border: "1px solid var(--border-subtle)", borderRadius: 5,
+              background: "var(--card)",
+            }}
         onCreateEditor={(view) => { viewRef.current = view; }}
       />
       {loading && (

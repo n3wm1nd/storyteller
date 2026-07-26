@@ -25,6 +25,7 @@ module Server.Writer.Branch
   , uploadImage
   , saveFile
   , saveFileAsNew
+  , saveWholeFile
   , onlyWhilePresent
   ) where
 
@@ -322,6 +323,18 @@ saveFile branch path content =
 saveFileAsNew :: SessionEffects r => T.Text -> FilePath -> FilePath -> T.Text -> Sem r ()
 saveFileAsNew branch path newPath content =
   withStorage (withBranch @Main branch (void (runStorage @Main (Ops.saveFileAsNew path newPath content))))
+
+-- | The third write strategy behind the same @PUT /branch/{name}/$raw/{path}@
+--   endpoint, reached via its @?whole@ query flag: an ordinary, continuing
+--   edit like 'saveFile', but at whole-file granularity -- the file's
+--   lifetime is kept at exactly one atom (see 'Storage.Ops.saveWholeFile').
+--   For a file with no meaningful internal structure to track piece by
+--   piece; today that's the Context DSL editor (@*.dsl@, frontend
+--   @dsl-file-view.tsx@), whose unit of change genuinely is the whole
+--   program. Presence-agnostic, same as the two above it.
+saveWholeFile :: SessionEffects r => T.Text -> FilePath -> T.Text -> Sem r ()
+saveWholeFile branch path content =
+  withStorage (withBranch @Main branch (void (runStorage @Main (Ops.saveWholeFile path content))))
 
 -- | Run one summarization pass for @kind@ against the already-open
 --   'Main' branch scope -- see 'Storyteller.Writer.Agent.Summarizer.runSummarizer'.

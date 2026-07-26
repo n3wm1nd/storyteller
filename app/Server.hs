@@ -45,7 +45,13 @@
 --                                 reconciled diff — no note/atom continuity
 --                                 carried forward. "?newPath=..." alongside
 --                                 it forks to a different file; absent, it
---                                 defaults to this same path.
+--                                 defaults to this same path. With "?whole"
+--                                 instead: still a continuing edit, but the
+--                                 file is kept as exactly one atom (see
+--                                 'Server.Writer.Branch.saveWholeFile'/
+--                                 'Storage.Ops.saveWholeFile') — for a file
+--                                 with no internal structure worth tracking,
+--                                 i.e. a Context DSL program.
 --   GET /context-default/{name} — a compiled-in Context DSL slot's own
 --                                 default source, pretty-printed back from
 --                                 its parsed 'Definition' (see
@@ -84,7 +90,7 @@ import System.IO (hPutStrLn, stderr)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Server.Core.File (readFileContent)
-import Server.Writer.Branch (uploadFile, uploadImage, saveFile, saveFileAsNew)
+import Server.Writer.Branch (uploadFile, uploadImage, saveFile, saveFileAsNew, saveWholeFile)
 import Storyteller.Context.DSL.Library (defaultLibrarySource)
 import Storyteller.Context.DSL.PrettyPrint (prettyDefinition)
 import Server.Writer.Env (ServerEnv, loadServerEnv, envPort, envStaticDir)
@@ -181,9 +187,18 @@ httpApp env req respond
       -- escape hatch. "?newPath=..." alongside it forks to a different
       -- file instead of replacing this one in place; absent, it defaults
       -- to this same path.
+      --
+      -- "?whole" is the third strategy on the same resource ('Server.
+      -- Writer.Branch.saveWholeFile'): still an ordinary continuing edit,
+      -- but the file is kept as exactly one atom — for a file with no
+      -- meaningful internal structure to diff (a Context DSL program).
+      -- Mutually exclusive with "?asNew"; "?asNew" wins if both are given,
+      -- being the more destructive of the two, so an ambiguous request
+      -- can't silently keep atom continuity a caller asked to break.
       (m, "branch" : name : "$raw" : path@(_:_)) | m == methodPut -> do
         let filePath = T.unpack (T.intercalate "/" path)
             asNew    = any ((== "asNew") . fst) (Wai.queryString req)
+            whole    = any ((== "whole") . fst) (Wai.queryString req)
             newPath  = maybe filePath (T.unpack . TE.decodeUtf8Lenient)
                              (join (lookup "newPath" (Wai.queryString req)))
         body <- strictRequestBody req
@@ -193,7 +208,9 @@ httpApp env req respond
             result <- runAction env $
               if asNew
                 then saveFileAsNew name filePath newPath content
-                else saveFile name filePath content
+                else if whole
+                  then saveWholeFile name filePath content
+                  else saveFile name filePath content
             case result of
               Left err -> respond $ responseLBS status400 (corsHeaders req) (LBC.pack err)
               Right () -> respond $ responseLBS status200 (corsHeaders req) ""
