@@ -24,16 +24,18 @@ import qualified Data.Text.Encoding as TE
 import qualified Network.WebSockets as WS
 import Polysemy (Embed, Member, Sem, embed)
 import Polysemy.Error (throw)
-import Runix.FileSystem (fileExists, readFile)
 import Runix.Git (ObjectHash(..))
+
+import qualified Storage.Core as Core
 
 import Server.Core.Run (SessionEffects)
 import Server.Writer.Branch (importCharacterCard)
+import Server.Writer.Character (CharacterState(..), characterState)
 import Server.Writer.Env (ServerEnv, requestCancel)
 import Server.Writer.Session.Protocol
-import Storyteller.Core.Git (BranchTag, runBranchAndFS)
+import Storyteller.Core.Snapshot (Snapshot, runSnapshotFS)
 import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
-import Storyteller.Core.Types (BranchName(..), branchName)
+import Storyteller.Core.Types (BranchName(..), branchHead, branchName, unTickId)
 import Storyteller.Core.Undo (UndoEntry(..), listUndo, resetToUndo)
 import Storyteller.Writer.Branches (BranchKind(..), classifyBranch)
 
@@ -107,8 +109,6 @@ runCommand env conn cmd = case cmd of
   where
     push = embed . WS.sendTextData conn . encode
 
-data SummaryBranch
-
 -- | Every branch name — shared by the connection's initial push and its
 --   notifier (see 'Server.Writer.Session.Connection'), which re-pushes this
 --   same list whenever any branch ref moves.
@@ -118,20 +118,42 @@ branchNames = map (unBranchName . branchName) <$> listBranches
 -- | Every 'character/*' branch, each with its raw @sheet.md@ content (if
 --   any) — shared by the connection's initial push and its notifier (see
 --   'Server.Writer.Session.Connection'), which re-pushes this same list
---   whenever a matching branch ref moves. Opens each branch's own transient
---   FS scope to read its sheet, the same way 'Server.Writer.Branch.trackFiles'
---   opens a scope for a branch other than the one already ambiently open.
+--   whenever a matching branch ref moves.
+--
+--   Reuses 'Server.Writer.Character.characterState' rather than restating
+--   it: this used to carry its own copy of the same two 'fileExists' and
+--   one 'readFile' against @sheet.md@\/@avatar.png@, producing a record
+--   with the same three fields under different names. Only 'csBranch'
+--   genuinely differs -- the wire wants the raw branch name here, where
+--   the sidebar's own view wants the display name -- so that one field is
+--   taken from the caller and the two file-derived ones come from the
+--   shared read.
+--
+--   Read at each character branch's own position rather than by opening
+--   its scope. The previous shape ran 'runBranchAndFS' once per character,
+--   inside a 'mapM' over every character branch -- so each iteration built
+--   a whole mutable ambient working tree ('Storage.Core.freshScope'), took
+--   a 'Storyteller.Core.Branch.BranchOp' scope with the full mutation
+--   apparatus behind it (head re-resolution, a 'setRef' publish if head
+--   moved, a closing 'flushRemaps' that can cascade and notify), and threw
+--   all of it away after reading two files. None of that is reachable now:
+--   'Runix.FileSystem.FileSystemWrite' isn't in the row a snapshot
+--   interpreter supplies, so a push that reads the cast can't move a ref.
 characterSummaries :: SessionEffects r => Sem r [CharacterSummary]
 characterSummaries = do
   names <- filter ((== Character) . classifyBranch) <$> branchNames
   mapM readSummary names
   where
-    readSummary branch = runBranchAndFS @SummaryBranch (BranchName branch) $ do
-      sheet <- fileExists @(BranchTag SummaryBranch) "sheet.md" >>= \case
-        False -> return Nothing
-        True  -> Just . TE.decodeUtf8 <$> readFile @(BranchTag SummaryBranch) "sheet.md"
-      hasAvatar <- fileExists @(BranchTag SummaryBranch) "avatar.png"
-      return (CharacterSummary branch sheet hasAvatar)
+    readSummary branch = getBranch (BranchName branch) >>= \case
+      -- Listed a moment ago by 'branchNames'; gone by now only if
+      -- something deleted it in between. An empty summary is the same
+      -- answer a branch with no sheet already gets.
+      Nothing -> pure (CharacterSummary branch Nothing False)
+      Just b  -> do
+        st <- runSnapshotFS (commitOf b) (characterState @Snapshot branch)
+        pure (CharacterSummary branch (charSheet st) (charHasAvatar st))
+
+    commitOf b = Core.ObjectHash (unTickId (branchHead b))
 
 -- | The undo log, wire-shaped and chronological (oldest first) — shared by
 --   the connection's initial push and its notifier (see
