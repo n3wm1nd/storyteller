@@ -70,11 +70,12 @@
           gitlib-effect = pkgs.haskell.lib.compose.addTestToolDepends [ pkgs.git ]
             (pkgs.haskell.lib.compose.overrideCabal (old: {
             # gitlib-effect's Setup.hs (build-type: Custom) shells out to
-            # cbits/build-libgit2.sh in preBuild, which builds vendor/libgit2
-            # (a git submodule not present in this flake's filtered source)
-            # unless its output is already there -- pre-stage the nix-built
-            # libgit2 so the script's own "already built" short-circuit fires
-            # and vendor/libgit2 is never touched.
+            # cbits/build-libgit2.sh from its confHook, which builds
+            # vendor/libgit2 (a git submodule not present in this flake's
+            # filtered source) unless its output is already there -- pre-stage
+            # the nix-built libgit2 so the script's own "already built"
+            # short-circuit fires and vendor/libgit2 is never touched. This
+            # must stay in preConfigure, i.e. ahead of that hook.
             preConfigure = ''
               ${old.preConfigure or ""}
               patchShebangs cbits/build-libgit2.sh

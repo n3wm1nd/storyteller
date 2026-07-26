@@ -21,4 +21,5 @@ CLAUDE.md
 # explicitly (!.foo) if something dotfile-shaped should actually be tracked.
 .*
 !.gitignore
+!.dockerignore
 test/fixtures/llm-agent-cache/

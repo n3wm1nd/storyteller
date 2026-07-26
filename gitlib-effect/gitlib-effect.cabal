@@ -12,11 +12,17 @@ maintainer:         authors@storyteller.dev
 category:           Development
 build-type:         Custom
 
--- | 'Setup.hs' shells out to 'cbits/build-libgit2.sh' in 'preBuild' to
--- produce the static @libgit2.a@ this package's FFI bindings link
--- against, before GHC needs it -- see 'Setup.hs' and the build script's
--- own module doc for why (vendored + statically built with no network
--- transports, rather than depending on a system libgit2 install).
+-- | 'Setup.hs' shells out to 'cbits/build-libgit2.sh' from its 'confHook'
+-- to produce the static @libgit2.a@ this package's FFI bindings link
+-- against, before Cabal's configure step probes for it -- see 'Setup.hs'
+-- and the build script's own module doc for why (vendored + statically
+-- built with no network transports, rather than depending on a system
+-- libgit2 install).
+--
+-- The script must ship in the sdist: it is what a from-tarball build --
+-- including @cabal install@, which sdists local packages into the store --
+-- runs to obtain libgit2 at all.
+extra-source-files: cbits/build-libgit2.sh
 custom-setup
   -- Upper-bounded below Cabal 3.14, which reworked BuildInfo's
   -- includeDirs/extraLibDirs from plain FilePath to SymbolicPath --
@@ -59,6 +65,20 @@ library
   include-dirs:     cbits/build/install/include
   extra-lib-dirs:   cbits/build/install/lib
   extra-libraries:  git2
+  -- The directories above are only good while this package's build tree
+  -- exists, which for a store build (what `cabal install` does, via an
+  -- sdist) it does not: consumers linking afterwards would fail with
+  -- "cannot find -lgit2". So Setup.hs's postCopy additionally installs
+  -- libgit2.a into this package's own libdir, which registration always
+  -- records in library-dirs and which lives as long as the package does.
+  --
+  -- Cabal's extra-bundled-libraries would be the declarative way to do that,
+  -- but it does not fit: bundled names must follow GHC's packageHsLibs
+  -- convention (HS- or C-prefixed, hence "Cgit2"), and GHC strips that C
+  -- again for the dynamic way -- so a dyn link looks for libgit2.so, which
+  -- a statically vendored libgit2 does not provide. Installing the archive
+  -- under the name @-lgit2@ actually asks for satisfies both link ways from
+  -- the one file.
   ghc-options:      -Wall
                     -Wcompat
                     -Widentities

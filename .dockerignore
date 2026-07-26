@@ -1,0 +1,36 @@
+# Host-specific package paths (~/git/runix/...) — the image writes its own.
+cabal.project.local
+.env
+
+# Build artifacts and VCS metadata: never inputs to the image build.
+dist-newstyle/
+gitlib-effect/cbits/build/
+.git/
+.github/
+*.prof
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+
+# vendor/libgit2 (the submodule) IS needed -- gitlib-effect's Setup.hs builds
+# it during the image build. Nothing else under vendor/ is.
+vendor/*
+!vendor/libgit2
+
+# frontend/out (the committed static export) is the only part of the
+# frontend the image needs.
+frontend/node_modules/
+frontend/src/
+frontend/public/
+frontend/.next/
+frontend/bun.lock
+frontend/tsconfig.tsbuildinfo
+
+# Documentation, mockups and fixtures that no build step reads.
+mockup/
+docs/
+example/
+*.md
+!README.md
+test/fixtures/llm-agent-cache/

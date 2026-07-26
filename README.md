@@ -111,6 +111,47 @@ nix run github:n3wm1nd/storyteller
 
 This builds `story-server` and points it at a pre-built copy of the frontend (see below), so it serves a working UI out of the box.
 
+### Container (podman)
+
+`Dockerfile` builds `story-server` and the pre-built frontend into a single ~220MB runtime image, so the whole deployment is one process serving both the UI and the API. It needs no Nix and no sibling checkouts — the four Haskell dependencies that aren't on Hackage are fetched from GitHub at commits pinned in the Dockerfile — but it does need the `libgit2` submodule, which is where that library's version is pinned:
+
+```
+git submodule update --init vendor/libgit2
+podman build -t storyteller .
+```
+
+Running it, with a named volume for the story repository and the API on port 8090:
+
+```
+podman run -d --name storyteller \
+  -p 8090:8090 \
+  -v storyteller-data:/data \
+  -e ROLE_PROSE_MODEL=claude-opus-4-8 -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e ROLE_AGENT_MODEL=deepseek-v4-pro -e OPENROUTER_API_KEY=sk-or-... \
+  storyteller
+```
+
+Then open `http://localhost:8090`.
+
+To keep the repository in a host directory you can `git clone` from directly, bind-mount it and map your own user into the container:
+
+```
+podman run -d --name storyteller \
+  -p 8090:8090 \
+  --userns=keep-id --user $(id -u):$(id -g) \
+  -v ./my-story:/data \
+  storyteller
+```
+
+Both halves matter. Rootless podman maps your host UID to *root* inside the container, so a plain `-v ./my-story:/data` is unwritable by the image's non-root user and startup dies on `failed to make directory '/data/story': Permission denied`. And `keep-id` is what makes the resulting repository owned by you on the host — `podman unshare chown` would also get the server running, but leaves the files owned by a subordinate UID that host `git` then rejects as dubious ownership. On an SELinux host the bind additionally needs a `:Z` suffix.
+
+Two things are worth getting right:
+
+- **`/data` holds everything.** `STORY_REPO` defaults to `/data/story` and the bare repository is created there on first start. Bind or mount it — otherwise the entire story lives in the container's writable layer and disappears with the container.
+- **Local models need the endpoint rewritten.** Both model roles default to `qwen35-40b`, which routes via llama.cpp, and `LLAMACPP_ENDPOINT`'s own default (`http://localhost:8080/v1`) means *inside the container*. Point it at the host — `-e LLAMACPP_ENDPOINT=http://host.containers.internal:8080/v1` — or run with `--network=host`.
+
+`ROLE_PROSE_MODEL` and `ROLE_AGENT_MODEL` select the model per role; an unknown name fails at startup and lists the valid ones. The two roles draw from different tables, since the agent role needs structured output — the Claude entries are prose-only and say so if used for it (`Storyteller.Core.LLM.Registry`). API keys are only required for the backends the selected models actually route through. The full set of environment variables, with defaults, is documented in the `ENV` block at the bottom of the `Dockerfile`.
+
 ### Backend (Haskell)
 
 The backend is a standard Cabal project; `nix develop` (via `flake.nix`) drops you into a shell with GHC, `cabal-install`, and the native deps `gitlib-effect` needs (`libgit2` build tooling). From there, `cabal build` / `cabal run story-server` / `cabal test` work as usual. Individual executables (`story-write`, `story-outline`, `story-chapter`, `story-track`, `story-rebase`, `story-chargen`, …) are also defined in the cabal file for CLI-driven workflows.
