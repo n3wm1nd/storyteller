@@ -92,11 +92,6 @@ module Storyteller.Core.ContentEffects
   , conversationTurns
   , runConversationAccess
 
-    -- * Tracked-file policy (tick-history dependent)
-  , TrackedFiles(..)
-  , atomTrackedAmong
-  , runTrackedFiles
-
     -- * A file's own tick list (tick-history dependent)
   , FileTicks(..)
   , FileTick(..)
@@ -127,7 +122,6 @@ import Control.Monad.Trans.Class (lift)
 import Data.ByteString (ByteString)
 import Data.Kind (Type)
 import Data.Set (Set)
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -139,7 +133,10 @@ import qualified Storage.Query as Query
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
 
+import Runix.Git (Git)
+
 import Storyteller.Core.Branch (BranchOp, runStorage)
+import Storyteller.Core.Snapshot (readSnapshotFile)
 import Storyteller.Core.Storage (StoryStorage, getBranch, listBranches)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
@@ -150,13 +147,46 @@ import Storyteller.Writer.Types (Character(..))
 -- Tree snapshots
 -- ---------------------------------------------------------------------------
 
--- | A commit's tree, as a flat list of tracked paths (never-atom-tracked
---   paths -- an uploaded binary asset, say -- already excluded, same
---   policy 'Storage.Query.loadLiveWorkingTree' always applied), plus the
---   ability to read one blob and to ask where "here" currently is. No
---   parent-chain walk anywhere in this effect -- a plain directory (or
---   any other content-addressed snapshot) can back all three operations
---   honestly.
+-- | A commit's *readable* content, as a flat list of paths -- an uploaded
+--   binary asset, or anything else that opted out of atom tracking, is
+--   not there -- plus the ability to read one blob and to ask where
+--   "here" currently is.
+--
+--   Readable-content-at-a-position is the concept, and the exclusion is
+--   part of it rather than a filter layered on top: everything downstream
+--   of this turns a file into a
+--   'Storyteller.Context.DSL.Value.Message', and a raw non-UTF8 blob has
+--   no Message to become. A caller wanting one *specific* file, with no
+--   listing and no policy, wants
+--   'Storyteller.Core.Snapshot.readSnapshotFile' instead -- that's a
+--   plain positioned read, not this.
+--
+--   An earlier version of this Haddock claimed "no parent-chain walk
+--   anywhere in this effect -- a plain directory can back all three
+--   operations honestly." That was false on both counts and worth
+--   recording rather than quietly deleting. The interpreter walks history
+--   ('Storage.Query.liveWorkingTree' -> 'Storage.Query.atomTrackedAmong'),
+--   because on this backend "is this readable content" *is* a question
+--   about tick history; and every operation here takes or returns a
+--   'Core.ObjectHash', so a backend with no content-addressing can't
+--   implement any of them regardless of the walk (see the FIXME below).
+--
+--   The tempting fix -- strip the filter out into its own effect, leaving
+--   this one genuinely history-free -- was tried and reverted. It doesn't
+--   abstract the storage layer, it pulls it through: "which paths have
+--   ever carried an atom tick" is a git-storage primitive with a
+--   constructor around it, exactly what this module's own intro warns
+--   against, and splitting it off forced ~50 signatures across the DSL to
+--   carry a second effect that only one of them ever calls. The two are
+--   not independent capabilities; they are one capability
+--   ('Storage.Query.liveWorkingTree', which is also what
+--   'Storyteller.Core.Snapshot.runTextSnapshotFS' serves a whole
+--   filesystem from) that was split in half. What a backend has to
+--   support to implement this effect is "tell me what's readable here" --
+--   however it knows that. Sniffing bytes, an extension list, or (here)
+--   tick history are all honest answers; having no answer at all is what
+--   should stop a backend implementing it, and that's a real, statable
+--   requirement rather than a leaked primitive.
 --
 --   NOTE (2026-07-23, discussed but not resolved further): deliberately
 --   *not* folded into @Runix.FileSystem@'s own 'Runix.FileSystem.FileSystem'
@@ -309,22 +339,6 @@ runConversationAccess = interpret $ \case
       _        -> []
 
 -- ---------------------------------------------------------------------------
--- Tracked-file policy
--- ---------------------------------------------------------------------------
-
--- | Which of @paths@ are atom-tracked (i.e. not a binary asset that opted
---   out of tracking) -- a policy question over history, separate from
---   reading any of the tracked files themselves. Tick-history dependent.
-data TrackedFiles (branch :: k) (m :: Type -> Type) a where
-  AtomTrackedAmong :: [FilePath] -> TrackedFiles branch m (Set FilePath)
-
-makeSem ''TrackedFiles
-
-runTrackedFiles :: forall branch r a. Member (BranchOp branch) r => Sem (TrackedFiles branch ': r) a -> Sem r a
-runTrackedFiles = interpret $ \case
-  AtomTrackedAmong paths -> runStorage @branch (Query.atomTrackedAmong paths)
-
--- ---------------------------------------------------------------------------
 -- A file's own tick list
 -- ---------------------------------------------------------------------------
 
@@ -469,9 +483,30 @@ makeSem ''Cast
 --   which imports this module, so pulling it in here would be a real
 --   compile-time cycle, not just a style preference. Keep the two in sync
 --   if the convention ever changes (see WRITER.md's "Branch naming").
+--   Reads each sheet with 'Storyteller.Core.Snapshot.readSnapshotFile' --
+--   a direct positioned read of one known path, no scope opened and no
+--   listing -- rather than 'TreeAccess', which it used to lean on for
+--   want of anything better. That was a bad fit in both directions.
+--   'treeSnapshot' hands back a whole branch's files so this could
+--   @lookup "sheet.md"@ in it, which meant materializing the entire tree
+--   *and* (since a readable-content listing is history-dependent, see
+--   'TreeAccess') walking that branch's chain -- measured at 54 object
+--   reads against 3 for a character branch with fifty journal entries,
+--   growing with history, once per cast member. And every one of those
+--   reads was provably incapable of changing the answer: @sheet.md@ is
+--   always atom-tracked, so the filter could only ever remove entries
+--   this never looks at.
+--
+--   Losing the @treeBranch@ phantom is the other half of the fix. It was
+--   only ever there to name *some* already-open branch scope to borrow an
+--   object store from -- explicitly not the character's own, since a blob
+--   is addressed by hash regardless of which scope reads it. A positioned
+--   read needs no scope at all, so the parameter (and the ceremony at
+--   every call site of picking an arbitrary branch to pass) simply goes
+--   away.
 runCast
-  :: forall treeBranch r a
-  .  Members '[StoryStorage, BranchResolve, TreeAccess treeBranch, Fail] r
+  :: forall r a
+  .  Members '[StoryStorage, BranchResolve, Git, Fail] r
   => Sem (Cast ': r) a -> Sem r a
 runCast = interpret $ \case
   KnownCast -> do
@@ -485,11 +520,7 @@ runCast = interpret $ \case
       mCommit <- send (ResolveBranch name)
       sheet <- case mCommit of
         Nothing     -> pure ""
-        Just commit -> do
-          tree <- treeSnapshot @treeBranch commit
-          case lookup "sheet.md" tree of
-            Nothing -> pure ""
-            Just h  -> TE.decodeUtf8 <$> readTreeBlob @treeBranch h
+        Just commit -> maybe "" TE.decodeUtf8 <$> readSnapshotFile commit "sheet.md"
       pure CastMember
         { cmBranch = name
         , cmSheet  = sheet
@@ -515,12 +546,11 @@ runContentEffectsGit
   :: forall branch r a
   .  Member (BranchOp branch) r
   => Sem ( TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch
-         ': TrackedFiles branch ': FileTicks branch ': Summarized branch ': r ) a
+         ': FileTicks branch ': Summarized branch ': r ) a
   -> Sem r a
 runContentEffectsGit =
     runSummarized @branch
   . runFileTicks @branch
-  . runTrackedFiles @branch
   . runConversationAccess @branch
   . runJournalAccess @branch
   . runPresence @branch

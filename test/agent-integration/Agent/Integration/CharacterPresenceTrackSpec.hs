@@ -33,7 +33,7 @@ import Runix.Logging (info)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
-import Storyteller.Core.ContentEffects (runCast, runTreeAccess)
+import Storyteller.Core.ContentEffects (runCast)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -96,8 +96,11 @@ spec runner = describe "retroactive presence tracking (real LLM, cached)" $
         _ <- runStorage @Main (Ops.addAtom sceneFile sceneText)
         pure ()
 
-      decisions <- runTreeAccess @Main $ runCast @Main $
-        trackPresenceFor @Main sceneFile
+      -- 'runCast' no longer borrows a branch scope's object store via
+      -- 'TreeAccess' -- it reads each sheet at that character branch's own
+      -- resolved position -- so there's no @treeBranch@ to name here, and
+      -- no 'runTreeAccess' wrapper to supply one.
+      decisions <- runCast $ trackPresenceFor @Main sceneFile
       info $ "presence decisions: " <> T.pack (show decisions)
 
       -- The scene's own text has both characters explicitly leave at the

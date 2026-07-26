@@ -38,6 +38,7 @@ import Test.Hspec
 import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
+import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -122,6 +123,7 @@ spec = do
   multiMatchReadSpec
   summarizedFilterSpec
   summarizedOnceFilterSpec
+  binaryExclusionSpec
 
 -- | Demonstrates the doc's own follow-up sentence ("The raw fact stays
 --   reachable via @in thisResult: read \"injury\"@") properly. A
@@ -480,6 +482,55 @@ excludeFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Act
 excludeFilterDsl = [dsl|
 as "kept":
   in (**/* | exclude("secrets/**")):
+    for f in *:
+      as f: read f
+|]
+
+-- | Never-atom-tracked content (an uploaded portrait, say) must never
+--   reach a DSL program at all -- a raw, non-UTF8 blob has no sensible
+--   'Message' to become, so the DSL is written throughout on the
+--   assumption it will never be handed one.
+--
+--   Pinned here, at the level a DSL author actually observes it, rather
+--   than only where it happens to be implemented. The filter has moved
+--   twice already -- from an interceptor wrapped around agent context
+--   assembly, into 'Storage.Query.loadLiveWorkingTree' behind the
+--   'TreeAccess' interpreter -- and neither move was visible to a single
+--   existing test, because no test in this suite ever put a binary file
+--   on a branch. The policy could have been dropped outright at any point
+--   and the whole suite would have stayed green.
+binaryExclusionSpec :: Spec
+binaryExclusionSpec = describe "never-atom-tracked (binary) content" $
+  it "is invisible to a glob over the branch, alongside ordinary tracked files" $
+    run (testStack $ do
+      _ <- createBranch (BranchName "main")
+      runBranchAndFS @Main (BranchName "main") $ do
+        _ <- runStorage @Main (Ops.addAtom "notes.md" "quietly written")
+        _ <- runStorage @Main (Ops.addAtom "other.md" "also kept")
+        -- An uploaded asset: real committed content with no atom history
+        -- at all, exactly what an image upload deposits. Committed via
+        -- 'Ops.commitFiles' rather than 'Ops.addAtom' precisely so it
+        -- stays untracked -- an 'addAtom' would make it ordinary text.
+        runStorage @Main (Core.writeFile "portrait.png" "\xFF\xFE\x00")
+        runStorage @Main (Ops.commitFiles ["portrait.png"])
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right (Map.fromList
+      [ ("notes.md", "quietly written")
+      , ("other.md", "also kept")
+      ])
+  where
+    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
+    go = do
+      v <- binaryExclusionDsl @Main
+      Just keptAction <- pure (lookup "kept" (valueEntries v))
+      kept <- keptAction
+      entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries kept)
+      pure (Map.fromList entryText)
+
+binaryExclusionDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+binaryExclusionDsl = [dsl|
+as "kept":
+  in **/*:
     for f in *:
       as f: read f
 |]
