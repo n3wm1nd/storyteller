@@ -25,11 +25,11 @@ import Test.Hspec
 
 import Polysemy (Sem, run)
 
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, glob, listFiles, readFile)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, glob, listAllFiles, listFiles, readFile)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
-import Storyteller.Core.Snapshot (Snapshot, readSnapshotFile, runSnapshotFS)
+import Storyteller.Core.Snapshot (Snapshot, readSnapshotFile, runSnapshotFS, runTextSnapshotFS)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 
@@ -153,3 +153,63 @@ spec = describe "Storyteller.Core.Snapshot" $ do
           viaScope = readVia (\_   -> TE.decodeUtf8 <$> readFile @(BranchTag Main) "nope.md")
           viaSnap  = readVia (\pos -> runSnapshotFS pos (TE.decodeUtf8 <$> readFile @Snapshot "nope.md"))
       viaSnap `shouldBe` viaScope
+
+  -- Ported from the deleted 'Storyteller.ContextFilterSpec', which covered
+  -- the 'hideBinaryFiles' interceptor this replaces. The concrete bug the
+  -- last of these guards is worth restating: a binary file uploaded into a
+  -- branch used to crash a raw 'readFile' outright (an unsafe UTF-8 decode
+  -- of raw image bytes) rather than being excluded.
+  describe "runTextSnapshotFS" $ do
+
+    it "excludes a never-atom-tracked binary path from listAllFiles" $ do
+      let result = withStory $ do
+            _ <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
+            runStorage @Main (Core.writeFile "portrait.png" "\xFF\xFE\x00")
+            _ <- runStorage @Main (Ops.commitFiles ["portrait.png"])
+            pos <- headPosition
+            runTextSnapshotFS pos (listAllFiles @Snapshot "/")
+      result `shouldBe` Right ["scene.md"]
+
+    it "leaves the listing untouched when nothing is binary" $ do
+      let result = withStory $ do
+            _   <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
+            _   <- runStorage @Main (Ops.addAtom "other.md" "p2\n")
+            pos <- headPosition
+            runTextSnapshotFS pos (listAllFiles @Snapshot "/")
+      fmap (\ps -> length ps) result `shouldBe` Right 2
+
+    -- The error text changes deliberately versus the interceptor (which
+    -- said "Access denied: binary files are hidden"): in this view a
+    -- hidden binary is not a forbidden path, it is an absent one, and
+    -- reporting it as anything else leaks the existence of the very thing
+    -- being hidden.
+    it "reports a hidden binary as absent rather than decoding its bytes" $ do
+      let result = withStory $ do
+            runStorage @Main (Core.writeFile "portrait.png" "\xFF\xFE\x00")
+            _   <- runStorage @Main (Ops.commitFiles ["portrait.png"])
+            pos <- headPosition
+            runTextSnapshotFS pos (TE.decodeUtf8 <$> readFile @Snapshot "portrait.png")
+      result `shouldBe` Left "portrait.png: not found"
+
+    -- The correctness fix that motivated making this an interpreter rather
+    -- than reusing the interceptor. "Has this path ever had an atom" must
+    -- be asked *of the position being read*. The interceptor asked it of
+    -- whatever branch scope happened to be ambient, so filtering one
+    -- branch's content from inside another's scope consulted the wrong
+    -- history entirely -- here, "story" has never heard of notes.md, and
+    -- would therefore have hidden a perfectly ordinary text file of
+    -- "other"'s.
+    it "resolves tracked-ness at the commit being read, not at the ambient scope" $ do
+      let result = run $ testStack $ do
+            _ <- createBranch (BranchName "other")
+            otherPos <- runBranchAndFS @Main (BranchName "other") $ do
+              _ <- runStorage @Main (Ops.addAtom "notes.md" "other's notes\n")
+              mb <- getBranch (BranchName "other")
+              case mb of
+                Nothing -> fail "branch vanished"
+                Just b  -> pure (Core.ObjectHash (unTickId (branchHead b)))
+            _ <- createBranch (BranchName "story")
+            runBranchAndFS @Main (BranchName "story") $ do
+              _ <- runStorage @Main (Ops.addAtom "unrelated.md" "story\n")
+              runTextSnapshotFS otherPos (listAllFiles @Snapshot "/")
+      result `shouldBe` Right ["notes.md"]

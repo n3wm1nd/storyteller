@@ -40,7 +40,6 @@ library
                   , Storyteller.Core.LLM.Settings
                   , Storyteller.Core.LLM.Interceptor
                   , Storyteller.Writer.Agent.Continuation
-                  , Storyteller.Writer.Agent.ContextFilter
                   , Storyteller.Writer.Agent.Chat
                   , Storyteller.Writer.Agent.CharContext
                   , Storyteller.Writer.Agent.AskCharacter
@@ -295,7 +294,6 @@ test-suite storyteller-test
                   , Storyteller.LibrarySpec
                   , Storyteller.LoreSpec
                   , Storyteller.BranchesSpec
-                  , Storyteller.ContextFilterSpec
                   , Storyteller.ContextPreviewSpec
                   , Storyteller.ContextCostSpec
                   , Storyteller.Context.DSL.ParserSpec

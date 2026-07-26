@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -12,12 +13,14 @@
 -- knowing about.
 --
 -- Structure is pure (see 'Storyteller.Writer.Lore'); this module adds what
--- can't be: the branch's current file list, binary-hiding (reusing
--- 'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles', the same
--- interceptor 'Server.Writer.ContextView.Connection' already wraps its own
--- reads in), and each eligible file's blurb and
--- aliases (reusing 'Storyteller.Writer.Lore.blurb' and
--- 'Storyteller.Writer.Lore.parseAliases' off the same content read). No
+-- can't be: the branch's current file list, binary-hiding, and each
+-- eligible file's blurb and aliases (reusing
+-- 'Storyteller.Writer.Lore.blurb' and 'Storyteller.Writer.Lore.parseAliases'
+-- off the same content read). The first two come together, from one
+-- 'Storyteller.Core.Snapshot.runTextSnapshotFS' wired at the branch's own
+-- head -- so 'loreEntries', the part that actually walks files, is a plain
+-- @Members '[FileSystem project, FileSystemRead project]@ function with no
+-- notion of branches, git, or binaries at all. No
 -- incremental cache like 'Server.Writer.Library.LibraryFoldCache' — a full
 -- codex re-read on every ref-move is cheap enough (short files, first-
 -- line-only reads) not to need one.
@@ -43,18 +46,20 @@ import Data.Set (Set)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Polysemy (Members, Sem)
-import Runix.FileSystem (listAllFiles, readFile)
+import Polysemy.Fail (Fail)
+import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, buildContextLibrary, getContextOverrides, resolveOverrideDefinition, runContextValue)
-import Storyteller.Core.Git (BranchTag)
+import Storyteller.Core.Git (runStorage)
+import Storyteller.Core.Snapshot (Snapshot, runTextSnapshotFS)
+import qualified Storage.Core as Core
 import Storyteller.Context.DSL.AST (defParams)
 import Storyteller.Context.DSL.Compile (bval, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value (Value(..), defaultMeta, leafValue)
-import Storyteller.Writer.Agent.ContextFilter (hideBinaryFiles)
 import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree, parseAliases, blurb)
 
 import Prelude hiding (readFile)
@@ -64,14 +69,35 @@ import Prelude hiding (readFile)
 --   non-blank line and the parsed, mention-filtered aliases of its own
 --   content, built into a tree.
 loreTree :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r) => Sem r [LoreNode]
-loreTree = hideBinaryFiles @(BranchTag Main) @Main $ do
-  paths  <- filter isLoreEligible <$> listAllFiles @(BranchTag Main) "/"
-  files  <- mapM readWithBlurb paths
+loreTree = do
+  head'  <- runStorage @Main Core.headHash
+  files  <- runTextSnapshotFS head' (loreEntries @Snapshot)
   active <- activeMentionAliases (concatMap (\(_, _, aliases) -> aliases) files)
   return (buildLoreTree [ (path, b, filter (`Set.member` active) aliases) | (path, b, aliases) <- files ])
+
+-- | Every eligible path paired with its blurb and declared aliases --
+--   'loreTree' minus the mention filter, and the half that is genuinely
+--   just filesystem work.
+--
+--   Generic over @project@: listing and reading files is all it does, so
+--   it asks for a filesystem and nothing else. Which paths are hidden as
+--   binary isn't its business either -- it used to be wrapped in the
+--   since-deleted @ContextFilter.hideBinaryFiles@ (an
+--   interceptor needing 'Storyteller.Core.Branch.BranchOp' in the caller's
+--   own row, which is what kept this whole module pinned to a git-backed
+--   branch scope); the policy now lives in whichever interpreter is wired
+--   ('Storyteller.Core.Snapshot.runTextSnapshotFS' above), so a consumer
+--   that isn't prepared to deal with binary content simply never sees any.
+loreEntries
+  :: forall project r
+  .  Members '[FileSystem project, FileSystemRead project, Fail] r
+  => Sem r [(FilePath, T.Text, [T.Text])]
+loreEntries = do
+  paths <- filter isLoreEligible <$> listAllFiles @project "/"
+  mapM readWithBlurb paths
   where
     readWithBlurb path = do
-      content <- TE.decodeUtf8 <$> readFile @(BranchTag Main) path
+      content <- TE.decodeUtf8 <$> readFile @project path
       return (path, blurb content, parseAliases content)
 
 -- | Runs @context.mentionFilter@ against every alias this branch's codex

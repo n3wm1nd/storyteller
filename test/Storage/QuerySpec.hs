@@ -11,7 +11,8 @@
 
 -- | 'Storage.Query.loadLiveWorkingTree' against a real (mock-git-backed)
 --   branch: a genuinely never-atom-tracked path (same fixture shape as
---   'Storyteller.ContextFilterSpec's own 'hideBinaryFiles' case) never
+--   'Storyteller.SnapshotSpec's own 'runTextSnapshotFS' cases, which
+--   exercise the same filter through a whole filesystem interface) never
 --   shows up in its result at all.
 module Storage.QuerySpec (spec) where
 

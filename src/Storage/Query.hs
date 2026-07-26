@@ -20,6 +20,7 @@ module Storage.Query
   , hasAnyAtom
   , atomTrackedAmong
   , loadLiveWorkingTree
+  , liveWorkingTree
 
     -- * A path's current lifetime
   , atomHistory
@@ -108,11 +109,29 @@ atomTrackedAmong paths = headHash >>= go (Set.fromList paths) Set.empty
 --   is safe to call against a foreign commit without disturbing the
 --   caller's own position.
 loadLiveWorkingTree :: StoreM m => ObjectHash -> StoreT m [(FilePath, ObjectHash)]
-loadLiveWorkingTree commit = do
-  wt <- lift (loadWorkingTree commit)
-  let files = [ (path, h) | (path, FSFile h) <- Map.toList wt ]
-  tracked <- readAt commit (atomTrackedAmong (map fst files))
-  pure [ (path, h) | (path, h) <- files, path `Set.member` tracked ]
+loadLiveWorkingTree commit =
+  (\wt -> [ (path, h) | (path, FSFile h) <- Map.toList wt ]) <$> liveWorkingTree commit
+
+-- | 'loadLiveWorkingTree' as a whole 'WorkingTree' rather than a flat file
+--   list -- the same commit, the same atom-tracking filter, keeping the
+--   'FSDir' entries (and the 'Map' shape) a caller answering *directory*
+--   questions needs. 'loadLiveWorkingTree' is this projected down to its
+--   files, which is all its own callers ever wanted; a caller serving a
+--   whole filesystem interface over the result (see
+--   'Storyteller.Core.Snapshot.runTextSnapshotFS', which has to answer
+--   @isDirectory@\/@listFiles@ too) needs the tree itself.
+--
+--   Directories are never filtered: "has this path ever had an atom" is a
+--   question about *files*, and a directory that survives only because
+--   some hidden binary sits under it is an empty directory, not a leaked
+--   one -- the same answer flushing the equivalent tree would give.
+liveWorkingTree :: StoreM m => ObjectHash -> StoreT m WorkingTree
+liveWorkingTree commit = do
+  wt      <- lift (loadWorkingTree commit)
+  tracked <- readAt commit (atomTrackedAmong [ path | (path, FSFile _) <- Map.toList wt ])
+  let keep path (FSFile _) = path `Set.member` tracked
+      keep _    FSDir      = True
+  pure (Map.filterWithKey keep wt)
 
 -- | This file's own *current lifetime*, oldest first: every atom strictly
 --   after @path@'s most recent deletion event (see

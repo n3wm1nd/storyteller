@@ -76,6 +76,7 @@
 module Storyteller.Core.Snapshot
   ( Snapshot(..)
   , runSnapshotFS
+  , runTextSnapshotFS
   , readSnapshotFile
   ) where
 
@@ -87,7 +88,10 @@ import Runix.Git (Git)
 import Runix.FileSystem (FileSystem(..), FileSystemRead(..))
 import qualified System.FilePath.Glob as Glob
 
+import qualified Data.Map.Strict as Map
+
 import qualified Storage.Core as Core
+import qualified Storage.Query as Query
 import qualified Storage.FS as FS
 import Storyteller.Core.Storage (StoryStorage)
 -- For the @'Core.MonadStore' ('Sem' r)@ instance alone (nothing else from
@@ -181,6 +185,82 @@ runSnapshotFS commit = interpretFS . interpretRead
       Glob base pat     ->
         Right . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
           . FS.listUnderIn base <$> tree
+
+-- | 'runSnapshotFS' with every never-atom-tracked path hidden -- an
+--   uploaded portrait, or anything else that opted out of atom tracking,
+--   is simply not there: absent from any listing, and a 'ReadFile' on one
+--   answers "not found" exactly as a genuinely absent path does.
+--
+--   This is the common shape behind "I need filesystem access, but
+--   whatever consumes it isn't prepared to deal with binary content."
+--   Deciding which paths those are is a real storage fact -- a chain walk,
+--   not something derivable from a path's own text -- so a consumer can't
+--   answer it, and shouldn't have to know the question exists. Wiring this
+--   instead of 'runSnapshotFS' settles it once, at the boundary, and the
+--   consumer stays a plain @Members '[FileSystem project, FileSystemRead
+--   project]@ function that runs anywhere.
+--
+--   Filtered *at @commit@*, which is the whole reason this is an
+--   interpreter and not a filter stacked on an existing scope. The
+--   interceptor this replaces (@ContextFilter.hideBinaryFiles@, deleted
+--   along with its module) asked 'Storage.Query.atomTrackedAmong'
+--   from whatever branch scope happened to be ambient -- fine for its one
+--   caller, which was always filtering that same branch's live filesystem,
+--   but silently the wrong question for any other position: filtering a
+--   snapshot of branch B while scoped to branch A asked A's history about
+--   B's paths, and filtering B's own older commit asked about B as it
+--   stands now. 'Storage.Query.liveWorkingTree' resolves the tracked set
+--   at the commit being read, so the answer belongs to the position it
+--   describes.
+--
+--   Unlike 'runSnapshotFS', the tree is loaded *eagerly*, once, and every
+--   operation is served from it -- including 'ReadFile', which therefore
+--   loses that function's O(path depth) property. That's not an oversight:
+--   no question in this view can be answered without the tracked set, and
+--   the tracked set costs a chain walk (worst case, for a path that never
+--   had an atom, all the way to root -- precisely the binaries this is
+--   filtering). Deferring it per call would mean re-walking history on
+--   every read. A caller that doesn't need the policy should use
+--   'runSnapshotFS' and keep the cheap reads.
+runTextSnapshotFS
+  :: forall r a
+  .  Members '[Git, StoryStorage, Fail] r
+  => Core.ObjectHash
+  -> Sem (FileSystemRead Snapshot ': FileSystem Snapshot ': r) a
+  -> Sem r a
+runTextSnapshotFS commit action = do
+  -- Seeded with an empty ambient tree rather than via 'Core.runStoreT',
+  -- whose own 'Core.freshScope' would load the whole tree a second time
+  -- just to populate ambient state this computation never touches.
+  (visible, _) <- Core.runStoreTFrom (commit, Core.emptyWorkingTree)
+                    (Query.liveWorkingTree commit)
+  interpretFS visible (interpretRead visible action)
+  where
+    interpretRead
+      :: Members '[Git, StoryStorage, Fail] r'
+      => Core.WorkingTree -> Sem (FileSystemRead Snapshot ': r') b -> Sem r' b
+    interpretRead visible = interpret $ \case
+      ReadFile path -> case Map.lookup path visible of
+        Just (Core.FSFile h) -> Core.readObject h >>= \case
+          Core.BlobObject bs -> pure (Right bs)
+          Core.TreeObject _  -> pure (Left (path <> ": is a directory"))
+        Just Core.FSDir      -> pure (Left (path <> ": is a directory"))
+        -- A hidden binary is reported exactly as a genuinely absent path:
+        -- the point of this view is that it isn't there.
+        Nothing              -> pure (Left (path <> ": not found"))
+
+    -- No store access at all: given the already-filtered tree, every
+    -- structural question is a pure lookup ("Storage.FS"'s own query core).
+    interpretFS :: Core.WorkingTree -> Sem (FileSystem Snapshot ': r') b -> Sem r' b
+    interpretFS visible = interpret $ \case
+      GetFileSystem    -> pure (Snapshot commit)
+      GetCwd           -> pure (Right "/")
+      ListFiles dir    -> pure (Right (FS.listChildrenIn dir visible))
+      IsDirectory path -> pure (Right (FS.isDirectoryIn path visible))
+      FileExists path  -> pure (Right (FS.existsIn path visible || FS.isDirectoryIn path visible))
+      Glob base pat    -> pure . Right
+        . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
+        $ FS.listUnderIn base visible
 
 -- | Read one file at @commit@, without opening a scope of any kind --
 --   'runSnapshotFS' at its smallest useful size, for the very common

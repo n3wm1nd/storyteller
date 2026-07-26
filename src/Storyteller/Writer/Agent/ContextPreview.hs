@@ -10,7 +10,7 @@
 -- the DSL's own @Value@ shape (own content, then named entries, in order).
 --
 -- Superseded the old bucket-picker preview (glob patterns classified into
--- numbered buckets via 'Storyteller.Writer.Agent.ContextFilter.classifyPath')
+-- numbered buckets via the since-deleted @ContextFilter.classifyPath@)
 -- once agent context assembly itself moved to the Context DSL -- see
 -- CONTEXT-DSL.md. Previewing a @PickerRule@ layout stopped meaning anything
 -- the day @context.writer@ became the real thing every generation call

@@ -44,6 +44,7 @@ import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
+import Storyteller.Core.Git (BranchTag)
 
 runCharacter :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCharacter env branch conn = do
@@ -80,7 +81,7 @@ reportError conn err = WS.sendTextData conn (encode (CharacterError (T.pack err)
 
 push :: (BranchOpen r, Member (Embed IO) r) => WS.Connection -> T.Text -> Sem r ()
 push conn branch = do
-  st <- characterState branch
+  st <- characterState @(BranchTag Main) branch
   embed $ WS.sendTextData conn (encode (CharacterUpdate (charName st) (charSheet st) (charHasAvatar st)))
 
 -- | No commands to dispatch — just block until the client disconnects, so

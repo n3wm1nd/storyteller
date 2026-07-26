@@ -366,9 +366,9 @@ characterIntentAgent name ownContext sceneContext question = do
 --   ('protectCharacterFiles', baked directly into @write_file@\/@edit_file@'s
 --   own tool definitions below), not by checking the path inside their
 --   implementation -- the same 'Runix.FileSystem.PathFilter'\/
---   'Runix.FileSystem.filterWrite' machinery
---   'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles' already uses
---   for read-side narrowing, just on the write side. Wrapping
+--   'Runix.FileSystem.filterWrite' machinery, just on the write side --
+--   the read-side counterpart being an interpreter now rather than a
+--   filter ('Storyteller.Core.Snapshot.runTextSnapshotFS'). Wrapping
 --   only those two tools' own functions (rather than the whole tool loop)
 --   is deliberate: @add_thought@\/@add_suspicion@ append to @journal.md@
 --   through this exact same 'FileSystemWrite' effect, and would be denied
@@ -426,9 +426,8 @@ characterTools =
 -- | Wrap @action@ so @sheet.md@\/@journal.md@ can never be written on this
 --   character's own branch through it -- see 'characterTools's own Haddock
 --   for why this is a real filesystem-effect interception, not a per-tool
---   guess. Same 'Runix.FileSystem.PathFilter'\/'Runix.FileSystem.filterWrite'
---   machinery 'Storyteller.Writer.Agent.ContextFilter.hideBinaryFiles'
---   already uses for read-side narrowing, on the write side instead.
+--   guess. The 'Runix.FileSystem.PathFilter'\/'Runix.FileSystem.filterWrite'
+--   machinery, applied on the write side.
 protectCharacterFiles
   :: forall project r a
   .  Members '[FileSystem project, FileSystemWrite project] r

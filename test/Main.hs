@@ -41,7 +41,6 @@ import qualified Storyteller.LibrarySpec
 import qualified Storyteller.SnapshotSpec
 import qualified Storyteller.LoreSpec
 import qualified Storyteller.BranchesSpec
-import qualified Storyteller.ContextFilterSpec
 import qualified Storyteller.ContextPreviewSpec
 import qualified Storyteller.ContextCostSpec
 import qualified Storyteller.OutlineSpec
@@ -110,7 +109,6 @@ main = hspec $ do
   describe "Storyteller.Writer.Lore"       Storyteller.LoreSpec.spec
   Storyteller.SnapshotSpec.spec
   describe "Storyteller.Writer.Branches"   Storyteller.BranchesSpec.spec
-  describe "Storyteller.Writer.Agent.ContextFilter" Storyteller.ContextFilterSpec.spec
   describe "Storyteller.Writer.Agent.ContextPreview" Storyteller.ContextPreviewSpec.spec
   describe "Storyteller.Writer.Agent.ContextCost" Storyteller.ContextCostSpec.spec
   describe "Storyteller.Writer.Agent.Outline" Storyteller.OutlineSpec.spec

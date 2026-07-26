@@ -6,7 +6,7 @@
 -- No commands: this connection is read-only, same as
 -- 'Server.Writer.Character.Protocol' — curating which codex entries feed an
 -- agent's context happens through the ordinary @writer:story@ context
--- filter (see 'Storyteller.Writer.Agent.ContextFilter'), not through this
+-- filter (the Context DSL, see CONTEXT-DSL.md), not through this
 -- connection. Events: a single tree push, sent on connect and again
 -- whenever the branch changes.
 module Server.Writer.Lore.Protocol
