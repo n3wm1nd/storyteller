@@ -125,6 +125,16 @@ interface UIState {
   // live branch list by its reader rather than kept in sync here.
   dslResolveBranch: string | null;
   setDslResolveBranch: (branch: string) => void;
+
+  // The .dsl editor's current buffer, shared with its own sidebar (see
+  // app/dsl-file-view.tsx) so the "what does this resolve to" pane follows
+  // what's actually being typed rather than the last saved version. One
+  // cell, not a map: exactly one .dsl editor is ever open, and it names the
+  // path it belongs to so a stale draft can't be read against a file it
+  // isn't from. Null when no .dsl editor is mounted.
+  dslDraft: { path: string; text: string } | null;
+  setDslDraft: (path: string, text: string) => void;
+  clearDslDraft: () => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -178,6 +188,10 @@ export const useUI = create<UIState>((set) => ({
 
   dslResolveBranch: null,
   setDslResolveBranch: (branch) => set({ dslResolveBranch: branch }),
+
+  dslDraft: null,
+  setDslDraft: (path, text) => set({ dslDraft: { path, text } }),
+  clearDslDraft: () => set({ dslDraft: null }),
 }));
 
 // Selection is a temporary "about to act on this" marker, not a durable

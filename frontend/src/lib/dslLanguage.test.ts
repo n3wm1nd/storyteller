@@ -11,7 +11,7 @@ function tokens(source: string): [string, string][] {
   const state: DslTokenState = startDslState();
   const out: [string, string][] = [];
   for (const line of source.split("\n")) {
-    const stream = new StringStream(line, 2, 2, () => 0);
+    const stream = new StringStream(line, 2, 2);
     while (!stream.eol()) {
       stream.start = stream.pos;
       const tok = tokenizeDsl(stream, state);

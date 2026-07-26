@@ -1,8 +1,8 @@
 "use client";
 
-// How a `.dsl` file looks when opened in the file view — a code editor,
-// not the atom/prose surface every other file gets (page.tsx dispatches on
-// the extension). Two reasons, one per layer:
+// The DSL surface: how a `.dsl` file is edited (see lib/fileSurface.ts —
+// this replaces the prose/atom view outright rather than being a mode
+// inside it). Two reasons, one per layer:
 //
 //   * A Context DSL program has no internal structure worth tracking piece
 //     by piece. Saves go through `saveRawFileWhole` (PUT /$raw/...?whole →
@@ -20,22 +20,21 @@
 // happens to sit on would measure nothing. So the branch a real call would
 // resolve against is chosen explicitly here, independent of the file's own
 // branch, and remembered across file switches (uiStore's dslResolveBranch).
+//
+// 'DslSidebar' below is this surface's own sidebar content — the resolved
+// output of whatever is currently in the editor. The editor's buffer
+// travels between the two through uiStore's dslDraft cell rather than a
+// shared parent: page.tsx owns the panel, not what's in it.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Save } from "lucide-react";
 import { branchFileUrl, saveRawFileWhole } from "@/lib/ws";
-import type { LineCost } from "@/lib/ws";
+import type { LineCost, PreviewNode } from "@/lib/ws";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { useUI } from "@/lib/uiStore";
 import { classifyBranch } from "@/lib/branches";
 import { contextsBranchName } from "@/lib/contextBranch";
-import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
-
-// Is this a file the DSL editor owns? One place, so page.tsx's dispatch and
-// anything else asking the same question can't drift apart.
-export function isDslFile(path: string): boolean {
-  return path.endsWith(".dsl");
-}
+import { CodeCostEditor, useAdhocCostFetcher, useAdhocPreviewFetcher } from "./code-cost-editor";
 
 // Branches a program can sensibly be resolved against: story branches only.
 // A character branch holds one character's own journal/sheet, the prompts
@@ -52,6 +51,8 @@ export function DslFileView({ branch, path }: {
   const branches         = useServerCache((s) => s.branches);
   const storedResolve    = useUI((s) => s.dslResolveBranch);
   const setStoredResolve = useUI((s) => s.setDslResolveBranch);
+  const setDslDraft      = useUI((s) => s.setDslDraft);
+  const clearDslDraft    = useUI((s) => s.clearDslDraft);
 
   const [content, setContent] = useState<string | null>(null);
   const [savedContent, setSavedContent] = useState<string | null>(null);
@@ -110,6 +111,15 @@ export function DslFileView({ branch, path }: {
       });
     return () => { cancelled = true; };
   }, [branch, path]);
+
+  // Publish the buffer for this surface's own sidebar (see DslSidebar).
+  // Cleared on unmount so nothing downstream can read a draft belonging to
+  // an editor that's no longer open.
+  useEffect(() => {
+    if (content !== null) setDslDraft(path, content);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, content]);
+  useEffect(() => clearDslDraft, [clearDslDraft]);
 
   const dirty = content !== null && content !== savedContent;
 
@@ -198,6 +208,131 @@ export function DslFileView({ branch, path }: {
           fetchCosts={fetchAndTotal}
         />
       )}
+    </div>
+  );
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+
+// This surface's own sidebar: what the program in the editor actually
+// resolves to, on the branch the editor is pointed at. The counterpart to
+// the gutter's per-statement cost — that answers "what does this line cost",
+// this answers "what does the whole thing produce", which is the question
+// you have while writing one.
+//
+// Resolved server-side through the same `context.preview.adhoc` command a
+// real 0-arity slot resolution uses (Storyteller.Writer.Agent.ContextPreview.
+// buildAdhocPreview), so a name reference inside the program (context.lore,
+// say) sees this project's own committed override exactly as a real send
+// would — never a client-side re-implementation of the DSL's semantics.
+export function DslSidebar({ branch, path }: { branch: string; path: string }) {
+  const draft         = useUI((s) => s.dslDraft);
+  const storedResolve = useUI((s) => s.dslResolveBranch);
+  const branches      = useServerCache((s) => s.branches);
+
+  const candidates = useMemo(() => resolvableBranches(branches), [branches]);
+  const resolveBranch =
+    (storedResolve && candidates.includes(storedResolve)) ? storedResolve
+    : candidates.includes(branch) ? branch
+    : candidates[0] ?? null;
+
+  const fetchPreview = useAdhocPreviewFetcher(resolveBranch);
+  const [node, setNode] = useState<PreviewNode | null>(null);
+  const [stale, setStale] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const requestIdRef = useRef(0);
+
+  // Only this editor's own draft — a stale cell from a previously open file
+  // must never be rendered as if it were this one's.
+  const program = draft && draft.path === path ? draft.text : null;
+
+  // Debounced, superseded-request-safe — the same shape (and the same
+  // reason) as CodeCostEditor's own cost fetch: a program mid-keystroke is
+  // usually unparseable, and every resolution is a real server-side read.
+  useEffect(() => {
+    if (!program || !program.trim()) { setNode(null); setFailed(false); return; }
+    setStale(true);
+    const requestId = ++requestIdRef.current;
+    const t = setTimeout(async () => {
+      const result = await fetchPreview(program);
+      if (requestId !== requestIdRef.current) return;
+      setStale(false);
+      setFailed(result === null);
+      if (result !== null) setNode(result);
+    }, PREVIEW_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [program, resolveBranch]);
+
+  const totalChars = node ? countChars(node) : 0;
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "8px 8px 0" }}>
+      <div style={{ flexShrink: 0, display: "flex", alignItems: "baseline", gap: 6, padding: "0 2px 6px" }}>
+        <span style={{ fontSize: 11, color: "var(--text-label)" }}>Resolves to</span>
+        <code style={{ fontSize: 9.5, fontFamily: "monospace", color: "var(--text-ghost)" }}>
+          {resolveBranch ?? "no story branch"}
+        </code>
+        <span style={{ flex: 1 }} />
+        {node && (
+          <span style={{ fontSize: 9.5, color: stale ? "var(--text-ghost)" : "var(--amber)" }}>
+            ≈{Math.round(totalChars / 4).toLocaleString()}t
+          </span>
+        )}
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", fontSize: 11, lineHeight: 1.5 }}>
+        {failed ? (
+          <div style={{ padding: "8px 2px", color: "var(--text-ghost)", fontStyle: "italic" }}>
+            Doesn&apos;t resolve — an unfinished line, or a name this branch has no definition for.
+          </div>
+        ) : !node ? (
+          <div style={{ padding: "8px 2px", color: "var(--text-ghost)", fontStyle: "italic" }}>
+            {program ? "Resolving…" : "Nothing to resolve yet."}
+          </div>
+        ) : (
+          <PreviewTree node={node} depth={0} stale={stale} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const PREVIEW_DEBOUNCE_MS = 700;
+
+// Every rendered character under a node — the same "sum what's actually
+// produced" figure the editor's own header shows from the cost side, so
+// the two can be read against each other.
+function countChars(node: PreviewNode): number {
+  return node.content.reduce((sum, t) => sum + t.length, 0)
+       + node.entries.reduce((sum, e) => sum + countChars(e.node), 0);
+}
+
+// One node of the resolved structure: its own text, then its named
+// children — mirroring Storyteller.Context.DSL.Rendering.RenderedContext
+// (and PreviewNode) exactly, rather than flattening it, since the `as
+// "name":` structure is a real part of what the program produces.
+function PreviewTree({ node, depth, stale }: { node: PreviewNode; depth: number; stale: boolean }) {
+  return (
+    <div style={{ opacity: stale ? 0.5 : 1, transition: "opacity 0.15s" }}>
+      {node.content.map((text, i) => (
+        <div key={i} style={{
+          whiteSpace: "pre-wrap", wordBreak: "break-word",
+          color: "var(--text-body)", padding: "2px 2px 6px",
+          borderLeft: depth > 0 ? "1px solid var(--border-subtle)" : undefined,
+          paddingLeft: depth > 0 ? 8 : 2,
+        }}>
+          {text}
+        </div>
+      ))}
+      {node.entries.map((entry) => (
+        <div key={entry.name} style={{ paddingLeft: depth > 0 ? 8 : 0, borderLeft: depth > 0 ? "1px solid var(--border-subtle)" : undefined }}>
+          <div style={{ fontSize: 9.5, fontFamily: "monospace", color: "var(--sky)", padding: "2px 2px 1px" }}>
+            {entry.name}
+          </div>
+          <PreviewTree node={entry.node} depth={depth + 1} stale={stale} />
+        </div>
+      ))}
     </div>
   );
 }

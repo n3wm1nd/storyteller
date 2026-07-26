@@ -6,6 +6,10 @@
 // shared by the input-bar dropdown (fileview.tsx) and the Agents tab
 // (agentstab.tsx).
 
+// Type-only, so this stays a compile-time reference rather than a runtime
+// import cycle (fileSurface.ts imports isChatFile from here).
+import type { FileSurface } from "./fileSurface";
+
 // The whole-story outline is `outline.md` (optionally in a subdir). Chapter
 // beat sheets are `ch{N}.outline.md` — those are outputs of the split, not
 // inputs to it, so only the bare `outline.md` gets the "generate beat sheets"
@@ -59,7 +63,30 @@ export interface AgentDef {
   // fixer/outline-split read their context in ways not yet exposed as a
   // named, overridable DSL slot).
   contextSlots?: string[];
+  // Which editing surface this agent belongs to (see lib/fileSurface.ts) —
+  // an agent acts on one kind of file, and the Agents tab (a settings
+  // surface, open over whatever file is being edited) lists the agents that
+  // are actually relevant to that editor. Omitted means "prose", which is
+  // every agent shipped today: they all write or rewrite story text.
+  //
+  // The forward case this exists for: an agent that helps write a Context
+  // DSL program, or one that drafts prompt text, would declare "dsl"/
+  // "prompt" here and appear only while that editor is open — without the
+  // prose agents (Writer, Fixer, …) showing up in a settings panel where
+  // they'd do nothing.
+  surfaces?: FileSurface[];
+  // Finer-grained, *within* a surface: which paths this agent applies to
+  // (chat/ files vs. not, outline.md, …). Not a substitute for `surfaces` —
+  // this only ever runs for an agent already on the right surface.
   appliesTo: (path: string) => boolean;
+}
+
+// The agents worth showing for one open file: on this surface, and
+// applicable to this path. The single place that question is answered —
+// shared by the Agents tab and the input bar's own send-mode dropdown, so
+// they can't disagree about what's available.
+export function agentsForSurface(surface: FileSurface, path: string): AgentDef[] {
+  return AGENTS.filter((a) => (a.surfaces ?? ["prose"]).includes(surface) && a.appliesTo(path));
 }
 
 export const AGENTS: AgentDef[] = [

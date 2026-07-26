@@ -27,19 +27,24 @@
 // server-side from the actual parsed Definition -- see
 // Storyteller.Context.DSL.PrettyPrint), so editing one reads as
 // "customize the default" instead of "start from a blank, unexplained
-// box." Saving either kind of slot writes through saveRawFile
-// (contextBranch.ts's writeContextFunction wraps the DSL editor/panel's
-// own saves the same way) so the file lands as an ordinary atom-tracked
-// text file, not the opaque binary blob uploadBranchFile would leave
-// behind.
+// box." Every save here — prompt, sampling config, or context slot — goes
+// through the whole-file write (saveRawFileWhole / PUT $raw?whole, see
+// Storage.Ops.saveWholeFile), the same one the .dsl and prompt editors use
+// (app/dsl-file-view.tsx, app/prompt-file-view.tsx): the file lands as an
+// ordinary atom-tracked text file kept at exactly one atom, rather than
+// the opaque binary blob a plain PUT would leave behind (which is what the
+// library's "binary" flag actually means — never had an atom tick) or the
+// paragraph-shaped atoms an ordinary reconciled save would mint in a file
+// that has no paragraphs worth tracking.
 
 import { useEffect, useState } from "react";
 import {
   ChevronRight, FileText, Sliders, BookOpen,
   PenLine, Wrench, RefreshCw, Split, MessageSquare, Bot,
 } from "lucide-react";
-import { AGENTS, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
-import { branchConn, branchFileUrl, uploadBranchFile } from "@/lib/ws";
+import { AGENTS, agentsForSurface, promptKeyToPath, configKeyToPath, configFieldsHint, type AgentDef } from "@/lib/agents";
+import type { FileSurface } from "@/lib/fileSurface";
+import { branchConn, branchFileUrl, saveRawFileWhole } from "@/lib/ws";
 import { setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
 import { contextFunctionUrl, contextsBranchName, writeContextFunction, readContextDefault } from "@/lib/contextBranch";
 import { parseLoreProgram, toggleLorePathInProgram } from "@/lib/dslCompose";
@@ -111,11 +116,11 @@ function SectionLabel({ icon: Icon, children }: { icon: typeof FileText; childre
 
 // Fetches an overridden prompt's text on expand (raw GET against the
 // "prompts" branch — same HTTP endpoint the file-embed/download path uses,
-// see lib/ws.ts's branchFileUrl) and saves edits back with a plain PUT
-// (uploadBranchFile), i.e. a full-content replace, not the atom
-// chain-editing pipeline — appropriate here since a prompt override is a
-// single opaque blob, not chain-tracked prose (see
-// Server.Writer.Branch.hs's "deposit, not a claim" doc comment).
+// see lib/ws.ts's branchFileUrl) and saves it back whole
+// (saveRawFileWhole), since a prompt override's unit of change is the
+// whole text, never a paragraph of it. The same file opened in the main
+// file view gets app/prompt-file-view.tsx — a bigger editor with the same
+// save, deliberately, so the two can't disagree about what a save means.
 function PromptEditor({ path }: { path: string }) {
   const [content, setContent] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -143,7 +148,7 @@ function PromptEditor({ path }: { path: string }) {
   async function save() {
     setSaving(true);
     try {
-      await uploadBranchFile("prompts", path, new Blob([draft], { type: "text/markdown" }));
+      await saveRawFileWhole("prompts", path, draft);
       setContent(draft);
     } catch (err) {
       setError(String(err));
@@ -304,7 +309,7 @@ function ConfigEditor({ path, fieldsHint }: { path: string; fieldsHint: string[]
   async function save() {
     setSaving(true);
     try {
-      await uploadBranchFile("prompts", path, new Blob([draft], { type: "application/yaml" }));
+      await saveRawFileWhole("prompts", path, draft);
       setContent(draft);
     } catch (err) {
       setError(String(err));
@@ -803,20 +808,30 @@ function groupByCategory(agents: AgentDef[]): { category: string | null; agents:
   return groups;
 }
 
-export function AgentsTab({ path, branch, onJumpToPrompt }: {
+// A settings surface, open over whatever file is being edited — which is
+// why it lists the agents relevant to *that editor* ('surface', see
+// lib/fileSurface.ts) rather than a fixed global set. Today every agent is
+// a prose agent, so the DSL and prompt editors show the empty state; an
+// agent that helps write a DSL program or draft prompt text would appear
+// here by declaring its own surface in the registry, with nothing to change
+// in this component.
+export function AgentsTab({ path, branch, surface, onJumpToPrompt }: {
   path: string;
   branch: string | null;
+  surface: FileSurface;
   onJumpToPrompt: (path: string) => void;
 }) {
-  const applicable = AGENTS.filter((a) => a.appliesTo(path));
+  const applicable = agentsForSurface(surface, path);
   const [selectedId, setSelectedId] = useState<string | null>(applicable[0]?.id ?? null);
   const promptFiles = usePromptFiles();
   const contextFiles = useContextFiles();
 
   if (applicable.length === 0) {
     return (
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: 12 }}>
-        No agents apply to this file.
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", color: "var(--text-ghost)", fontSize: 12, lineHeight: 1.6 }}>
+        {surface === "prose"
+          ? "No agents apply to this file."
+          : "No agents for this editor yet — nothing writes or reviews this kind of file on your behalf."}
       </div>
     );
   }
