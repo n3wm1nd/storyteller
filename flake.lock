@@ -8,11 +8,11 @@
       },
       "locked": {
         "dir": "frontend",
-        "lastModified": 1784936798,
-        "narHash": "sha256-u4aqrsSxE8sNI39Anf5bKd8nr9e1OJFq61VIwU0mRuo=",
+        "lastModified": 1785073757,
+        "narHash": "sha256-XCljuTGuvWfQ01MBZ6GmJKbdesOSiVr7ED4y/nfpiCs=",
         "owner": "n3wm1nd",
         "repo": "storyteller",
-        "rev": "b0514e9d036fc18ac17e526f57f9c2702b56bc98",
+        "rev": "44893519d7c49abdd169a8d0d32097572c2276b7",
         "type": "github"
       },
       "original": {
