@@ -59,6 +59,7 @@ module Storage.Ops
   , StoreM
   , StoreT
   , Tick(..)
+  , isRemoval
   , headHash
   , store
   , drop

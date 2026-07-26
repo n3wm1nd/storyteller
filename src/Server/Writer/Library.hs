@@ -83,13 +83,27 @@ emptyLibraryFoldCache = LibraryFoldCache Map.empty Set.empty
 --   own commit message (see 'Storage.Core.readTick'), not a separate blob
 --   'Storage.Core.readFile' would have to fetch — but the step still has
 --   to be monadic in 'StoreT' to satisfy 'Ops.memoFold's own signature.
+--
+--   The two halves treat a deletion marker ('Ops.isRemoval') differently,
+--   because they're answering differently-scoped questions. 'lfcChapters'
+--   is @path@'s content /as it currently stands/, so a marker ends a
+--   lifetime and clears it: everything folded in before belongs to a
+--   previous life of that path (see 'Storage.Ops.deleteFile'), and letting
+--   it survive means a recreated chapter reports the deleted one's heading
+--   forever — the same lifetime boundary 'Storage.Query.lifetimeAtoms'
+--   stops at when it reconstructs the identical fold from scratch.
+--   'lfcTracked' is the strictly monotonic "has this path /ever/ carried an
+--   atom" ('Storage.Ops.hasAnyAtom's own "once atom, always atom"
+--   invariant), which a deletion doesn't undo — the marker is itself an
+--   atom on @path@ — so it keeps growing across the boundary.
 foldLibraryState :: Ops.StoreM m => LibraryFoldCache -> Ops.ObjectHash -> Ops.Tick -> Ops.StoreT m LibraryFoldCache
 foldLibraryState acc _h tick = return $ case tick of
-  Ops.Atom _ path _ content ->
+  Ops.Atom _ path tags content ->
     let tracked'  = Set.insert path (lfcTracked acc)
         chapters' = case classifyPath path of
-          Unit -> Map.insertWith (flip (<>)) path content (lfcChapters acc)
-          _    -> lfcChapters acc
+          Unit | Ops.isRemoval tags -> Map.delete path (lfcChapters acc)
+          Unit                      -> Map.insertWith (flip (<>)) path content (lfcChapters acc)
+          _                         -> lfcChapters acc
     in acc { lfcTracked = tracked', lfcChapters = chapters' }
   _ -> acc
 

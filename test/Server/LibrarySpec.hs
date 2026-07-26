@@ -104,6 +104,22 @@ spec = describe "libraryTree" $ do
       Right tree -> map lnHeading (collectChapters tree)
         `shouldBe` [Just "WRONG", Just "# Chapter Two"]
 
+  -- A path deleted and recreated is a brand new lifetime (see
+  -- 'Storage.Ops.deleteFile'): every atom before the removal marker
+  -- belongs to a previous life of that path and must not contribute to
+  -- what the tree reports now.
+  it "reports the recreated chapter's own heading, not the deleted lifetime's" $ do
+    let result = withLibraryBranch "story" $ do
+          chapterCreate "chapters/ch1.md" "Chapter One"
+          _ <- runStorage @Main (Ops.deleteFile "chapters/ch1.md")
+          chapterCreate "chapters/ch1.md" "A Fresh Start"
+          (tree, _, _) <- libraryTree []
+          return tree
+    case result of
+      Left err   -> expectationFailure err
+      Right tree -> map lnHeading (collectChapters tree)
+        `shouldBe` [Just "# A Fresh Start"]
+
   -- The client's own cue not to open a prose/atom viewer on a path (see
   -- the "upload a binary file" design conversation): a never-atom-tracked
   -- path is flagged 'lnBinary', an ordinary chapter is not.
