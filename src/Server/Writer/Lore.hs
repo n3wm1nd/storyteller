@@ -50,7 +50,6 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, getFileSystem, listAllFiles, readFile)
 
 import Server.Core.Branch (Main, BranchOpen)
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, getContextOverrides, resolveOverrideDefinition, runContextValue)
 import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Context.DSL.AST (defParams)

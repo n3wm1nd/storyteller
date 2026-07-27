@@ -36,7 +36,6 @@ import Polysemy.Fail (Fail)
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..), renderContext)
 import Storyteller.Context.DSL.Value (messageText, listPaths)
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Branch (BranchOp, Branches)
 import Storyteller.Core.Context
   (ContextStorage, resolveContext0, resolveContext1, resolveAdhoc, runContextValue, setContextOverride)

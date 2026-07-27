@@ -47,12 +47,11 @@ import Server.Writer.Notification (BranchNotification(..), watchBranch)
 import Runix.LLM.Streaming (StreamEvent)
 import Runix.StreamChunk (ignoreChunks)
 import Server.Writer.Run (actionStack, wsAction, loggingWS)
-import qualified Storage.Core as Core
 import Server.Core.Branch (Main)
 import Storyteller.Core.Branch (withBranch)
 import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Core.Storage (getBranch)
-import Storyteller.Core.Types (BranchName(..), branchHead, unTickId)
+import Storyteller.Core.Types (BranchName(..))
 
 runCharacter :: ServerEnv -> T.Text -> WS.Connection -> IO ()
 runCharacter env branch conn = do

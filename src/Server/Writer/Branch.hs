@@ -60,7 +60,6 @@ import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Writer.Agent (ContextBlock(..))
 import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Context (resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))

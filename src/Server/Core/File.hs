@@ -51,7 +51,6 @@ import qualified Data.Text as T
 import Polysemy (Member, Members, Sem)
 import Polysemy.Error (Error, throw)
 import Polysemy.Fail (Fail)
-import Runix.Git (Git)
 import Runix.Logging (Logging, info)
 
 import Server.Core.Protocol (Update(..), toWireTick)
@@ -71,8 +70,8 @@ import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
-import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..), fromTick)
-import Storyteller.Core.Git (BranchTag, BranchOp, runStorage)
+import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import qualified Runix.FileSystem as FS
 
