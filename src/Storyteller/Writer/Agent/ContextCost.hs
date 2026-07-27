@@ -55,7 +55,7 @@ import Storyteller.Context.DSL.Library (contextWriterDef)
 import Storyteller.Context.DSL.Parser (parseDefinition)
 import Storyteller.Context.DSL.Rendering (renderContext, renderText)
 import Storyteller.Context.DSL.Value (Message(User), bval, leafValue)
-import Storyteller.Core.Branch (BranchOp)
+import Storyteller.Core.Branch (BranchOp, Branches, Visited)
 import Storyteller.Core.Context
   ( ContextRow, ContextStorage, adhocArgs, buildContextLibrary, getContextOverrides
   , resolveOverrideDefinition, runContextValue
@@ -152,10 +152,10 @@ ablate target block =
 --   shaped programs via 'buildProgramCosts', none at all for a bare
 --   0-arity snippet via 'buildAdhocProgramCosts') -- this function itself
 --   has no opinion on arity, same as 'runDefinition' doesn't.
-sizeOf :: forall branch r. Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r => Library (ContextRow branch r) -> Definition -> [Binding (ContextRow branch r)] -> Sem r Int
+sizeOf :: forall branch r. Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r => Library (ContextRow branch r) -> Definition -> [Binding (ContextRow branch r)] -> Sem r Int
 sizeOf lib def args =
   runContextValue @branch $ do
-    v        <- runDefinition @branch lib def args
+    v        <- runDefinition lib def args
     rendered <- renderContext v
     pure (T.length (renderText rendered))
 
@@ -172,7 +172,7 @@ sizeOf lib def args =
 --   "what's eating my budget," not source order.
 buildLineCosts
   :: forall branch r
-  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
   => Library (ContextRow branch r) -> Definition -> [Binding (ContextRow branch r)] -> Sem r [LineCost]
 buildLineCosts lib def args = do
   baseline <- sizeOf @branch lib def args
@@ -201,7 +201,7 @@ buildLineCosts lib def args = do
 --   never a second, independent check of @program@ on its own.
 buildProgramCosts
   :: forall branch r
-  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
   => FilePath -> Text -> Sem r [LineCost]
 buildProgramCosts path program = do
   overrides <- getContextOverrides
@@ -235,7 +235,7 @@ buildProgramCosts path program = do
 --   agree about what they're measuring.
 buildAdhocProgramCosts
   :: forall branch r
-  .  Members '[BranchOp branch, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
   => Text -> Maybe FilePath -> Sem r [LineCost]
 buildAdhocProgramCosts program mPath = do
   overrides <- getContextOverrides

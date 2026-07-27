@@ -66,16 +66,12 @@
 --   other 'BranchOp'\/'StoryStorage' interpreter composes under every
 --   function here unchanged.
 module Storyteller.Core.ContentEffects
-  ( -- * Tree snapshots (portable to any content-addressed or plain
-    -- directory backend -- no history involved)
-    TreeAccess(..)
-  , currentHead
-  , treeSnapshot
-  , readTreeBlob
-  , runTreeAccess
+  ( -- * Why there is no file-reading effect here
+    --
+    -- $treeaccess
 
     -- * Character presence (tick-history dependent)
-  , Presence(..)
+    Presence(..)
   , charactersPresent
   , runPresence
 
@@ -137,107 +133,51 @@ import Runix.Git (Git)
 
 import Storyteller.Core.Branch (BranchOp, Branches, runStorage, withBranch)
 import Runix.FileSystem (FileSystemRead(..))
-import Storyteller.Core.Git (BranchTag, runStoryFSRead)
+import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Core.Storage (StoryStorage, getBranch, listBranches)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Writer.Presence as WriterPresence
 import Storyteller.Writer.Types (Character(..))
 
--- ---------------------------------------------------------------------------
--- Tree snapshots
--- ---------------------------------------------------------------------------
-
--- | A commit's *readable* content, as a flat list of paths -- an uploaded
---   binary asset, or anything else that opted out of atom tracking, is
---   not there -- plus the ability to read one blob and to ask where
---   "here" currently is.
+-- $treeaccess
 --
---   Readable-content-at-a-position is the concept, and the exclusion is
---   part of it rather than a filter layered on top: everything downstream
---   of this turns a file into a
---   'Storyteller.Context.DSL.Value.Message', and a raw non-UTF8 blob has
---   no Message to become. A caller wanting one *specific* file, with no
---   listing and no policy, wants
---   'Storyteller.Core.Snapshot.readSnapshotFile' instead -- that's a
---   plain positioned read, not this.
+-- There used to be a @TreeAccess branch@ effect here: "current head", "list
+-- a commit's readable paths", "read a blob by hash". It is gone, and what
+-- replaced it is worth stating, because the shape it had is an easy one to
+-- reach for again.
 --
---   An earlier version of this Haddock claimed "no parent-chain walk
---   anywhere in this effect -- a plain directory can back all three
---   operations honestly." That was false on both counts and worth
---   recording rather than quietly deleting. The interpreter walks history
---   ('Storage.Query.liveWorkingTree' -> 'Storage.Query.atomTrackedAmong'),
---   because on this backend "is this readable content" *is* a question
---   about tick history; and every operation here takes or returns a
---   'Core.ObjectHash', so a backend with no content-addressing can't
---   implement any of them regardless of the walk (see the FIXME below).
+-- It was a storage primitive with a constructor around it. Listing files
+-- and reading them is 'Runix.FileSystem.FileSystem' \/
+-- 'Runix.FileSystem.FileSystemRead' -- a vocabulary that already existed,
+-- that works against a real directory or a test filesystem just as well as
+-- against a branch, and that nothing in this module needed to reinvent.
+-- What made reinventing it look necessary was the /position/: the DSL
+-- reads at a commit it resolves mid-evaluation, and those effects take
+-- their position from an interpreter rather than an argument. So the
+-- position was threaded through the effect instead -- and, because a
+-- 'Storyteller.Context.DSL.Value.Value' is lazy, through every leaf of
+-- every scope as well.
 --
---   The tempting fix -- strip the filter out into its own effect, leaving
---   this one genuinely history-free -- was tried and reverted. It doesn't
---   abstract the storage layer, it pulls it through: "which paths have
---   ever carried an atom tick" is a git-storage primitive with a
---   constructor around it, exactly what this module's own intro warns
---   against, and splitting it off forced ~50 signatures across the DSL to
---   carry a second effect that only one of them ever calls. The two are
---   not independent capabilities; they are one capability
---   ('Storage.Query.liveWorkingTree', which is also what
---   'Storyteller.Core.Snapshot.runTextSnapshotFS' serves a whole
---   filesystem from) that was split in half. What a backend has to
---   support to implement this effect is "tell me what's readable here" --
---   however it knows that. Sniffing bytes, an extension list, or (here)
---   tick history are all honest answers; having no answer at all is what
---   should stop a backend implementing it, and that's a real, statable
---   requirement rather than a leaked primitive.
+-- The actual answer was to enter, not to carry: a caller that needs another
+-- branch says so ('Storyteller.Core.Branch.Branches'), enters it, and reads
+-- through the ordinary filesystem effects inside. Nothing carries a hash,
+-- and no signature outside an interpreter mentions one.
 --
---   NOTE (2026-07-23, discussed but not resolved further): deliberately
---   *not* folded into @Runix.FileSystem@'s own 'Runix.FileSystem.FileSystem'
---   \/'Runix.FileSystem.FileSystemRead' effects, even though both are
---   "list files, read a blob" in shape. The difference is where the
---   position comes from: 'Runix.FileSystem''s own @project@ is a
---   *type-level* phantom, fixed once when an interpreter is wired
---   (@runStoryFSGit \@branch@) -- right for "the one named branch I keep
---   reading from, always its current live state" (what
---   "Storyteller.Writer.Agent.Tasks"\/"Storyteller.Writer.Agent.CharContext"
---   want). 'TreeSnapshot'\/'ReadTreeBlob' take their position as a
---   *value*-level 'Core.ObjectHash' instead, because the DSL's own
---   cross-branch reads (@in (charname | branch): ...@,
---   'Storyteller.Context.DSL.Compile.journalDelta') only learn *which*
---   commit to read at from a 'BranchResolve' call moments earlier in the
---   same evaluation -- often a different commit on every loop iteration.
---   Minting a fresh phantom-tagged 'Runix.FileSystem.FileSystem'
---   interpreter per dynamically-resolved commit isn't expressible cleanly
---   (a Polysemy row is fixed at compile time), so this stays its own
---   effect rather than folding into the existing one.
---
---   FIXME (2026-07-23): 'BranchResolve' currently hands back a raw
---   'Core.ObjectHash', imported directly from "Storage.Core" -- meaning
---   this whole effect vocabulary still presupposes content-addressing
---   exists at all ("the position of a branch is a hash of its content"),
---   which a backend with no history (a plain directory, a SillyTavern
---   export) genuinely doesn't have. Should own an opaque position\/ref
---   type here instead (produced by 'BranchResolve', consumed by
---   'TreeSnapshot'\/'ReadTreeBlob'\/'JournalWindow'), with the git-backed
---   interpreter free to implement it *as* an 'Core.ObjectHash' internally
---   -- not expose that choice to callers.
-data TreeAccess (branch :: k) (m :: Type -> Type) a where
-  CurrentHead  :: TreeAccess branch m Core.ObjectHash
-  TreeSnapshot :: Core.ObjectHash -> TreeAccess branch m [(FilePath, Core.ObjectHash)]
-  ReadTreeBlob :: Core.ObjectHash -> TreeAccess branch m ByteString
-
-makeSem ''TreeAccess
-
-runTreeAccess :: forall branch r a. Member (BranchOp branch) r => Sem (TreeAccess branch ': r) a -> Sem r a
-runTreeAccess = interpret $ \case
-  CurrentHead      -> runStorage @branch Core.headHash
-  TreeSnapshot h   -> runStorage @branch (Query.loadLiveWorkingTree h)
-  ReadTreeBlob h   -> runStorage @branch $ lift $ Core.readObject h >>= \case
-    Core.BlobObject bs -> pure bs
-    Core.TreeObject _  -> fail "readTreeBlob: hash is a tree, not a blob"
+-- The cost of getting that wrong was not local. Because every scope was
+-- built through @TreeAccess@, and every entry point built a scope,
+-- @TreeAccess branch@ appeared on roughly fifty signatures across the DSL
+-- -- including definitions that provably read nothing at all. A capability
+-- that spreads that far is usually not describing a capability; it is
+-- describing a call graph. See
+-- 'Storyteller.Context.DSL.Compile.currentScope', now the only place in the
+-- DSL that turns a capability into a scope, and
+-- "Storyteller.Context.DSL.Library"'s own note on what fell out once it
+-- did.
 
 -- ---------------------------------------------------------------------------
 -- Presence
 -- ---------------------------------------------------------------------------
-
 -- | Which characters are tracked\/present in @path@'s own tick history --
 --   already-derived, deduplicated character identities
 --   ('Storyteller.Writer.Presence.activeCharacters' folded into the
@@ -529,7 +469,7 @@ runCast = interpret $ \case
       -- 'Runix.FileSystem.readFile', because a character branch with no
       -- sheet yet is a legitimate cast member (see 'CastMember') -- the
       -- miss is an empty answer here, not a 'Fail'.
-      sheet <- withBranch @castBranch name $ runStoryFSRead @castBranch name $
+      sheet <- withBranch @castBranch name $ runStoryFSRead @(BranchTag castBranch) @castBranch (BranchTag name) $
         either (const "") TE.decodeUtf8 <$> send @(FileSystemRead (BranchTag castBranch)) (ReadFile "sheet.md")
       pure CastMember
         { cmBranch = name
@@ -549,13 +489,15 @@ runCast = interpret $ \case
 --   at different @branch@ type applications within the same stack (see
 --   the module Haddock) -- a different backend supplies its own
 --   equivalent of this function, discharging whichever subset of the
---   six effects it can honestly back. 'BranchResolve' isn't included --
+--   five effects it can honestly back. 'BranchResolve' isn't included --
 --   it has no @branch@ of its own to be scoped to; wire it separately
---   (once, project-wide) via 'runBranchResolve'.
+--   (once, project-wide) via 'runBranchResolve'. Neither is file reading,
+--   which isn't part of this vocabulary at all -- see the module's own
+--   note on why ($treeaccess).
 runContentEffectsGit
   :: forall branch r a
   .  Member (BranchOp branch) r
-  => Sem ( TreeAccess branch ': Presence branch ': JournalAccess branch ': ConversationAccess branch
+  => Sem ( Presence branch ': JournalAccess branch ': ConversationAccess branch
          ': FileTicks branch ': Summarized branch ': r ) a
   -> Sem r a
 runContentEffectsGit =
@@ -564,4 +506,3 @@ runContentEffectsGit =
   . runConversationAccess @branch
   . runJournalAccess @branch
   . runPresence @branch
-  . runTreeAccess @branch

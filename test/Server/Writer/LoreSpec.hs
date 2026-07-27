@@ -26,6 +26,7 @@ import Runix.Logging (loggingNull)
 
 import Storyteller.Core.Context (interpretContextStorageMap)
 import Storyteller.Core.ContentEffects (runBranchResolve)
+import Storyteller.Core.Branch (Visited)
 import Storyteller.Core.Snapshot (runSnapshotGit)
 import Storyteller.Core.Git (runBranchAndFS, runBranchesGit, runStorage, runStoryStorageGit)
 import Storyteller.Core.LLM.Role (AgentModel, ProseModel)
@@ -85,6 +86,7 @@ runLoreTestFull overrides files =
   . stubLLM @ProseModel
   . runStoryStorageGit
   . runBranchResolve
+  . runBranchesGit @Visited
   . runBranchesGit @Main
   . runSnapshotGit
   $ do

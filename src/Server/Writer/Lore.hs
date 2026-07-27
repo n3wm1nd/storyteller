@@ -45,16 +45,16 @@ import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Polysemy (Members, Sem)
+import Polysemy (Member, Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, getFileSystem, listAllFiles, readFile)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.ContentEffects (BranchResolve)
-import Storyteller.Core.Context (ContextStorage, buildContextLibrary, getContextOverrides, resolveOverrideDefinition, runContextValue)
+import Storyteller.Core.Context (ContextStorage, getContextOverrides, resolveOverrideDefinition, runContextValue)
 import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Context.DSL.AST (defParams)
-import Storyteller.Context.DSL.Compile (bval, runDefinition)
+import Storyteller.Context.DSL.Compile (bval, emptyLibrary, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value (Value(..), defaultMeta, leafValue)
 import Storyteller.Writer.Lore (LoreNode, isLoreEligible, buildLoreTree, parseAliases, blurb)
@@ -65,14 +65,14 @@ import Prelude hiding (readFile)
 --   'Storyteller.Writer.Lore.isLoreEligible'), paired with the first
 --   non-blank line and the parsed, mention-filtered aliases of its own
 --   content, built into a tree.
-loreTree :: (BranchOpen r, Members '[ContextStorage, BranchResolve] r) => Sem r [LoreNode]
+loreTree :: (BranchOpen r, Member ContextStorage r) => Sem r [LoreNode]
 loreTree = do
   -- The ambient branch filesystem is already in the row, but it shows
   -- every path; 'loreEntries' must only see readable content. So shadow it
   -- for the duration with the filtered read-only view of the same branch,
   -- taking the branch's own name from the filesystem already open on it.
   BranchTag name <- getFileSystem @(BranchTag Main)
-  files  <- runStoryFSRead @Main name (loreEntries @(BranchTag Main))
+  files  <- runStoryFSRead @(BranchTag Main) @Main (BranchTag name) (loreEntries @(BranchTag Main))
   active <- activeMentionAliases (concatMap (\(_, _, aliases) -> aliases) files)
   return (buildLoreTree [ (path, b, filter (`Set.member` active) aliases) | (path, b, aliases) <- files ])
 
@@ -108,8 +108,29 @@ loreEntries = do
 --   decides by name, and there's nothing here worth reading a whole file a
 --   second time for just to populate a field no default or override
 --   actually looks at yet.
+--   Runs @context.mentionFilter@ against 'emptyLibrary', not against the
+--   project's full compiled table.
+--
+--   That is a capability decision, not a shortcut. Building the full table
+--   ('buildContextLibrary') constructs every 'hostLibrary' binding, so a
+--   caller owes all of their capabilities -- @charactersin@'s presence
+--   data, @summarized@'s summary access, @branch@'s ability to enter
+--   another branch -- regardless of which entry it goes on to run. This
+--   runs exactly one definition whose default (@aliases: in aliases: for f
+--   in *: as f: read f@) references no library name at all, so paying that
+--   union would have meant "list the lore files on this branch" demanding
+--   the right to cross into character branches. It did, until this comment
+--   was written.
+--
+--   The visible consequence: an override of @context.mentionFilter@ that
+--   /calls another library definition by name/ no longer resolves, and
+--   fails loudly rather than silently. Today's filter vocabulary
+--   (@without@\/@only@, and every other 'coreFilters' entry) is unaffected
+--   -- filters aren't library entries. If a real override ever needs the
+--   table, the fix is to hand this the library it needs from a caller that
+--   can already satisfy it, not to rebuild the union here.
 activeMentionAliases
-  :: (BranchOpen r, Members '[ContextStorage, BranchResolve] r)
+  :: (BranchOpen r, Member ContextStorage r)
   => [T.Text] -> Sem r (Set T.Text)
 activeMentionAliases aliasNames = do
   let candidate = Value
@@ -118,10 +139,10 @@ activeMentionAliases aliasNames = do
         , valueMeta = defaultMeta
         }
   overrides <- getContextOverrides
-  let (table, _rejected) = buildContextLibrary @Main overrides
   result <- runContextValue @Main $
     case resolveOverrideDefinition (Map.lookup "context.mentionFilter" overrides) of
       Just overrideDef
-        | length (defParams overrideDef) == 1 -> runDefinition @Main table overrideDef [bval (pure candidate)]
-      _ -> CtxLibrary.contextMentionFilter @Main (bval (pure candidate))
+        | length (defParams overrideDef) == 1 ->
+            runDefinition emptyLibrary overrideDef [bval (pure candidate)]
+      _ -> CtxLibrary.contextMentionFilter (bval (pure candidate))
   pure (Set.fromList (map fst (valueEntries result)))

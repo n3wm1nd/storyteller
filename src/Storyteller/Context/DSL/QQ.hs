@@ -65,7 +65,7 @@ module Storyteller.Context.DSL.QQ (dsl, dslWith, defQuote) where
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Language.Haskell.TH (Exp(..), Pat(VarP), Q, Type(VarT), mkName, newName)
+import Language.Haskell.TH (Exp(..), Pat(VarP), Q, newName)
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Language.Haskell.TH.Syntax (Lift(lift), Loc(..), location)
 
@@ -110,24 +110,25 @@ compileDsl tblSrc src = do
     Left err  -> fail (T.unpack (renderParseErr err))
     Right def -> curriedRunner tblSrc def
 
--- | Splices to @\\a1 ... an -> 'runDefinition' \@branch 'emptyLibrary' def
+-- | Splices to @\\a1 ... an -> 'runDefinition' 'emptyLibrary' def
 --   [toBinding a1, ..., toBinding an]@ ('dsl'), or @\\tbl a1 ... an ->
---   'runDefinition' \@branch tbl def [toBinding a1, ..., toBinding an]@
+--   'runDefinition' tbl def [toBinding a1, ..., toBinding an]@
 --   ('dslWith') -- 'defParams' contributes the trailing @a1 ... an@
 --   parameters either way, with no lambda at all when there are none and
 --   no table argument ('dsl', 0-arity, the common top-level case).
 --   Parameter names are reused from the source's own (so a type error at
 --   a call site names @charname@, not a generic @arg1@).
 --
---   The spliced call always applies 'runDefinition' at a type variable
---   literally named @branch@ -- 'runDefinition''s own @branch@-phantomed
---   effects (see "Storyteller.Core.ContentEffects") mean this can't be
---   left for GHC to infer; every @['dsl'| ... |]@\/@['dslWith'| ... |]@-
---   defined binding's own type signature must therefore declare
---   @forall branch r. ... =>@ (with @ScopedTypeVariables@ in scope) using
---   that exact name, the same naming convention
---   'Storyteller.Core.Branch.runStorage'\'s own @\@branch@ call sites
---   already follow throughout this codebase.
+--   No type application anywhere in the spliced call. It used to apply
+--   'runDefinition' at a type variable /literally named @branch@/, because
+--   the scope came from a @branch@-phantomed effect that GHC could not
+--   infer -- so every quasiquoted binding's signature had to declare
+--   @forall branch r.@ using that exact name, and got a content-read
+--   capability whether or not its definition read anything. The scope now
+--   comes from one concrete filesystem tag
+--   ('Storyteller.Context.DSL.Compile.ContextFS'), so a binding is
+--   declared with an ordinary @forall r.@ and the naming convention is
+--   gone.
 --
 --   Each declared-parameter argument goes through
 --   'Storyteller.Context.DSL.Context.toBinding' rather than being used
@@ -149,11 +150,10 @@ curriedRunner tblSrc def = do
     NoTable         -> pure Nothing
     LeadingTableArg -> Just <$> newName "table"
   let toBindingArg n = AppE (VarE 'toBinding) (VarE n)
-      runDefinitionAtBranch = AppTypeE (VarE 'runDefinition) (VarT (mkName "branch"))
       tblExpr = case tblName of
         Nothing -> VarE 'emptyLibrary
         Just n  -> VarE n
-      call = AppE (AppE (AppE runDefinitionAtBranch tblExpr) defExpr) (ListE (map toBindingArg argNames))
+      call = AppE (AppE (AppE (VarE 'runDefinition) tblExpr) defExpr) (ListE (map toBindingArg argNames))
       lamParams = maybe [] ((: []) . VarP) tblName ++ map VarP argNames
   pure $ if null lamParams then call else LamE lamParams call
 

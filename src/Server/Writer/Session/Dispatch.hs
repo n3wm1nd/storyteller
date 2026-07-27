@@ -35,7 +35,7 @@ import Server.Writer.Env (ServerEnv, requestCancel)
 import Server.Writer.Session.Protocol
 import Server.Core.Branch (Main)
 import Storyteller.Core.Branch (withBranch)
-import Storyteller.Core.Git (BranchTag, runStoryFSRead)
+import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
 import Storyteller.Core.Types (BranchName(..), branchHead, branchName, unTickId)
 import Storyteller.Core.Undo (UndoEntry(..), listUndo, resetToUndo)
@@ -153,7 +153,7 @@ characterSummaries = do
       Nothing -> pure (CharacterSummary branch Nothing False)
       Just _  -> do
         st <- withBranch @Main (BranchName branch) $
-                runStoryFSRead @Main (BranchName branch)
+                runStoryFSRead @(BranchTag Main) @Main (BranchTag (BranchName branch))
                   (characterState @(BranchTag Main) branch)
         pure (CharacterSummary branch (charSheet st) (charHasAvatar st))
 

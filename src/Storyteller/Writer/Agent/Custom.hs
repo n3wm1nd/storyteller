@@ -80,7 +80,7 @@ import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
 import Storyteller.Context.DSL.Rendering (renderMessages, renderText)
-import Storyteller.Core.Branch (BranchOp)
+import Storyteller.Core.Branch (BranchOp, Branches, Visited)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
@@ -116,7 +116,7 @@ customPromptKey slug = PromptKey ("agent.custom." <> slug)
 --   construction.
 customAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Branches Visited, Fail, Logging] r)
   => FilePath
   -> Text                        -- ^ agent slug, e.g. @"critic"@
   -> PinnedContext               -- ^ this call's pinned content, already resolved by the caller (see 'Server.Writer.File.customWriter') -- per-call user data, not part of the agent's definition

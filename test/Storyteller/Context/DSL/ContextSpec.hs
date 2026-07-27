@@ -27,6 +27,7 @@ import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -35,9 +36,10 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve, TreeAccess)
+import Runix.FileSystem (FileSystem, FileSystemRead)
+import Storyteller.Core.ContentEffects (BranchResolve)
 
-import Storyteller.Context.DSL.Compile (Library)
+import Storyteller.Context.DSL.Compile (ContextFS, Library)
 import Storyteller.Context.DSL.Context (Context, toContext, user, assistant, runContext)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl, dslWith)
@@ -52,7 +54,7 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
@@ -83,10 +85,10 @@ inlineLiteralSpec = describe "inline single-expression [dsl| |] snippets" $ do
         (messagesText <$> (valueDefault =<< (scopedDsl @Main "key" "value" >>= namedEntry "key"))))
     `shouldBe` Right "value"
   where
-    identityDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
+    identityDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Text -> Action r (Value r)
     identityDsl = [dsl| a: a |]
 
-    scopedDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Text -> Action r (Value r)
+    scopedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Text -> Text -> Action r (Value r)
     scopedDsl = [dsl| a: b: as a: b |]
 
 contextMonoidSpec :: Spec
@@ -113,7 +115,7 @@ contextMonoidSpec = describe "Context (Semigroup/Monoid)" $ do
         (map messageText <$> runContext (mempty <> toContext (loreDsl @Main) <> mempty)))
     `shouldBe` Right ["lore a"]
   where
-    loreDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+    loreDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
     loreDsl = [dsl|
       for f in lore/**/*:
         as f: read f
@@ -144,13 +146,13 @@ toBindingSpec = describe "ToBinding (plain values as [dsl| |] arguments)" $ do
         (messagesText <$> (valueDefault =<< splicesDsl @Main (user "hello"))))
     `shouldBe` Right "hello"
   where
-    crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Library r -> Text -> Action r (Value r)
+    crossBranchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,BranchResolve, Fail] r => Library r -> Text -> Action r (Value r)
     crossBranchDsl = [dslWith|
       charname:
         in (charname | branch): read "sheet.md"
       |]
 
-    splicesDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Context r -> Action r (Value r)
+    splicesDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Context r -> Action r (Value r)
     splicesDsl = [dsl|
       ctx:
         < ctx

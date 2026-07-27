@@ -28,6 +28,7 @@ import Polysemy.Fail (Fail)
 import qualified UniversalLLM as LLM
 
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -37,6 +38,7 @@ import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Context.DSL.Compile (currentScope)
 import Storyteller.Context.DSL.Library (contextChapters, contextLore)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Context.DSL.Value
@@ -55,7 +57,7 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
@@ -91,7 +93,8 @@ valueMessagesSpec = describe "valueMessages (via contextChapters' own default)" 
         , ("chapters/ch2.md", "chapter two prose")
         ]
       runDslOn (BranchName "main")
-        (map describeMessage . map Render.dslMessageToLLM <$> (ownMessages =<< contextChapters @Main (fst (buildContextLibrary @Main Map.empty)))))
+        (map describeMessage . map Render.dslMessageToLLM
+           <$> (ownMessages =<< (currentScope >>= \s -> contextChapters s (fst (buildContextLibrary @Main Map.empty))))))
     `shouldBe` Right
       [ (LLM.User,      "## Chapters written so far")
       , (LLM.User,      "## Chapter: chapters/ch2.md")
@@ -108,7 +111,9 @@ valueBlocksSpec = describe "valueBlocks (via contextLore's own default)" $
         [ ("lore/places/tavern.md", "the tavern")
         , ("lore/notes.md", "a note")
         ]
-      runDslOn (BranchName "main") (map Render.messageToBlock <$> (ownMessages =<< contextLore @Main (fst (buildContextLibrary @Main Map.empty)))))
+      runDslOn (BranchName "main")
+        (map Render.messageToBlock
+           <$> (ownMessages =<< (currentScope >>= \s -> contextLore s (fst (buildContextLibrary @Main Map.empty))))))
     `shouldBe` Right
       [ ContextBlock "## Story background"
       , ContextBlock "## lore/notes.md"

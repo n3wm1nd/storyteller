@@ -26,7 +26,9 @@ import Polysemy (Members, Sem, run)
 import Polysemy.Fail (Fail)
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve, TreeAccess)
+import Runix.FileSystem (FileSystem, FileSystemRead)
+import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -34,12 +36,12 @@ import Storyteller.Core.Types (BranchName(..))
 import Server.Core.Branch (Main)
 import Server.TestStack
 
-import Storyteller.Context.DSL.Compile (emptyLibrary, runDefinition)
+import Storyteller.Context.DSL.Compile (ContextFS, emptyLibrary, runDefinition)
 import Storyteller.Context.DSL.Parser (parseDefinition, renderParseErr)
 import Storyteller.Context.DSL.QQ (dsl)
 import Storyteller.Context.DSL.Value
 
-injuryStatus :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+injuryStatus :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 injuryStatus = [dsl|
 as "injury": read status/injury.md
 |]
@@ -54,7 +56,7 @@ injuryText v = case lookup "injury" (valueEntries v) of
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
@@ -75,7 +77,7 @@ spec = describe "[dsl| ... |]" $ do
         _ <- createBranch (BranchName "empty")
         runDslOn (BranchName "empty") (manualDsl @Main >>= injuryText))
   where
-    manualDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+    manualDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
     manualDsl = case parseDefinition "<test>" (T.unlines ["as \"injury\": read status/injury.md"]) of
       Left err  -> fail (T.unpack (renderParseErr err))
-      Right def -> runDefinition @branch emptyLibrary def []
+      Right def -> runDefinition emptyLibrary def []

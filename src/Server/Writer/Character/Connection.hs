@@ -50,7 +50,7 @@ import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import qualified Storage.Core as Core
 import Server.Core.Branch (Main)
 import Storyteller.Core.Branch (withBranch)
-import Storyteller.Core.Git (BranchTag, runStoryFSRead)
+import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Core.Storage (getBranch)
 import Storyteller.Core.Types (BranchName(..), branchHead, unTickId)
 
@@ -101,7 +101,7 @@ push conn branch = getBranch (BranchName branch) >>= \case
   Nothing -> fail ("branch not found: " <> T.unpack branch)
   Just _  -> do
     st <- withBranch @Main (BranchName branch) $
-            runStoryFSRead @Main (BranchName branch)
+            runStoryFSRead @(BranchTag Main) @Main (BranchTag (BranchName branch))
               (characterState @(BranchTag Main) branch)
     embed $ WS.sendTextData conn (encode (CharacterUpdate (charName st) (charSheet st) (charHasAvatar st)))
 

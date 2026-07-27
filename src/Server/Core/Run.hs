@@ -21,7 +21,7 @@ import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
 import Storyteller.Core.Runtime (Main)
-import Storyteller.Core.Branch (Branches)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Storage (StoryStorage)
@@ -55,5 +55,10 @@ type SessionEffects r =
              , ContextStorage
              , BranchResolve
              , Branches Main
+             -- The context DSL's own door, at its own tag: @charname |
+             -- branch@ steps into a character branch mid-evaluation, which
+             -- is a different thing from a handler opening the branch its
+             -- connection is for (see 'Storyteller.Core.Branch.Visited').
+             , Branches Visited
              ] r
   )

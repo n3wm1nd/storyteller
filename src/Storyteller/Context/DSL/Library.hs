@@ -46,26 +46,20 @@
 --   'characterBlurb''s own haddock for the case that used to be
 --   parameter-passed for no good reason, and the bug that came from it).
 module Storyteller.Context.DSL.Library
-  ( contextStyle
-  , loreEntry
-  , contextLore
-  , contextLoreWithout
-  , chapterEntry
+  ( -- * Entry points
+    --
+    -- $entrypoints
+    contextLore
   , contextChapters
-  , contextChaptersWithout
-  , chapterEntryCompressed
   , contextChaptersCompressed
   , contextOther
   , contextWriter
   , contextWriterDef
-  , contextCustom
   , contextCustomDef
   , contextCharacter
-  , characterBlurb
   , characterSummaryOf
   , contextMentionFilter
   , toBinding1
-  , identity
   , defaultLibraryOrder
   , defaultLibrarySource
   , hostLibrary
@@ -79,13 +73,42 @@ import Polysemy (Member, Members)
 import Polysemy.Fail (Fail)
 
 import Storyteller.Context.DSL.AST (Definition, Name)
-import Storyteller.Context.DSL.Compile (Binding(..), Library, bval, hostLibrary, runDefinition)
+import Runix.FileSystem (FileSystem, FileSystemRead)
+import Storyteller.Context.DSL.Compile (Binding(..), ContextFS, Library, bval, compileDefinition, hostLibrary)
 import Storyteller.Context.DSL.Context (toBinding)
 import Storyteller.Context.DSL.QQ (defQuote, dsl)
 import Storyteller.Context.DSL.Value (Action, Value, namedEntry)
 import qualified Storyteller.Context.DSL.Render as Render
-import Storyteller.Core.ContentEffects (ConversationAccess, JournalAccess, Presence, TreeAccess, Summarized)
 import Storyteller.Writer.Agent (CharSummary(..))
+
+-- $entrypoints
+--
+-- Deliberately /not/ one Haskell wrapper per 'Definition'. The definitions
+-- below are the ground truth -- what 'defaultLibraryOrder' registers, what
+-- a project overrides by name, what every other definition reaches by
+-- name. A wrapper adds nothing to that; it exists only for a Haskell
+-- caller wanting to invoke one definition directly.
+--
+-- There used to be a wrapper for all sixteen, and nine of them had no
+-- caller anywhere. That was not free. Every wrapper went through a
+-- @runDefinition@ that built the branch's whole readable tree as the
+-- ambient scope before the body ran, so each declared a content-read
+-- capability whether or not its definition ever read anything.
+-- @chapterEntryCompressed@ (@f: "## Chapter: %f%" > (f |
+-- summarized("prose"))@) declared one despite never reading a file, and
+-- @identity@ (@a: a@) declared one despite touching nothing at all --
+-- while 'characterSummaryOf', the most-called function here, needs no
+-- capability whatsoever, because it works on a 'Value' it was handed
+-- instead of conjuring a scope. The constraint tracked "went through
+-- @runDefinition@", not "reads content", and spread across the module for
+-- that reason alone.
+--
+-- So the scope is now an ordinary argument and every entry point here
+-- needs nothing but 'Fail'. Reading story content is
+-- 'Runix.FileSystem.FileSystemRead', which happens in exactly one place:
+-- 'Storyteller.Context.DSL.Compile.currentScope' (plus the @branch@ host
+-- binding, for a cross-branch @in@). Not here, and not in fifty
+-- signatures.
 
 -- | The one reserved standing-instruction file, if a project has one --
 --   mirrors 'Storyteller.Writer.Agent.WorldContext.isSystemContextPath',
@@ -102,9 +125,6 @@ contextStyleDef = [defQuote|
 read "style.md" | orifempty ""
 |]
 
-contextStyle :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
-contextStyle lib = runDefinition @branch lib contextStyleDef []
-
 -- | Describes one lore (or "other") entry -- a header naming it, then its
 --   content, still role-undecided (see 'read''s own convention).
 --   Referenced by plain name from 'contextLore''s\/'contextOther''s own
@@ -119,9 +139,6 @@ f:
   "## %f%"
   read f
 |]
-
-loreEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
-loreEntry lib a = runDefinition @branch lib loreEntryDef [toBinding a]
 
 -- | Hand-authored lore -- a plain positive convention (@lore\/**@), not
 --   "everything except chapters/style/scratch": 'exclude'\/'without'\/
@@ -166,8 +183,8 @@ for f in lore/**/*:
   x
 |]
 
-contextLore :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
-contextLore lib = runDefinition @branch lib contextLoreDef []
+contextLore :: forall r. Member Fail r => Value r -> Library r -> Action r (Value r)
+contextLore scope lib = compileDefinition lib contextLoreDef scope []
 
 -- | 'contextLoreDef', minus one path -- what 'contextWriterDef' actually
 --   calls, so the file currently being written never shows up twice (once
@@ -208,9 +225,6 @@ path:
   in (context.lore | exclude(path)): read **/*
 |]
 
-contextLoreWithout :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-contextLoreWithout lib p = runDefinition @branch lib contextLoreWithoutDef [toBinding p]
-
 -- | Describes one chapter -- a @User@ header immediately followed by its
 --   content re-tagged @Assistant@ (@> read f@, per
 --   'Storyteller.Context.DSL.AST.EAssistant''s own haddock) -- the exact
@@ -229,9 +243,6 @@ f:
   > read f
 |]
 
-chapterEntry :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
-chapterEntry lib a = runDefinition @branch lib chapterEntryDef [toBinding a]
-
 -- | 'chapterEntryDef', but the body read through @summarized(f, "prose")@
 --   instead of @read f@ -- a separate definition, not a parameterized
 --   variant of 'chapterEntryDef', because @f@ there is bound to the bare
@@ -245,9 +256,6 @@ f:
   "## Chapter: %f%"
   > (f | summarized("prose"))
 |]
-
-chapterEntryCompressed :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r) -> Action r (Value r)
-chapterEntryCompressed lib a = runDefinition @branch lib chapterEntryCompressedDef [toBinding a]
 
 -- | Chapter prose, in natural reading order (@ch2@ before @ch11@, not
 --   @ch11@ before @ch2@) -- 'sortBy''s reordering now survives the
@@ -278,8 +286,8 @@ in (x | sortBy):
     y
 |]
 
-contextChapters :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Action r (Value r)
-contextChapters lib = runDefinition @branch lib contextChaptersDef []
+contextChapters :: forall r. Member Fail r => Value r -> Library r -> Action r (Value r)
+contextChapters scope lib = compileDefinition lib contextChaptersDef scope []
 
 -- | 'contextChaptersDef', minus one path -- 'contextLoreWithout''s own
 --   twin, same reasoning throughout (see its Haddock): calls
@@ -297,9 +305,6 @@ path:
   "## Chapters written so far"
   in (context.chapters | exclude(path)): read **/*
 |]
-
-contextChaptersWithout :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-contextChaptersWithout lib p = runDefinition @branch lib contextChaptersWithoutDef [toBinding p]
 
 -- | 'contextChaptersDef', but each chapter's body read through
 --   @summarized(f, "prose")@ instead of @read f@ -- the
@@ -326,8 +331,15 @@ in (x | sortBy):
     y
 |]
 
-contextChaptersCompressed :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r)
-contextChaptersCompressed lib = runDefinition @branch lib contextChaptersCompressedDef []
+--   Declares no capability beyond 'Fail', despite the compression:
+--   @summarized@ is reached through @chapterEntryCompressed@'s own entry in
+--   @lib@, so the 'Storyteller.Core.ContentEffects.Summarized' capability
+--   lives in the 'Library' this is handed (where 'hostLibrary' establishes
+--   it), and the file reading lives in @scope@, which is already-built
+--   data. Restating either here would describe this function by what its
+--   arguments happen to contain rather than by what it does.
+contextChaptersCompressed :: forall r. Member Fail r => Value r -> Library r -> Action r (Value r)
+contextChaptersCompressed scope lib = compileDefinition lib contextChaptersCompressedDef scope []
 
 -- | The catch-all: any file that isn't under @lore@\/@chapters@' own
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
@@ -360,8 +372,8 @@ path:
     x
 |]
 
-contextOther :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-contextOther lib p = runDefinition @branch lib contextOtherDef [toBinding p]
+contextOther :: forall r. Member Fail r => Value r -> Library r -> Text -> Action r (Value r)
+contextOther scope lib p = compileDefinition lib contextOtherDef scope [toBinding p]
 
 -- | The writer agent's own default background context -- what
 --   'Server.Writer.File.chatWriter' resolves (branch-override-then-this)
@@ -464,8 +476,8 @@ path:
     x
 |]
 
-contextWriter :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-contextWriter lib p = runDefinition @branch lib contextWriterDef [toBinding p]
+contextWriter :: forall r. Member Fail r => Value r -> Library r -> Text -> Action r (Value r)
+contextWriter scope lib p = compileDefinition lib contextWriterDef scope [toBinding p]
 
 -- | The starting point for a user-defined agent
 --   ('Storyteller.Writer.Agent.Custom.customAgent'): everything
@@ -540,9 +552,6 @@ path:
   readconversation path
 |]
 
-contextCustom :: forall branch r. Members '[TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-contextCustom lib p = runDefinition @branch lib contextCustomDef [toBinding p]
-
 -- | The "and this is the character" acquaintance-level line -- the
 --   header @sheet.md@ is required to open with (its display name, see
 --   @WRITER.md@), plus whatever paragraph follows it, by convention
@@ -603,9 +612,6 @@ charname:
     a = read "sheet.md" | abstract
     "%n%: %a%"
 |]
-
-characterBlurb :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-characterBlurb lib charname = runDefinition @branch lib characterBlurbDef [toBinding charname]
 
 -- | A named character's rich context, as five independently reachable
 --   buckets rather than one flattened blob -- every consumer
@@ -676,8 +682,13 @@ charname:
   character.blurb charname
 |]
 
-contextCharacter :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Text -> Action r (Value r)
-contextCharacter lib charname = runDefinition @branch lib contextCharacterDef [toBinding charname]
+--   Takes a @scope@ like its siblings but never consults it: every read in
+--   this definition's body sits inside @in (charname | branch): ...@, and
+--   the rest are library calls. It still takes one rather than assuming
+--   'Storyteller.Context.DSL.Value.emptyValue', because a project's own
+--   override of @context.character@ has no such guarantee.
+contextCharacter :: forall r. Member Fail r => Value r -> Library r -> Text -> Action r (Value r)
+contextCharacter scope lib charname = compileDefinition lib contextCharacterDef scope [toBinding charname]
 
 -- | Reshapes an already-resolved @context.character@-shaped 'Value' into
 --   a 'CharSummary' -- the shared piece every consumer wanting that exact
@@ -721,7 +732,7 @@ characterSummaryOf journalBucket charVal = do
 --   designed this for why @without@\/@only@ alone are enough here and
 --   'contextLore''s @exclude@ isn't needed: alias names never nest into
 --   subtrees the way file paths do).
-contextMentionFilter :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
+contextMentionFilter :: forall r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, Fail] r => Binding r -> Action r (Value r)
 contextMentionFilter = [dsl|
 aliases:
   in aliases:
@@ -749,14 +760,6 @@ toBinding1 f = Binding 1 go
     go [a] _  = f (bval a)
     go args _ = fail $ "expected exactly 1 argument, got " <> show (length args)
 
--- | The identity -- wraps a plain string as a 'Value' whose own default
---   is exactly that text, nothing else. What used to get hand-rolled
---   inline (@[dsl| a: a |]@, or reaching for
---   'Storyteller.Context.DSL.Value.leafValue' directly) at any call site
---   that just needed "this text, as a DSL value" -- one named, reusable
---   definition instead.
-identity :: forall branch r. Members '[TreeAccess branch, Fail] r => Text -> Action r (Value r)
-identity = [dsl| a: a |]
 
 -- | Every pure-DSL definition this application ships, as already-parsed
 --   'Definition's, in a *fixed compile order* --

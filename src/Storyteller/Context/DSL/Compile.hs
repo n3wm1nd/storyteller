@@ -67,7 +67,8 @@ module Storyteller.Context.DSL.Compile
   , definitionBinding
   , runCompiledBlock
   , runCompiledExpr
-  , treeValueOfCommit
+  , ContextFS(..)
+  , scopeOfFileSystem
   , currentScope
   , runDefinition
   , runNamed
@@ -103,12 +104,17 @@ import qualified Storage.Core as Core
 import Storyteller.Context.DSL.AST
 import Storyteller.Context.DSL.Value
 
+import Runix.FileSystem (FileSystem, FileSystemRead)
+import qualified Runix.FileSystem as FS
+
 import Storyteller.Core.ContentEffects
-  ( TreeAccess, Presence, JournalAccess, ConversationAccess, Summarized
+  ( Presence, JournalAccess, ConversationAccess, Summarized
   , BranchResolve, Turn(..), JournalCuration(..)
-  , currentHead, treeSnapshot, readTreeBlob, charactersPresent, journalWindow
+  , charactersPresent, journalWindow
   , conversationTurns, resolveBranch, readSummarized
   )
+import Storyteller.Core.Branch (Branches, Visited, withBranch)
+import Storyteller.Core.Git (BranchTag, runStoryFSRead)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Writer.Agent.MessageWindow as MessageWindow
 import qualified Storyteller.Writer.Branches as Branches
@@ -230,19 +236,39 @@ buildLibrary seed = foldl' step (Right seed)
 --   'Message' to become at all, so this module -- the DSL's own
 --   interpreter -- never needs to know binary files exist in the first
 --   place, rather than filtering them out after the fact.
-treeValueOfCommit :: forall branch r. Member (TreeAccess branch) r => Core.ObjectHash -> Action r (Value r)
-treeValueOfCommit commit = do
-  files <- liftSem (treeSnapshot @branch commit)
+-- | The @project@ tag the context DSL reads through.
+--
+--   One concrete tag, not a phantom threaded from the caller, because DSL
+--   text has no concept of /which/ filesystem it is reading -- @read
+--   lore/x.md@ means "in the scope I'm evaluating against," full stop. A
+--   phantom would put a type parameter on every quasiquoted definition to
+--   express a distinction the language itself cannot make. (Whoever wires
+--   this decides what it reads; see
+--   'Storyteller.Core.Context.runContextValue'.)
+--
+--   Crossing branches, the one place that assumption bends, is handled
+--   without bending it: @charname | branch@ enters the other branch,
+--   builds a scope there, and /forces/ it before returning (see
+--   'branchBinding'), so what comes back is an ordinary already-read
+--   'Value' rather than a second filesystem the DSL would have to name.
+data ContextFS = ContextFS
+
+scopeOfFileSystem
+  :: forall project r
+  .  Members '[FileSystem project, FileSystemRead project, Fail] r
+  => Action r (Value r)
+scopeOfFileSystem = do
+  files <- liftSem (FS.glob @project "" "**/*")
   pure Value
     { valueDefault = pure []
     , valueEntries =
-        [ (T.pack path, withProvenance path commit . leafValue . (: []) . FileRead path . TE.decodeUtf8 <$> readBlob h)
-        | (path, h) <- files
+        [ (T.pack path, withProvenance path . leafValue . (: []) . FileRead path <$> readEntry path)
+        | path <- files
         ]
     , valueMeta = defaultMeta
     }
   where
-    readBlob h = liftSem (readTreeBlob @branch h)
+    readEntry path = TE.decodeUtf8 <$> liftSem (FS.readFile @project path)
 
 -- ---------------------------------------------------------------------------
 -- Evaluation
@@ -1059,15 +1085,29 @@ readMaybeInt t = case reads (T.unpack t) of
 --   (@branch charname@) or piped (@charname | branch@ -- see 'EFilter'\'s
 --   own fallthrough case, which is exactly "the piped value becomes the
 --   first argument"). Resolves its argument's text as a character branch
---   name via 'askBranch', then hands off to 'treeValueOfCommit' exactly
---   like the initial scope was built.
-branchBinding :: forall branch r. Members '[BranchResolve, TreeAccess branch, Fail] r => Binding r
+--   name, enters that branch, and builds a scope from its filesystem
+--   exactly like the initial scope was built.
+--
+--   The scope is forced before the branch is left, and that is not
+--   optional. A 'Value' is thunks in a row; leaving the character's
+--   filesystem with unforced leaves would mean each one resolving against
+--   whatever filesystem is live when the outer evaluation finally forces
+--   it -- the /main/ branch -- so @charname | branch@ would quietly read
+--   main's files under the character's paths. Wrong content, no error, no
+--   type to catch it. Forcing here costs reading that character's own
+--   files, which every real use of this (@context.character@'s @sheet@\/
+--   @full@\/@journalFull@ buckets) goes on to read anyway.
+branchBinding :: forall r. Members '[Branches Visited, Fail] r => Binding r
 branchBinding = fn1 go
   where
     go vArg = do
-      ident  <- messagesText <$> (valueDefault =<< vArg)
-      commit <- liftSem (resolveBranch (BranchName ("character/" <> ident)))
-      treeValueOfCommit @branch commit
+      ident <- messagesText <$> (valueDefault =<< vArg)
+      let name = BranchName ("character/" <> ident)
+      forcedValue <$> crossInto name
+
+    crossInto name =
+      Action . withBranch @Visited name . runStoryFSRead @ContextFS @Visited ContextFS . runAction $
+        forceValue =<< scopeOfFileSystem @ContextFS
 
 -- | @charactersin@'s own implementation, as an ordinary 'Binding' -- same
 --   reasoning as 'branchBinding': it needs real 'Core.StoreM' access
@@ -1147,8 +1187,10 @@ summarizedOnceBinding = fn2 (summarizedGo @branch (take 1))
 --   'resolveBranch', then delegates. The one case a Reader-scope switch
 --   genuinely does correspond to a different commit (contrast
 --   'currentScope', which needs no name or lookup at all).
-treeValueOfBranch :: forall branch r. Members '[BranchResolve, TreeAccess branch, Fail] r => BranchName -> Action r (Value r)
-treeValueOfBranch name = liftSem (resolveBranch name) >>= treeValueOfCommit @branch
+treeValueOfBranch :: forall r. Members '[Branches Visited, Fail] r => BranchName -> Action r (Value r)
+treeValueOfBranch name =
+  fmap forcedValue . Action . withBranch @Visited name . runStoryFSRead @ContextFS @Visited ContextFS . runAction $
+    forceValue =<< scopeOfFileSystem @ContextFS
 
 -- | A named character's own @journal.md@, curated by
 --   'Storage.Tick.recentAtomsOf': entries that are byte-identical to
@@ -1282,11 +1324,11 @@ injectShallow isTurnStart lo hi toInsert history
 --   imports "Storyteller.Context.DSL.QQ" for 'dsl'\/'defQuote').
 --   Re-exported from "Storyteller.Context.DSL.Library" for every existing
 --   caller.
-hostLibrary :: forall branch r. Members '[BranchResolve, TreeAccess branch, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r => Library r
+hostLibrary :: forall branch r. Members '[BranchResolve, Branches Visited, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r => Library r
 hostLibrary = Library
   [ ("readconversation", readConversation @branch)
   , ("embedshallow",     embedShallow)
-  , ("branch",           branchBinding @branch)
+  , ("branch",           branchBinding)
   , ("charactersin",     charactersInBinding @branch)
   , ("summarized",       summarizedBinding @branch)
   , ("summarizedOnce",   summarizedOnceBinding @branch)
@@ -1301,13 +1343,18 @@ hostLibrary = Library
   , ("characterJournal", journalDelta @branch (JournalCuration 30 10 2))
   ]
 
--- | The Reader scope for wherever this 'Action' is actually run --
---   'Storyteller.Core.ContentEffects.currentHead', read straight off the
---   ambient position, no 'Storyteller.Core.Types.BranchName' or lookup
---   needed. This is what makes 'runDefinition' able to just say "run in
---   whatever branch/session I'm already in."
-currentScope :: forall branch r. Member (TreeAccess branch) r => Action r (Value r)
-currentScope = liftSem (currentHead @branch) >>= treeValueOfCommit @branch
+-- | The Reader scope for wherever this 'Action' is actually run -- the
+--   'ContextFS' filesystem, whatever a caller wired that to. No
+--   'Storyteller.Core.Types.BranchName', no lookup, no position: "run in
+--   whatever I'm already in" is the whole of it.
+--
+--   The one place in the DSL that turns a capability into a scope. From
+--   here down a scope is data: 'compileDefinition' takes one and needs
+--   nothing but 'Fail', every compiled 'Binding' receives one as its
+--   second argument, and no filter or library definition declares a read
+--   capability at all.
+currentScope :: forall r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, Fail] r => Action r (Value r)
+currentScope = scopeOfFileSystem @ContextFS
 
 -- | The whole pipeline as one 'Action': take whatever commit is
 --   currently ambient as the initial scope, compile @def@ against it.
@@ -1316,30 +1363,46 @@ currentScope = liftSem (currentHead @branch) >>= treeValueOfCommit @branch
 --   only enters when the returned 'Action' is finally run via
 --   'Storyteller.Context.DSL.Value.runAction'.
 --
---   @lib@ is the compile-time table @def@'s own body resolves any
---   cross-definition reference against (see 'definitionBinding') --
---   passed @Map.empty@ by @[dsl| |]@-spliced callers (see
---   "Storyteller.Context.DSL.QQ"), since a quasiquoted definition is
---   always a self-contained leaf, never referencing another named library
---   entry.
-runDefinition :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Definition -> [Binding r] -> Action r (Value r)
-runDefinition lib def args = currentScope @branch >>= \scope -> compileDefinition lib def scope args
+-- | 'compileDefinition' at 'currentScope' -- the shape a
+--   @['dsl'| ... |]@-spliced binding gets, and what a Haskell caller that
+--   just wants "run this definition where I am" calls.
+--
+--   Kept, unlike the library entry points below it, because a quasiquoted
+--   definition genuinely is invoked at the ambient scope by a caller that
+--   has no scope of its own to pass. The capability it costs is honest and
+--   confined: it lands on the handful of quoted bindings, not on every
+--   definition in "Storyteller.Context.DSL.Library" -- those take their
+--   scope as an argument and need nothing but 'Fail'.
+runDefinition
+  :: forall r
+  .  Members '[FileSystem ContextFS, FileSystemRead ContextFS, Fail] r
+  => Library r -> Definition -> [Binding r] -> Action r (Value r)
+runDefinition lib def args = currentScope >>= \scope -> compileDefinition lib def scope args
 
--- | Looks @name@ up in @lib@ and runs it directly at the current scope --
---   what a caller wants once @lib@ has already been built (see
---   'Storyteller.Core.Context.buildContextLibrary'): unlike 'runDefinition',
---   there's no separate 'Definition' to compile here, because @name@'s own
---   slot in @lib@ is already a compiled 'Binding' -- the default, or an
---   accepted override, whichever 'Compile.buildLibrary' actually put
---   there. A missing @name@ is a genuine, loud 'Fail' (not "fall back to
---   some caller-supplied default"): every real caller only ever asks for
---   a name it knows is a 'defaultLibraryOrder' slot, so a miss here means
---   the caller and the library have drifted, not that a project simply
---   hasn't overridden anything yet.
-runNamed :: forall branch r. Members '[TreeAccess branch, Fail] r => Library r -> Name -> [Action r (Value r)] -> Action r (Value r)
-runNamed lib name args = case lookup name (libraryEntries lib) of
+-- | Looks @name@ up in @lib@ and runs it against @scope@ -- what a caller
+--   wants once @lib@ has already been built (see
+--   'Storyteller.Core.Context.buildContextLibrary'): unlike
+--   'compileDefinition' there's no separate 'Definition' to compile here,
+--   because @name@'s own slot in @lib@ is already a compiled 'Binding' --
+--   the default, or an accepted override, whichever 'buildLibrary'
+--   actually put there. A missing @name@ is a genuine, loud 'Fail' (not
+--   "fall back to some caller-supplied default"): every real caller only
+--   ever asks for a name it knows is a 'defaultLibraryOrder' slot, so a
+--   miss here means the caller and the library have drifted, not that a
+--   project simply hasn't overridden anything yet.
+--
+--   @scope@ is an argument, and that is the whole reason this function --
+--   like every 'Binding', like 'compileDefinition' -- needs nothing but
+--   'Fail'. There used to be a @runDefinition@ beside this that called
+--   'currentScope' on its caller's behalf, and the cost of that
+--   convenience was that roughly fifty signatures across the DSL declared
+--   a content-read capability, including definitions that provably never
+--   read anything. A scope is data; only 'currentScope' turns a capability
+--   into one.
+runNamed :: forall r. Member Fail r => Value r -> Library r -> Name -> [Action r (Value r)] -> Action r (Value r)
+runNamed scope lib name args = case lookup name (libraryEntries lib) of
   Nothing -> fail ("runNamed: unknown library entry " <> T.unpack name)
   Just (Binding arity fn)
     | arity /= length args -> fail (T.unpack name <> ": expected " <> show arity
                                        <> " argument(s), got " <> show (length args))
-    | otherwise             -> currentScope @branch >>= fn args
+    | otherwise             -> fn args scope

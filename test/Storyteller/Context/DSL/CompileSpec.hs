@@ -40,6 +40,7 @@ import Polysemy.Fail (Fail)
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -48,10 +49,12 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve, Presence, Summarized, TreeAccess, JournalCuration(..))
+import Runix.FileSystem (FileSystem, FileSystemRead)
+import Storyteller.Context.DSL.Compile (ContextFS)
+import Storyteller.Core.ContentEffects (BranchResolve, Presence, Summarized, JournalCuration(..))
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (Binding, Library, bval, fn1, journalDelta)
+import Storyteller.Context.DSL.Compile (Binding, Library, bval, currentScope, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
@@ -83,7 +86,7 @@ seedBranch name files = do
 --   each @where@-bound @go@ can carry an explicit signature (needed:
 --   without one, a plain @go = do ...@ gets a monomorphic inferred type
 --   that can't unify with 'runDslOn's own rank-2 argument).
-type DslR r = Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r
+type DslR r = Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r
 
 runDslOn
   :: forall a
@@ -138,12 +141,12 @@ spec = do
 --   implemented yet -- see "Storyteller.Context.DSL.Compile"'s module
 --   haddock); compiling it directly here and passing the result in
 --   stands in for that.
-ctxDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+ctxDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 ctxDsl = [dsl|
 as "injury": read status/injury.md
 |]
 
-callerDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
+callerDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Binding r -> Action r (Value r)
 callerDsl = [dsl|
 ctx:
   in ctx: read "injury" | orifempty "not injured"
@@ -166,7 +169,7 @@ absenceSpec = describe "absence, not an error (Non-goals)" $
     runInjuryCase "main" []
       `shouldBe` Right "not injured"
 
-crossBranchDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Fail] r => Library r -> Binding r -> Action r (Value r)
+crossBranchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,BranchResolve, Fail] r => Library r -> Binding r -> Action r (Value r)
 crossBranchDsl = [dslWith|
 charname:
   in (charname | branch): read "sheet.md"
@@ -185,7 +188,7 @@ crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $
 -- | Shared by 'forLoopSpec' (checks the container's own default text)
 --   and 'forLoopEntriesSpec' (checks what's inside each entry) -- both
 --   exercise the same definition.
-openTrackingDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+openTrackingDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 openTrackingDsl = [dsl|
 as "open":
   for f in tracking/**.md:
@@ -269,9 +272,9 @@ multiMatchReadSpec = describe "read *.md (a multi-match glob argument, not just 
       , FileRead "tracking/letter.md" "an unopened letter"
       ]
   where
-    multiMatchDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+    multiMatchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
     multiMatchDsl = [dsl| read tracking/*.md |]
-    quotedMultiMatchDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+    quotedMultiMatchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
     quotedMultiMatchDsl = [dsl| read "tracking/*.md" |]
 
 -- | The case that actually motivated widening @for@'s source from a
@@ -295,7 +298,7 @@ forOverBindingResultSpec = describe "for iterates a Binding call's result direct
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["aria"]
   where
-    forCharsDsl :: forall branch r. Members '[TreeAccess branch, Presence branch, Fail] r => Library r -> Action r (Value r)
+    forCharsDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Presence branch, Fail] r => Library r -> Action r (Value r)
     forCharsDsl = [dslWith|
 for c in (charactersin "scene.md"):
   as c: c
@@ -328,7 +331,7 @@ charactersinIgnoresBranchRedirectionSpec =
         runDslOn (BranchName "main") go)
       `shouldBe` Right ["aria"]
   where
-    redirectedDsl :: forall branch r. Members '[TreeAccess branch, BranchResolve, Presence branch, Fail] r => Library r -> Binding r -> Action r (Value r)
+    redirectedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,BranchResolve, Presence branch, Fail] r => Library r -> Binding r -> Action r (Value r)
     redirectedDsl = [dslWith|
 charname:
   in (charname | branch):
@@ -345,7 +348,7 @@ charname:
 --   rather than the raw branch. Eager, like @read@: the summarized text
 --   is already settled by the time this 'Value' comes back, not a
 --   deferred handle a caller resolves later.
-summarizedDsl :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r)
+summarizedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Summarized branch, Fail] r => Library r -> Action r (Value r)
 summarizedDsl = [dslWith|
 "chapter.md" | summarized("prose/chapter")
 |]
@@ -370,7 +373,7 @@ summarizedFilterSpec = describe "path | summarized(kind) (reads a file through i
 --   counterpart: only the *first* kind in the given hierarchy is ever
 --   considered, so a caller listing a coarser tier after a finer one
 --   never falls through to it, unlike @summarized@.
-summarizedOnceDsl :: forall branch r. Members '[TreeAccess branch, Summarized branch, Fail] r => Library r -> Action r (Value r)
+summarizedOnceDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Summarized branch, Fail] r => Library r -> Action r (Value r)
 summarizedOnceDsl = [dslWith|
 "chapter.md" | summarizedOnce("prose/chapter prose/book")
 |]
@@ -396,7 +399,7 @@ summarizedOnceFilterSpec = describe "path | summarizedOnce(kinds) (reads exactly
 
 -- | @< read file@ -- a 'read' would otherwise produce a role-undecided
 --   'FileRead'; @<@ forces it to read as ordinary authored text instead.
-forceUserRoleDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+forceUserRoleDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 forceUserRoleDsl = [dsl|
 < read notes.md
 |]
@@ -418,7 +421,7 @@ forceUserRoleSpec = describe "< <expr> (force User role)" $
 --   unable to actually be called -- and checks the *content*, not just
 --   the shape, so a function silently ignoring its argument (always
 --   resolving the same loop iteration) wouldn't slip through.
-localFunctionInForLoopDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+localFunctionInForLoopDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 localFunctionInForLoopDsl = [dsl|
 as "results":
   for f in tracking/**.md:
@@ -459,7 +462,7 @@ shout av = do
   msgs <- valueDefault v
   pure (leafValue [User (T.toUpper (messagesText msgs))])
 
-hostFunctionDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
+hostFunctionDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Binding r -> Action r (Value r)
 hostFunctionDsl = [dsl|
 transform:
   transform (read notes.md)
@@ -478,7 +481,7 @@ hostFunctionParamSpec = describe "a parameter can be a real Haskell function, no
 --   context-selection design's own @"lore"@ scope to drop a whole
 --   subtree (@exclude("secrets\/**")@) without enumerating every file in
 --   it individually.
-excludeFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+excludeFilterDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 excludeFilterDsl = [dsl|
 as "kept":
   in (**/* | exclude("secrets/**")):
@@ -527,7 +530,7 @@ binaryExclusionSpec = describe "never-atom-tracked (binary) content" $
       entryText <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries kept)
       pure (Map.fromList entryText)
 
-binaryExclusionDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+binaryExclusionDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 binaryExclusionDsl = [dsl|
 as "kept":
   in **/*:
@@ -571,7 +574,7 @@ excludeFilterSpec = describe "expr | exclude(pattern...) (glob-pattern exclusion
 --   'valueEntries' directly, in whatever order they're already in)
 --   rather than a second @for@, since re-globbing would just re-sort
 --   lexically and silently undo 'sortBy's own reordering.
-sortByFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+sortByFilterDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 sortByFilterDsl = [dsl|
 x =
   for f in *.md:
@@ -598,7 +601,7 @@ sortByFilterSpec = describe "expr | sortBy (natural-key reordering)" $
 --   matches lexically (see its own haddock) -- before that fix, this
 --   second @for@ would have silently re-alphabetized @x@'s already-sorted
 --   entries right back to @ch1, ch11, ch2@.
-sortByThenReexportDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+sortByThenReexportDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 sortByThenReexportDsl = [dsl|
 x =
   for f in *.md:
@@ -634,13 +637,13 @@ sortByThenReexportSpec = describe "sortBy's reordering survives a subsequent for
 --   own definition, no pattern duplicated between the two, and the
 --   removal survives the second @for@ re-export instead of resurrecting
 --   the excluded paths as empty stubs.
-loreDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+loreDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 loreDsl = [dsl|
 for f in lore/**/*:
   as f: read f
 |]
 
-excludeByAnotherDefinitionDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
+excludeByAnotherDefinitionDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Binding r -> Action r (Value r)
 excludeByAnotherDefinitionDsl = [dsl|
 lore:
   in (**/* | exclude(lore)):
@@ -674,7 +677,7 @@ excludeByAnotherDefinitionSpec = describe "expr | exclude(anotherDefinition)" $
 --   own message assembly would otherwise have to construct in Haskell --
 --   see 'Storyteller.Writer.Agent.Write.buildChapterMessages''s own
 --   earlier-chapters framing, the case that motivated widening @>@.
-assistantWrapsExprDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+assistantWrapsExprDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 assistantWrapsExprDsl = [dsl|
 as "chapter":
   "## Chapter: ch1.md"
@@ -709,12 +712,12 @@ exampleSheet = T.unlines
   , "Tags: Student, Human"
   ]
 
-nameFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+nameFilterDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 nameFilterDsl = [dsl|
 read "sheet.md" | name
 |]
 
-abstractFilterDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Action r (Value r)
+abstractFilterDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Action r (Value r)
 abstractFilterDsl = [dsl|
 read "sheet.md" | abstract
 |]
@@ -752,7 +755,7 @@ seedCharacterJournalBranch name = do
     _  <- runStorage @Main (Ops.addAtomWithRefs [s2] "journal.md" "s2 content, but Jenny remembers it differently")
     pure ()
 
-journalDeltaDsl :: forall branch r. Members '[TreeAccess branch, Fail] r => Binding r -> Action r (Value r)
+journalDeltaDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Fail] r => Binding r -> Action r (Value r)
 journalDeltaDsl = [dsl|
 journal:
   journal "jenny"
@@ -807,7 +810,7 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
   where
     go :: forall r. DslR r => Action (ContextRow Main r) (Text, Text, Text, [Name], Text, Text)
     go = do
-      v <- CtxLibrary.contextCharacter @Main (fst (buildContextLibrary @Main Map.empty)) "jenny"
+      v <- currentScope >>= \s -> CtxLibrary.contextCharacter s (fst (buildContextLibrary @Main Map.empty)) "jenny"
       def <- messagesText <$> valueDefault v
       Just sheetAction <- pure (lookup "sheet" (valueEntries v))
       sheet <- messagesText <$> (valueDefault =<< sheetAction)

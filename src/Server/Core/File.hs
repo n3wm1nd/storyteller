@@ -67,7 +67,7 @@ import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
 import Storyteller.Core.Storage (StoryStorage, getBranch)
 import Storyteller.Core.Branch (Branches, withBranch)
-import Storyteller.Core.Git (BranchTag, runStoryFSRead)
+import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
@@ -338,7 +338,8 @@ readFileContent branch path =
   getBranch (BranchName branch) >>= \case
     Nothing -> throw ("branch not found: " <> T.unpack branch)
     Just _  -> withBranch @Main (BranchName branch)
-                 (runStoryFSRead @Main (BranchName branch) (FS.readFile @(BranchTag Main) path))
+                 (runStoryFSRead @(BranchTag Main) @Main (BranchTag (BranchName branch))
+                    (FS.readFile @(BranchTag Main) path))
 
 -- ---------------------------------------------------------------------------
 -- Internal

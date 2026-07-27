@@ -35,6 +35,7 @@ import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.Logging (Logging)
 
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
@@ -79,6 +80,7 @@ writeAction
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)
               , BranchOp Main
+              , Branches Visited
               , StoryStorage
               , Splitter
               , Git

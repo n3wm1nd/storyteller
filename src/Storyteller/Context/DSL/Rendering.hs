@@ -54,10 +54,8 @@ import qualified UniversalLLM as LLM
 import Polysemy (Member)
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (treeValueOfCommit)
 import Storyteller.Context.DSL.Render (dslMessageToLLM)
 import Storyteller.Context.DSL.Value
-import Storyteller.Core.ContentEffects (TreeAccess)
 
 -- | Mirrors 'Value''s own shape exactly (own content, then named
 --   children, in order), just with a leaf type @a@ chosen by whichever
@@ -199,15 +197,19 @@ namedChild name = lookup name . rcEntries
 listDeferred :: FileSystemView -> [ContextRef]
 listDeferred = toList
 
--- | Forces exactly the one entry a 'ContextRef' points at -- re-resolves
---   its own commit's tree ('treeValueOfCommit', the same primitive every
---   Reader-scope bootstrap already uses) rather than assuming the
---   caller's own ambient position is still the right one to read from,
---   since a 'ContextRef' may have been handed to a tool call well after
---   'renderFileSystem' itself ran.
-readRef :: forall branch r. Member (TreeAccess branch) r => ContextRef -> Action r ContextItem
-readRef (ContextRef (Provenance path tick) meta) = do
-  tree <- treeValueOfCommit @branch tick
+-- | Forces exactly the one entry a 'ContextRef' points at, against the
+--   @scope@ it was produced from.
+--
+--   The scope is an argument because a 'ContextRef' is only meaningful
+--   relative to one: it names a path, and a path means nothing without
+--   somewhere to look it up. This used to re-resolve a commit position
+--   carried inside the reference itself, which let a caller force a
+--   reference with no scope in hand -- at the cost of every leaf in every
+--   scope carrying a storage position purely so this one function could
+--   exist. Passing the scope needs no capability at all: this is now a
+--   lookup and a force, nothing more.
+readRef :: Value r -> ContextRef -> Action r ContextItem
+readRef tree (ContextRef (Provenance path) meta) =
   case lookup (T.pack path) (valueEntries tree) of
     Nothing     -> pure (ContextItem (FileRead path "") meta)
     Just action -> do

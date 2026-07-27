@@ -38,6 +38,7 @@ import Storyteller.Writer.Agent.Context (Lore, Other, PinnedContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.Types (TickId(..))
 
@@ -55,7 +56,7 @@ import Storyteller.Core.Types (TickId(..))
 --   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, StoryStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Branches Visited, StoryStorage, Fail, Logging] r)
   => FilePath                    -- ^ file being continued
   -> TickId                      -- ^ flowTid: HEAD when the user started typing
   -> Lore                        -- ^ see 'writeAgent's own Haddock

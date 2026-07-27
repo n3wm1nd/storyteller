@@ -49,6 +49,7 @@ import Agent.Integration.Harness (assertToolCallBudget, emptyPinnedContext, empt
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
 import Storyteller.Core.LLM.Role (AgentModel, LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -71,7 +72,7 @@ import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValu
 type JourneyEffects r =
   ( LLMs r
   , Members '[ PromptStorage, ContextStorage, BranchResolve, Splitter, Logging
-             , StoryStorage, BranchOp Main, Git
+             , StoryStorage, BranchOp Main, Branches Visited, Git
              , FileSystem      (BranchTag Main)
              , FileSystemRead  (BranchTag Main)
              , FileSystemWrite (BranchTag Main)

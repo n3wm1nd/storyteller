@@ -41,6 +41,9 @@ module Storyteller.Context.DSL.Value
   , defaultMeta
   , withProvenance
   , Value(..)
+  , ForcedValue(..)
+  , forceValue
+  , forcedValue
   , emptyValue
   , leafValue
   , messagesText
@@ -158,9 +161,25 @@ liftSem = Action
 -- | Where a 'Value' came from -- stamped by @read@ itself (see
 --   'withProvenance'), never invented by a filter. Structural: knowing it
 --   never requires forcing 'valueDefault'.
-data Provenance = Provenance
+--
+--   The path, and nothing else. It used to also carry a
+--   'Storage.Core.ObjectHash' position, so a reference could be re-read
+--   later against the commit it came from. That position only existed
+--   because the scope builder was handed one; now a scope is built from an
+--   ordinary 'Runix.FileSystem.FileSystem', which has no position to
+--   offer and shouldn't need one. Re-reading is
+--   'Storyteller.Context.DSL.Rendering.readRef', which resolves a
+--   reference against the scope it was produced from -- an argument the
+--   caller already has, rather than a position smuggled through every
+--   leaf.
+--
+--   That does change one thing honestly: a reference is no longer pinned
+--   to the exact bytes it was made from. Nothing depends on that today
+--   (the whole browse-then-read surface has no callers yet), and the
+--   caller that eventually does can hold its own scope for as long as it
+--   needs the references to stay meaningful.
+newtype Provenance = Provenance
   { provPath :: FilePath
-  , provTick :: Core.ObjectHash
   } deriving (Eq, Show)
 
 -- | Higher survives longer under budget pressure. Ordinary 'Int' wrapped
@@ -192,8 +211,52 @@ defaultMeta = Meta Nothing defaultPriority Set.empty
 --   resolution (see "Storyteller.Context.DSL.Compile") calls on every
 --   entry it builds from a commit's tree, never something a filter
 --   invents for itself.
-withProvenance :: FilePath -> Core.ObjectHash -> Value r -> Value r
-withProvenance path tick v = v { valueMeta = (valueMeta v) { metaProvenance = Just (Provenance path tick) } }
+withProvenance :: FilePath -> Value r -> Value r
+withProvenance path v = v { valueMeta = (valueMeta v) { metaProvenance = Just (Provenance path) } }
+
+-- | A 'Value' with every thunk already run -- plain data, in no effect row
+--   at all.
+--
+--   This is what lets a 'Value' built inside one interpreter scope be
+--   returned from it. A 'Value' is thunks in a particular row @r@, so a
+--   scope built inside (say) a branch filesystem opened for one character
+--   cannot outlive that interpreter: its unforced leaves would resolve
+--   against whatever filesystem happened to be live when they were finally
+--   forced, which is a wrong answer rather than an error. Forcing at the
+--   boundary is what makes crossing scopes sound, and 'ForcedValue' is the
+--   shape that survives the crossing.
+--
+--   Deliberately only used at scope boundaries. Forcing a whole 'Value'
+--   reads every file it names, which is exactly what the DSL's laziness
+--   exists to avoid on the main path -- see
+--   'Storyteller.Context.DSL.Library.contextOtherDef', where @exclude@
+--   consumes @context.lore@ and @context.chapters@ for their /keys/ and
+--   never forces their contents. Crossing into another branch is the case
+--   where that trade is worth making, because the alternative is silently
+--   reading the wrong branch.
+data ForcedValue = ForcedValue
+  { fvDefault :: [Message]
+  , fvEntries :: [(Name, ForcedValue)]
+  , fvMeta    :: Meta
+  } deriving (Eq, Show)
+
+-- | Run every thunk, depth-first, in the row the 'Value' belongs to.
+forceValue :: Value r -> Action r ForcedValue
+forceValue v =
+  ForcedValue
+    <$> valueDefault v
+    <*> mapM (\(name, act) -> (,) name <$> (forceValue =<< act)) (valueEntries v)
+    <*> pure (valueMeta v)
+
+-- | The already-forced result as a 'Value' again, in any row -- every
+--   thunk is now a 'pure', so it carries no effects and can be handed to a
+--   caller in a different scope than the one that built it.
+forcedValue :: ForcedValue -> Value r
+forcedValue (ForcedValue d es m) = Value
+  { valueDefault = pure d
+  , valueEntries = [ (name, pure (forcedValue e)) | (name, e) <- es ]
+  , valueMeta    = m
+  }
 
 -- | @Value = { default :: Thunk [Message], entries :: [(Name, Value)], meta :: Meta }@.
 --   An ordered association list, not a 'Data.Map.Strict.Map' -- order is

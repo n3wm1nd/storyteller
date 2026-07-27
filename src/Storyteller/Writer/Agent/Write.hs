@@ -82,7 +82,7 @@ import Storage.Tick (FileTick)
 
 import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Branch (BranchOp, runStorage)
+import Storyteller.Core.Branch (BranchOp, Branches, Visited, runStorage)
 import Storyteller.Core.Context (ContextStorage, resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
@@ -161,7 +161,7 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --   of this either.
 writeAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, StoryStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Branches Visited, StoryStorage, Fail, Logging] r)
   => FilePath
   -> Lore                        -- ^ already resolved (branch override or compiled-in default; see 'Server.Writer.File.chatWriter')
   -> Other                       -- ^ 'Lore''s own twin for @context.other@, already resolved the same way
@@ -209,7 +209,7 @@ writeAgent path (Lore lore) (Other other) chaptersMode (PinnedContext pinned) in
 --   a present character's full self-knowledge).
 activeCharacterContext
   :: forall branch r
-  .  Members '[BranchOp branch, StoryStorage, ContextStorage, BranchResolve, Fail] r
+  .  Members '[BranchOp branch, Branches Visited, StoryStorage, ContextStorage, BranchResolve, Fail] r
   => FilePath -> Sem r [(CharLabel, CharSummary)]
 activeCharacterContext path = do
   active <- activeCharactersFor @branch path

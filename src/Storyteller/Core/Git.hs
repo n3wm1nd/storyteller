@@ -777,21 +777,28 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
 --   as 'Storyteller.Core.Snapshot.runTextSnapshotFS' -- which is the
 --   point: whether a caller is reading this branch's head or some other
 --   version, it is writing identical 'Runix.FileSystem' code either way.
+--   Takes the @project@ tag as a /value/, rather than always answering
+--   'Runix.FileSystem.getFileSystem' with a 'BranchTag'. A caller reading
+--   a branch by name wants exactly that and passes @'BranchTag' name@; a
+--   caller whose consumers have no business knowing which branch they're
+--   on -- the context DSL, whose whole vocabulary assumes one filesystem
+--   ('Storyteller.Context.DSL.Compile.ContextFS') -- passes its own tag
+--   instead and keeps that assumption true.
 runStoryFSRead
-  :: forall branch r a
+  :: forall project branch r a
   .  Member (BranchOp branch) r
-  => BranchName
-  -> Sem ( FileSystemRead (BranchTag branch)
-         : FileSystem     (BranchTag branch)
+  => project
+  -> Sem ( FileSystemRead project
+         : FileSystem     project
          : r ) a
   -> Sem r a
-runStoryFSRead name action = do
+runStoryFSRead tag action = do
   tree <- runStorage @branch (Core.headHash >>= Query.liveWorkingTree)
   interpretFS tree (interpretRead tree action)
   where
     interpretRead
       :: Member (BranchOp branch) r'
-      => Core.WorkingTree -> Sem (FileSystemRead (BranchTag branch) : r') b -> Sem r' b
+      => Core.WorkingTree -> Sem (FileSystemRead project : r') b -> Sem r' b
     interpretRead tree = interpret $ \case
       ReadFile path -> case Map.lookup path tree of
         Just (Core.FSFile h) -> runStorage @branch (lift (Core.readObject h)) >>= \case
@@ -803,9 +810,9 @@ runStoryFSRead name action = do
         Nothing              -> pure (Left (path <> ": not found"))
 
     interpretFS
-      :: Core.WorkingTree -> Sem (FileSystem (BranchTag branch) : r') b -> Sem r' b
+      :: Core.WorkingTree -> Sem (FileSystem project : r') b -> Sem r' b
     interpretFS tree = interpret $ \case
-      GetFileSystem    -> pure (BranchTag name)
+      GetFileSystem    -> pure tag
       GetCwd           -> pure (Right "/")
       ListFiles dir    -> pure (Right (FS.listChildrenIn dir tree))
       IsDirectory path -> pure (Right (FS.isDirectoryIn path tree))

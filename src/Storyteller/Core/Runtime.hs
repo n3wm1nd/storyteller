@@ -49,7 +49,7 @@ import Runix.Logging (Logging)
 
 import Runix.Git (Git, runGitFFIPerCall, withGitCache)
 import Storyteller.Core.ContentEffects
-import Storyteller.Core.Branch (Branches)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Snapshot (runSnapshotGit)
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Types (BranchName(..))
@@ -233,6 +233,7 @@ runStoryGit
                            , BranchResolve
                            , BranchOp Main
                            , Branches Main
+                           , Branches Visited
                            , StoryStorage
                            , Git
                            , Logging, Fail ] r
@@ -246,6 +247,7 @@ runStoryGit repoPath endpoint branch configs action =
   . runBranchResolve
   . runSnapshotGit
   . runBranchesGit @Main
+  . runBranchesGit @Visited
   . interpretLLMWith (StoryLlamaCppAuth (LlamaCppAuth endpoint)) (route @StoryModel) storyModel configs
   . reinterpretAgent @StoryModel
   . raiseUnder

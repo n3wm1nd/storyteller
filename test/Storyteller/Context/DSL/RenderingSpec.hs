@@ -26,6 +26,7 @@ import Polysemy.Fail (Fail)
 import qualified UniversalLLM as LLM
 
 import qualified Storage.Ops as Ops
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -50,14 +51,14 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 -- | No overrides are ever staged in this spec -- just the compiled-in
 --   defaults, same as 'buildContextLibrary' would build from an empty
 --   override map.
-emptyLib :: forall r. Members '[BranchResolve, Fail] r => Library (ContextRow Main r)
+emptyLib :: forall r. Members '[Branches Visited, BranchResolve, Fail] r => Library (ContextRow Main r)
 emptyLib = fst (buildContextLibrary @Main Map.empty)
 
 describeMessage :: LLM.Message m -> (LLM.MessageDirection, Text)
@@ -99,7 +100,7 @@ renderContextSpec = describe "renderContext / renderText / renderMessages" $ do
   it "renderText concatenates every reachable message's own content, ignoring role" $
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
-      runDslOn (BranchName "main") (renderText <$> (renderContext =<< contextLore @Main emptyLib)))
+      runDslOn (BranchName "main") (renderText <$> (renderContext =<< (currentScope >>= \s -> contextLore s emptyLib))))
     `shouldBe` Right
       "## Story background\n\n## lore/notes.md\n\na hand-authored note"
 
@@ -108,7 +109,7 @@ renderContextSpec = describe "renderContext / renderText / renderMessages" $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runDslOn (BranchName "main")
         (map describeMessage . (renderMessages :: Context -> [LLM.Message ProseModel])
-          <$> (renderContext =<< contextLore @Main emptyLib)))
+          <$> (renderContext =<< (currentScope >>= \s -> contextLore s emptyLib))))
     `shouldBe` Right
       [ (LLM.User, "## Story background")
       , (LLM.User, "## lore/notes.md")
@@ -119,7 +120,7 @@ renderContextSpec = describe "renderContext / renderText / renderMessages" $ do
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runDslOn (BranchName "main") (do
-        ctx <- renderContext =<< contextLore @Main emptyLib
+        ctx <- renderContext =<< (currentScope >>= \s -> contextLore s emptyLib)
         case namedChild "lore/notes.md" ctx of
           Nothing    -> fail "expected a lore/notes.md entry"
           Just child -> pure (renderText child)))
@@ -142,7 +143,7 @@ renderFileSystemSpec = describe "renderFileSystem / listDeferred / readRef" $ do
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runDslOn (BranchName "main") (do
-        fsv <- renderFileSystem =<< currentScope @Main
+        fsv <- renderFileSystem =<< currentScope
         pure (map (provPath . crSource) (listDeferred fsv))))
     `shouldBe` Right ["lore/notes.md"]
 
@@ -150,8 +151,9 @@ renderFileSystemSpec = describe "renderFileSystem / listDeferred / readRef" $ do
     run (testStack $ do
       seedBranch "main" [("lore/notes.md", "a hand-authored note")]
       runDslOn (BranchName "main") (do
-        fsv <- renderFileSystem =<< currentScope @Main
+        scope <- currentScope
+        fsv   <- renderFileSystem scope
         case listDeferred fsv of
-          [ref] -> messageText . ciMessage <$> readRef @Main ref
+          [ref] -> messageText . ciMessage <$> readRef scope ref
           refs  -> fail ("expected exactly one ref, got " <> show (length refs))))
     `shouldBe` Right "a hand-authored note"

@@ -34,6 +34,7 @@ import Polysemy.Fail (Fail)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, getContextOverrides, interpretContextStorageMap, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -42,7 +43,7 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Context.DSL.AST (Name)
-import Storyteller.Context.DSL.Compile (Library, bval)
+import Storyteller.Context.DSL.Compile (Library, bval, currentScope)
 import qualified Storyteller.Context.DSL.Compile as Compile
 import Storyteller.Context.DSL.Library
   (contextCharacter, contextLore, contextMentionFilter, contextWriter)
@@ -66,7 +67,7 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname $ do
   overrides <- getContextOverrides
@@ -81,7 +82,7 @@ runDslOn bname act = runBranchAndFS @Main bname $ do
 runDslOnWith
   :: forall a
   .  Map Name Text -> BranchName
-  -> (forall r. Members '[BranchOp Main, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOnWith overrides bname act =
   runBranchAndFS @Main bname $ interpretContextStorageMap overrides $ do
@@ -152,7 +153,7 @@ contextWriterLoreOverrideSpec =
     overrides = Map.fromList
       [ ("context.lore", "\"this is a project-committed override, not the default\"") ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) [Message]
-    go table = valueDefault =<< contextWriter @Main table ""
+    go table = valueDefault =<< (currentScope >>= \s -> contextWriter s table "")
 
 -- | The other half of 'contextWriterLoreOverrideSpec': a project's own
 --   override of @context.lore@ that *does* expose real per-file entries
@@ -191,7 +192,7 @@ contextWriterLoreOverrideWithEntriesSpec =
           ])
       ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Text -> Action (ContextRow Main r) [Message]
-    go table path = valueDefault =<< contextWriter @Main table path
+    go table path = valueDefault =<< (currentScope >>= \s -> contextWriter s table path)
 
 -- | The regression test for the bug that started this whole redesign:
 --   'contextCharacter' used to take @blurb@ as a typed 'Binding'
@@ -221,7 +222,7 @@ contextCharacterBlurbOverrideSpec =
       [ ("character.blurb", "charname:\n  \"this is a project-committed override, not the default\"") ]
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
     go table = do
-      v <- contextCharacter @Main table "aria"
+      v <- currentScope >>= \s -> contextCharacter s table "aria"
       Just blurbAction <- pure (lookup "blurb" (valueEntries v))
       messagesText <$> (valueDefault =<< blurbAction)
 
@@ -248,7 +249,7 @@ contextStyleSelfReferenceOverrideSpec =
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) Text
     go table = case lookup "context.style" (Compile.libraryEntries table) of
       Just (Binding 0 fn) -> do
-        scope <- Compile.currentScope @Main
+        scope <- Compile.currentScope
         messagesText <$> (valueDefault =<< fn [] scope)
       _ -> fail "expected context.style to be a 0-arity binding"
 
@@ -408,10 +409,10 @@ contextWriterSpec = describe "contextWriter (the default context.writer library 
       )
   where
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Text -> Action (ContextRow Main r) [Message]
-    go table path = valueDefault =<< contextWriter @Main table path
+    go table path = valueDefault =<< (currentScope >>= \s -> contextWriter s table path)
     goWithCharacter :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) ([Message], [Text])
     goWithCharacter table = do
-      v         <- contextWriter @Main table "chapters/ch2.md"
+      v         <- currentScope >>= \s -> contextWriter s table "chapters/ch2.md"
       def       <- valueDefault v
       Just aria <- pure (lookup "aria" (valueEntries v))
       ariaTexts <- messagesText <$> (valueDefault =<< aria)
@@ -440,7 +441,7 @@ contextChaptersCompressedSpec = describe "contextChaptersCompressed (the compres
       ]
   where
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) [Message]
-    go table = valueDefault =<< CtxLibrary.contextChaptersCompressed @Main table
+    go table = valueDefault =<< (currentScope >>= \s -> CtxLibrary.contextChaptersCompressed s table)
 
 -- | 'contextLore'\/'contextOther' each on their own -- self-describing
 --   *and* keeping per-file entries, both at once (see 'contextLore''s own
@@ -462,7 +463,7 @@ contextLoreSpec = describe "contextLore/contextOther (standalone)" $ do
   where
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) ([Message], Map Text Text)
     go table = do
-      v      <- contextLore @Main table
+      v      <- currentScope >>= \s -> contextLore s table
       def    <- valueDefault v
       texts  <- entryTexts v
       pure (def, texts)
@@ -483,5 +484,5 @@ contextMentionFilterSpec = describe "contextMentionFilter (the default context.m
       }
     go :: forall r. Members '[BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) (Map Text Text)
     go _table = do
-      v <- contextMentionFilter @Main (bval aliases)
+      v <- contextMentionFilter (bval aliases)
       entryTexts v

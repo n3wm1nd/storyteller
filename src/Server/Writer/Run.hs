@@ -56,7 +56,7 @@ import Storyteller.Core.LLM.Registry (SomeProseLLMRunner(..), SomeAgentLLMRunner
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Runtime (Main, runInfrastructureWithCancellation)
 import Storyteller.Core.ContentEffects (BranchResolve, runBranchResolve)
-import Storyteller.Core.Branch (Branches)
+import Storyteller.Core.Branch (Branches, Visited)
 import Storyteller.Core.Git (runBranchesGit)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Context (interpretContextStorageFS, ContextStorage)
@@ -161,7 +161,7 @@ actionStack
   => ServerEnv
   -> TVar Bool
   -> Sem ( LLM ProseModel : LLM AgentModel
-         : Config StreamingEnabled : ContextStorage : Branches Main : BranchResolve : PromptStorage : StoryStorage : Undo
+         : Config StreamingEnabled : ContextStorage : Branches Visited : Branches Main : BranchResolve : PromptStorage : StoryStorage : Undo
          : Random : HTTP : HTTPStreaming : Sleep : Time : Git
          : Fail : Error String : Logging : r) a
   -> Sem (Logging : r) (Either String a)
@@ -181,6 +181,7 @@ actionStack env cancelFlag action =
       . interpretPromptStorageFS
       . runBranchResolve
       . runBranchesGit @Main
+      . runBranchesGit @Visited
       . interpretContextStorageFS
       . runConfig (StreamingEnabled True)
       . agentRunner

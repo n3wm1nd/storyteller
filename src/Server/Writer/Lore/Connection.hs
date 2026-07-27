@@ -78,7 +78,7 @@ onNotify branch conn () = \case
 reportError :: WS.Connection -> String -> IO ()
 reportError conn err = WS.sendTextData conn (encode (LoreError (T.pack err)))
 
-push :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r, Member (Embed IO) r) => WS.Connection -> Sem r ()
+push :: (BranchOpen r, Member ContextStorage r, Member (Embed IO) r) => WS.Connection -> Sem r ()
 push conn = do
   tree <- loreTree
   embed $ WS.sendTextData conn (encode (LoreTree tree))
