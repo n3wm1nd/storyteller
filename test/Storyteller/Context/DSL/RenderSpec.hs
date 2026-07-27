@@ -37,7 +37,6 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Context.DSL.Compile (currentScope)
 import Storyteller.Context.DSL.Library (contextChapters, contextLore)
 import qualified Storyteller.Context.DSL.Render as Render
@@ -57,7 +56,7 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, ContextStorage, Fail] r => Action (ContextRow r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 

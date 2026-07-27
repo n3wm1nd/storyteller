@@ -34,7 +34,6 @@ import Runix.Git (Git)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Server.Core.Run (SessionEffects)
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage)
 import Server.Writer.Lore (loreTree)
 import Server.Writer.Lore.Protocol (LoreEvent(..))

@@ -46,7 +46,6 @@ import Storyteller.Core.Context
   ( contextsBranchName, setContextOverride, interpretContextStorageFS, interpretContextStorageMap
   , resolveOverrideDefinition, ContextRow, ContextStorage, resolveContext0, resolveContext1, resolveAdhoc0, runContextValue
   , buildContextLibrary, getContextOverrides )
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -451,10 +450,10 @@ buildContextLibrarySpec = describe "buildContextLibrary" $ do
 --   its own; the accepted 'Library' half is still thrown away unused, only
 --   the effect row itself needs to be concrete.
 rejectedOverrides
-  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
+  :: forall branch r. Members '[BranchOp branch, Branches, ContextStorage, Fail] r
   => Sem r [Name]
 rejectedOverrides = do
   overrides <- getContextOverrides
   let (_lib, rejected) = buildContextLibrary @branch overrides
-        :: (Library (ContextRow branch r), [Name])
+        :: (Library (ContextRow r), [Name])
   runContextValue @branch (pure rejected)

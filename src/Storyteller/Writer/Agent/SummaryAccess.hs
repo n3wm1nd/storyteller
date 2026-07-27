@@ -6,20 +6,26 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | How a summary is actually read off an alternate chain -- the
---   implementation behind
---   'Storyteller.Writer.Agent.Summarizer.SummaryQuery', not an API.
+--   implementation behind "Storyteller.Writer.Agent.Summarizer"'s read
+--   side, not an API.
 --
---   __Nothing outside that interpreter should import this.__ Every
---   function here knows the representation: that a compression lives on an
---   alternate chain, that a level is a 'Summary' tick on the open scope,
---   that completeness means folding in whatever landed since. Reading a
---   file "as compressed as it gets" is
---   'Storyteller.Writer.Agent.Summarizer.densest', and it goes through the
---   effect precisely so that none of the above is a caller's problem.
+--   __Treat everything here but 'rawContent' as private to that module.__
+--   Every function here knows the representation: that a compression
+--   lives on an alternate chain, that a level is a 'Summary' tick on the
+--   open scope, that completeness means folding in whatever landed since.
+--   Reading a file "as compressed as it gets" is
+--   'Storyteller.Writer.Agent.Summarizer.densest', and it exists precisely
+--   so that none of the above is a caller's problem.
 --
---   This module used to *be* the API, which is why the write side went
---   through an effect while every read reached around it. What's left here
---   is the "how"; the "what" is one module up.
+--   'rawContent' is the deliberate exception (imported by
+--   "Storyteller.Writer.Agent.ChapterSummarizer" and
+--   "Storyteller.Writer.Agent.LoreSummarizer"): it is "this path's current
+--   committed text," which knows nothing about summaries at all and only
+--   lives here because this is where its callers already were.
+--
+--   This module used to *be* the API for reads, which is why the write
+--   side went through an effect while every read reached around it. What's
+--   left here is the "how"; the "what" is one module up.
 --
 --   Everything here runs inside a caller's already-open @source@ branch
 --   scope ('Storyteller.Core.Git.BranchOp') -- there is no branch to open

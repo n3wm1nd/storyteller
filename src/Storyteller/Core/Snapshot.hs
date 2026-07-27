@@ -56,11 +56,10 @@
 --   own @project@ phantom is fixed when an interpreter is wired
 --   (@runStoryFSGit \@branch@) -- right for "the one named branch I keep
 --   reading from, always its live state," wrong for a caller whose branch
---   is only discovered at runtime ('Storyteller.Core.ContentEffects.runCast'
+--   is only discovered at runtime ('Storyteller.Writer.Cast.knownCast'
 --   iterating @listBranches@; the context DSL resolving @charname | branch@
 --   mid-evaluation). That doesn't need a *second read vocabulary* the way
---   the @TreeAccess@ effect this replaced assumed (see
---   "Storyteller.Core.ContentEffects"'s own note on why it's gone) -- it
+--   the @TreeAccess@ effect this replaced assumed -- it
 --   needs the same one, discharged per position with the position as an
 --   ordinary value argument. Callers are sequential (each scope is discharged
 --   before the next opens), so one fixed 'Snapshot' tag serves all of

@@ -68,6 +68,7 @@ import Storyteller.Core.Storage (StoryStorage, getBranch)
 import Storyteller.Core.Branch (Branches, withBranch)
 import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import qualified Storage.Ops as Ops
+import qualified Storyteller.Common.Types as CommonTypes
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick)
@@ -262,10 +263,10 @@ splitFileAtoms tids = do
 setFileAtomsHidden :: FileOpen r => [TickId] -> Bool -> Sem r ()
 setFileAtomsHidden tids hidden = do
   ordered <- runStorage @Main (Ops.descendantsFirst (map toHash tids))
-  mapM_ (\h -> void $ runStorage @Main (Ops.setAtomHidden h hidden)) ordered
+  mapM_ (\h -> void $ runStorage @Main (CommonTypes.setHidden h hidden)) ordered
 
 -- | Hide a batch of atoms from an agent's ambient context without
---   deleting them -- see 'Storage.Ops.setAtomHidden'.
+--   deleting them -- see 'Storyteller.Common.Types.hiddenTagKey'.
 hideFileAtoms :: FileOpen r => [TickId] -> Sem r ()
 hideFileAtoms tids = setFileAtomsHidden tids True
 

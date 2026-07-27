@@ -32,7 +32,6 @@ import Runix.Logging (Logging)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Context (ContextStorage)
 import qualified Storage.Tick as Tick
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Storage (ticksSince)
 import Storyteller.Writer.Agent (Instruction(..), Prose, PastChaptersMode)
 import Storyteller.Writer.Agent.Context (Lore, Other, PinnedContext)
@@ -57,7 +56,7 @@ import Storyteller.Core.Types (TickId(..))
 --   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Branches, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchOp branch, Branches, Fail, Logging] r)
   => FilePath                    -- ^ file being continued
   -> TickId                      -- ^ flowTid: HEAD when the user started typing
   -> Lore                        -- ^ see 'writeAgent's own Haddock

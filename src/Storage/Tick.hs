@@ -1,6 +1,8 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Bridge between "Storage.Core"'s backend-agnostic 'Tick' (an 'Atom' or
 --   an opaque 'NonAtom') and "Storyteller.Core.Types"'s typed-tick
@@ -21,6 +23,7 @@ module Storage.Tick
   , findTickFrom
   , findTick
   , FileTick(..)
+  , ftIsType
   , fileTicksOf
   , atomsMatchingText
   , relatedTicksOf
@@ -293,6 +296,17 @@ data FileTick = FileTick
   , ftContent :: Maybe Text
   , ftParent  :: Maybe Text
   } deriving (Show, Eq)
+
+-- | Is this tick of kind @a@? The typed way to ask, so a caller writes
+--   @ftIsType \@Atom ft@ rather than spelling @"atom"@ out again --
+--   'ftKind' /is/ the type tag 'Storyteller.Core.Types.tickTypeName'
+--   produced on the way in, and this is the one place the two are
+--   compared. Deliberately a predicate and not a @fromTick@-style decode:
+--   a 'FileTick' is already the flattened projection (see 'toFileTick'),
+--   so there is no original 'Storyteller.Core.Types.Tick' left to decode
+--   into @a@ -- what a caller can still ask honestly is which kind it was.
+ftIsType :: forall a. ST.TickType a => FileTick -> Bool
+ftIsType ft = ftKind ft == ST.tickTypeName @a
 
 -- | Walk the branch history from head and decode every tick within
 --   @path@'s *current lifetime*: since the last time it was deleted

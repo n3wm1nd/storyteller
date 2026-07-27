@@ -37,7 +37,6 @@ import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
 import Runix.FileSystem (FileSystem, FileSystemRead)
-import Storyteller.Core.ContentEffects (BranchResolve)
 
 import Storyteller.Context.DSL.Compile (ContextFS, Library)
 import Storyteller.Context.DSL.Context (Context, toContext, user, assistant, runContext)
@@ -54,7 +53,7 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, ContextStorage, Fail] r => Action (ContextRow r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
@@ -146,7 +145,7 @@ toBindingSpec = describe "ToBinding (plain values as [dsl| |] arguments)" $ do
         (messagesText <$> (valueDefault =<< splicesDsl @Main (user "hello"))))
     `shouldBe` Right "hello"
   where
-    crossBranchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,BranchResolve, Fail] r => Library r -> Text -> Action r (Value r)
+    crossBranchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, Branches, Fail] r => Library r -> Text -> Action r (Value r)
     crossBranchDsl = [dslWith|
       charname:
         in (charname | branch): read "sheet.md"

@@ -55,8 +55,6 @@ import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
-import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
 import Prelude hiding (readFile)
@@ -93,7 +91,6 @@ main = do
 chapterAction
   :: (LLMs r, Members '[ PromptStorage
               , ContextStorage
-              , BranchResolve
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)

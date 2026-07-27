@@ -48,7 +48,6 @@ import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 import Storyteller.Context.DSL.Rendering (RenderedContext(..))
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, interpretContextStorageFS)
 import qualified Storage.Ops as Ops
 
@@ -75,7 +74,6 @@ main = do
 writeAction
   :: (LLMs r, Members '[ PromptStorage
               , ContextStorage
-              , BranchResolve
               , FileSystem      (BranchTag Main)
               , FileSystemRead  (BranchTag Main)
               , FileSystemWrite (BranchTag Main)

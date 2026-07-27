@@ -27,8 +27,6 @@ import Server.Writer.Branch (summarize, uploadFiles, importCharacterCard)
 import Server.TestStack
 import Storyteller.Core.Storage (getBranch)
 import Storyteller.Writer.Agent.Summarizer (densest)
-import Storyteller.Writer.Agent.Summarizer
-  (Summarization, SummaryQuery, runSummarization, runSummaryQuery)
 
 import Prelude hiding (readFile)
 
@@ -44,9 +42,7 @@ import Prelude hiding (readFile)
 withBranch_
   :: TestRunner
   -> BranchName
-  -> Sem ( SummaryQuery
-         : Summarization
-         : FileSystemWrite (BranchTag Main)
+  -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
          : BranchOp Main
@@ -55,7 +51,7 @@ withBranch_
   -> Either String a
 withBranch_ runner name action = run $ runner $ do
   _ <- createBranch name
-  runBranchAndFS @Main name (runSummarization @Main (runSummaryQuery @Main action))
+  runBranchAndFS @Main name action
 
 spec :: TestRunner -> Spec
 spec runner = do

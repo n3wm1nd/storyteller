@@ -1,330 +1,284 @@
-# Adding functionality: think in effects
+# Adding functionality: effects, and when not to reach for one
 
-This is the convention to follow whenever agent or DSL code needs some new
-capability from storage (or from anything else pluggable). The worked
-example throughout is `src/Storyteller/Core/ContentEffects.hs`, written
-during the pass that moved the context DSL and its agents off direct
-`Storage.Core.StoreT` access (see `[[project_mcp_export_effect_boundary]]`).
-Read that module's Haddocks alongside this doc — this explains *why* it's
-shaped the way it is; the module is the concrete instance.
+This is the convention to follow whenever agent, DSL, or server code needs
+some new capability.
 
-## Start from the concept, not the primitive
+**The short version: write a function.** Put it in the module that owns the
+concept, give it `Members '[BranchOp branch, ...] r` for whatever it
+genuinely touches, export it. That is the default and it covers most new
+work. An effect is a specific tool for a specific problem, and the rest of
+this document is about recognizing that problem.
 
-Before writing a GADT, name the *capability* in one sentence: "which
-characters are present in this file's history," "a curated recent slice of
-the journal," "turn-shaped conversation history." If the sentence is
-"read/write this thing" with no derivation or curation involved, it's
-probably not a new effect at all — see "Reuse before inventing" below.
+This is a correction, not the original position. An earlier pass built
+`Storyteller.Core.ContentEffects` — seven narrow effects (`TreeAccess`,
+`Presence`, `JournalAccess`, `ConversationAccess`, `FileTicks`,
+`Summarized`, `BranchResolve`, plus `Cast`) plus module-local
+`Summarization` and `TasksSync` — on the theory that each named capability
+should be independently swappable. All of them are gone now. The reasoning
+that removed them is in "When an effect earns its place" below, and it is
+worth reading before adding anything, because the shape they had is an easy
+one to reach for again: every one of them looked correct at the time.
 
-The wrong shape is one effect per module that happens to own some `StoreT`
-code today (a catch-all `DSLStore`, a catch-all `TasksStore`). That just
-relocates the "one fat interface" problem: a backend able to honestly
-support half of a bundled effect still can't get an interpreter for the
-whole thing, so it loses every function that touches *any* constructor in
-it, including ones it could actually run. `ContentEffects.hs` splits seven
-narrow effects (`TreeAccess`, `Presence`, `JournalAccess`,
-`ConversationAccess`, `TrackedFiles`, `FileTicks`, `BranchResolve`) rather
-than one `DSLStore`, precisely so a backend can support, say,
-`ConversationAccess` (a SillyTavern-style chat log already *is*
-turn-shaped) without needing tick-history machinery for the rest.
+## The default: a function in the module that owns the concept
 
-Self-contained is the default (task tracking's `TasksSync` doesn't reach
-into journal or conversation concerns), but real interdependency is fine
-when the concept genuinely has it — `Storyteller.Writer.Agent.Summarizer`'s
-internal `Summarization` effect is this: its four operations
-(`PendingSummary`/`RecordSummary` for a whole-branch pass,
-`PendingPathSummary`/`RecordPathSummary` for one path) are one effect
-because they're one concept ("what's pending, record this pass," two
-granularities), confirmed by the fact that every real caller
-(`runSummarizer` vs. `runSummarizerForPath`) already picks between the pair
-at one call site, not because they happen to share an implementation. (A
-shared, ContentEffects-level write vocabulary analogous to the read side
-above — "commit content, several ways" — was sketched at one point but
-never built: every write path today instead calls `Storage.Ops`/
-`Storage.Tick` directly from inside whichever narrower, module-local effect
-actually needs it, `Summarization` here and `Storyteller.Writer.Agent.
-Tasks`'s `TasksSync` being the two real instances.)
+`Storyteller.Writer.Conversation` owns "a file's ticks read as a
+conversation." `Storyteller.Writer.Journal` owns "a curated recent slice of
+a journal." `Storyteller.Writer.Cast` owns "every character branch and what
+its sheet says." Each is a module, a domain type where one is warranted, and
+a couple of functions over `BranchOp`/`Branches`. No GADT, no `makeSem`, no
+interpreter, no discharge site.
 
-## Two layers: the GADT vs. the exported library
+What you get from this is what the effects were actually delivering:
 
-An effect module has two things in it, and they are allowed to differ:
+- **A name for the concept**, which is what stops the next person
+  re-implementing it. Modules do this for free.
+- **A domain type at the boundary** — `Turn`, `CastMember`,
+  `JournalCuration`, `Set Character`. This matters more than the effect
+  question and is covered in "Native types at the boundary" below.
+- **One place the derivation lives.** `turnsFromFileTicks` is the only code
+  in the tree that decides what a `"prompt"` tick means.
 
-1. **The GADT** — the minimal set of operations an interpreter must
-   implement. Keep this as small as the concept allows. It's fine (and
-   often right, see "Carrying errors" below) for a constructor's return
-   type to be more informative than what most callers want, e.g. `Either`
-   or `Maybe` instead of a bare value — that's for interpreters and
-   interceptors to see, not ordinary callers.
-2. **The exported functions** — the actual library callers reach for. Some
-   are literally `makeSem`'s generated sends (`ContentEffects.hs` does this
-   for all seven effects, since each GADT constructor already *is* the
-   natural call a caller wants — `charactersPresent`, `journalWindow`,
-   etc.). Others should be hand-written on top of the raw sends: a
-   convenience wrapper that collapses an `Either`/`Maybe` into `Fail`, an
-   `append` defined as `read` then `write`, two constructors combined into
-   one natural-language call. The GADT describes the interpreter's
-   contract; the exported functions describe the *user's* library. They
-   don't have to be the same shape, and forcing them to be is how you end
-   up exposing raw storage primitives as if they were the concept.
+What you don't get is a compile-time guarantee that a caller went through
+your function rather than calling `runStorage @branch (...)` itself. That
+guarantee was largely notional even when the effects existed — see
+"What we gave up, honestly."
 
-## Reuse before inventing
+## When an effect earns its place
 
-There's no single fixed criterion for "does this need a new effect" —
-it's two different situations, and they get different treatment:
+Ask this, and be strict about it:
 
-- **A functionality achievable with what's already there.** Composing
-  existing effects at the call site (a plain multi-effect function, see
-  below) is enough — don't add a new effect just because a function
-  happens to call two others.
-- **An operation that structurally requires several functionalities
-  together as one thing.** `Storyteller.Writer.Agent.Summarizer`'s
-  internal `Summarization` effect is this: its four operations are one
-  concept because every real caller already picks between the
-  whole-branch and single-path pair at a single point of use, not a
-  coincidence of implementation. When it's this, name it.
+> **Does the interpreter need capabilities its callers don't already hold
+> — and won't end up holding anyway?**
 
-Check whether an existing effect already covers it before writing a new
-one. `ContentEffects.hs`'s own design pass found that plain path-based
-file read/write, with no history involved, is already `Runix.FileSystem`'s
-`FileSystemRead`/`FileSystem` — no new effect needed for that half of
-`Storyteller.Writer.Agent.Tasks`'s `readTasksFile`/`resolveCharacterName`.
-New effects are for the genuinely history- or chain-dependent remainder.
+That last clause is load-bearing. `Cast` passed the first half: its
+interpreter needed `Branches` + `StoryStorage`, which `trackPresenceFor`
+didn't name. But `Branches` appears in ~150 signatures across `src`+`app`;
+it is effectively ambient, and every real caller acquired it one layer down
+regardless. So `Cast` wasn't bounding authority, it was adding a row entry
+that already implied itself. An effect wrapping capabilities the caller
+acquires anyway is a rename with ceremony.
 
-Also decide deliberately whether the new effect needs its own `(branch ::
-k)` phantom, matching `Storyteller.Core.Branch.BranchOp`/
-`Runix.FileSystem`'s convention: it does, if evaluation isn't pinned to one
-fixed branch chosen once at interpreter-wiring time (all eight
-`ContentEffects` had this except `BranchResolve`, which resolves a *name*
-through the project-global `StoryStorage` rather than reading from an
-already-open branch scope). Getting this wrong doesn't fail loudly at
-first — it fails the first time a real caller needs two different branches
-live in the same request (this happened once already; see
-`[[project_mcp_export_effect_boundary]]`'s design-corrections section).
+Beyond that test, three things genuinely justify a GADT:
 
-## Position: type-level phantom vs. value-level argument
+1. **A second interpreter that actually exists.** Not one a hypothetical
+   backend might write — one in this repository, today.
+   `PromptStorage` has `interpretPromptStorageFS` and
+   `interpretPromptStorageMap` (tests run without git). `Snapshot`,
+   `FileSystem`, `LLM` likewise. This is the strongest justification and
+   the easiest to check.
+2. **A real interception point.** Somewhere in the tree, an `intercept`
+   sits between callers and the interpreter. Note where these actually
+   are: the `Git` undo log, the `LLM` budget, the `FileSystemWrite` path
+   filter. Every interceptor in this codebase attaches to a
+   runix-level effect; none has ever attached to a domain effect. If you
+   are adding an effect *so that* it could be intercepted later, you are
+   guessing, and the guess has a 100% miss rate so far.
+3. **Per-scope state or a scoped resource.** `Branches` is `Scoped`, and
+   entering a branch is a real lifecycle with a beginning and an end.
+   `ContextStorage` carries per-request override state. These are readers
+   and resource brackets, which is a different thing from a capability
+   vocabulary — see "The remaining effects" below.
 
-A subtler version of the same reuse question: if something *looks* like it
-should fold into an existing effect because the operations are shaped the
-same ("list some paths, read a blob"), check where the position comes
-from before merging them.
+**And one thing that argues strongly against a GADT:** if the operation
+takes an effectful callback (`([Text] -> Sem r Text)`), an effect makes it
+expensive. A higher-order effect constructor needs `interpretH` and the
+`Tactics` vocabulary — `bindT`, `pureT`, `getInspectorT`,
+`getInitialStateT` — which is the hardest part of Polysemy to get right and
+the part that produces the most confusing type errors. As a plain function,
+the callback is just an argument. Agent code is largely
+effectful-callback-shaped (`tieredPass` takes the reduce step,
+`syncTasksWith` takes the generation hook), so this comes up constantly.
+Note that `BranchOp` is deliberately first-order for exactly this reason:
+one `RunStorage` constructor carrying a closed `StoreT` computation, no
+`interpretH` anywhere.
 
-`Runix.FileSystem`'s own `project` phantom is fixed once, at compile time,
-when an interpreter is wired (`runStoryFSGit @branch`) — right for "the one
-named branch I keep reading from, always its current live state."
-`ContentEffects.hs`'s `TreeAccess` looks superficially identical
-("`TreeSnapshot`/`ReadTreeBlob` read a tree/blob") but takes its position as
-a *value*-level `Core.ObjectHash` argument instead, because the DSL's own
-cross-branch reads only learn *which* commit to read at from a
-`BranchResolve` call moments earlier in the same evaluation — often a
-different one on every loop iteration. Minting a fresh phantom-tagged
-`FileSystem` interpreter per dynamically-resolved commit isn't expressible
-(a Polysemy row is fixed at compile time), so `TreeAccess` stays its own
-effect. See its Haddock in `ContentEffects.hs` for the fuller version of
-this argument — it's the kind of judgment call worth writing down at the
-declaration, not just here.
+## The remaining effects, and what each is for
+
+Two different things live in this row and it helps to name them separately.
+
+**Doors — the ones that actually abstract a backend:**
+
+- `BranchOp branch` — "I am working in *the* branch scope that is open."
+  One constructor, `RunStorage :: (forall n. StoreM n => StoreT n a) ->
+  BranchOp branch m a`. Its interpreter holds git; no caller does. This is
+  the real abstraction boundary in this codebase, and almost everything
+  that was deleted had been stacked on top of it.
+- `Branches` — `Scoped Anchor (BranchOp Visited)`, the door into *another*
+  scope, by name (`ByName`) or by position (`ByPosition`). A row fixes how
+  many scopes exist at compile time, so visiting a branch you can only name
+  at runtime needs this and can't be done with `BranchOp` alone.
+- `FileSystem`/`FileSystemRead`/`FileSystemWrite` — the primary way file
+  content is reached. A function written against these runs against a
+  branch, a snapshot, a real directory or a test filesystem without knowing
+  which. Prefer them even when a positioned read would be cheaper; see
+  `Storyteller.Writer.Cast.knownCast`'s Haddock for that trade made
+  explicitly.
+- `StoryStorage` — branch enumeration and creation. Project-global; nothing
+  to scope it to.
+- `LLM role` — genuinely several providers.
+
+**Readers and brackets — carriers of implicit parameters, not
+abstractions:**
+
+- `ContextStorage`, `PromptStorage` — per-request overrides and prompt
+  defaults. `PromptStorage` also has the second-interpreter justification.
+- `Snapshot`, `Timetravel branch` — positioned reads.
+- `Undo`, `Splitter` — pluggable policy.
+
+Adding to the first group is a real design decision. Adding to the second
+is cheap and usually fine — a reader effect that carries a parameter you'd
+otherwise thread through forty signatures is earning its keep even if
+nothing will ever swap its interpreter.
 
 ## Native types at the boundary
 
-Once a caller is on the near side of an effect's `Member` constraint, it
-should be looking at ordinary Haskell types for the concept — `Set
-Character`, `[Turn]`, `[Text]` — never a backend's own representation
-leaking through. `ContentEffects.hs` is not fully clean on this point
-today, and says so in its own Haddocks: `BranchResolve`'s `ResolveBranch ::
-BranchName -> BranchResolve m (Maybe Core.ObjectHash)` and `TreeAccess`'s
-`TreeSnapshot`/`ReadTreeBlob` hand back a raw `Storage.Core.ObjectHash` —
-i.e. "the position of a branch is a hash of its content," an assumption a
-backend with no content-addressing (a plain directory, a SillyTavern
-export) genuinely can't satisfy. The fix, not yet done, is an opaque
-position/ref type owned by the effect module itself, produced by
-`BranchResolve` and consumed by `TreeSnapshot`/`ReadTreeBlob`/
-`JournalWindow`, with the git-backed interpreter free to implement it *as*
-an `ObjectHash` internally without exposing that choice to callers.
-Contrast this with `Presence`'s `CharactersPresent`, which is done right:
-it returns `Set Character` (a real domain type), not the raw `FileTick`
-list the git interpreter actually walked to derive it — the derivation is
-the interpreter's job, not something every caller repeats.
+This survives from the original document unchanged, because it was never
+really about effects — it is about what your function returns.
 
-The test: if a caller needs to know something about *how* the backend
-stores data in order to use the return value (that it's a hash, that it's
-addressable, that two of them can be compared for object identity rather
-than semantic equality), the boundary is leaking. Push that knowledge back
-into the interpreter, or into an opaque type the effect module itself
-owns.
+A caller should be looking at ordinary Haskell types for the concept —
+`Set Character`, `[Turn]`, `[CastMember]`, `[Text]` — never storage
+vocabulary leaking through. `conversationTurns` returns `[Turn]`, not
+`[FileTick]`, because `ftKind`/`ftFields`/the hide flag are things a caller
+asking "what was said" should not have to know. `journalWindow` takes a
+named `JournalCuration` record rather than three same-typed `Int`s that are
+easy to transpose.
 
-What that opaque position type actually looks like is open — deliberately
-not designed yet. It needs more analysis before committing to a shape (does
-it need `Eq`/`Ord`? is it one type shared by every effect that resolves or
-consumes a position, or does each effect own its own?) — don't invent an
-answer under time pressure the next time `BranchResolve`/`TreeAccess` come
-up; treat it as its own design pass.
+The test: **if a caller needs to know something about how the backend
+stores data in order to use the return value** — that it's a hash, that
+it's addressable, that two of them compare by object identity rather than
+semantic equality — the boundary is leaking.
 
-## Interpreters vs. plain multi-effect functions
+The worst instance of this in the old design is worth recording because it
+shows what the leak costs. `BranchResolve` returned a raw
+`Storage.Core.ObjectHash`, and `journalWindow` took a `Maybe ObjectHash`
+position to consume it. Every caller crossing branches had to resolve a
+name to a hash and carry it. That is "the position of a branch is a hash of
+its content" — an assumption a plain directory can't satisfy — appearing in
+two signatures and one parameter. It was noted as a FIXME with a proposed
+opaque position type. The actual fix turned out not to need a new type at
+all: **enter, don't carry.** `withBranch (BranchName ("character/" <>
+ident)) $ journalWindow "journal.md" curation` — no hash, no parameter, no
+`BranchResolve`. Both the effect and the leak went away together.
 
-Effects are allowed to depend on other effects — a git-backed interpreter
-for effect `X` can legitimately be written by calling into effect `Y`
-rather than reaching for a primitive. `runBranchResolve` does this: it's
-built on `StoryStorage`, not on raw git. Intermediate effects are entirely
-permissible; the story-DSL is layered several effects deep already
-(`TreeAccess`/`Presence`/... on `BranchOp`, `BranchOp` on `StoryStorage`
-and `Git`).
+Reach for that first. If something wants to hand you a position, check
+whether it should be handing you a scope.
 
-But keep two different things distinct in your own head, because they read
-differently and are wired at different places:
+## Batch the primitive; keep the call intent-shaped
 
-- **A plain function written against several effects.** No GADT of its
-  own — it's just ordinary business logic that happens to need more than
-  one capability (`Members '[TreeAccess branch, Presence branch] r =>
-  ...`). This is the common case, and it's what almost every DSL library
-  function and agent should be.
-- **An interpreter for effect `X`, implemented by translating each
-  constructor into calls on effect `Y`** (`reinterpret`/`interpret`
-  discharging `X` while re-emitting `Y` sends). This is a real
-  implementation strategy for `X`, not a caller of `X` — it belongs next
-  to the rest of `X`'s interpreters, wired into the stack at the point `X`
-  is discharged, not scattered into business-logic modules.
+A function should say *what* the caller wants ("this file's recent journal
+window") and do it in one `runStorage` dispatch, even when the `StoreT`
+computation inside walks tick history, filters, and pads a window. Don't
+relay each primitive step back out through `Sem r`.
 
-Both are fine. What isn't fine is *unnecessarily* repeated round-trips
-through an effect boundary when one send would do — see below.
+`BranchOp`'s `RunStorage` is what makes this cheap: one send, one closed
+`StoreT` computation, several git-level operations run to completion inside
+it, only the final `[Text]` crossing back out.
 
-## Batch the primitive; keep the effect call intent-shaped
-
-An effect call should say *what* the caller wants ("give me this file's
-recent journal window," "commit this content") — one send, one meaningful
-unit of work — even when the interpreter underneath has to do several
-low-level operations to satisfy it. It should not become a relay for each
-individual primitive step.
-
-This is exactly what `Storyteller.Core.Branch.BranchOp`'s `RunStorage ::
-(forall n. StoreM n => StoreT n a) -> BranchOp branch m a` already gives
-every interpreter in `ContentEffects.hs`: `runJournalAccess`'s
-`JournalWindow` constructor is *one* `BranchOp` effect call
-(`runStorage @branch (...)`), even though the `StoreT` computation inside
-it walks tick history, filters, and pads a window — several git-level
-operations batched and run to completion inside that single send, with
-only the final `[Text]` crossing back out. The alternative — sending one
-effect call to read the tick list, another to filter it, another to slice
-the window, each returning through `Sem r` — would multiply effect
-dispatch overhead for no benefit (nothing between those steps needs to
-observe or intercept them individually) and would scatter the concept
-`JournalWindow` is supposed to name across several call sites instead of
-naming it once.
+Functions have one advantage over effects here that we are not yet using.
+Two effect constructors can never be fused into one transaction — they're
+separate dispatches by construction. Two functions can: `pendingSummary`
+followed by `recordSummary` is still two `runStorage` calls today, but it
+is now *possible* to write it as one. If you find yourself doing several
+dispatches that logically form one transaction, that's now a fixable
+problem rather than a structural one.
 
 The rule of thumb: if two steps always happen together, are never
 individually intercepted, and nothing meaningful could happen in between
-them from a different part of the program, they belong inside one
-interpreter case, run against the underlying primitive layer in one shot
-— not as two round-trips through the effect boundary.
-
-## The user-facing story
-
-From the point of view of someone adding a capability, the workflow is
-meant to be exactly this and nothing more:
-
-a. **I want that functionality, so I import those functions from the
-   effect module.** No storage internals to learn — see `STRUCTURE.md`'s
-   "erring toward specificity" section for the parallel argument about
-   why agent authors shouldn't need to know `Storage.*`.
-b. **The compiler tells me to add the effect to my function's `Members`
-   list** — and transitively, to every caller above it, all the way up to
-   wherever an interpreter is eventually supplied.
-c. **The interpreter goes wherever it's logical, not necessarily the main
-   stack.** Most of `ContentEffects.hs`'s interpreters compose directly
-   into `Storyteller.Core.Runtime.runStoryGit` (git already backs
-   everything). But an interpreter that needs extra data an app's main
-   stack doesn't carry (a cache, a rate limiter's own state, per-request
-   config) is legitimately wired closer to where that data lives —
-   `Storyteller.Core.Context.runContextValue` interprets its four
-   content effects fresh, per call, rather than once globally, because
-   the branch it's scoped to isn't known until the call site (see that
-   module's own redesign history in `[[project_mcp_export_effect_boundary]]`
-   for why a global wiring was actually wrong here, not just less
-   convenient).
-d. **Recoverable errors don't get hand-rolled at the call site.** See
-   below.
-
-This is also the whole answer to "is this portable to a different
-backend": a backend only has to write interpreters for the effects it can
-honestly support. Anything requiring an unsupported effect simply fails to
-compile *for that backend* — there is no separate runtime capability check
-to write, because the type is the check.
+them from a different part of the program, they belong inside one `StoreT`
+computation.
 
 ## Error handling: fix at the interpreter/interceptor level, not the call site
 
 Agent and filter functions should read as pure happy path — see
-`../runix/ERRORHANDLING.md` in full, this project follows it directly, not
-as an aspiration. In effect terms:
+`../runix/ERRORHANDLING.md` in full; this project follows it directly.
 
-- A GADT constructor can carry a richer return type (`Either`/`Maybe`) than
-  what most callers should see — `BranchResolve`'s `ResolveBranch ::
-  BranchName -> BranchResolve m (Maybe Core.ObjectHash)` is exactly this:
-  the raw send exposes absence, but a caller that has nothing useful to say
-  about a missing branch should get a convenience wrapper that collapses
-  it to `Fail` instead of matching on `Maybe` everywhere it's used.
-- A **fixing** interceptor sits between the caller and the interpreter,
-  sees every request, and can repair a failure into a valid value without
-  the caller ever knowing anything went wrong (ERRORHANDLING.md's
-  `intercept`-based `withFileDefaults` example). This is where recovery
-  belongs when the right context to fix things — a cache, a default, a
-  retry policy — lives at a different layer than either the call site or
-  the interpreter.
-- `Fail` is for the genuinely unrecoverable remainder, and it can be
-  caught locally (`runFail`) at whatever level actually has a sensible
-  fallback ("skip this notification silently"), without forcing every
-  intermediate function to thread `Either` through its own signature.
+- A function can carry a richer return type (`Either`/`Maybe`) internally
+  than what most callers should see, and export a wrapper that collapses it
+  to `Fail`. A caller with nothing useful to say about a missing branch
+  shouldn't be matching on `Maybe` everywhere.
+- A **fixing** interceptor sits between the caller and an interpreter, sees
+  every request, and repairs a failure into a valid value without the
+  caller knowing (ERRORHANDLING.md's `withFileDefaults`). This belongs
+  where the right context to fix things — a cache, a default, a retry
+  policy — lives at a different layer than either the call site or the
+  interpreter. Note that this requires an effect to intercept, and is one
+  of the few genuine reasons to have one.
+- `Fail` is for the unrecoverable remainder, caught locally (`runFail`)
+  wherever a sensible fallback exists.
 
-This doesn't compete with `Storage.Core.StoreT`'s own existing support for
-defaults and conditionals inside a batched computation (see "Batch the
-primitive" above) — those two mechanisms operate at different scopes and
-both stay. **Most errors are not fixable by any information available
-anywhere**, because they're the natural result of bad input, bad state, or
-a logic error — failing is the *correct* outcome for those, not a gap to
-paper over with a cleverer interceptor. `intercept`-based fixing earns its
-keep only for the narrow, genuinely-recoverable class: retrying an LLM call
-that returned a syntactically successful but malformed response,
-materializing a missing file from a template, and similar cases where a
-valid substitute value really does exist and the fix is legitimate rather
-than papering over a bug. Reach for it there; don't reach for it as a
-general substitute for `Fail`.
+**Most errors are not fixable by any information available anywhere** —
+they're the natural result of bad input, bad state, or a logic error, and
+failing is the *correct* outcome. `intercept`-based fixing earns its keep
+only for the narrow, genuinely-recoverable class: retrying an LLM call that
+returned a malformed response, materializing a missing file from a
+template. Don't reach for it as a general substitute for `Fail`.
 
-The test for whether a new effect's design is right: does the exported
-library function read as an ordinary, unconditional call — `charactersPresent
-path`, `journalWindow ... path lookback maxOut padding` — with no
-error-shaped noise in the agent code that calls it? If an agent needs a
-`case` on the result to do something other than propagate failure, that's a
-sign the fix belongs in an interceptor between the agent and the
-interpreter, not inline in the agent.
+The test for whether a new function's design is right: does it read as an
+ordinary, unconditional call — `conversationTurns path`,
+`journalWindow path curation` — with no error-shaped noise in the agent
+code calling it?
 
-## Composing the whole vocabulary
+## What we gave up, honestly
 
-Once several effects are naturally used together against the same backend,
-give callers one combinator that discharges all of them at once — not so
-callers are *forced* to take the bundle (they still request the individual
-effects, per function, in their own `Members` lists), but so wiring an
-interpreter stack for "the whole vocabulary, one branch, one backend"
-doesn't mean writing out seven `.`-composed lines by hand at every call
-site and keeping them in sync. `ContentEffects.hs`'s `runContentEffectsGit`
-is this: it composes the seven branch-scoped interpreters (everything but
-`BranchResolve`, which has no branch to scope to and is wired once,
-project-wide, separately). A different backend would supply its own
-equivalent, discharging whichever subset it can honestly back — there's no
-requirement that a second backend's combinator cover all seven.
+Three things, and one of them is real:
 
-## Testing an effect
+**Signalling.** `Members '[Presence branch, JournalAccess branch]` told you
+what a function touches at a glance; `Members '[BranchOp branch]` tells you
+"storage, somehow." This is a genuine regression when reading an unfamiliar
+agent, and it is the cost paid daily rather than hypothetically. What
+replaces it is import lists — weaker, because a row is type-checked and an
+import list is only read.
 
-If an effect is easily mockable, or has an honest pure implementation (no
-real I/O needed to behave correctly — an in-memory map standing in for
-tick history, say), that test interpreter belongs in the effect's own
-module, alongside the real one, the same way `Git.Mock` sits next to the
-real git interpreter for `test/`'s existing `runCWT`/`runEdit` pattern.
-Write it as part of adding the effect, not as an afterthought once
-something breaks.
+**Alternate backends.** `ConversationAccess` was the one case with a
+plausible alternate implementation: a SillyTavern-style chat log natively
+*is* turn-shaped, no tick history involved. It's now a DAG walk. The
+mitigation is that `Turn` survived as a type and `turnsFromFileTicks` is
+pure, so the seam is still there — re-effectifying is small and local
+*because the type exists*. **This is the general lesson: the type is the
+seam, not the GADT.** If you're worried about a future backend, define the
+domain type carefully and keep the pure derivation separate. That buys you
+most of the optionality at none of the cost.
 
-If it isn't honestly mockable that way (an LLM call, anything where a fake
-implementation would test the fake rather than real behavior), it relies on
-mocking further up the stack instead — up to and including the
-integration-test pattern already used elsewhere in this project: caching
-real responses once and replaying them (see the `agent-integration` journey
-tests). Don't invent a third option (a "plausible-looking" hand-written
-stub for something that can't be genuinely mocked) just to have something
-local to the module — that produces exactly the false-green risk
-`CLAUDE.md`'s testing section already warns about.
+**Mandatory vocabulary.** Nothing now stops an agent calling
+`runStorage @branch (Tick.fileTicksOf path)` raw. But this was already
+failing: while `FileTicks` existed, four sites
+(`Writer.Agent.Write`, `Writer.Presence`, `Server.Writer.File`,
+`Server.Writer.Library`) wrote that exact line raw anyway, and
+`Member (FileTicks branch) r` never appeared in a single signature because
+every caller discharged it locally. The discipline was always module
+discipline; the effect was charging ceremony for enforcement it wasn't
+providing.
+
+And one thing that got *better* than expected: the effect boundary was
+actively hiding duplication. `Presence` was a rename of
+`Writer.Presence.activeCharactersFor`, which already existed — the effect
+sat beside the function doing the same thing, and the layering made two
+owners look like one concept in two layers. `ConversationAccess`'s own fold
+was `Chat.historyFromFileTicks` transcribed into a second message type.
+Declaring a concept in a GADT makes it *look* owned, which is precisely
+what stops anyone checking whether it already was.
+
+## Testing
+
+If something has an honest pure implementation (no real I/O needed to
+behave correctly), test it directly — `turnsFromFileTicks` takes a
+`[FileTick]` and returns `[Turn]`, so its whole contract is testable
+without a storage stack at all. Extracting the pure core is usually the
+right first move; see `test/Storyteller/ChatSpec.hs`.
+
+For anything needing storage, the harness already exists: real storage
+effect stack, in-memory git (`Git.Mock`), plain hspec — see the
+`runCWT`/`runEdit` runners in `CommitWorkingTreeSpec`/`EditSpec` for the
+pattern to copy.
+
+For an effect with multiple interpreters, the test interpreter belongs in
+the effect's own module, alongside the real one. Write it as part of adding
+the effect, not once something breaks.
+
+If it isn't honestly mockable (an LLM call, anything where a fake would
+test the fake), mock further up the stack — up to the integration-test
+pattern of caching real responses once and replaying them (see the
+`agent-integration` journey tests). Don't invent a third option, a
+plausible-looking hand-written stub for something that can't be genuinely
+mocked, just to have something local to the module — that produces exactly
+the false-green risk `CLAUDE.md`'s testing section warns about.

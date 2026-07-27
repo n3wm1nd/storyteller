@@ -22,8 +22,7 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Writer.Agent (Prompt(..))
-import Storyteller.Writer.Agent.Summarizer
-  (Summarization, SummaryQuery, runSummarization, runSummaryQuery, runSummarizer)
+import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, defaultJournalGroupSize)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storage.Core as Core
@@ -43,9 +42,7 @@ import Prelude hiding (readFile)
 withFile_
   :: TestRunner
   -> BranchName
-  -> Sem ( SummaryQuery
-         : Summarization
-         : FileSystemWrite (BranchTag Main)
+  -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
          : BranchOp Main
@@ -54,7 +51,7 @@ withFile_
   -> Either String a
 withFile_ runner name action = run $ runner $ do
   _ <- createBranch name
-  runBranchAndFS @Main name (runSummarization @Main (runSummaryQuery @Main action))
+  runBranchAndFS @Main name action
 
 spec :: TestRunner -> Spec
 spec runner = do

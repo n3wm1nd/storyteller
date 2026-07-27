@@ -54,7 +54,7 @@ import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryGenerate)
 import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryGenerate)
 import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, journalChunkAgent, currentSheet)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
-import Storyteller.Writer.Agent.Summarizer (Summarization, runSummarizer)
+import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Writer.Agent (ContextBlock(..))
@@ -64,6 +64,7 @@ import Storyteller.Core.Context (resolveContext0, resolveContext1, runContextVal
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
 import Storyteller.Core.Atom (Atom(..), contentFor)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage, withStorage)
 import Storyteller.Core.Image (Image(..))
 import Storyteller.Core.LLM.Role (LLMs)
@@ -360,15 +361,15 @@ saveWholeFile branch path content =
 --   'Storyteller.Writer.Agent.Summarizer.runSummarizer' itself ever needs
 --   to change.
 summarize
-  :: (LLMs r, Members '[BranchOp Main, Summarization, PromptStorage, Logging, Fail, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)] r)
+  :: (LLMs r, Members '[BranchOp Main, Branches, PromptStorage, Logging, Fail, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)] r)
   => T.Text -> Sem r (Maybe TickId)
 summarize kind
-  | kind == "prose/chapter" = runSummarizer kind (chapterSummaryGenerate @Main kind)
-  | kind == "lore/article"  = runSummarizer kind (loreSummaryGenerate @Main kind)
+  | kind == "prose/chapter" = runSummarizer @Main kind (chapterSummaryGenerate @Main kind)
+  | kind == "lore/article"  = runSummarizer @Main kind (loreSummaryGenerate @Main kind)
   | kind == "journal"        = do
       sheet <- currentSheet @Main
-      Nothing <$ journalSummarize (journalChunkAgent sheet)
-  | otherwise                = runSummarizer kind passthroughGenerate
+      Nothing <$ journalSummarize @Main (journalChunkAgent sheet)
+  | otherwise                = runSummarizer @Main kind passthroughGenerate
 
 passthroughGenerate :: [Tick] -> Sem r (Map.Map FilePath T.Text)
 passthroughGenerate = pure . foldl' step Map.empty

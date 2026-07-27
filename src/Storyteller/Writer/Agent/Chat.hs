@@ -87,6 +87,7 @@ import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFrom
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt, PromptStorage, getConfigWithPrompt)
 import Storage.Tick (FileTick(..))
+import Storyteller.Writer.Conversation (Turn(..), turnsFromFileTicks)
 
 -- | Continue a conversation: given everything the model should see so far
 --   (prior history plus, at minimum, the new message the caller wants
@@ -168,20 +169,16 @@ chatTools =
 --   messages ('Storyteller.Writer.Agent.Prompt' ticks) with the agent's
 --   replies ('Storyteller.Core.Atom.Atom' ticks) — this is exactly a
 --   conversation transcript, so building one is just filtering and
---   relabelling, not new storage. Any other tick kind on the file (notes,
---   presence) is conversational noise here and dropped -- and so is any
---   tick the user has explicitly hidden (@("hide", "true")@ in 'ftFields',
---   set\/cleared via 'Server.Core.File.hideFileAtoms'\/'unhideFileAtoms'):
---   this is the one place a hidden tick actually stops reaching a model,
---   same tag the UI already lets a user toggle per atom but that, until
---   now, only ever affected how the atom was *displayed*, never what a
---   later call here actually sent.
+--   relabelling, not new storage.
+--
+--   Which ticks count and which are dropped is
+--   'Storyteller.Writer.Conversation.turnsFromFileTicks' — this is only
+--   the projection of its model-agnostic 'Turn' into a 'UniversalLLM'
+--   'Message'. The rules used to live here in full, and again, spelled
+--   identically, in the context DSL's own @readconversation@; splitting
+--   them this way is what keeps the two from drifting.
 historyFromFileTicks :: [FileTick] -> [Message m]
-historyFromFileTicks = concatMap toMessage . filter (not . isHidden)
+historyFromFileTicks = map toMessage . turnsFromFileTicks
   where
-    isHidden ft = lookup "hide" (ftFields ft) == Just "true"
-
-    toMessage ft = case ftKind ft of
-      "prompt" -> [UserText (ftMessage ft)]
-      "atom"   -> [AssistantText (maybe (ftMessage ft) id (ftContent ft))]
-      _        -> []
+    toMessage (UserTurn t)      = UserText t
+    toMessage (AssistantTurn t) = AssistantText t

@@ -11,10 +11,16 @@ module Storyteller.Common.Types
   ( Note(..)
   , Fixup(..)
   , Swipe(..)
+  , hiddenTagKey
+  , setHidden
+  , ftHidden
   ) where
 
 import Data.Text (Text)
 
+import Storage.Core (ObjectHash, StoreM, StoreT)
+import qualified Storage.Ops as Ops
+import Storage.Tick (FileTick(..))
 import Storyteller.Core.Types (TickId, TickType(..), Tick(..), TickData(..), encodeDraft, decodePayload)
 
 -- | An annotation attached to zero or more existing ticks — a comment on a
@@ -73,3 +79,34 @@ instance TickType Swipe where
     case tickRefs (tickData t) of
       [of_] -> Just Swipe { swipeOf = of_, swipeContent = content }
       _     -> Nothing
+
+-- ---------------------------------------------------------------------------
+-- Hiding
+-- ---------------------------------------------------------------------------
+
+-- | The atom tag marking a tick the user has hidden.
+--
+--   Not a tick kind of its own but a flag on an existing one, and not a
+--   storage concept either — "Storage.Core" never acts on this key the way
+--   it acts on 'Storage.Core.removedTagKey'. It sits here for the same
+--   reason 'Note' does: an app built on this storage model might plausibly
+--   want it, none of them have to.
+--
+--   The tick stays in the chain and in the file; what hiding actually costs
+--   it is inclusion in the conversation an agent is sent (see
+--   'Storyteller.Writer.Conversation.turnsFromFileTicks' — the one place
+--   the flag has real consequences, rather than merely affecting how the
+--   UI draws the tick).
+hiddenTagKey :: Text
+hiddenTagKey = "hide"
+
+-- | Hide or unhide one atom, by id.
+setHidden :: StoreM m => ObjectHash -> Bool -> StoreT m ObjectHash
+setHidden target hidden =
+  Ops.setAtomTag target hiddenTagKey (if hidden then Just "true" else Nothing)
+
+-- | Is this tick hidden? Absent on every kind but an atom, which reads as
+--   not hidden — a note or a presence tick is never something the user
+--   hid.
+ftHidden :: FileTick -> Bool
+ftHidden ft = lookup hiddenTagKey (ftFields ft) == Just "true"

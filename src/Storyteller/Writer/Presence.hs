@@ -195,7 +195,7 @@ activeCharacters :: [FileTick] -> Set.Set Character
 activeCharacters = foldl' step Set.empty
   where
     step acc ft
-      | ftKind ft /= "presence" = acc
+      | not (Tick.ftIsType @Presence ft) = acc
       | otherwise = case (lookup "character" (ftFields ft), lookup "event" (ftFields ft)) of
           (Just charT, Just "enter") -> Set.insert (Character (BranchName charT)) acc
           (Just charT, Just "leave") -> Set.delete (Character (BranchName charT)) acc

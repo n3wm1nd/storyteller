@@ -36,7 +36,7 @@ import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Runix.Logging (Logging)
 
-import Storyteller.Core.ContentEffects (BranchResolve, Cast, runCast)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag, BranchOp)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
@@ -59,7 +59,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS (runCast @Main (presenceAction target)))
+    (interpretPromptStorageFS (presenceAction target))
 
   case result of
     Left err       -> hPutStrLn stderr ("Error: " <> err) >> exitFailure
@@ -76,8 +76,7 @@ presenceAction
               , FileSystemRead  (BranchTag Main)
               , BranchOp Main
               , StoryStorage
-              , BranchResolve
-              , Cast
+              , Branches
               , Logging, Fail] r)
   => Maybe FilePath -> Sem r [(FilePath, [PresenceDecision])]
 presenceAction (Just path) = (\ds -> [(path, ds)]) <$> trackPresenceFor @Main path

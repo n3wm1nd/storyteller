@@ -35,7 +35,6 @@ import Server.Core.Branch (Main)
 import Server.TestStack
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (ProseModel)
 import Storyteller.Context.DSL.Compile (Library, currentScope)
 import Storyteller.Context.DSL.Library (contextLore)
@@ -51,14 +50,14 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, ContextStorage, Fail] r => Action (ContextRow r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 -- | No overrides are ever staged in this spec -- just the compiled-in
 --   defaults, same as 'buildContextLibrary' would build from an empty
 --   override map.
-emptyLib :: forall r. Members '[Branches, BranchResolve, Fail] r => Library (ContextRow Main r)
+emptyLib :: forall r. Members '[Branches, BranchOp Main, Fail] r => Library (ContextRow r)
 emptyLib = fst (buildContextLibrary @Main Map.empty)
 
 describeMessage :: LLM.Message m -> (LLM.MessageDirection, Text)

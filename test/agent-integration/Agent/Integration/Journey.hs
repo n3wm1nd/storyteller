@@ -63,7 +63,6 @@ import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Context.DSL.Rendering (renderContext)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 
 -- | Every effect one journey step needs -- exactly 'Server.Writer.File'\'s
@@ -71,7 +70,7 @@ import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValu
 --   @Error String@, neither of which any step below touches.
 type JourneyEffects r =
   ( LLMs r
-  , Members '[ PromptStorage, ContextStorage, BranchResolve, Splitter, Logging
+  , Members '[ PromptStorage, ContextStorage, Splitter, Logging
              , StoryStorage, BranchOp Main, Branches, Git
              , FileSystem      (BranchTag Main)
              , FileSystemRead  (BranchTag Main)

@@ -27,7 +27,6 @@ import Polysemy.Fail (Fail)
 
 import Storyteller.Core.Context (ContextRow, ContextStorage, runContextValue)
 import Runix.FileSystem (FileSystem, FileSystemRead)
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -56,7 +55,7 @@ injuryText v = case lookup "injury" (valueEntries v) of
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, ContextStorage, Fail] r => Action (ContextRow r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 

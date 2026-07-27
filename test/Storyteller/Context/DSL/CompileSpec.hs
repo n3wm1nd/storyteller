@@ -20,11 +20,11 @@
 --
 --   "Storyteller.Context.DSL.Compile" itself has no Polysemy dependency
 --   of its own beyond the generic effect row 'Storyteller.Context.DSL.Value.Action'
---   carries -- every deferred computation names exactly the
---   "Storyteller.Core.ContentEffects" vocabulary it needs
---   (@\@branch@-phantomed, see that module's own Haddock), never a
---   concrete backend. 'runDslOn' below is where a *real* git-backed
---   instance of that vocabulary gets supplied, via 'runContextValue'.
+--   carries -- every deferred computation names exactly the capabilities
+--   it needs ('Storyteller.Core.Branch.BranchOp'\/'Storyteller.Core.Branch.Branches',
+--   the DSL's own filesystem), never a concrete backend. 'runDslOn' below
+--   is where a *real* git-backed instance of those gets supplied, via
+--   'runContextValue'.
 module Storyteller.Context.DSL.CompileSpec (spec) where
 
 import Control.Monad (void)
@@ -51,15 +51,14 @@ import Server.TestStack
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Storyteller.Context.DSL.Compile (ContextFS)
-import Storyteller.Core.ContentEffects (BranchResolve, Presence, JournalCuration(..))
-import Storyteller.Writer.Agent.Summarizer (SummaryQuery)
+import Storyteller.Writer.Journal (JournalCuration(..))
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding, Library, bval, currentScope, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Agent.Summarizer (runSummarization, runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
 import Storyteller.Writer.Presence (enters, leaves)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
@@ -87,12 +86,12 @@ seedBranch name files = do
 --   each @where@-bound @go@ can carry an explicit signature (needed:
 --   without one, a plain @go = do ...@ gets a monomorphic inferred type
 --   that can't unify with 'runDslOn's own rank-2 argument).
-type DslR r = Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r
+type DslR r = Members '[BranchOp Main, Branches, ContextStorage, Fail] r
 
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. DslR r => Action (ContextRow Main r) a)
+  -> (forall r. DslR r => Action (ContextRow r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
@@ -170,7 +169,7 @@ absenceSpec = describe "absence, not an error (Non-goals)" $
     runInjuryCase "main" []
       `shouldBe` Right "not injured"
 
-crossBranchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,BranchResolve, Fail] r => Library r -> Binding r -> Action r (Value r)
+crossBranchDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, Branches, Fail] r => Library r -> Binding r -> Action r (Value r)
 crossBranchDsl = [dslWith|
 charname:
   in (charname | branch): read "sheet.md"
@@ -223,7 +222,7 @@ crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $ d
 
 -- | Reads the same path either side of an @in (charname | branch)@ -- see
 --   'crossBranchSpec'\'s second case.
-bothScopesDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, BranchResolve, Fail] r => Library r -> Binding r -> Action r (Value r)
+bothScopesDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, Branches, Fail] r => Library r -> Binding r -> Action r (Value r)
 bothScopesDsl = [dslWith|
 charname:
   as "cross": in (charname | branch): read "sheet.md"
@@ -255,7 +254,7 @@ forLoopSpec = describe "for/as over a glob (Chekhov's-gun list example)" $
       -- named exports) -- see the follow-up test below for what's
       -- actually inside it.
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Text, Map Name Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Text, Map Name Text)
     go = do
       v         <- openTrackingDsl @Main
       defMsgs   <- valueDefault v
@@ -276,7 +275,7 @@ forLoopEntriesSpec = describe "for/as nested entries" $
       , ("tracking/letter.md", "an unopened letter")
       ])
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Map Name Text)
     go = do
       v       <- openTrackingDsl @Main
       Just openAction <- pure (lookup "open" (valueEntries v))
@@ -343,12 +342,12 @@ forOverBindingResultSpec = describe "for iterates a Binding call's result direct
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["aria"]
   where
-    forCharsDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Presence branch, Fail] r => Library r -> Action r (Value r)
+    forCharsDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, BranchOp branch, Fail] r => Library r -> Action r (Value r)
     forCharsDsl = [dslWith|
 for c in (charactersin "scene.md"):
   as c: c
 |]
-    go :: forall r. DslR r => Action (ContextRow Main r) [Name]
+    go :: forall r. DslR r => Action (ContextRow r) [Name]
     go = do
       v <- forCharsDsl @Main (CtxLibrary.hostLibrary @Main)
       pure (map fst (valueEntries v))
@@ -376,14 +375,14 @@ charactersinIgnoresBranchRedirectionSpec =
         runDslOn (BranchName "main") go)
       `shouldBe` Right ["aria"]
   where
-    redirectedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,BranchResolve, Presence branch, Fail] r => Library r -> Binding r -> Action r (Value r)
+    redirectedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, Branches, BranchOp branch, Fail] r => Library r -> Binding r -> Action r (Value r)
     redirectedDsl = [dslWith|
 charname:
   in (charname | branch):
     for c in (charactersin "scene.md"):
       as c: c
 |]
-    go :: forall r. DslR r => Action (ContextRow Main r) [Name]
+    go :: forall r. DslR r => Action (ContextRow r) [Name]
     go = do
       v <- redirectedDsl @Main (CtxLibrary.hostLibrary @Main) (textArg "aria")
       pure (map fst (valueEntries v))
@@ -393,7 +392,7 @@ charname:
 --   rather than the raw branch. Eager, like @read@: the summarized text
 --   is already settled by the time this 'Value' comes back, not a
 --   deferred handle a caller resolves later.
-summarizedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, SummaryQuery, Fail] r => Library r -> Action r (Value r)
+summarizedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, BranchOp branch, Fail] r => Library r -> Action r (Value r)
 summarizedDsl = [dslWith|
 "chapter.md" | summarized("prose/chapter")
 |]
@@ -404,7 +403,7 @@ summarizedFilterSpec = describe "path | summarized(kind) (reads a file through i
     run (testStack $ do
       seedBranch "main" [("chapter.md", "a very long chapter, in full")]
       runBranchOpGit @Main (BranchName "main") $
-        runSummarization @Main (void (runSummarizerForPath"prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized")))
+        void (runSummarizerForPath @Main "prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedDsl @Main (CtxLibrary.hostLibrary @Main))))
     `shouldBe` Right "chapter one, summarized"
 
@@ -418,7 +417,7 @@ summarizedFilterSpec = describe "path | summarized(kind) (reads a file through i
 --   counterpart: only the *first* kind in the given hierarchy is ever
 --   considered, so a caller listing a coarser tier after a finer one
 --   never falls through to it, unlike @summarized@.
-summarizedOnceDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, SummaryQuery, Fail] r => Library r -> Action r (Value r)
+summarizedOnceDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, BranchOp branch, Fail] r => Library r -> Action r (Value r)
 summarizedOnceDsl = [dslWith|
 "chapter.md" | summarizedOnce("prose/chapter prose/book")
 |]
@@ -428,9 +427,9 @@ summarizedOnceFilterSpec = describe "path | summarizedOnce(kinds) (reads exactly
   it "stops at the finest kind's own summary, ignoring a coarser kind listed after it" $
     run (testStack $ do
       seedBranch "main" [("chapter.md", "a very long chapter, in full")]
-      runBranchOpGit @Main (BranchName "main") $ runSummarization @Main $ do
+      runBranchOpGit @Main (BranchName "main") $ do
         void (runSummarizerForPath"prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
-        runSummarization @Main (void (runSummarizerForPath"prose/book" "chapter.md" (\_ -> pure "whole book, summarized")))
+        void (runSummarizerForPath @Main "prose/book" "chapter.md" (\_ -> pure "whole book, summarized"))
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedOnceDsl @Main (CtxLibrary.hostLibrary @Main))))
     `shouldBe` Right "chapter one, summarized"
 
@@ -438,7 +437,7 @@ summarizedOnceFilterSpec = describe "path | summarizedOnce(kinds) (reads exactly
     run (testStack $ do
       seedBranch "main" [("chapter.md", "a very long chapter, in full")]
       runBranchOpGit @Main (BranchName "main") $
-        runSummarization @Main (void (runSummarizerForPath"prose/book" "chapter.md" (\_ -> pure "whole book, summarized")))
+        void (runSummarizerForPath @Main "prose/book" "chapter.md" (\_ -> pure "whole book, summarized"))
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedOnceDsl @Main (CtxLibrary.hostLibrary @Main))))
     `shouldBe` Right "a very long chapter, in full"
 
@@ -485,7 +484,7 @@ localFunctionInForLoopSpec = describe "a local function bound fresh each for-loo
       runDslOn (BranchName "main") go)
     `shouldBe` Right (Map.fromList [("tracking/gun.md", "gun"), ("tracking/letter.md", "letter")])
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Map Name Text)
     go = do
       v       <- localFunctionInForLoopDsl @Main
       Just resultsAction <- pure (lookup "results" (valueEntries v))
@@ -567,7 +566,7 @@ binaryExclusionSpec = describe "never-atom-tracked (binary) content" $
       , ("other.md", "also kept")
       ])
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Map Name Text)
     go = do
       v <- binaryExclusionDsl @Main
       Just keptAction <- pure (lookup "kept" (valueEntries v))
@@ -599,7 +598,7 @@ excludeFilterSpec = describe "expr | exclude(pattern...) (glob-pattern exclusion
       , ("other.md", "also kept")
       ])
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Map Name Text)
     go = do
       v       <- excludeFilterDsl @Main
       Just keptAction <- pure (lookup "kept" (valueEntries v))
@@ -668,7 +667,7 @@ sortByThenReexportSpec = describe "sortBy's reordering survives a subsequent for
       runDslOn (BranchName "main") go)
     `shouldBe` Right ["ch1.md", "ch2.md", "ch11.md"]
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) [Name]
+    go :: forall r. DslR r => Action (ContextRow r) [Name]
     go = do
       v <- sortByThenReexportDsl @Main
       pure (map fst (valueEntries v))
@@ -711,7 +710,7 @@ excludeByAnotherDefinitionSpec = describe "expr | exclude(anotherDefinition)" $
       , ("chapters/ch1.md", "chapter one prose")
       ])
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Map Name Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Map Name Text)
     go = do
       v <- excludeByAnotherDefinitionDsl @Main (bval (loreDsl @Main))
       entryTexts <- mapM (\(k, act) -> (,) k . messagesText <$> (valueDefault =<< act)) (valueEntries v)
@@ -737,7 +736,7 @@ assistantWrapsExprSpec = describe "> <expr> (Assistant-tag a general expression,
       runDslOn (BranchName "main") go)
     `shouldBe` Right [User "## Chapter: ch1.md", Assistant "chapter one prose"]
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) [Message]
+    go :: forall r. DslR r => Action (ContextRow r) [Message]
     go = do
       v <- assistantWrapsExprDsl @Main
       Just chapterAction <- pure (lookup "chapter" (valueEntries v))
@@ -813,7 +812,7 @@ journalDeltaSpec = describe "journalDelta (host-supplied Binding wrapping recent
       seedBranch "main" []
       seedCharacterJournalBranch "character/jenny"
       runDslOn (BranchName "main")
-        (messagesText <$> (valueDefault =<< journalDeltaDsl @Main (journalDelta @Main (JournalCuration 30 10 0)))))
+        (messagesText <$> (valueDefault =<< journalDeltaDsl @Main (journalDelta (JournalCuration 30 10 0)))))
     `shouldBe` Right
       ( "### From this character's own journal (their private viewpoint -- may be biased, outdated, or contradict the wider record)\n\n"
         <> "s2 content, but Jenny remembers it differently"
@@ -853,7 +852,7 @@ contextCharacterSpec = describe "contextCharacter (sheet/blurb/full/journal/jour
       , "s1 contents2 content, but Jenny remembers it differently"
       )
   where
-    go :: forall r. DslR r => Action (ContextRow Main r) (Text, Text, Text, [Name], Text, Text)
+    go :: forall r. DslR r => Action (ContextRow r) (Text, Text, Text, [Name], Text, Text)
     go = do
       v <- currentScope >>= \s -> CtxLibrary.contextCharacter s (fst (buildContextLibrary @Main Map.empty)) "jenny"
       def <- messagesText <$> valueDefault v

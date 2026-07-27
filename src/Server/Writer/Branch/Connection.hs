@@ -61,7 +61,6 @@ import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (withStorage)
-import Storyteller.Writer.Agent.Summarizer (runSummarization)
 import Storyteller.Core.Types (TickId(..))
 
 runBranch :: ServerEnv -> T.Text -> WS.Connection -> IO ()
@@ -172,7 +171,7 @@ commandLoop env conn branch cancelFlag = loop
       embed $ mapM_ (\cid -> registerCancel env cid cancelFlag) (bcId cmd)
       catch @String
         (logCommand (commandKind cmd)
-          (withStorage (withBranch @Main branch (runSummarization @Main (runCommand branch cmd))))
+          (withStorage (withBranch @Main branch (runCommand branch cmd)))
           >>= embed . mapM_ (WS.sendTextData conn . encode))
         (\err -> embed (reportError conn err))
       embed $ mapM_ (unregisterCancel env) (bcId cmd)

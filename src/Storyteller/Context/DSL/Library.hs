@@ -333,7 +333,7 @@ in (x | sortBy):
 
 --   Declares no capability beyond 'Fail', despite the compression:
 --   @summarized@ is reached through @chapterEntryCompressed@'s own entry in
---   @lib@, so the 'Storyteller.Core.ContentEffects.Summarized' capability
+--   @lib@, so the summary-reading capability
 --   lives in the 'Library' this is handed (where 'hostLibrary' establishes
 --   it), and the file reading lives in @scope@, which is already-built
 --   data. Restating either here would describe this function by what its

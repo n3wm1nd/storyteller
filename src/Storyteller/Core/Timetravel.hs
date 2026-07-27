@@ -60,9 +60,8 @@ import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (TickId(..))
 
 -- | @branch@-scoped, same convention as 'Storyteller.Core.Branch.BranchOp'
---   and every 'Storyteller.Core.ContentEffects' effect but 'BranchResolve':
---   "run this at a position" is meaningless without saying which branch's
---   chain the position is in.
+--   and @Runix.FileSystem@: "run this at a position" is meaningless
+--   without saying which branch's chain the position is in.
 data Timetravel (branch :: k) (m :: Type -> Type) a where
   At         :: TickId -> m a -> Timetravel branch m a
   AtAtomText :: FilePath -> T.Text -> m a -> Timetravel branch m a

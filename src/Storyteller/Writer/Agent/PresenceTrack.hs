@@ -72,7 +72,7 @@
 --
 --   'trackPresenceFor' is the effectful wrapper: reads the scene's whole
 --   current text and the story's full cast (via
---   'Storyteller.Core.ContentEffects.knownCast'), hands both to
+--   'Storyteller.Writer.Cast.knownCast'), hands both to
 --   'presenceAgent', and resolves\/applies every decision via
 --   'resolveAnchor'\/'Storyteller.Writer.Presence.recordPresenceForFile'. Safe
 --   to re-run: a decision that's already reflected in the file's state as
@@ -114,7 +114,8 @@ import UniversalLLM.Tools
   , ToolResult(..)
   )
 
-import Storyteller.Core.ContentEffects (Cast, CastMember(..), knownCast)
+import Storyteller.Writer.Cast (CastMember(..), knownCast)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
@@ -353,7 +354,7 @@ defaultPresenceConfig = [MaxTokens 4096, Temperature 0.2]
 --   edit -- @(atom, character, event)@, the shape
 --   'Storyteller.Writer.Presence.recordPresenceForFile' wants -- via
 --   'Storage.Tick.atomsMatchingText' against @ticks@ (typically
---   'Storyteller.Core.ContentEffects.fileTicksOf's own result). This
+--   'Storage.Tick.fileTicksOf's own result). This
 --   caller's own tolerance is exactly one atom: logs and drops (returns
 --   'Nothing') if the match is missing or ambiguous, the same "an
 --   unresolvable model-supplied span is a real problem, not silently
@@ -382,7 +383,7 @@ resolveAnchor path ticks (PresenceDecision charBranch event atText) =
 
 -- | Track presence for one scene file already committed on @branch@: reads
 --   its current whole text, the story's full cast (via
---   'Storyteller.Core.ContentEffects.knownCast'), and who's already marked
+--   'Storyteller.Writer.Cast.knownCast'), and who's already marked
 --   present, hands all three to 'presenceAgent', resolves every decision's
 --   quoted span to a real anchor via 'resolveAnchor', then applies them all
 --   in one 'Storyteller.Writer.Presence.recordPresenceForFile' call — a
@@ -395,7 +396,7 @@ resolveAnchor path ticks (PresenceDecision charBranch event atText) =
 trackPresenceFor
   :: forall branch r
   .  ( LLMs r
-     , Members '[ PromptStorage, StoryStorage, BranchOp branch, Cast
+     , Members '[ PromptStorage, StoryStorage, BranchOp branch, Branches
                 , FileSystem (BranchTag branch), FileSystemRead (BranchTag branch)
                 , Fail, Logging] r
      )
@@ -406,7 +407,7 @@ trackPresenceFor path = do
     then [] <$ warning ("trackPresenceFor: " <> T.pack path <> " has no content yet, skipping")
     else do
       sceneText <- TE.decodeUtf8 <$> readFile @(BranchTag branch) path
-      cast      <- knownCast
+      cast      <- knownCast @branch
       present   <- map unCharacter <$> activeCharactersFor @branch path
       info $ "trackPresenceFor: " <> T.pack path <> ": " <> T.pack (show (length cast)) <> " known character(s)"
       decisions <- presenceAgent cast present sceneText
@@ -429,7 +430,7 @@ trackPresenceFor path = do
 trackPresenceForAll
   :: forall branch r
   .  ( LLMs r
-     , Members '[ PromptStorage, StoryStorage, BranchOp branch, Cast
+     , Members '[ PromptStorage, StoryStorage, BranchOp branch, Branches
                 , FileSystem (BranchTag branch), FileSystemRead (BranchTag branch)
                 , Fail, Logging] r
      )

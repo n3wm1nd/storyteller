@@ -61,7 +61,9 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import Storyteller.Core.Git (BranchTag)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
-import Storyteller.Writer.Agent.Summarizer (Summarization, tieredSummary, withTrailingNewline)
+import Storyteller.Core.Branch (Branches)
+import Storyteller.Core.Git (BranchOp)
+import Storyteller.Writer.Agent.Summarizer (tieredPass, withTrailingNewline)
 import Storyteller.Writer.Library (journalPath)
 
 -- | Every tier groups in batches of 10 -- "10 atoms" for tier 0, "10
@@ -87,11 +89,12 @@ journalKind = "journal"
 --   (see @test.Storyteller.TasksSpec@'s own Haddock) -- production passes
 --   'journalChunkAgent', a test passes a pure stub.
 journalSummarize
-  :: Member Summarization r
+  :: forall source r
+  .  Members '[BranchOp source, Branches, Fail] r
   => ([Text] -> Sem r Text)  -- ^ compress one full group, oldest first
   -> Sem r Bool
 journalSummarize =
-  tieredSummary journalKind journalPath defaultJournalGroupSize False
+  tieredPass @source journalKind journalPath defaultJournalGroupSize False
 
 -- | The manual-creation entry point: force tier 0's current pass to close
 --   out right now, compressing whatever's pending -- however many raw
@@ -104,9 +107,12 @@ journalSummarize =
 --   Deeper tiers are never forced (see 'TieredSummary'), so a manual
 --   tier-0 entry contributes one more ordinary item to tier 1's count and
 --   nothing more.
-journalCreateManual :: Member Summarization r => Sem r Bool
+journalCreateManual
+  :: forall source r
+  .  Members '[BranchOp source, Branches, Fail] r
+  => Sem r Bool
 journalCreateManual =
-  tieredSummary journalKind journalPath defaultJournalGroupSize True (const (pure ""))
+  tieredPass @source journalKind journalPath defaultJournalGroupSize True (const (pure ""))
 
 -- | Compress one full group of raw items (raw journal entries at tier 0,
 --   a lower tier's own newly-grown text at tier @n > 0@) into one dense

@@ -20,14 +20,13 @@ import Runix.Git (Git)
 import Git.Mock (emptyGitState, runGitMock)
 
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Git (BranchOp, runBranchAndFS, runStorage, runStoryStorageGit)
+import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchesGit, runStorage, runStoryStorageGit)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..), Tick)
 import Storyteller.Common.Summary (lastSummaryOf)
 import Storyteller.Writer.Agent.ChapterSummarizer (unitSummaryCandidates)
 import Storyteller.Writer.Agent.Summarizer
-  ( densest, densestWithin, runSummarization, runSummaryQuery
-  , runSummarizer, runSummarizerForPath )
+  ( densest, densestWithin, runSummarizer, runSummarizerForPath )
 import Storyteller.Writer.Agent.SummaryAccess (rawContent)
 
 data Source
@@ -38,10 +37,10 @@ runOne action =
   . evalState emptyGitState
   . runGitMock
   . runStoryStorageGit
+  . runBranchesGit
   $ do
       _ <- createBranch (BranchName "book1/chapter3")
-      runBranchAndFS @Source (BranchName "book1/chapter3")
-        (runSummaryQuery @Source (runSummarization @Source action))
+      runBranchAndFS @Source (BranchName "book1/chapter3") action
 
 spec :: Spec
 spec = do

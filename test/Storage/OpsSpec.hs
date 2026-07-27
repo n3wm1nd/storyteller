@@ -116,29 +116,38 @@ spec = do
         Left err -> expectationFailure err
         Right ((refs, _t1), _finalState) -> length refs `shouldBe` 1
 
-  describe "setAtomHidden" $ do
-    it "tags the atom hidden without touching its content" $ do
+  describe "setAtomTag" $ do
+    it "attaches the tag without touching the atom's content" $ do
       let result = fst <$> runChain (do
             t1 <- addAtom "scene.md" "p1\n"
-            _  <- setAtomHidden t1 True
+            _  <- setAtomTag t1 "mood" (Just "tense")
             h  <- headHash
             lift (readTick h))
-      result `shouldBe` Right (Atom [] "scene.md" [("hide", "true")] "p1\n")
+      result `shouldBe` Right (Atom [] "scene.md" [("mood", "tense")] "p1\n")
 
-    it "unhiding clears the tag again" $ do
+    it "clearing removes the tag again" $ do
       let result = fst <$> runChain (do
             t1 <- addAtom "scene.md" "p1\n"
-            _  <- setAtomHidden t1 True
-            _  <- setAtomHidden t1 False
+            _  <- setAtomTag t1 "mood" (Just "tense")
+            _  <- setAtomTag t1 "mood" Nothing
             h  <- headHash
             lift (readTick h))
       result `shouldBe` Right (Atom [] "scene.md" [] "p1\n")
 
-    it "hiding an atom earlier in the chain doesn't disturb a later atom's own content" $ do
+    it "setting a tag again replaces the old value rather than accumulating one per write" $ do
+      let result = fst <$> runChain (do
+            t1 <- addAtom "scene.md" "p1\n"
+            _  <- setAtomTag t1 "mood" (Just "tense")
+            _  <- setAtomTag t1 "mood" (Just "calm")
+            h  <- headHash
+            lift (readTick h))
+      result `shouldBe` Right (Atom [] "scene.md" [("mood", "calm")] "p1\n")
+
+    it "tagging an atom earlier in the chain doesn't disturb a later atom's own content" $ do
       let result = fst <$> runChain (do
             t1 <- addAtom "scene.md" "p1\n"
             _  <- addAtom "scene.md" "p2\n"
-            _  <- setAtomHidden t1 True
+            _  <- setAtomTag t1 "mood" (Just "tense")
             committedContent "scene.md")
       result `shouldBe` Right "p1\np2\n"
 

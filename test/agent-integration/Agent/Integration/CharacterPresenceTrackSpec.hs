@@ -33,7 +33,6 @@ import Runix.Logging (info)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
-import Storyteller.Core.ContentEffects (runCast)
 import Storyteller.Core.Git (runBranchAndFS, runStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -96,12 +95,11 @@ spec runner = describe "retroactive presence tracking (real LLM, cached)" $
         _ <- runStorage @Main (Ops.addAtom sceneFile sceneText)
         pure ()
 
-      -- 'runCast' no longer borrows a branch scope's object store via
-      -- 'runCast' enters each character branch itself (via the 'Branches'
+      -- 'knownCast' enters each character branch itself (via the 'Branches'
       -- door) and reads its sheet through the ordinary filesystem effects,
       -- so there's no scope to name here beyond the tag the door is wired
       -- at.
-      decisions <- runCast @Main $ trackPresenceFor @Main sceneFile
+      decisions <- trackPresenceFor @Main sceneFile
       info $ "presence decisions: " <> T.pack (show decisions)
 
       -- The scene's own text has both characters explicitly leave at the

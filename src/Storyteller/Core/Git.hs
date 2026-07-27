@@ -103,7 +103,7 @@ import qualified System.FilePath.Glob as Glob
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
-import Storyteller.Core.Branch (BranchOp(..), Branches, Visited, runStorage)
+import Storyteller.Core.Branch (Anchor(..), BranchOp(..), Branches, Visited, runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Query as Query
@@ -622,7 +622,15 @@ runBranchesGit
   :: forall r a
   .  Members '[Git, StoryStorage, Fail] r
   => Sem (Branches ': r) a -> Sem r a
-runBranchesGit = runScopedNew (runBranchOpGit @Visited)
+runBranchesGit = runScopedNew $ \case
+  ByName name -> runBranchOpGit @Visited name
+  -- No ref to publish to, so nothing to publish: a position-anchored
+  -- scope's head is handed back by 'withBranchAt' instead, and recording
+  -- it somewhere reachable is the caller's job. Reacting per-write would
+  -- also be wrong for the one real caller -- a tiered summarizer descends
+  -- by moving its own head backward before replaying forward, so
+  -- intermediate positions are bookkeeping, not results.
+  ByPosition (TickId h) -> runBranchOpGitFrom @Visited (Core.ObjectHash h) (\_ -> return ())
 
 -- | The general interpreter 'runBranchOpGit' is just one particular
 --   instance of: seed the scope from an explicit object hash rather than

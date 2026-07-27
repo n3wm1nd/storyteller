@@ -107,15 +107,12 @@ import Storyteller.Context.DSL.Value
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import qualified Runix.FileSystem as FS
 
-import Storyteller.Core.ContentEffects
-  ( Presence, JournalAccess, ConversationAccess
-  , BranchResolve, Turn(..), JournalCuration(..)
-  , charactersPresent, journalWindow
-  , conversationTurns, resolveBranch
-  )
-import Storyteller.Writer.Agent.Summarizer (SummaryQuery, densest)
+import Storyteller.Writer.Agent.Summarizer (densest)
+import Storyteller.Writer.Conversation (Turn(..), conversationTurns)
+import Storyteller.Writer.Journal (JournalCuration(..), journalWindow)
+import Storyteller.Writer.Presence (activeCharactersFor)
 import Storyteller.Core.Branch (Branches, Visited, withBranch)
-import Storyteller.Core.Git (BranchTag, runStoryFSRead)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStoryFSRead)
 import Storyteller.Core.Types (BranchName(..))
 import qualified Storyteller.Writer.Agent.MessageWindow as MessageWindow
 import qualified Storyteller.Writer.Branches as Branches
@@ -1128,18 +1125,18 @@ branchBinding = fn1 go
 --   *is* the key (the identifier); a caller narrows further with @in
 --   (charname | branch): ...@\/@describechar charname@, same as any other
 --   character identifier this DSL already hands around.
-charactersInBinding :: forall branch r. Members '[Presence branch, Fail] r => Binding r
+charactersInBinding :: forall branch r. Members '[BranchOp branch, Fail] r => Binding r
 charactersInBinding = fn1 go
   where
     go vArg = do
       path  <- T.unpack . messagesText <$> (valueDefault =<< vArg)
-      chars <- liftSem (charactersPresent @branch path)
-      let idents = [ Branches.branchDisplayName name | Character (BranchName name) <- Set.toList chars ]
+      chars <- liftSem (activeCharactersFor @branch path)
+      let idents = [ Branches.branchDisplayName name | Character (BranchName name) <- chars ]
       pure (Value (pure []) [ (ident, pure (leafValue [User ident])) | ident <- idents ] defaultMeta)
 
 -- | @summarized@\/@summarizedOnce@'s shared plumbing: force @vPath@\/@vKind@,
 --   split @vKind@'s text into the finest-first hierarchy
---   'Storyteller.Core.ContentEffects.readSummarized' wants (the same way
+--   'Storyteller.Writer.Agent.Summarizer.densest' wants (the same way
 --   'argCriteria'\/glob patterns already tokenize on whitespace, so a
 --   caller wanting a coarser fallback chain just passes more than one
 --   word -- @summarized(path, \"prose\/chapter prose\/book\")@), then read.
@@ -1149,17 +1146,18 @@ charactersInBinding = fn1 go
 --   resolves a plain file -- context assembly stays one deterministic
 --   pass with a predictable cache boundary, rather than deferring "which
 --   version" to render time.
-summarizedGo :: forall branch r. Members '[SummaryQuery, Fail] r => ([Text] -> [Text]) -> Action r (Value r) -> Action r (Value r) -> Action r (Value r)
+summarizedGo :: forall branch r. Members '[BranchOp branch, Fail] r => ([Text] -> [Text]) -> Action r (Value r) -> Action r (Value r) -> Action r (Value r)
 summarizedGo narrow vPath vKind = do
   path  <- T.unpack . messagesText <$> (valueDefault =<< vPath)
   kinds <- narrow . T.words . messagesText <$> (valueDefault =<< vKind)
-  text  <- liftSem (densest kinds path)
+  text  <- liftSem (densest @branch kinds path)
   pure (leafValue [FileRead path text])
 
 -- | @summarized@'s own implementation, as an ordinary 'Binding' -- same
 --   reasoning as 'branchBinding'\/'charactersInBinding': reading a file
 --   through its own compressed form needs real capability
---   ('Storyteller.Core.ContentEffects.Summarized'), not just forcing
+--   (a 'BranchOp' read through
+--   'Storyteller.Writer.Agent.Summarizer.densest'), not just forcing
 --   values already in hand, so it's a library entry rather than a
 --   'coreFilters' case. Takes the summarizer kind explicitly as its
 --   second argument (@path | summarized(\"prose\/chapter\")@, or bare
@@ -1176,7 +1174,7 @@ summarizedGo narrow vPath vKind = do
 --   "give me the deepest compression" and "give me exactly the next zoom
 --   level" are two different questions a caller asks, not two settings
 --   of the same one.
-summarizedBinding :: forall branch r. Members '[SummaryQuery, Fail] r => Binding r
+summarizedBinding :: forall branch r. Members '[BranchOp branch, Fail] r => Binding r
 summarizedBinding = fn2 (summarizedGo @branch id)
 
 -- | @summarizedOnce@'s own implementation -- 'summarizedBinding''s
@@ -1186,7 +1184,7 @@ summarizedBinding = fn2 (summarizedGo @branch id)
 --   coarser tier the way 'summarizedBinding' does, even if more kinds are
 --   listed. What a caller reaches for to show "the next zoom level up,"
 --   as a deliberately distinct step from "how compressed can this get."
-summarizedOnceBinding :: forall branch r. Members '[SummaryQuery, Fail] r => Binding r
+summarizedOnceBinding :: forall branch r. Members '[BranchOp branch, Fail] r => Binding r
 summarizedOnceBinding = fn2 (summarizedGo @branch (take 1))
 
 -- | 'treeValueOfCommit' for a named branch -- resolves the name via
@@ -1212,12 +1210,10 @@ treeValueOfBranch name =
 --   right branch, because 'Storage.Tick.recentAtomsOf' reads the
 --   *ambient* 'Core.StoreT' scope (@headHash@), and @in@\/@branch@ only
 --   ever redirect the Reader-scope 'Value' that @read@\/@for@ glob
---   against -- they never reposition 'Core.StoreT' itself (see
---   'treeValueOfCommit': it takes an explicit commit hash rather than
---   reading @headHash@). So this resolves the character's branch itself
---   and hops there via 'Core.readAt', the same primitive
---   'Storyteller.Common.Summary' already uses for a historical peek that
---   must not disturb the caller's own position.
+--   against -- they never reposition 'Core.StoreT' itself. So this enters
+--   the character's own branch ('withBranch') and reads the journal from
+--   inside it, the same way every other cross-branch read in this codebase
+--   works.
 --
 --   Takes @lookback@\/@maxOut@\/@padding@ baked in from the Haskell side
 --   (a project's own tuning, not DSL-expressible policy -- mirrors the
@@ -1225,13 +1221,13 @@ treeValueOfBranch name =
 --   identifier as its one DSL-side argument, e.g. @journal charname@
 --   where @journal@ was threaded in as a parameter the same way
 --   'fBranch' expects @charname | branch@'s own identifier.
-journalDelta :: forall branch r. Members '[BranchResolve, JournalAccess branch, Fail] r => JournalCuration -> Binding r
+journalDelta :: forall r. Members '[Branches, Fail] r => JournalCuration -> Binding r
 journalDelta curation = fn1 go
   where
     go charnameArg = do
-      ident  <- messagesText <$> (valueDefault =<< charnameArg)
-      commit <- liftSem (resolveBranch (BranchName ("character/" <> ident)))
-      texts  <- liftSem (journalWindow @branch (Just commit) "journal.md" curation)
+      ident <- messagesText <$> (valueDefault =<< charnameArg)
+      texts <- liftSem $ withBranch @Visited (BranchName ("character/" <> ident)) $
+                 journalWindow @Visited "journal.md" curation
       pure (leafValue (renderJournalTexts texts))
 
 -- | One block per curated slice, joined by a plain divider -- entries
@@ -1261,7 +1257,7 @@ renderJournalTexts texts =
 --   but the DSL still decides *where* the result lands (@conv =
 --   readconversation curchapter@, then composed with whatever else the
 --   calling definition builds).
-readConversation :: forall branch r. Members '[ConversationAccess branch, Fail] r => Binding r
+readConversation :: forall branch r. Members '[BranchOp branch, Fail] r => Binding r
 readConversation = fn1 go
   where
     go pathArg = do
@@ -1330,7 +1326,7 @@ injectShallow isTurnStart lo hi toInsert history
 --   imports "Storyteller.Context.DSL.QQ" for 'dsl'\/'defQuote').
 --   Re-exported from "Storyteller.Context.DSL.Library" for every existing
 --   caller.
-hostLibrary :: forall branch r. Members '[BranchResolve, Branches, Presence branch, JournalAccess branch, ConversationAccess branch, SummaryQuery, Fail] r => Library r
+hostLibrary :: forall branch r. Members '[Branches, BranchOp branch, Fail] r => Library r
 hostLibrary = Library
   [ ("readconversation", readConversation @branch)
   , ("embedshallow",     embedShallow)
@@ -1346,7 +1342,7 @@ hostLibrary = Library
   --   default (formerly 'Server.Writer.File.activeCharacterContext''s own
   --   constants), not something 'Storyteller.Context.DSL.Library.contextCharacterDef'
   --   should have to take as a parameter just to reference it by name.
-  , ("characterJournal", journalDelta @branch (JournalCuration 30 10 2))
+  , ("characterJournal", journalDelta (JournalCuration 30 10 2))
   ]
 
 -- | The Reader scope for wherever this 'Action' is actually run -- the

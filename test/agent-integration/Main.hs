@@ -24,7 +24,6 @@ import Test.Hspec
 import Git.Mock (emptyGitState, runGitMock)
 import Storyteller.Common.Splitter (splitMarkdownAware)
 import Storyteller.Core.Git (runBranchAndFS, runBranchesGit, runStoryStorageGit)
-import Storyteller.Core.ContentEffects (runBranchResolve)
 import Storyteller.Core.LLM.Role (reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Context (interpretContextStorageMap)
@@ -185,7 +184,6 @@ main = do
               . evalState emptyGitState
               . runGitMock
               . runStoryStorageGit
-              . runBranchResolve
               . runBranchesGit
               $ do
                   _ <- createBranch mainBranch

@@ -31,7 +31,7 @@ module Storage.Ops
   , editAtom
   , editAtomAt
   , replaceAtom
-  , setAtomHidden
+  , setAtomTag
 
     -- * Chain-editing operations -- position-aware moves\/merges\/splits
     -- over the whole chain, not just one file's own atom history
@@ -169,18 +169,22 @@ editAtomAt target content = at target $ editTick $ \old -> case old of
   Atom refs path tags _ -> return (Atom refs path tags content)
   _                      -> fail ("editAtomAt: not an atom: " <> T.unpack (unObjectHash target))
 
--- | Set or clear a specific atom's own "hide" tag in place -- same
---   arbitrary-id, preserves-refs-and-position shape as 'editAtomAt'. The
---   tag stays with the tick permanently (see "Storage.Core"'s 'atomTags'),
---   not a reference to it from elsewhere in the chain the way a note is.
-setAtomHidden :: StoreM m => ObjectHash -> Bool -> StoreT m ObjectHash
-setAtomHidden target hidden = at target $ editTick $ \old -> case old of
+-- | Set (@Just@) or clear (@Nothing@) one of a specific atom's own tags in
+--   place -- same arbitrary-id, preserves-refs-and-position shape as
+--   'editAtomAt'. The tag stays with the tick permanently (see
+--   "Storage.Core"'s 'atomTags'), not a reference to it from elsewhere in
+--   the chain the way a note is.
+--
+--   Deliberately generic over the key: /which/ tags exist and what they
+--   mean is an application's business, not this layer's. The one tag this
+--   module does act on itself ('Storage.Core.removedTagKey') is set by
+--   'deleteFile', never through here.
+setAtomTag :: StoreM m => ObjectHash -> Text -> Maybe Text -> StoreT m ObjectHash
+setAtomTag target key mValue = at target $ editTick $ \old -> case old of
   Atom refs path tags content -> return (Atom refs path (setTag tags) content)
-  _                            -> fail ("setAtomHidden: not an atom: " <> T.unpack (unObjectHash target))
+  _                            -> fail ("setAtomTag: not an atom: " <> T.unpack (unObjectHash target))
   where
-    setTag tags
-      | hidden    = ("hide", "true") : filter ((/= "hide") . fst) tags
-      | otherwise = filter ((/= "hide") . fst) tags
+    setTag tags = maybe id (\v -> ((key, v) :)) mValue (filter ((/= key) . fst) tags)
 
 -- | Introduce or replace @path@ as a deliberately binary asset: write
 --   @content@ into the ambient tree (replacing whatever was there, unlike

@@ -27,7 +27,9 @@ library
                   , Storyteller.Core.Storage
                   , Storyteller.Core.Snapshot
                   , Storyteller.Core.Branch
-                  , Storyteller.Core.ContentEffects
+                  , Storyteller.Writer.Cast
+                  , Storyteller.Writer.Conversation
+                  , Storyteller.Writer.Journal
                   , Storyteller.Core.Undo
                   , Storyteller.Core.Git
                   , Storyteller.Core.Timetravel

@@ -46,11 +46,10 @@
 --   view, just "what's pending, generate from it, record the result" --
 --   the same shape 'Storyteller.Writer.Agent.Summarizer.runSummarizer'
 --   settled on. All the storage structure (sync-marker placement, the
---   first-pass-vs-delta read strategy, checkpoint timing) lives inside
---   the internal 'TasksSync' effect these two functions open and
---   discharge for themselves; neither @reconcile@ nor @generate@ (the
---   per-call LLM hooks) ever sees a 'BranchOp' phantom or a
---   'Storage.Core.StoreT' action.
+--   first-pass-vs-delta read strategy, checkpoint timing) lives in
+--   'pendingSyncMaterial'\/'pendingSuggestMaterial'\/'recordTasksPass'
+--   below; neither @reconcile@ nor @generate@ (the per-call LLM hooks)
+--   ever sees a 'BranchOp' phantom or a 'Storage.Core.StoreT' action.
 module Storyteller.Writer.Agent.Tasks
   ( -- * Effectful glue
     syncTasksWith
@@ -63,7 +62,6 @@ module Storyteller.Writer.Agent.Tasks
   ) where
 
 import Control.Monad (when)
-import Data.Kind (Type)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -121,50 +119,25 @@ firstHeadingName content = case filter (T.isPrefixOf "# ") (T.lines content) of
   []      -> Nothing
 
 -- ---------------------------------------------------------------------------
--- The sync/suggest storage structure, hidden behind one internal effect
+-- The sync/suggest storage structure
 -- ---------------------------------------------------------------------------
+--
+-- Everything 'syncTasksWith'\/'suggestTasksWith' need from @tasks.md@'s own
+-- sync bookkeeping, named as the questions they actually ask -- "what's
+-- pending" and "record this pass" -- rather than as the storage primitives
+-- (the sync marker's own ref shape, checkpoint timing,
+-- first-pass-vs-delta read strategy) those questions happen to be answered
+-- with today.
 
--- | Everything 'syncTasksWith'\/'suggestTasksWith' need from @tasks.md@'s
---   own sync bookkeeping, named as the two questions they actually ask --
---   "what's pending" and "record this pass" -- never as the storage
---   primitives (the sync marker's own ref shape, checkpoint timing,
---   first-pass-vs-delta read strategy) those questions happen to be
---   answered with today. Not exported: exists purely so
---   'syncTasksWith'\/'suggestTasksWith' can open and discharge it around
---   their own body (see their Haddocks), the same "hide the structure in
---   the interpreter" shape
---   'Storyteller.Writer.Agent.Summarizer.Summarization' uses for the
---   summary agents.
-data TasksSync (branch :: Type) (m :: Type -> Type) a where
-  -- | @characterName@, tasks.md's own current content (or @\"\"@), and
-  --   the concatenated new source text restricted to @isSource@ -- or
-  --   'Nothing' if there's genuinely nothing new (or nothing new that
-  --   @isSource@ accepts) to reconcile.
-  PendingSyncMaterial :: Text -> (FilePath -> Bool) -> FilePath -> TasksSync branch m (Maybe (Text, Text, Text))
-  -- | @characterName@, tasks.md's own current content (or @\"\"@), and
-  --   the assembled context material (full unfiltered branch dump on a
-  --   genuine first pass, sheet.md plus the delta since on every later
-  --   one) -- or 'Nothing' if there's nothing to draw on yet, or nothing
-  --   new since the last pass.
-  PendingSuggestMaterial :: Text -> FilePath -> TasksSync branch m (Maybe (Text, Text, Text))
-  -- | Record one sync\/suggest pass as a single unit: checkpoint whatever
-  --   was on @tasksPath@ before (skipped if it didn't exist yet), replace
-  --   it wholesale with the new content, then append the fresh sync
-  --   marker. A caller never threads its own "did it exist before" flag
-  --   or head hash in -- this decides both for itself, the same reason
-  --   'Storyteller.Writer.Agent.Summarizer.RecordPathSummary' repositions
-  --   itself rather than trusting a value threaded from an earlier call.
-  RecordTasksPass :: FilePath -> Text -> TasksSync branch m ()
-
-makeSem ''TasksSync
-
--- | The git-backed 'TasksSync' interpreter -- moves every storage detail
---   (the sync marker's own shape, first-pass-vs-delta strategy, checkpoint
---   timing) out of 'syncTasksWith'\/'suggestTasksWith' and into exactly
---   one place.
-runTasksSync :: forall branch r a. Members '[BranchOp branch, Logging] r => Sem (TasksSync branch ': r) a -> Sem r a
-runTasksSync = interpret $ \case
-  PendingSyncMaterial fallbackName isSource tasksPath -> do
+-- | @characterName@, tasks.md's own current content (or @\"\"@), and the
+--   concatenated new source text restricted to @isSource@ -- or 'Nothing'
+--   if there's genuinely nothing new (or nothing new that @isSource@
+--   accepts) to reconcile.
+pendingSyncMaterial
+  :: forall branch r
+  .  Members '[BranchOp branch, Logging] r
+  => Text -> (FilePath -> Bool) -> FilePath -> Sem r (Maybe (Text, Text, Text))
+pendingSyncMaterial fallbackName isSource tasksPath = do
     (characterName, mOld, lastSynced) <- runStorage @branch $ do
       name <- resolveCharacterName "sheet.md" fallbackName
       old  <- readTasksFile tasksPath
@@ -183,7 +156,16 @@ runTasksSync = interpret $ \case
             return Nothing
           else return (Just (characterName, fromMaybe "" mOld, sourceText))
 
-  PendingSuggestMaterial fallbackName tasksPath -> do
+-- | @characterName@, tasks.md's own current content (or @\"\"@), and the
+--   assembled context material (full unfiltered branch dump on a genuine
+--   first pass, sheet.md plus the delta since on every later one) -- or
+--   'Nothing' if there's nothing to draw on yet, or nothing new since the
+--   last pass.
+pendingSuggestMaterial
+  :: forall branch r
+  .  Members '[BranchOp branch, Logging] r
+  => Text -> FilePath -> Sem r (Maybe (Text, Text, Text))
+pendingSuggestMaterial fallbackName tasksPath = do
     (characterName, mOld, lastSynced, sheetText) <- runStorage @branch $ do
       name  <- resolveCharacterName "sheet.md" fallbackName
       old   <- readTasksFile tasksPath
@@ -230,7 +212,18 @@ runTasksSync = interpret $ \case
         return Nothing
       else return (Just (characterName, fromMaybe "" mOld, sourceText))
 
-  RecordTasksPass tasksPath newContent -> do
+-- | Record one sync\/suggest pass as a single unit: checkpoint whatever
+--   was on @tasksPath@ before (skipped if it didn't exist yet), replace it
+--   wholesale with the new content, then append the fresh sync marker. A
+--   caller never threads its own "did it exist before" flag or head hash
+--   in -- this decides both for itself, the same reason
+--   'Storyteller.Writer.Agent.Summarizer.recordPathSummary' repositions
+--   itself rather than trusting a value threaded from an earlier call.
+recordTasksPass
+  :: forall branch r
+  .  Member (BranchOp branch) r
+  => FilePath -> Text -> Sem r ()
+recordTasksPass tasksPath newContent = do
     hadContent <- runStorage @branch (elem tasksPath <$> FS.list)
     headH      <- runStorage @branch Core.headHash
     runStorage @branch $ do
@@ -238,40 +231,41 @@ runTasksSync = interpret $ \case
       Ops.saveFileAsNew tasksPath tasksPath newContent
       _ <- Ops.addAtomWithRefs [headH] tasksPath ""
       return ()
-  where
-    -- | The newest atom on @tasksPath@ that carries a ref -- i.e. this
-    --   branch's own last sync marker, if it's ever been synced\/suggested
-    --   before *in the file's current lifetime*. Built on
-    --   'Storage.Tick.fileTicksOf', which is itself already scoped to the
-    --   current lifetime (never reads past a removal boundary) -- this
-    --   function has no idea what a removal marker even is, it only ever
-    --   asks "what are this file's current ticks" and picks the newest
-    --   one with a ref. Without that scoping, a marker from a stale,
-    --   no-longer-visible lifetime (e.g. tasks.md manually cleared via
-    --   'Storage.Ops.saveFileAsNew' directly) would still be found,
-    --   wrongly treating a run against the now-empty file as a
-    --   continuation of a sync history that, as far as the current file
-    --   is concerned, doesn't exist.
-    lastSyncedTasksRef :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Core.ObjectHash)
-    lastSyncedTasksRef tasksPath = do
-      ticks <- Tick.fileTicksOf tasksPath
-      return $ listToMaybe
-        [ Core.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ]
 
-    -- | Read @tasksPath@'s current content, if it exists.
-    readTasksFile :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Text)
-    readTasksFile tasksPath = do
-      files <- FS.list
-      if tasksPath `elem` files
-        then Just . TE.decodeUtf8 <$> FS.readFile tasksPath
-        else return Nothing
+-- | The newest atom on @tasksPath@ that carries a ref -- i.e. this
+--   branch's own last sync marker, if it's ever been synced\/suggested
+--   before *in the file's current lifetime*. Built on
+--   'Storage.Tick.fileTicksOf', which is itself already scoped to the
+--   current lifetime (never reads past a removal boundary) -- this
+--   function has no idea what a removal marker even is, it only ever asks
+--   "what are this file's current ticks" and picks the newest one with a
+--   ref. Without that scoping, a marker from a stale, no-longer-visible
+--   lifetime (e.g. tasks.md manually cleared via
+--   'Storage.Ops.saveFileAsNew' directly) would still be found, wrongly
+--   treating a run against the now-empty file as a continuation of a sync
+--   history that, as far as the current file is concerned, doesn't exist.
+lastSyncedTasksRef :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Core.ObjectHash)
+lastSyncedTasksRef tasksPath = do
+  ticks <- Tick.fileTicksOf tasksPath
+  return $ listToMaybe
+    [ Core.ObjectHash r | ft <- reverse ticks, (r : _) <- [Tick.ftRefs ft] ]
 
-    resolveCharacterName :: Core.StoreM m => FilePath -> Text -> Core.StoreT m Text
-    resolveCharacterName sheetPath fallbackName = do
-      files <- FS.list
-      if sheetPath `elem` files
-        then fromMaybe fallbackName . firstHeadingName . TE.decodeUtf8 <$> FS.readFile sheetPath
-        else return fallbackName
+-- | Read @tasksPath@'s current content, if it exists.
+readTasksFile :: Core.StoreM m => FilePath -> Core.StoreT m (Maybe Text)
+readTasksFile tasksPath = do
+  files <- FS.list
+  if tasksPath `elem` files
+    then Just . TE.decodeUtf8 <$> FS.readFile tasksPath
+    else return Nothing
+
+-- | The character's real name from @sheetPath@, falling back to
+--   @fallbackName@ -- see 'firstHeadingName'.
+resolveCharacterName :: Core.StoreM m => FilePath -> Text -> Core.StoreT m Text
+resolveCharacterName sheetPath fallbackName = do
+  files <- FS.list
+  if sheetPath `elem` files
+    then fromMaybe fallbackName . firstHeadingName . TE.decodeUtf8 <$> FS.readFile sheetPath
+    else return fallbackName
 
 -- ---------------------------------------------------------------------------
 -- Effectful glue
@@ -295,13 +289,13 @@ syncTasksWith
   .  Members '[BranchOp branch, Logging] r
   => (Text -> Text -> Text -> Sem r Text)
   -> Text -> (FilePath -> Bool) -> FilePath -> Sem r Bool
-syncTasksWith reconcile fallbackName isSource tasksPath = runTasksSync @branch $ do
+syncTasksWith reconcile fallbackName isSource tasksPath = do
   info ("syncTasksWith: checking " <> T.pack tasksPath <> " for new source material...")
   mPending <- pendingSyncMaterial @branch fallbackName isSource tasksPath
   case mPending of
     Nothing -> return False
     Just (characterName, current, sourceText) -> do
-      newContent <- raise (reconcile characterName current sourceText)
+      newContent <- reconcile characterName current sourceText
       recordTasksPass @branch tasksPath newContent
       info ("syncTasksWith: wrote updated " <> T.pack tasksPath)
       return True
@@ -356,13 +350,13 @@ suggestTasksWith
   .  Members '[BranchOp branch, Logging] r
   => (Text -> Text -> Text -> Sem r Text)
   -> Text -> FilePath -> Sem r Bool
-suggestTasksWith generate fallbackName tasksPath = runTasksSync @branch $ do
+suggestTasksWith generate fallbackName tasksPath = do
   info ("suggestTasksWith: reading character context for " <> T.pack tasksPath <> "...")
   mPending <- pendingSuggestMaterial @branch fallbackName tasksPath
   case mPending of
     Nothing -> return False
     Just (characterName, current, sourceText) -> do
-      newContent <- raise (generate characterName current sourceText)
+      newContent <- generate characterName current sourceText
       recordTasksPass @branch tasksPath newContent
       info ("suggestTasksWith: wrote updated " <> T.pack tasksPath)
       return True

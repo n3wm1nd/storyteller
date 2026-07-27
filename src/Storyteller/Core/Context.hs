@@ -79,11 +79,6 @@ import qualified Storage.FS as FS
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Storyteller.Core.Branch (Branches)
-import Storyteller.Core.ContentEffects
-  ( Presence, JournalAccess, ConversationAccess, BranchResolve
-  , runPresence, runJournalAccess, runConversationAccess
-  )
-import Storyteller.Writer.Agent.Summarizer (SummaryQuery, runSummaryQuery)
 import Storyteller.Core.Git (runBranchOpGit, runStoryFSRead)
 import Storyteller.Core.Runtime (Contexts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
@@ -127,23 +122,27 @@ data ContextStorage (m :: Type -> Type) a where
 
 makeSem ''ContextStorage
 
--- | The four DSL-facing content effects, scoped to one @branch@, layered
---   onto whatever row @r@ a caller is already working in -- what
---   'runContextValue' interprets locally, fresh, per call (never wired
---   globally to one fixed branch -- see "Storyteller.Core.ContentEffects"'s
---   own module Haddock and @project_mcp_export_effect_boundary@ for why:
---   'runContextValue' is genuinely called at different @branch@es --
---   @\@Main@, @\@LoreSource@, a caller-generic @\@branch@ -- not one fixed
---   choice).
---   The filesystem the DSL reads through ('Compile.ContextFS') is part of
---   this row, established per call by 'runContextValue' -- deliberately
---   /not/ the connection's own ambient branch filesystem, which shows every
---   path including uploaded binaries. Context assembly must only ever see
---   readable content, and that is a property of the interpreter wired here
---   rather than something each definition could be trusted to filter.
-type ContextRow branch r =
-  FileSystemRead Compile.ContextFS ': FileSystem Compile.ContextFS
-    ': Presence branch ': JournalAccess branch ': ConversationAccess branch ': SummaryQuery ': r
+-- | The DSL's own filesystem, layered onto whatever row @r@ a caller is
+--   already working in.
+--
+--   It used to carry a @branch@ phantom and three content effects
+--   (@Presence@, @JournalAccess@, @ConversationAccess@) alongside. Those
+--   are plain functions over 'BranchOp' now -- 'buildContextLibrary' and
+--   the host bindings ask for the capabilities they use directly, which
+--   is why nothing but the filesystem is left to layer here.
+--
+--   'runContextValue' still establishes that filesystem locally and fresh
+--   per call, never wired globally to one fixed branch: it is genuinely
+--   called at different @branch@es -- @\@Main@, @\@LoreSource@, a
+--   caller-generic @\@branch@ -- not one fixed choice.
+--
+--   Deliberately /not/ the connection's own ambient branch filesystem,
+--   which shows every path including uploaded binaries. Context assembly
+--   must only ever see readable content, and that is a property of the
+--   interpreter wired here rather than something each definition could be
+--   trusted to filter.
+type ContextRow r =
+  FileSystemRead Compile.ContextFS ': FileSystem Compile.ContextFS ': r
 
 -- | The one well-known branch name this module owns -- exported the same
 --   way 'Storyteller.Core.Prompt.promptsBranchName' is, so
@@ -219,7 +218,7 @@ interpretContextStorageFS action = do
 --   actually decides pass/fail per name; a name whose own text doesn't
 --   even parse can't be a candidate for that decision at all.
 spliceOverrides
-  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, SummaryQuery, Fail] r
+  :: forall branch r. Members '[Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, BranchOp branch, Fail] r
   => Map Name Text -> [(Name, Definition)]
 spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEntries
   where
@@ -272,7 +271,7 @@ spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEn
 --   every rejected name, so a caller can surface *which* commits didn't
 --   take instead of the previous silent fallback.
 buildContextLibrary
-  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, SummaryQuery, Fail] r
+  :: forall branch r. Members '[Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, BranchOp branch, Fail] r
   => Map Name Text -> (Library r, [Name])
 buildContextLibrary overrides =
   case compileWith overrides of
@@ -338,34 +337,29 @@ interpretContextStorageMap overrides action =
     )
     action
 
--- | Runs a Context DSL 'Action' against @branch@ -- interprets
---   'Presence'\/'JournalAccess'\/'ConversationAccess'\/'SummaryQuery', plus
---   the DSL's own filesystem, locally and fresh, scoped to
---   this one call's @branch@ (never wired globally to one fixed branch --
---   see 'ContextRow's own Haddock), then runs @act@. @act@ is already
---   fully compiled by the time it's handed here -- every identifier
---   inside it was resolved at its own construction (see
---   'buildContextLibrary''s own Haddock), so unlike the previous design
---   there is no library table left to build or thread through 'runAction'
---   at this point. This is what makes calling @\@Main@ here and
---   @\@LoreSource@ there, from the *same* 'ContextStorage' interpretation,
---   safe: nothing about this function commits 'ContextStorage' itself to
---   one branch.
---   Needs only @branch@'s own scope. Interpreting the content effects and
---   opening the DSL's filesystem are both 'BranchOp' work; nothing here
---   resolves a branch name or enters another branch, so this asks for
---   neither 'BranchResolve' nor 'Branches'. Those belong to whatever
+-- | Runs a Context DSL 'Action' against @branch@ -- opens the DSL's own
+--   filesystem locally and fresh, scoped to this one call's @branch@
+--   (never wired globally to one fixed branch -- see 'ContextRow's own
+--   Haddock), then runs @act@. @act@ is already fully compiled by the time
+--   it's handed here -- every identifier inside it was resolved at its own
+--   construction (see 'buildContextLibrary''s own Haddock), so unlike the
+--   previous design there is no library table left to build or thread
+--   through 'runAction' at this point. This is what makes calling @\@Main@
+--   here and @\@LoreSource@ there, from the *same* 'ContextStorage'
+--   interpretation, safe: nothing about this function commits
+--   'ContextStorage' itself to one branch.
+--
+--   Needs only @branch@'s own scope. Everything the host bindings do --
+--   presence, journal windows, conversation turns -- is ordinary
+--   'BranchOp' work they ask for themselves; nothing here enters another
+--   branch, so this doesn't ask for 'Branches'. That belongs to whatever
 --   /built the library/ being run -- see 'buildContextLibrary'.
 runContextValue
   :: forall branch r a
   .  Members '[BranchOp branch, Fail] r
-  => Action (ContextRow branch r) a -> Sem r a
+  => Action (ContextRow r) a -> Sem r a
 runContextValue act =
-    runSummaryQuery @branch
-  . runConversationAccess @branch
-  . runJournalAccess @branch
-  . runPresence @branch
-  . runStoryFSRead @Compile.ContextFS @branch Compile.ContextFS
+    runStoryFSRead @Compile.ContextFS @branch Compile.ContextFS
   $ runAction act
 
 -- | Runs the already-compiled library entry @name@ -- mirrors
@@ -380,8 +374,8 @@ runContextValue act =
 --   override, with no second, parallel "or call this Haskell function
 --   instead" path needed.
 resolveContext0
-  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
-  => Name -> Sem r (Value (ContextRow branch r))
+  :: forall branch r. Members '[BranchOp branch, Branches, ContextStorage, Fail] r
+  => Name -> Sem r (Value (ContextRow r))
 resolveContext0 name = do
   overrides <- getContextOverrides
   let (table, _rejected) = buildContextLibrary @branch overrides
@@ -390,8 +384,8 @@ resolveContext0 name = do
 -- | 'resolveContext0''s 1-arity counterpart -- what every real
 --   @context.character@\/@context.writer@ call site wants.
 resolveContext1
-  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
-  => Name -> Text -> Sem r (Value (ContextRow branch r))
+  :: forall branch r. Members '[BranchOp branch, Branches, ContextStorage, Fail] r
+  => Name -> Text -> Sem r (Value (ContextRow r))
 resolveContext1 name arg = do
   overrides <- getContextOverrides
   let (table, _rejected) = buildContextLibrary @branch overrides
@@ -414,8 +408,8 @@ resolveContext1 name arg = do
 --   swallowing the error would just mean silently contributing nothing,
 --   worse than telling the caller their program didn't run.
 resolveAdhoc0
-  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
-  => Text -> Sem r (Value (ContextRow branch r))
+  :: forall branch r. Members '[BranchOp branch, Branches, ContextStorage, Fail] r
+  => Text -> Sem r (Value (ContextRow r))
 resolveAdhoc0 src = resolveAdhoc @branch src []
 
 -- | 'resolveAdhoc0' generalized to a program that declares parameters:
@@ -434,8 +428,8 @@ resolveAdhoc0 src = resolveAdhoc @branch src []
 --   declared name to and the resulting failure would otherwise be a
 --   confusing "unknown identifier" from inside the body.
 resolveAdhoc
-  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
-  => Text -> [Text] -> Sem r (Value (ContextRow branch r))
+  :: forall branch r. Members '[BranchOp branch, Branches, ContextStorage, Fail] r
+  => Text -> [Text] -> Sem r (Value (ContextRow r))
 resolveAdhoc src available = do
   overrides <- getContextOverrides
   let (table, _rejected) = buildContextLibrary @branch overrides

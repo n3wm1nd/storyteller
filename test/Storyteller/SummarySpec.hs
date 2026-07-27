@@ -23,7 +23,7 @@ import Storyteller.Common.Summary
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types
-import Storyteller.Writer.Agent.Summarizer (runSummarization, runSummarizer, runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer (runSummarizer, runSummarizerForPath)
 
 -- ---------------------------------------------------------------------------
 -- Phantom + single-branch runner. There's no alt branch to open -- an
@@ -44,9 +44,10 @@ runOne action =
   . evalState emptyGitState
   . runGitMock
   . runStoryStorageGit
+  . runBranchesGit
   $ do
       _ <- createBranch (BranchName "source")
-      runBranchAndFS @Source (BranchName "source") (runSummarization @Source action)
+      runBranchAndFS @Source (BranchName "source") action
 
 -- | Always writes the same one file, so 'runSummarizer' has something to
 --   commit every time it's called.

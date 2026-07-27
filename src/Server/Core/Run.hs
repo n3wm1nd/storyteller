@@ -21,7 +21,6 @@ import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
 import Storyteller.Core.Branch (Branches)
-import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Prompt (PromptStorage)
@@ -52,7 +51,6 @@ type SessionEffects r =
              , StoryStorage
              , PromptStorage
              , ContextStorage
-             , BranchResolve
              -- One door, whoever walks through it: a handler opening the
              -- branch its connection is for, and the context DSL stepping
              -- into a character branch mid-evaluation (@charname | branch@),

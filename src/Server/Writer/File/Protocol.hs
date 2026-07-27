@@ -135,7 +135,8 @@ data FileCommand
   --   See 'Storyteller.Core.Edit.splitTick'.
   | SplitAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   -- | Hide (or unhide) @fcTargets@ from an agent's ambient context, in
-  --   place -- the atoms stay in the file. See 'Storage.Ops.setAtomHidden'.
+  --   place -- the atoms stay in the file. See
+  --   'Storyteller.Common.Types.hiddenTagKey'.
   | HideAtoms   { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   | UnhideAtoms { fcId :: Maybe T.Text, fcTargets :: [T.Text] }
   -- | 'fcPinned' is the client's own explicit tick-level selection --

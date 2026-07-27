@@ -39,7 +39,6 @@ import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Common.Summary (Summary(..), lastSummaryOf, summaryContent, summariesTouching)
 import Storyteller.Writer.Library (journalPath)
-import Storyteller.Writer.Agent.Summarizer (runSummarization)
 import Storyteller.Writer.Agent.JournalSummarizer
 
 data TestBranch
@@ -51,9 +50,10 @@ runOne action =
   . evalState emptyGitState
   . runGitMock
   . runStoryStorageGit
+  . runBranchesGit
   $ do
       _ <- createBranch (BranchName "branch")
-      runBranchAndFS @TestBranch (BranchName "branch") (runSummarization @TestBranch action)
+      runBranchAndFS @TestBranch (BranchName "branch") action
 
 -- | A deterministic stand-in for the real LLM call: joins its items with a
 --   marker unlikely to appear in test fixtures, so a test can tell exactly
