@@ -189,11 +189,77 @@ re-derive it independently.
 
 Named `Writer.Agent`, not bare `Agent`, because this is the "what does this
 app actually do" policy layer — the least reusable part of the whole SDK.
-Holds: `Agent` (shared cross-agent vocabulary — `UserInput`, `Instruction`,
-`Prompt`, `Prose`, etc.), `CharContext`, `CharGen`, `Chat`, `ContextPreview`,
-`Continuation` (the prose-generation core), `Fix`, `FlowWrite`, `Outline`,
-`ReplaceTool`, `Tracker`, `Write`. There's no `Append` module here — see
-below.
+`Storyteller.Writer.Agent` itself (the parent module) holds the shared
+cross-agent vocabulary — `UserInput`, `Instruction`, `Prompt`, `Prose`,
+`CharContextBlock`. There's no `Append` module here — see below.
+
+The rest group by what they do, which is more useful than an alphabetical
+list once there are two dozen of them:
+
+| Group | Modules |
+| --- | --- |
+| **Prose generation** | `Write` (continue a chapter as a conversation), `Continuation` (the generation core), `FlowWrite` (flow-aware variant), `Outline` (outline-driven), `Fix` (rewrite flagged atoms), `ReplaceTool` (the shared per-atom "should this change" tool call) |
+| **Conversational** | `Chat` (discuss the story with the author), `Roleplay` (turn-based scene play), `AskCharacter` (answer as one character, from their branch only), `Custom` (a user-defined writer — two files on a branch, no Haskell) |
+| **Characters** | `CharGen` (generate a character), `CharContext` (assemble one character's context), `PresenceTrack` (infer retroactively who was in a scene), `Tracker` (copy entity material between branches) |
+| **Summarization** | `Summarizer` (the generic machinery — see its Haddock), the per-domain instances `ChapterSummarizer`/`LoreSummarizer`/`JournalSummarizer`, and `SummaryAccess` (private read implementation) |
+| **Goals** | `Tasks` (maintain a branch's `tasks.md`) |
+| **Context DSL surface** | `ContextPreview` (run a client-submitted program), `ContextCost` (per-line cost by ablation), `Context` (the newtype wrapper) |
+| **Shared helpers** | `MessageWindow` (inject messages at a bounded depth) |
+
+### The shape an agent has
+
+Nearly every agent in the table above is the same four steps, and reading
+one is mostly recognizing them. `Storyteller.Writer.Agent.AskCharacter` is
+the shortest honest example — its body is eight lines:
+
+1. **Resolve the context**, by name, against the Context DSL library:
+   `resolveContext1 @branch "context.character" charname`, then
+   `runContextValue @branch` to run whatever it produced against the
+   branch. The name is a DSL definition a project can override on the
+   `contexts` branch without a rebuild — see CONTEXT-DSL.md. The agent
+   never globs files itself.
+2. **Get config and system prompt**, with a compiled-in fallback:
+   `getConfigWithPrompt "agent.ask-character" defaultAskSystemPrompt
+   defaultAskConfig`. The convention is that both defaults are defined at
+   the bottom of the agent's own module, with a comment saying why those
+   numbers — they are this app's policy, and a user can override them at
+   runtime via `Storyteller.Core.Prompt`.
+3. **Call the model** — `queryLLM configsWithPrompt [UserText userMsg]`.
+4. **Fold the response**, and (for anything that writes) commit the result
+   through `Storage.Ops`/`Storage.Tick` inside a single `runStorage`.
+
+Agents ask for capabilities, they don't define them: rows are built from
+`BranchOp branch`, `Branches`, `FileSystem*`, `PromptStorage`,
+`ContextStorage`, `LLMs`, `Fail`, `Logging`. If you find yourself wanting a
+new effect for an agent, read EFFECTS.md first — the answer is almost
+always a function in the module that owns the concept.
+
+**Known rough edge, unresolved:** steps 1–2 identify what they want with
+strings (`"context.character"`, `"agent.ask-character"`, and bucket names
+like `"journalFull"`), checked at runtime rather than compile time, whose
+legal values are documented in CONTEXT-DSL.md rather than anywhere near the
+call. Generating typed accessors (Template Haskell) so the names are
+checked has been floated and isn't built.
+
+Separately, *where* context resolution belongs is genuinely open, and there
+are two good arguments:
+
+- **Keep it in the agent.** The agent is what knows which default context
+  is the sensible one — that `askCharacterAgent` wants
+  `context.character` and not `context.writer` is real agent knowledge, not
+  plumbing, and moving it out means something else has to be told.
+- **Move it to dispatch.** The DSL has nothing to do with what an agent
+  does; an agent wants rendered blocks of material and a question. On this
+  reading every `resolveContext`/`runContextValue` call in an agent is
+  leaked assembly, and the agent should receive an already-rendered context
+  as an argument.
+
+These aren't wholly exclusive — the agent could name its default as a typed
+constant while dispatch does the resolving — and anything here has to
+account for the cases that must keep their own: `Custom` (a user-defined
+writer picks its own context by definition) and `ContextPreview`/
+`ContextCost` (whose subject *is* the DSL). Today five agents resolve their
+own: `Write`, `Roleplay`, `Custom`, `AskCharacter`, `CharContext`.
 
 ## Erring toward specificity
 

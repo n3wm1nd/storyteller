@@ -7,11 +7,13 @@
 
 -- | Ask-a-character agent: answer a question grounded only in one
 -- character's own branch (sheet, journal, anything else tracked there) --
--- not the scene being written, not any other character's material. See the
--- design conversation this closes: dropping the journal from the writer's
--- own ambient context (too long, too narratively-derived, possibly stale)
--- in favor of a real per-character query that can only see what that
--- character could actually know.
+-- not the scene being written, not any other character's material.
+--
+-- This exists because the journal was dropped from the writer's own ambient
+-- context: too long, too narratively-derived, and possibly stale by the
+-- time it's read. A per-character query that can only see what that
+-- character could actually know replaces it, and is more useful than the
+-- ambient version was — it answers a question rather than padding a prompt.
 module Storyteller.Writer.Agent.AskCharacter
   ( askCharacterAgent
   ) where
@@ -35,7 +37,8 @@ import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 -- | Answer @question@ using only what's readable from @charname@'s own
 --   branch -- deliberately effect-minimal like
 --   'Storyteller.Writer.Agent.Continuation.proseAgent' otherwise: no
---   world-lore lookup (deferred -- see the design conversation). Resolves
+--   world-lore lookup (deferred: a character answering about themselves
+--   shouldn't reach for material they'd have no way to know). Resolves
 --   @context.character@ (a branch override on the @contexts@ branch, then
 --   'Storyteller.Context.DSL.Library.contextCharacter' as fallback
 --   -- see 'Storyteller.Core.Context.resolveContextQuery') and reads its
