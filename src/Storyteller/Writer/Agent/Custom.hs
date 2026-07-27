@@ -79,15 +79,13 @@ import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
-import Storyteller.Context.DSL.Rendering (renderMessages, renderText)
-import Storyteller.Core.Branch (BranchOp, Branches)
-import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
+import Storyteller.Context.DSL.Render (dslMessageToLLM)
+import Storyteller.Context.DSL.Value (messageText)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptKey(..), PromptStorage, getConfigWithPrompt)
 import Storyteller.Context.DSL.AST (Name)
-import qualified Storyteller.Context.DSL.Rendering as Rendering
 import Storyteller.Writer.Agent (Instruction(..), Prose(..))
-import Storyteller.Writer.Agent.Context (PinnedContext(..))
+import Storyteller.Writer.Agent.Context (PinnedContext(..), ProgramContext(..))
 
 -- | The Context DSL slot a custom agent's own context program lives at --
 --   @context/custom/\<slug\>.dsl@ on the 'Contexts' branch, by the ordinary
@@ -106,28 +104,30 @@ customContextName slug = "context.custom." <> slug
 customPromptKey :: Text -> PromptKey
 customPromptKey slug = PromptKey ("agent.custom." <> slug)
 
--- | Run the custom agent named @slug@ against @path@.
+-- | Run the custom agent named @slug@.
 --
---   Fails loudly (via 'resolveContext1' \/ 'Fail') when the slug names no
---   context program, rather than quietly running with empty context: an
---   agent whose whole definition is missing has nothing to fall back to --
---   unlike an overridable slot, there is no compiled-in default here by
---   construction.
+--   Both contexts arrive already resolved, so this needs no storage
+--   capability: the caller looks the program up by
+--   'customContextName' (and fails loudly when the slug names no program
+--   -- an agent whose whole definition is missing has nothing to fall back
+--   to, unlike an overridable slot) and resolves this call's pinned
+--   content. See 'Server.Writer.File.customWriter'. What's left here is
+--   this agent's own subject: prompt key, message ordering, defaults.
 customAgent
-  :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchOp branch, Branches, Fail, Logging] r)
-  => FilePath
-  -> Text                        -- ^ agent slug, e.g. @"critic"@
-  -> PinnedContext               -- ^ this call's pinned content, already resolved by the caller (see 'Server.Writer.File.customWriter') -- per-call user data, not part of the agent's definition
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
+  => Text                        -- ^ agent slug, e.g. @"critic"@ -- prompt-key only; the program itself already arrived as 'ProgramContext'
+  -> ProgramContext              -- ^ this agent's own program, resolved by the caller
+  -> PinnedContext               -- ^ this call's pinned content, also caller-resolved -- per-call user data, not part of the agent's definition
   -> Instruction
   -> Sem r Prose
-customAgent path slug (PinnedContext pinned) instruction = do
+customAgent slug (ProgramContext context) (PinnedContext pinned) instruction = do
   configsWithPrompt <- getConfigWithPrompt (customPromptKey slug) defaultCustomSystemPrompt defaultCustomConfig
-  contextV          <- resolveContext1 @branch (customContextName slug) (T.pack path)
-  context           <- runContextValue @branch (Rendering.renderContext contextV)
-
   info ("customAgent (" <> slug <> "): querying model...")
-  response <- queryLLM configsWithPrompt (buildCustomMessages (renderMessages context) (renderText pinned) instruction)
+  response <- queryLLM configsWithPrompt
+    (buildCustomMessages (map dslMessageToLLM context)
+                         (T.intercalate "\n\n" (map messageText pinned))
+                         instruction)
   return $ Prose $ mconcat [ t | AssistantText t <- response ]
 
 -- | The whole of this agent's message-order policy, with no effect

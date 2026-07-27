@@ -34,7 +34,7 @@ import Agent.Integration.Judge (judgeOrFail)
 import Agent.Integration.OutlineSplitQualitySpec (messyOutlines)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Writer.Agent (ContextBlock(..))
+import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), OutlineDoc(..))
 
 -- | The shape every no-tool-call split variant has in common --
@@ -43,7 +43,7 @@ import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), Outlin
 --   exactly this type.
 type SplitFn
   =  forall r. (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock] -> OutlineDoc -> Sem r [ChapterBeats]
+  => [DSL.Message] -> OutlineDoc -> Sem r [ChapterBeats]
 
 splitAgainstMessyOutlines
   :: forall judgeModel

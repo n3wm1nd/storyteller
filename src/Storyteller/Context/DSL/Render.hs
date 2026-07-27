@@ -25,24 +25,18 @@
 --   A bare 'FileRead' -- role deliberately left undecided by the DSL
 --   itself (see 'Storyteller.Context.DSL.Value.Message's own haddock) --
 --   is finally decided here: presented as ordinary @User@-role reference
---   material, fenced via 'renderEmbeddedFile', the same framing
---   'Storyteller.Writer.Agent.WorldContext.worldContextOf'\/
---   'Storyteller.Writer.Agent.Continuation.gatherFileContext' already give
---   arbitrary file content today.
+--   material, fenced via 'renderEmbeddedFile' -- the same framing every
+--   prose path in this application gives arbitrary file content.
 module Storyteller.Context.DSL.Render
   ( dslMessageToLLM
-  , messageToBlock
-  , messageToCharBlock
   , valueAllMessages
   , valueMessages
-  , valueBlocks
-  , valueCharBlocks
   ) where
 
 import qualified UniversalLLM as LLM
 
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Agent (CharContextBlock(..), ContextBlock(..), renderEmbeddedFile)
+import Storyteller.Writer.Agent (renderEmbeddedFile)
 
 -- | A DSL 'Message', finally rendered into the LLM library's own message
 --   type -- polymorphic over every capability model @m@ since it only ever
@@ -53,25 +47,19 @@ dslMessageToLLM (FileRead path text) = LLM.UserText (renderEmbeddedFile path tex
 dslMessageToLLM (User text)          = LLM.UserText text
 dslMessageToLLM (Assistant text)     = LLM.AssistantText text
 
--- | Same decision, rendered into a 'ContextBlock' instead -- ignores role,
---   since a 'ContextBlock' slot has nowhere to put one.
-messageToBlock :: Message -> ContextBlock
-messageToBlock (FileRead path text) = ContextBlock (renderEmbeddedFile path text)
-messageToBlock (User text)          = ContextBlock text
-messageToBlock (Assistant text)     = ContextBlock text
-
--- | Same decision again, into a 'CharContextBlock' -- same reasoning as
---   'messageToBlock', a different target type.
-messageToCharBlock :: Message -> CharContextBlock
-messageToCharBlock (FileRead path text) = CharContextBlock (renderEmbeddedFile path text)
-messageToCharBlock (User text)          = CharContextBlock text
-messageToCharBlock (Assistant text)     = CharContextBlock text
-
 -- | Every 'Message' reachable from a 'Value' -- its own forced default,
 --   then every entry's own default in 'valueEntries' order -- the one
---   traversal 'valueMessages'\/'valueBlocks'\/'valueCharBlocks' all share,
---   varying only in which per-'Message' renderer they map over the
---   result.
+--   traversal every consumer shares.
+--
+--   This is what callers reach for when they want a 'Value''s content as
+--   ordinary data. There used to be two further wrappers here --
+--   @valueBlocks@\/@valueCharBlocks@, mapping each 'Message' into a
+--   @Text@-shaped @ContextBlock@\/@CharContextBlock@. Both are gone: they
+--   discarded the role the 'Message' was carrying (a chapter emitted as
+--   'Assistant' by @> read f@ came back indistinguishable from user-role
+--   reference material) and cost a prompt-cache boundary by collapsing
+--   several messages into one string. Consumers take @['Message']@ and
+--   flatten at the point they actually build a call, if at all.
 valueAllMessages :: Value r -> Action r [Message]
 valueAllMessages v = do
   own      <- valueDefault v
@@ -80,11 +68,3 @@ valueAllMessages v = do
 
 valueMessages :: Value r -> Action r [LLM.Message m]
 valueMessages v = map dslMessageToLLM <$> valueAllMessages v
-
--- | 'valueMessages', flattened into 'ContextBlock's instead.
-valueBlocks :: Value r -> Action r [ContextBlock]
-valueBlocks v = map messageToBlock <$> valueAllMessages v
-
--- | 'valueMessages', flattened into 'CharContextBlock's instead.
-valueCharBlocks :: Value r -> Action r [CharContextBlock]
-valueCharBlocks v = map messageToCharBlock <$> valueAllMessages v

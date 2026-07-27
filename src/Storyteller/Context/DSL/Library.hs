@@ -111,7 +111,7 @@ import Storyteller.Writer.Agent (CharSummary(..))
 -- signatures.
 
 -- | The one reserved standing-instruction file, if a project has one --
---   mirrors 'Storyteller.Writer.Agent.WorldContext.isSystemContextPath',
+--   mirrors the since-deleted @isSystemContextPath@,
 --   but as a plain glob, not a predicate: a project keeping its style
 --   guide somewhere else just overrides this one definition.
 --
@@ -721,9 +721,9 @@ contextCharacter scope lib charname = compileDefinition lib contextCharacterDef 
 --   level, one step up from here.
 characterSummaryOf :: Text -> Value r -> Action r CharSummary
 characterSummaryOf journalBucket charVal = do
-  sheet   <- Render.valueCharBlocks =<< namedEntry "sheet" charVal
-  full    <- Render.valueCharBlocks =<< namedEntry "full" charVal
-  journal <- Render.valueCharBlocks =<< namedEntry journalBucket charVal
+  sheet   <- Render.valueAllMessages =<< namedEntry "sheet" charVal
+  full    <- Render.valueAllMessages =<< namedEntry "full" charVal
+  journal <- Render.valueAllMessages =<< namedEntry journalBucket charVal
   pure (CharSummary sheet full journal)
 
 -- | Identity pass-through -- every candidate alias stays active for

@@ -65,8 +65,9 @@ import UniversalLLM.Tools
 import Storyteller.Core.LLM.Role (LLMs, ProseModel, AgentModel)
 import Storyteller.Core.LLM.Interceptor (withTurnBudget)
 import Storyteller.Writer.Agent
-  ( Instruction(..), Prose(..), CharContextBlock, ContextBlock(..)
-  , ExistingContent(..), WordCount(..) )
+  ( Instruction(..), Prose(..), ExistingContent(..), WordCount(..) )
+import Storyteller.Context.DSL.Value (messageText)
+import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Writer.Agent.Continuation (proseAgent)
 import Storyteller.Core.Prompt (Prompt(..), PromptKey, PromptStorage, getPrompt, getConfigWithPrompt)
 
@@ -108,7 +109,7 @@ expandAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => ExpandGoal
-  -> [ContextBlock]        -- ^ surrounding context (other chapters' outlines, world files, ...)
+  -> [DSL.Message]         -- ^ surrounding context (other chapters' outlines, world files, ...)
   -> OutlineDoc            -- ^ the document being expanded
   -> Sem r Text
 expandAgent goal contextBlocks (OutlineDoc doc) = do
@@ -119,7 +120,7 @@ expandAgent goal contextBlocks (OutlineDoc doc) = do
         | null contextBlocks = ""
         | otherwise =
             "Surrounding context:\n\n"
-            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+            <> T.intercalate "\n\n" (map messageText contextBlocks)
             <> "\n\n"
 
       userMsg = contextSection <> "Outline to expand:\n\n" <> doc <> "\n\n" <> closing
@@ -176,7 +177,7 @@ instance ToolParameter BeatSheetBody where
 splitOutlineAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
+  => [DSL.Message]         -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
 splitOutlineAgent contextBlocks (OutlineDoc doc) = do
@@ -195,7 +196,7 @@ splitOutlineAgent contextBlocks (OutlineDoc doc) = do
         | null contextBlocks = ""
         | otherwise =
             "Surrounding context:\n\n"
-            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+            <> T.intercalate "\n\n" (map messageText contextBlocks)
             <> "\n\n"
 
       userMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> closing
@@ -303,7 +304,7 @@ splitOutlineAgent contextBlocks (OutlineDoc doc) = do
 splitOutlineFreeform
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
+  => [DSL.Message]         -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
 splitOutlineFreeform contextBlocks (OutlineDoc doc) = do
@@ -314,7 +315,7 @@ splitOutlineFreeform contextBlocks (OutlineDoc doc) = do
         | null contextBlocks = ""
         | otherwise =
             "Surrounding context:\n\n"
-            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+            <> T.intercalate "\n\n" (map messageText contextBlocks)
             <> "\n\n"
 
       openingMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> opening
@@ -390,7 +391,7 @@ outlineCompleteSentinel = "[[OUTLINE-COMPLETE]]"
 splitOutlineBulk
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => [ContextBlock]        -- ^ surrounding context (world files, notes, ...)
+  => [DSL.Message]         -- ^ surrounding context (world files, notes, ...)
   -> OutlineDoc            -- ^ the whole-story outline being split
   -> Sem r [ChapterBeats]
 splitOutlineBulk contextBlocks (OutlineDoc doc) = do
@@ -401,7 +402,7 @@ splitOutlineBulk contextBlocks (OutlineDoc doc) = do
         | null contextBlocks = ""
         | otherwise =
             "Surrounding context:\n\n"
-            <> T.intercalate "\n\n" [ t | ContextBlock t <- contextBlocks ]
+            <> T.intercalate "\n\n" (map messageText contextBlocks)
             <> "\n\n"
 
       userMsg = contextSection <> "Story outline to divide into chapter beat sheets:\n\n" <> doc <> "\n\n" <> closing
@@ -458,7 +459,7 @@ chapterProse
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
-  -> [CharContextBlock]
+  -> [DSL.Message]
   -> [Message ProseModel]
   -> ExistingContent       -- ^ prose already written for this chapter (empty for a fresh chapter)
   -> BeatSheet
@@ -484,7 +485,7 @@ chapterProseByBeat
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount       -- ^ approximate length hint, per beat
-  -> [CharContextBlock]
+  -> [DSL.Message]
   -> [Message ProseModel]
   -> ExistingContent       -- ^ prose already written for this chapter
   -> BeatSheet
@@ -532,7 +533,7 @@ reconcileChapter
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
-  -> [CharContextBlock]
+  -> [DSL.Message]
   -> [Message ProseModel]
   -> CurrentProse          -- ^ the chapter's current prose (reference, to be revised)
   -> Instruction           -- ^ the user's additional steer
@@ -552,7 +553,7 @@ reconcileChapterByBeat
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount
-  -> [CharContextBlock]
+  -> [DSL.Message]
   -> [Message ProseModel]
   -> CurrentProse
   -> Instruction

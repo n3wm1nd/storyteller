@@ -58,7 +58,8 @@ import Polysemy
 import Polysemy.Fail
 import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 
-import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
+import Storyteller.Context.DSL.Value (Message(..))
+import Storyteller.Writer.Agent (CharSummary(..))
 
 import Prelude hiding (readFile)
 
@@ -86,15 +87,15 @@ readCharFiles keep = do
 -- | Format read files as labelled blocks: @"### \<path\>\n\n\<content\>"@.
 --   Pure — no filesystem access, so it's swappable independent of how the
 --   files were obtained.
-renderCharContext :: [(FilePath, T.Text)] -> [CharContextBlock]
+renderCharContext :: [(FilePath, T.Text)] -> [Message]
 renderCharContext = map $ \(path, content) ->
-  CharContextBlock $ "### " <> T.pack path <> "\n\n" <> content
+  User $ "### " <> T.pack path <> "\n\n" <> content
 
 -- | 'readCharFiles' then 'renderCharContext' — the common case.
 charSummaryAgent
   :: forall project r
   .  Members '[FileSystem project, FileSystemRead project, Fail] r
-  => (FilePath -> Bool) -> Sem r [CharContextBlock]
+  => (FilePath -> Bool) -> Sem r [Message]
 charSummaryAgent keep = renderCharContext <$> readCharFiles @project keep
 
 -- | 'readCharFiles' split into a 'CharSummary' by exact filename --

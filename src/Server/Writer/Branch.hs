@@ -57,8 +57,7 @@ import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, Scenar
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
 import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
 import Storyteller.Writer.Agent.Tracker (trackBranch)
-import Storyteller.Writer.Agent (ContextBlock(..))
-import Storyteller.Context.DSL.Value (valueDefault)
+import Storyteller.Context.DSL.Value (valueDefault, messageText)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Core.Context (resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Writer.Presence (presentAt)
@@ -427,8 +426,8 @@ suggestTasksOnBranch fallbackName loreSource toFile = do
 --   composition than @context.writer@ (no chapters at all), built from
 --   the same independently-named, independently-overridable pieces every
 --   other prose path in this application reads through, rather than a
---   second, hardcoded 'Storyteller.Writer.Agent.WorldContext.worldContextOf'
---   read (that module's own notion of "everything eligible that isn't a
+--   second, hardcoded @worldContextOf@ read (that since-deleted function's
+--   own notion of "everything eligible that isn't a
 --   chapter" had already drifted from the DSL's own glob-based
 --   classification). Each piece's own @valueDefault@ is already the
 --   complete, self-describing thing (see
@@ -446,8 +445,8 @@ fetchLore branch =
     blocks <- runContextValue @LoreSource $ do
       loreMsgs  <- valueDefault loreV
       otherMsgs <- valueDefault otherV
-      pure (map Render.messageToBlock (loreMsgs <> otherMsgs))
-    return (T.intercalate "\n\n---\n\n" [ t | ContextBlock t <- blocks ])
+      pure (loreMsgs <> otherMsgs)
+    return (T.intercalate "\n\n---\n\n" (map messageText blocks))
 
 -- | 'Just f' restricts to exactly that file; 'Nothing' accepts every file
 --   except @toFile@ itself (the tasks file is never its own source) --

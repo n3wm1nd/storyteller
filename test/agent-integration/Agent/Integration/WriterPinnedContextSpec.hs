@@ -36,7 +36,6 @@ import Runix.Logging (info)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (runStorage)
 import Storyteller.Core.Runtime (Main)
-import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..))
 import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Writer.Agent (Instruction(..), Prose(..), PastChaptersMode(..))
 import Storyteller.Writer.Agent.Context (PinnedContext(..))
@@ -50,14 +49,13 @@ import Agent.Integration.Judge (judgeOrFail)
 --   at all, the same way 'Server.Writer.File.pinnedContext' builds a real
 --   client's pinned selection: it's already just data, never assembled.
 pinned :: PinnedContext
-pinned = PinnedContext $ Node
-  [ ContextItem (DSL.User (T.unwords
+pinned = PinnedContext
+  [ DSL.User (T.unwords
       [ "Current scene conditions: a power outage has just plunged the"
       , "entire building into total darkness -- every light, everywhere,"
       , "is out, with no sign of coming back on soon."
-      ])) DSL.defaultMeta
+      ])
   ]
-  []
 
 instruction :: Instruction
 instruction = Instruction $ T.unwords

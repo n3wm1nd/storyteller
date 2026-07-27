@@ -9,18 +9,18 @@ import Test.Hspec
 import UniversalLLM (Message(..))
 
 import Storyteller.Core.LLM.Role (AgentModel)
-import Storyteller.Context.DSL.Rendering (RenderedContext(..))
-import Storyteller.Writer.Agent (CharContextBlock(..), CharSummary(..))
-import Storyteller.Writer.Agent.Context (WorldContext(..))
+import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Writer.Agent (CharSummary(..))
+import Storyteller.Writer.Agent.Context (SceneContext(..))
 import Storyteller.Writer.Agent.Roleplay (characterOpeningMessages, reflectOpeningMessages)
 
-opening :: CharSummary -> WorldContext -> [FilePath] -> T.Text -> [Message AgentModel]
+opening :: CharSummary -> SceneContext -> [FilePath] -> T.Text -> [Message AgentModel]
 opening = characterOpeningMessages "Ren"
 
 -- | No scene context at all -- the empty tree, same as a caller with
 --   nothing gathered yet would render.
-noContext :: WorldContext
-noContext = WorldContext (Node [] [])
+noContext :: SceneContext
+noContext = SceneContext []
 
 reflect :: CharSummary -> T.Text -> [FilePath] -> T.Text -> [Message AgentModel]
 reflect = reflectOpeningMessages "Ren"
@@ -63,9 +63,9 @@ spec = do
 
     it "puts the journal content exactly once, never fused into the stable context" $ do
       let cs = CharSummary
-            { csSheet   = [CharContextBlock "### sheet.md\n\n# Ren"]
-            , csContext = [CharContextBlock "### tasks.md\n\nkeep Elias distracted"]
-            , csJournal = [CharContextBlock "### journal.md\n\nI keep thinking about the mark."]
+            { csSheet   = [DSL.User "### sheet.md\n\n# Ren"]
+            , csContext = [DSL.User "### tasks.md\n\nkeep Elias distracted"]
+            , csJournal = [DSL.User "### journal.md\n\nI keep thinking about the mark."]
             }
           msgs = opening cs noContext [] "what do you ask Iskra?"
       occurrences "I keep thinking about the mark." msgs `shouldBe` 1
@@ -74,9 +74,9 @@ spec = do
 
     it "places the journal message directly before the final scene/question message -- nothing sits between them" $ do
       let cs = CharSummary
-            { csSheet   = [CharContextBlock "### sheet.md\n\n# Ren"]
-            , csContext = [CharContextBlock "### tasks.md\n\nsome tasks"]
-            , csJournal = [CharContextBlock "### journal.md\n\nsome journal entry"]
+            { csSheet   = [DSL.User "### sheet.md\n\n# Ren"]
+            , csContext = [DSL.User "### tasks.md\n\nsome tasks"]
+            , csJournal = [DSL.User "### journal.md\n\nsome journal entry"]
             }
           msgs = opening cs noContext [] "what do you ask?"
       case reverse msgs of
@@ -86,15 +86,15 @@ spec = do
         other -> expectationFailure ("expected journal pair directly before the final message, got " <> show (reverse other))
 
     it "drops an empty journal section instead of emitting an empty pair" $ do
-      let cs = CharSummary { csSheet = [CharContextBlock "### sheet.md\n\n# Ren"], csContext = [], csJournal = [] }
+      let cs = CharSummary { csSheet = [DSL.User "### sheet.md\n\n# Ren"], csContext = [], csJournal = [] }
           msgs = opening cs noContext [] "go"
       occurrences "## My own journal so far" msgs `shouldBe` 0
 
     it "survives a provider that concatenates adjacent same-role messages: the journal never ends up merged with stable content" $ do
       let cs = CharSummary
-            { csSheet   = [CharContextBlock "### sheet.md\n\n# Ren"]
-            , csContext = [CharContextBlock "### tasks.md\n\nsome tasks"]
-            , csJournal = [CharContextBlock "### journal.md\n\nsome journal entry"]
+            { csSheet   = [DSL.User "### sheet.md\n\n# Ren"]
+            , csContext = [DSL.User "### tasks.md\n\nsome tasks"]
+            , csJournal = [DSL.User "### journal.md\n\nsome journal entry"]
             }
           msgs      = opening cs noContext [] "what happens next?"
           flattened = mergeSameRole msgs
@@ -109,9 +109,9 @@ spec = do
 
     it "puts the journal content exactly once and the narrative last" $ do
       let cs = CharSummary
-            { csSheet   = [CharContextBlock "### sheet.md\n\n# Ren"]
+            { csSheet   = [DSL.User "### sheet.md\n\n# Ren"]
             , csContext = []
-            , csJournal = [CharContextBlock "### journal.md\n\nolder entry"]
+            , csJournal = [DSL.User "### journal.md\n\nolder entry"]
             }
           msgs = reflect cs "Elias asked a pointed question." [] "Write the entry."
       occurrences "older entry" msgs `shouldBe` 1

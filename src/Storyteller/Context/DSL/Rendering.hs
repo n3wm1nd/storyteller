@@ -41,6 +41,8 @@ module Storyteller.Context.DSL.Rendering
   , renderFileSystem
   , renderText
   , renderMessages
+  , contextAllMessages
+  , contextOwnMessages
   , namedChild
   , listDeferred
   , readRef
@@ -75,7 +77,7 @@ data RenderedContext a = Node
 --   "combine several already-rendered nodes into one flat node" any
 --   caller composing more than one resolved slot needs (e.g.
 --   'Server.Writer.File.chatWriter' folding @context.lore@\/chapters\/
---   @context.other@ into one 'WorldContext', or folding several
+--   @context.other@ into one stream, or folding several
 --   'fcPinnedPrograms' results in alongside plain pinned items). No
 --   attempt at deduplicating repeated names between the two sides' own
 --   'rcEntries' -- same "whatever's there is there, in order" contract
@@ -183,6 +185,43 @@ renderText = T.intercalate "\n\n" . map (messageText . ciMessage) . rcContent
 --   pass.
 renderMessages :: Context -> [LLM.Message m]
 renderMessages = map (dslMessageToLLM . ciMessage) . rcContent
+
+-- | This node's own default, then each named child's own default, in
+--   'rcEntries' order -- the already-rendered counterpart of
+--   'Storyteller.Context.DSL.Render.valueAllMessages', and the traversal a
+--   caller wants for a bucket whose content is /in/ its children rather
+--   than its own default.
+--
+--   __Not interchangeable with 'renderText'\/'renderMessages'__, and the
+--   difference is not cosmetic. Those read 'rcContent' only, which is
+--   right for "the definition's own answer" (see 'renderText''s Haddock on
+--   why walking both would double content that a @for@ loop deliberately
+--   exports twice). But a bucket built as a loop --
+--   'Storyteller.Context.DSL.Library.contextCharacterDef''s own @"full"@
+--   is exactly this, one entry per file with an empty default -- has
+--   /nothing/ in 'rcContent', so reading it that way silently returns
+--   nothing at all. Reach for this when addressing a named bucket you
+--   expect to hold files.
+--
+--   One level, matching @valueAllMessages@ exactly: a child's own children
+--   are not walked.
+contextAllMessages :: Context -> [Message]
+contextAllMessages c =
+     map ciMessage (rcContent c)
+  ++ concatMap (map ciMessage . rcContent . snd) (rcEntries c)
+
+-- | This node's own default and nothing else -- the same traversal
+--   'renderText' and 'renderMessages' use, as plain data rather than
+--   already flattened.
+--
+--   This is the right default for a whole definition's result:
+--   'Storyteller.Context.DSL.Library.contextLore''s per-file loop folds
+--   each entry's content into its own top-level default /and/ exports it
+--   again by name, so walking children too would send everything twice.
+--   Reach for 'contextAllMessages' only when addressing a named bucket
+--   whose content genuinely lives in its children.
+contextOwnMessages :: Context -> [Message]
+contextOwnMessages = map ciMessage . rcContent
 
 -- | Real, checkable structural lookup for a named bucket -- what a
 --   caller reaching for a specific piece of a multi-bucket definition

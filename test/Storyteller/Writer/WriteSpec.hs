@@ -10,7 +10,8 @@ import UniversalLLM (Message(..))
 import Storage.Tick (FileTick(..))
 
 import Storyteller.Core.LLM.Role (ProseModel)
-import Storyteller.Writer.Agent (Instruction(..), ContextBlock(..), CharContextBlock(..), CharLabel(..), CharSummary(..))
+import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Writer.Agent (Instruction(..), CharLabel(..), CharSummary(..))
 import Storyteller.Writer.Agent.Write (buildChapterMessages)
 
 -- | A bare-minimum atom tick: only the fields 'Storyteller.Writer.Agent.
@@ -32,7 +33,7 @@ noSummary :: CharSummary
 noSummary = CharSummary [] [] []
 
 build
-  :: [Message ProseModel] -> [(CharLabel, CharSummary)] -> [ContextBlock] -> [FileTick] -> Instruction
+  :: [Message ProseModel] -> [(CharLabel, CharSummary)] -> [DSL.Message] -> [FileTick] -> Instruction
   -> [Message ProseModel]
 build = buildChapterMessages
 
@@ -73,20 +74,26 @@ spec = describe "buildChapterMessages" $ do
       , UserText "## Chapter: chapters/ch2.md", AssistantText "chapter two prose"
       ]
 
-  it "puts a character's sheet/context as one chapter-start message, journal excluded from it" $ do
+  -- Each block is its own message now, rather than one joined string: the
+  -- boundaries are what a provider caches on, and a block that arrived as
+  -- 'DSL.Assistant' keeps that role. What still has to hold is that the
+  -- journal is *not* among them -- it belongs in the splice, not the
+  -- stable prefix.
+  it "puts a character's sheet/context at chapter start as separate messages, journal excluded from them" $ do
     let alice = CharSummary
-          { csSheet   = [CharContextBlock "### sheet.md\n\n# Alice"]
-          , csContext = [CharContextBlock "### notes.md\n\nsome context"]
-          , csJournal = [CharContextBlock "### journal excerpt\n\nsecret diary entry"]
+          { csSheet   = [DSL.User "### sheet.md\n\n# Alice"]
+          , csContext = [DSL.User "### notes.md\n\nsome context"]
+          , csJournal = [DSL.User "### journal excerpt\n\nsecret diary entry"]
           }
         msgs = build [] [(CharLabel "Alice", alice)] [] [] (Instruction "go")
-    case msgs of
-      (UserText t : _) -> do
-        t `shouldSatisfy` (\txt -> "## Character: Alice" `isInfixOfText` txt)
-        t `shouldSatisfy` (\txt -> "# Alice" `isInfixOfText` txt)
-        t `shouldSatisfy` (\txt -> "some context" `isInfixOfText` txt)
-        t `shouldSatisfy` (\txt -> not ("secret diary entry" `isInfixOfText` txt))
-      other -> expectationFailure ("expected a UserText chapter-start message first, got " <> show other)
+    take 3 msgs `shouldBe`
+      [ UserText "## Character: Alice"
+      , UserText "### sheet.md\n\n# Alice"
+      , UserText "### notes.md\n\nsome context"
+      ]
+    -- the journal is elsewhere entirely, not folded into the prefix
+    take 3 msgs `shouldSatisfy`
+      all (\m -> not ("secret diary entry" `isInfixOfText` messageBody m))
 
   it "reconstructs the current chapter's own history as alternating turns, in order" $ do
     let ticks = [promptTick "write the opening", atomTick "Once upon a time...", promptTick "now the twist", atomTick "...and then everything changed."]
@@ -99,30 +106,35 @@ spec = describe "buildChapterMessages" $ do
       ]
 
   it "places the journal excerpt in its own shallow splice message, directly before the instruction -- not inside it, not at chapter-start" $ do
-    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nshe remembers the storm"] }
+    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [DSL.User "### journal\n\nshe remembers the storm"] }
         msgs  = build [] [(CharLabel "Alice", alice)] [] [] (Instruction "continue")
     msgs `shouldBe`
-      [ UserText "## Character: Alice\n\n### journal\n\nshe remembers the storm"
+      [ UserText "## Character: Alice"
+      , UserText "### journal\n\nshe remembers the storm"
       , UserText "continue"
       ]
 
-  it "merges pinned context and journal excerpts into the same single splice message" $ do
-    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nshe remembers the storm"] }
-        msgs  = build [] [(CharLabel "Alice", alice)] [ContextBlock "### pinned.md\n\nuser-pinned note"] [] (Instruction "continue")
-    length msgs `shouldBe` 2
-    case msgs of
-      (UserText t : _) -> do
-        t `shouldSatisfy` (\txt -> "user-pinned note" `isInfixOfText` txt)
-        t `shouldSatisfy` (\txt -> "she remembers the storm" `isInfixOfText` txt)
-      other -> expectationFailure ("expected the merged splice message first, got " <> show other)
+  -- Pinned content and journals share the splice -- same position, adjacent
+  -- -- but each stays its own message rather than being joined into one
+  -- string, so a pinned item the user just changed doesn't invalidate the
+  -- journal block sitting next to it.
+  it "puts pinned context and journal excerpts adjacent in the splice, pinned first, each its own message" $ do
+    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [DSL.User "### journal\n\nshe remembers the storm"] }
+        msgs  = build [] [(CharLabel "Alice", alice)] [DSL.User "### pinned.md\n\nuser-pinned note"] [] (Instruction "continue")
+    msgs `shouldBe`
+      [ UserText "### pinned.md\n\nuser-pinned note"
+      , UserText "## Character: Alice"
+      , UserText "### journal\n\nshe remembers the storm"
+      , UserText "continue"
+      ]
 
   it "the instruction is always the last message, regardless of what else is present, and is the raw prompt verbatim" $ do
     let alice = CharSummary
-          { csSheet = [CharContextBlock "### sheet.md\n\n# Alice"], csContext = [], csJournal = [CharContextBlock "### journal\n\nnote"] }
+          { csSheet = [DSL.User "### sheet.md\n\n# Alice"], csContext = [], csJournal = [DSL.User "### journal\n\nnote"] }
         msgs = build
           ([loreMsg "### lore.md\n\nlore"] ++ earlierChapterMsgs "chapters/ch1.md" "earlier chapter")
           [(CharLabel "Alice", alice)]
-          [ContextBlock "### pinned.md\n\npinned"]
+          [DSL.User "### pinned.md\n\npinned"]
           [atomTick "existing prose"]
           (Instruction "finish the scene")
     case reverse msgs of
@@ -146,13 +158,15 @@ spec = describe "buildChapterMessages" $ do
     -- five completed turns, well past the window -- the splice must not be
     -- the very first message: some amount of older conversation should
     -- still lead it.
-    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nnote"] }
+    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [DSL.User "### journal\n\nnote"] }
         ticks = concat
           [ [promptTick ("prompt " <> T.pack (show n)), atomTick ("reply " <> T.pack (show n))]
           | n <- [1 :: Int .. 5]
           ]
         msgs = build [] [(CharLabel "Alice", alice)] [] ticks (Instruction "continue")
-        splice = UserText "## Character: Alice\n\n### journal\n\nnote"
+        -- the splice's first message; with csSheet/csContext empty there
+        -- is no identity prefix, so this header appears only in the splice
+        splice = UserText "## Character: Alice"
     case break (== splice) msgs of
       (before, _ : after) -> do
         before `shouldNotBe` []
@@ -160,13 +174,15 @@ spec = describe "buildChapterMessages" $ do
       (_, []) -> expectationFailure ("splice message not found in " <> show msgs)
 
   it "keeps at least one real conversation turn after the splice -- the model's lead-in to generating is the scene, not the context dump" $ do
-    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nnote"] }
+    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [DSL.User "### journal\n\nnote"] }
         ticks = concat
           [ [promptTick ("prompt " <> T.pack (show n)), atomTick ("reply " <> T.pack (show n))]
           | n <- [1 :: Int .. 5]
           ]
         msgs = build [] [(CharLabel "Alice", alice)] [] ticks (Instruction "continue")
-        splice = UserText "## Character: Alice\n\n### journal\n\nnote"
+        -- the splice's first message; with csSheet/csContext empty there
+        -- is no identity prefix, so this header appears only in the splice
+        splice = UserText "## Character: Alice"
     case break (== splice) msgs of
       (_, _ : after) -> init after `shouldSatisfy` any isConversationTurn
       (_, [])        -> expectationFailure ("splice message not found in " <> show msgs)
@@ -175,12 +191,14 @@ spec = describe "buildChapterMessages" $ do
     -- With min=2/max=4, 2..4 completed turns should all put the *entire*
     -- history on the recent side (boundary never moves within that
     -- stretch); a 5th turn is what finally pushes the boundary forward.
-    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nnote"] }
+    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [DSL.User "### journal\n\nnote"] }
         ticksThrough n = concat
           [ [promptTick ("prompt " <> T.pack (show i)), atomTick ("reply " <> T.pack (show i))]
           | i <- [1 .. n]
           ]
-        splice = UserText "## Character: Alice\n\n### journal\n\nnote"
+        -- the splice's first message; with csSheet/csContext empty there
+        -- is no identity prefix, so this header appears only in the splice
+        splice = UserText "## Character: Alice"
         olderCount n = length (fst (break (== splice) (build [] [(CharLabel "Alice", alice)] [] (ticksThrough n) (Instruction "go"))))
     mapM_ (\n -> olderCount n `shouldBe` 0) [2, 3, 4 :: Int]
     olderCount 5 `shouldSatisfy` (> 0)
@@ -195,7 +213,7 @@ spec = describe "buildChapterMessages" $ do
   -- fresh every turn) broke on literally every turn; regressing to that
   -- shape should fail this test immediately.
   it "gives a byte-identical prefix across consecutive turns within the same window stretch" $ do
-    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [CharContextBlock "### journal\n\nnote"] }
+    let alice = CharSummary { csSheet = [], csContext = [], csJournal = [DSL.User "### journal\n\nnote"] }
         ticksThrough n = concat
           [ [promptTick ("prompt " <> T.pack (show i)), atomTick ("reply " <> T.pack (show i))]
           | i <- [1 .. n]
@@ -211,3 +229,10 @@ spec = describe "buildChapterMessages" $ do
     isInfixOfText needle haystack = needle `T.isInfixOf` haystack
     isConversationTurn (AssistantText _) = True
     isConversationTurn _                 = False
+
+-- | The text of a message whatever its role -- for assertions about what
+--   did or didn't reach a given position, independent of framing.
+messageBody :: Message ProseModel -> T.Text
+messageBody (UserText t)      = t
+messageBody (AssistantText t) = t
+messageBody _                 = ""

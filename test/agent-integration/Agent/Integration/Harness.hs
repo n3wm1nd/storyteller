@@ -69,7 +69,6 @@ import UniversalLLM (ToolCall(..))
 import Agent.Integration.ToolCallQuality
   (TurnReport(..), invalidCallsSinceLastUser, reportTurn)
 import Storyteller.Common.Splitter (Splitter)
-import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..))
 import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag)
@@ -95,22 +94,21 @@ import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 --   branch (no chapters written, no presence ticks recorded), not by
 --   passing an empty parameter.
 emptyLore :: Lore
-emptyLore = Lore (Node [] [])
+emptyLore = Lore []
 
 emptyOther :: Other
-emptyOther = Other (Node [] [])
+emptyOther = Other []
 
 emptyPinnedContext :: PinnedContext
-emptyPinnedContext = PinnedContext (Node [] [])
+emptyPinnedContext = PinnedContext []
 
 -- | Builds a 'Lore' directly from plain 'Message's -- what a spec
 --   asserting on 'Storyteller.Writer.Agent.Write.writeAgent's own message
---   ordering used to pass as a bare @['Message' m]@ before lore became a
---   newtype-wrapped tree. @'UserText'@\/@'AssistantText'@ map onto the
+--   ordering passes directly. @'UserText'@\/@'AssistantText'@ map onto the
 --   DSL's own role tags directly; anything else this harness doesn't
 --   otherwise construct is given no sensible DSL equivalent and is dropped.
 loreFromMessages :: [Message m] -> Lore
-loreFromMessages msgs = Lore (Node [ ContextItem dm DSL.defaultMeta | Just dm <- map toDSLMessage msgs ] [])
+loreFromMessages msgs = Lore [ dm | Just dm <- map toDSLMessage msgs ]
   where
     toDSLMessage (UserText t)      = Just (DSL.User t)
     toDSLMessage (AssistantText t) = Just (DSL.Assistant t)

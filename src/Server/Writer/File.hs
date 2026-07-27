@@ -39,7 +39,6 @@ import Data.List (isSuffixOf)
 import qualified Data.List as List
 import Polysemy (Member, Members, Sem)
 import Polysemy.Fail (Fail)
-import Runix.Git (Git)
 import Runix.Logging (info, Logging)
 import Runix.FileSystem (FileSystem, FileSystemRead, fileExists, readFile, writeFile)
 
@@ -63,12 +62,11 @@ import Storyteller.Writer.Agent.Summarizer
   (runSummarizerForPath, summaryOccurrences)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Storage (StoryStorage)
 import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
 import Storyteller.Writer.Agent.Write (writeAgent, flattenCharBlocks, activeCharacterContext)
-import Storyteller.Writer.Agent.Custom (customAgent)
+import Storyteller.Writer.Agent.Custom (customAgent, customContextName)
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Agent.FlowWrite (flowWriteAgent)
 import Storyteller.Writer.Agent.Fix (fixAgent)
@@ -91,7 +89,7 @@ import qualified Storyteller.Context.DSL.Value as DSL
 import qualified Storyteller.Context.DSL.Render as Render
 import qualified Storyteller.Context.DSL.Rendering as Rendering
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Writer.Agent.Context (WorldContext(..), Lore(..), Other(..), PinnedContext(..))
+import Storyteller.Writer.Agent.Context (SceneContext(..), Lore(..), Other(..), PinnedContext(..), CharacterContext(..), ProgramContext(..))
 import Storyteller.Core.Context (resolveContext0, resolveContext1, resolveAdhoc0, setContextOverride, runContextValue)
 
 import Prelude hiding (readFile, writeFile)
@@ -131,12 +129,18 @@ chatWriter path prompt pinnedItems mLore mOther chaptersMode pinnedPrograms mFlo
   loreV               <- resolveContext0 @Main "context.lore"
   otherV              <- resolveContext1 @Main "context.other" (T.pack path)
   pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
+  -- Rendered here, not in the agent: this is the layer that ran the DSL,
+  -- so it is also the layer that decides the traversal. 'contextOwnMessages'
+  -- (a definition's own default, never its entries as well) is the right one
+  -- for a whole definition's result -- see its Haddock on why walking
+  -- children too would send a lore file twice.
   (lore, other, pinnedProgramCtxs) <- runContextValue @Main $ do
     l        <- Rendering.renderContext loreV
     o        <- Rendering.renderContext otherV
     progCtxs <- mapM Rendering.renderContext pinnedProgramValues
-    pure (Lore l, Other o, progCtxs)
-  let pinned      = PinnedContext (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs))
+    pure (Lore (Rendering.contextOwnMessages l), Other (Rendering.contextOwnMessages o), progCtxs)
+  let pinned      = PinnedContext
+        (Rendering.contextOwnMessages (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs)))
       instruction = Instruction prompt
       -- Storing this turn's prompt tick has to wait until every branch
       -- below has already read whatever tick history it needs -- both
@@ -189,9 +193,13 @@ customWriter
 customWriter path slug prompt pinnedItems pinnedPrograms = do
   pinnedProgramValues <- mapM (resolveAdhoc0 @Main) pinnedPrograms
   pinnedProgramCtxs   <- runContextValue @Main (mapM Rendering.renderContext pinnedProgramValues)
-  let pinned = PinnedContext (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs))
+  let pinned = PinnedContext
+        (Rendering.contextOwnMessages (mconcat (pinnedContext pinnedItems : pinnedProgramCtxs)))
+  programV <- resolveContext1 @Main (customContextName slug) (T.pack path)
+  program  <- ProgramContext . Rendering.contextOwnMessages
+                <$> runContextValue @Main (Rendering.renderContext programV)
   info $ "custom agent (" <> slug <> ") starting: " <> T.pack path
-  Prose generated <- customAgent @Main path slug pinned (Instruction prompt)
+  Prose generated <- customAgent slug program pinned (Instruction prompt)
   -- Same read-before-store ordering 'chatWriter' documents: nothing here
   -- reads tick history directly, but the agent's own program can
   -- (@readconversation path@ -- see
@@ -216,28 +224,13 @@ customWriter path slug prompt pinnedItems pinnedPrograms = do
 --   Haddock), rather than picking pieces apart the way 'chatWriter' has
 --   to. This is the one shared entry point every non-'chatWriter' prose
 --   path in this module now reads context through -- no more per-caller
---   'gatherFileContext'\/'Storyteller.Writer.Agent.WorldContext.worldContextOf'
---   reads that could quietly drift from @context.writer@'s own policy.
+--   hardcoded reads that could quietly drift from @context.writer@'s own
+--   policy.
 flatMainMessages :: (FileOpen r, SessionEffects r) => FilePath -> Sem r [DSL.Message]
 flatMainMessages path = do
   writerV <- resolveContext1 @Main "context.writer" (T.pack path)
   runContextValue @Main (valueDefault writerV)
 
--- | 'flatMainMessages', but rendered into a
---   'Storyteller.Context.DSL.Rendering.Context' via
---   'Storyteller.Context.DSL.Rendering.renderContext' rather than flattened
---   into '[DSL.Message]' -- what 'roleplayWriter' wraps as a
---   'Storyteller.Writer.Agent.Context.WorldContext' now, so
---   'Storyteller.Writer.Agent.Roleplay.roleplayAgent' renders it itself, at
---   the point it actually builds each of its own 'Runix.LLM.queryLLM'
---   calls, rather than receiving it pre-flattened. A separate function
---   from 'flatMainMessages', not a replacement -- 'chatChapterRegen'\/
---   'chatSplitOutline' still want the flattened '[DSL.Message]' shape and
---   aren't part of this pass.
-flatMainContext :: (FileOpen r, SessionEffects r) => FilePath -> Sem r Rendering.Context
-flatMainContext path = do
-  writerV <- resolveContext1 @Main "context.writer" (T.pack path)
-  runContextValue @Main (Rendering.renderContext writerV)
 
 -- | The roleplay writer: rather than one call producing the scene directly
 --   (the shape 'chatWriter' uses), every character present is interrogated
@@ -250,10 +243,9 @@ flatMainContext path = do
 --
 --   Scene context now comes from the same @context.main@ definition
 --   'chatWriter' uses ("Storyteller.Context.DSL.Library"), not a second,
---   independently-hardcoded read (formerly
---   'Storyteller.Writer.Agent.WorldContext.worldContextOf'\/
---   'Storyteller.Writer.Agent.ChapterContext.earlierChaptersOf'\/
---   'gatherFileContext') -- those two paths had already drifted (a plain
+--   independently-hardcoded read (formerly a per-caller
+--   @worldContextOf@\/@earlierChaptersOf@\/@gatherFileContext@ trio, all
+--   since deleted) -- those two paths had already drifted (a plain
 --   glob's own notion of "lore" isn't @worldContextOf@'s "everything
 --   eligible that isn't a chapter", and only @gatherFileContext@ ever
 --   excluded @path@ itself). 'flatMainMessages' is what actually pulls this
@@ -280,7 +272,7 @@ flatMainContext path = do
 --   than running against nothing.
 roleplayWriter :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
 roleplayWriter path prompt = do
-  sceneContext <- WorldContext <$> flatMainContext path
+  sceneContext <- SceneContext <$> flatMainMessages path
   active <- activeCharactersFor @Main path
   let characters    = [ (CharLabel (characterLabel c), c) | c <- active ]
   info $ "roleplay agent starting: " <> T.pack path
@@ -535,13 +527,11 @@ chatChapterRegen mode path prompt context = do
 --
 --   Surrounding context comes from 'flatMainMessages' now, not a second
 --   independently-hardcoded 'gatherFileContext' read -- see
---   'chatChapterRegen''s own Haddock. 'splitOutlineFreeform' still takes
---   flat 'ContextBlock's (unmigrated -- it doesn't go through 'proseAgent'),
---   flattened here at the call site same as 'roleplayWriter's own.
+--   'chatChapterRegen''s own Haddock.
 chatSplitOutline :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> Sem r ()
 chatSplitOutline path = do
   outline <- OutlineDoc . TE.decodeUtf8 <$> readFile @(BranchTag Main) path
-  fileCtx <- map Render.messageToBlock <$> flatMainMessages path
+  fileCtx <- flatMainMessages path
   info $ "outline split starting: " <> T.pack path
   sheets <- splitOutlineFreeform fileCtx outline
   mapM_ writeSheet sheets
@@ -591,13 +581,19 @@ setPresence path character Leave = void $ leaves @Main path character
 --   the result gets recorded, and it goes on @Main@ (the scene's own
 --   chain), not the character's: asking a question is something that
 --   happened during *this* writing, not a new memory for the character --
---   see 'Storyteller.Writer.Types.CharacterAnswer'. No branch-opening dance
---   needed here any more -- 'askCharacterAgent' reads via the Context DSL
---   now, which crosses to the character's own branch itself.
+--   see 'Storyteller.Writer.Types.CharacterAnswer'.
+--
+--   Resolving @context.character@ happens here rather than inside the
+--   agent -- Context DSL assembly is a dispatch concern (this is also
+--   where a client's own per-request override would land), and it's what
+--   crosses to the character's own branch. The agent gets the resolved
+--   tree, buckets intact.
 askCharacter :: (FileOpen r, SessionEffects r) => FilePath -> Character -> T.Text -> Sem r T.Text
 askCharacter path character@(Character (BranchName name)) question = do
   let ident = branchDisplayName name
-  answer <- askCharacterAgent @Main ident question
+  charVal <- resolveContext1 @Main "context.character" ident
+  charCtx <- runContextValue @Main (Rendering.renderContext charVal)
+  answer  <- askCharacterAgent (CharacterContext charCtx) question
   _ <- runStorage @Main (Tick.storeAs (CharacterAnswer character question answer (Just path)))
   return answer
 

@@ -25,7 +25,6 @@ import Runix.Logging (Logging)
 
 import qualified Storage.Ops as Ops
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
-import Storyteller.Context.DSL.Rendering (RenderedContext(..))
 import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage)
 import Storyteller.Core.LLM.Role (LLMs)
@@ -36,7 +35,7 @@ import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (CharLabel(..), Prose(..))
 import Storyteller.Writer.Agent.CharContext (charSummaryFull)
-import Storyteller.Writer.Agent.Context (WorldContext(..))
+import Storyteller.Writer.Agent.Context (SceneContext(..))
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Presence (activeCharactersFor)
@@ -65,7 +64,7 @@ runRoleplayTurn
 runRoleplayTurn path prompt = do
   active <- activeCharactersFor @Main path
   let characters = [ (CharLabel (characterLabel c), c) | c <- active ]
-  Prose text <- roleplayAgent (WorldContext (Node [] [])) characters prompt
+  Prose text <- roleplayAgent (SceneContext []) characters prompt
   sceneRefs <- mapM (\c -> runStorage @Main (Ops.append path c)) =<< splitAtoms text
   entries <- case sceneRefs of
     [] -> pure []

@@ -41,8 +41,8 @@
 -- different message shapes (a reconstructed multi-turn chapter
 -- conversation vs. one flattened trailing message) -- it just needed to
 -- stop being handed its own gathering as parameters, and to stop
--- bundling 'Lore' together with agent-derived content into one
--- 'WorldContext'-shaped blob the way an earlier pass here did.
+-- bundling 'Lore' together with agent-derived content into one anonymous
+-- blob the way an earlier pass here did.
 -- 'Server.Writer.File.chatWriter' correspondingly shrank to: stage a
 -- lore\/other override if the caller sent one, resolve each, then call
 -- this with @path@\/@lore@\/@other@\/@instruction@\/the other
@@ -80,14 +80,15 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
 
-import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText)
+import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText, contextAllMessages)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Branch (BranchOp, Branches, runStorage)
 import Storyteller.Core.Context (ContextStorage, resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent
-  ( Instruction(..), Prose(..), CharContextBlock(..), CharLabel(..), CharSummary(..)
-  , ContextBlock(..), PastChaptersMode(..) )
+  ( Instruction(..), Prose(..), CharLabel(..), CharSummary(..), PastChaptersMode(..) )
+import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Context.DSL.Render (dslMessageToLLM)
 import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 import Storyteller.Writer.Agent.Chat (historyFromFileTicks)
 import Storyteller.Writer.Agent.MessageWindow (injectAtWindow)
@@ -184,9 +185,9 @@ writeAgent path (Lore lore) (Other other) chaptersMode (PinnedContext pinned) in
 
   currentTicks <- runStorage @branch (Tick.fileTicksOf path)
 
-  let contextMsgs      = renderMessages lore ++ renderMessages chapters ++ renderMessages other
+  let contextMsgs      = map dslMessageToLLM lore ++ renderMessages chapters ++ map dslMessageToLLM other
       styleText        = renderText style
-      pinnedBlocks      = [ContextBlock (renderText pinned) | not (T.null (renderText pinned))]
+      pinnedBlocks      = pinned
       sysText           = T.intercalate "\n\n" (filter (not . T.null) [sysPrompt, styleText, chapterContinuationNote])
       configsWithPrompt = SystemPrompt sysText : configs
       messages          = buildChapterMessages contextMsgs chars pinnedBlocks currentTicks instruction
@@ -241,7 +242,7 @@ buildChapterMessages
   :: forall m
   .  [Message m]                 -- ^ world context -- lore, earlier chapters, everything else, already ordered and already built as real messages -- see 'writeAgent's own Haddock: this used to be two separate parameters (flattened lore text, plus a pre-built earlier-chapters list) reassembled here; now it's whatever assembled the caller's own context (typically @'Storyteller.Context.DSL.Library.contextWriter'@) handed through as one already-ordered stream
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
-  -> [ContextBlock]              -- ^ pinned/short-term context
+  -> [DSL.Message]               -- ^ pinned/short-term context
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> [Message m]
@@ -252,13 +253,17 @@ buildChapterMessages context chars pinned currentTicks (Instruction instr) =
     -- character with nothing under 'csSheet'\/'csContext' has to be
     -- dropped here -- not passed through with an empty blocks list -- or
     -- it'd surface as a header with nothing under it.
+    --
+    -- Each block stays its own message rather than being joined into one
+    -- string: the boundaries are what a provider caches on, and a block
+    -- that arrived as 'DSL.Assistant' keeps that role instead of being
+    -- flattened into user-role text.
     identityBlocks = flattenCharBlocks
       [ (label, blocks) | (label, cs) <- chars, let blocks = csSheet cs ++ csContext cs, not (null blocks) ]
-    chapterStartMsgs = [ UserText (renderCharBlocks identityBlocks) | not (null identityBlocks) ]
+    chapterStartMsgs = map dslMessageToLLM identityBlocks
 
     journalBlocks = flattenCharBlocks [ (label, csJournal cs) | (label, cs) <- chars, not (null (csJournal cs)) ]
-    spliceText = T.intercalate "\n\n" (filter (not . T.null) [renderContextBlocks pinned, renderCharBlocks journalBlocks])
-    spliceMsgs = [ UserText spliceText | not (T.null spliceText) ]
+    spliceMsgs = map dslMessageToLLM (pinned ++ journalBlocks)
 
     -- The splice sits at a depth inside the reconstructed conversation
     -- rather than at either end -- see 'Storyteller.Writer.Agent.
@@ -287,18 +292,12 @@ recentWindowMin, recentWindowMax :: Int
 recentWindowMin = 2
 recentWindowMax = 4
 
-renderContextBlocks :: [ContextBlock] -> T.Text
-renderContextBlocks blocks = T.intercalate "\n\n" [ t | ContextBlock t <- blocks ]
-
-renderCharBlocks :: [CharContextBlock] -> T.Text
-renderCharBlocks blocks = T.intercalate "\n\n" [ t | CharContextBlock t <- blocks ]
-
 -- | @(label, resolved blocks)@ per active character branch, flattened into
---   the plain 'CharContextBlock' list a rendered message actually takes --
+--   the plain message list a rendered call actually takes --
 --   each branch's blocks preceded by a @"## Character: {name}"@ header
 --   block. Shared with 'Storyteller.Writer.Agent.Outline''s reconciliation
 --   calls (which still take this same flattened shape directly) and with
 --   both 'writeAgent's own identity and journal splits above.
-flattenCharBlocks :: [(CharLabel, [CharContextBlock])] -> [CharContextBlock]
+flattenCharBlocks :: [(CharLabel, [DSL.Message])] -> [DSL.Message]
 flattenCharBlocks = concatMap
-  (\(CharLabel name, blocks) -> CharContextBlock ("## Character: " <> name) : blocks)
+  (\(CharLabel name, blocks) -> DSL.User ("## Character: " <> name) : blocks)

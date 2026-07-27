@@ -112,8 +112,11 @@ import Storyteller.Core.LLM.Role (LLMs, AgentModel, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Types (BranchName(..))
-import Storyteller.Writer.Agent (CharContextBlock(..), CharLabel(..), CharSummary(..), Prose(..))
-import Storyteller.Writer.Agent.Context (WorldContext(..))
+import Storyteller.Context.DSL.Value (messageText)
+import qualified Storyteller.Context.DSL.Value as DSL
+import Storyteller.Context.DSL.Render (dslMessageToLLM)
+import Storyteller.Writer.Agent (CharLabel(..), CharSummary(..), Prose(..))
+import Storyteller.Writer.Agent.Context (SceneContext(..))
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Lore (isLoreEligible)
 import Storyteller.Writer.Types (Character(..))
@@ -140,7 +143,7 @@ type Exchange = (Text, Text, Text)
 roleplayAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
-  => WorldContext               -- ^ scene context: existing prose, world lore -- rendered into a concrete model's own messages only right before each call actually reaches 'queryLLM' (see 'Storyteller.Writer.Agent.Continuation.proseAgent's own Haddock on why upstream binding is wrong)
+  => SceneContext               -- ^ scene context: existing prose, world lore -- rendered into a concrete model's own messages only right before each call actually reaches 'queryLLM' (see 'Storyteller.Writer.Agent.Continuation.proseAgent's own Haddock on why upstream binding is wrong)
   -> [(CharLabel, Character)]  -- ^ every character present
   -> Text                      -- ^ the author's direction; may be empty
   -> Sem r Prose
@@ -172,7 +175,7 @@ roleplayAgent sceneContext characters prompt = do
 askCharacter
   :: forall r
   .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
-  => Character -> Text -> WorldContext -> Text -> Sem r Text
+  => Character -> Text -> SceneContext -> Text -> Sem r Text
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
@@ -190,10 +193,10 @@ askCharacter (Character (BranchName branchName)) name sceneContext question = do
 questionForCharacterAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => WorldContext -> [Text] -> Text -> Text -> Sem r Text
-questionForCharacterAgent (WorldContext ctx) roster label prompt = do
+  => SceneContext -> [Text] -> Text -> Text -> Sem r Text
+questionForCharacterAgent (SceneContext ctx) roster label prompt = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay.question" defaultQuestionSystemPrompt defaultQuestionConfig
-  let contextMsgs = renderMessages ctx
+  let contextMsgs = map dslMessageToLLM ctx
   response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderQuestionTrailing roster label prompt)])
   pure (T.strip (mconcat [t | AssistantText t <- response]))
 
@@ -237,11 +240,11 @@ defaultQuestionConfig = [MaxTokens 5000, Temperature 0.8]
 composeSceneAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => WorldContext -> [Exchange] -> Text -> Sem r Text
-composeSceneAgent (WorldContext ctx) exchanges prompt = do
+  => SceneContext -> [Exchange] -> Text -> Sem r Text
+composeSceneAgent (SceneContext ctx) exchanges prompt = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay" defaultComposeSystemPrompt defaultComposeConfig
   info "roleplayAgent: composing the scene..."
-  let contextMsgs = renderMessages ctx
+  let contextMsgs = map dslMessageToLLM ctx
   response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderComposeTrailing exchanges prompt)])
   let narrative = T.strip (mconcat [t | AssistantText t <- response])
   info ("roleplayAgent: finished scene (" <> T.pack (show (T.length narrative)) <> " chars):\n" <> narrative)
@@ -321,7 +324,7 @@ characterIntentAgent
      )
   => Text                  -- ^ this character's display name
   -> CharSummary            -- ^ their own full, uncurated branch context (see 'Storyteller.Context.DSL.Library.characterSummaryOf')
-  -> WorldContext          -- ^ the scene's own context (existing prose, world lore)
+  -> SceneContext          -- ^ the scene's own context (existing prose, world lore)
   -> Text                  -- ^ the question put to them
   -> Sem r Text
 characterIntentAgent name ownContext sceneContext question = do
@@ -512,12 +515,12 @@ addSuspicionTool = LLMTool $ mkToolWithMeta
 --   what keeps a change to the always-changing journal from being able to
 --   silently fuse backward into, and invalidate, the stable prefix in front
 --   of it, no matter how a given provider handles same-role adjacency.
-characterOpeningMessages :: Text -> CharSummary -> WorldContext -> [FilePath] -> Text -> [Message m]
-characterOpeningMessages name ownContext (WorldContext ctx) lore question =
+characterOpeningMessages :: Text -> CharSummary -> SceneContext -> [FilePath] -> Text -> [Message m]
+characterOpeningMessages name ownContext (SceneContext ctx) lore question =
   UserText (characterIdentityNote name)
-    : labelledPair "## Your character sheet" (blocksText (csSheet ownContext))
-   ++ labelledPair "## What else I know" (T.intercalate "\n\n" (filter (not . T.null) [blocksText (csContext ownContext), renderLoreList lore]))
-   ++ labelledPair "## My own journal so far" (blocksText (csJournal ownContext))
+    : labelledPair "## Your character sheet" (csSheet ownContext)
+   ++ labelledPair "## What else I know" (csContext ownContext ++ [DSL.User (renderLoreList lore)])
+   ++ labelledPair "## My own journal so far" (csJournal ownContext)
    ++ sceneMsgs
    ++ [UserText asked]
   where
@@ -525,7 +528,7 @@ characterOpeningMessages name ownContext (WorldContext ctx) lore question =
     -- rest of this function's static framing is -- so any role structure
     -- @sceneContext@ itself carries (@context.main@'s own alternating-turn
     -- "chapters" bucket, say) survives into this call too.
-    sceneMessages = renderMessages ctx
+    sceneMessages = map dslMessageToLLM ctx
     sceneMsgs
       | null sceneMessages = []
       | otherwise           = UserText "### The scene so far" : sceneMessages
@@ -536,13 +539,20 @@ characterOpeningMessages name ownContext (WorldContext ctx) lore question =
 --   the role switch matter. Dropped entirely (not sent as an empty pair)
 --   when @content@ is blank, so an absent file never surfaces as a header
 --   with nothing under it.
-labelledPair :: Text -> Text -> [Message m]
-labelledPair label content
-  | T.null (T.strip content) = []
-  | otherwise                 = [UserText label, AssistantText content]
-
-blocksText :: [CharContextBlock] -> Text
-blocksText = T.intercalate "\n\n" . map (\(CharContextBlock b) -> b)
+--   Each block stays its own message rather than being joined into one
+--   string -- the boundaries are what a provider caches on, and this
+--   character's sheet doesn't change between turns even when their journal
+--   does.
+--   The role switch is a transformation on the 'DSL.Message's themselves,
+--   not a second way of rendering them: everything still goes out through
+--   the one 'dslMessageToLLM'.
+labelledPair :: Text -> [DSL.Message] -> [Message m]
+labelledPair label blocks
+  | null kept = []
+  | otherwise = UserText label : map (dslMessageToLLM . asOwnKnowledge) kept
+  where
+    kept = filter (not . T.null . T.strip . messageText) blocks
+    asOwnKnowledge = DSL.Assistant . messageText
 
 -- | Every shared lore path currently on the Main branch -- given to a
 --   character subagent as plain text up front (see 'renderLoreList'), so it
@@ -694,9 +704,9 @@ characterReflectAgent name ownContext narrative = do
 reflectOpeningMessages :: Text -> CharSummary -> Text -> [FilePath] -> Text -> [Message m]
 reflectOpeningMessages name ownContext narrative lore closing =
   UserText identity
-    : labelledPair "## Your character sheet" (blocksText (csSheet ownContext))
-   ++ labelledPair "## What else I know" (T.intercalate "\n\n" (filter (not . T.null) [blocksText (csContext ownContext), renderLoreList lore]))
-   ++ labelledPair "## My own journal so far" (blocksText (csJournal ownContext))
+    : labelledPair "## Your character sheet" (csSheet ownContext)
+   ++ labelledPair "## What else I know" (csContext ownContext ++ [DSL.User (renderLoreList lore)])
+   ++ labelledPair "## My own journal so far" (csJournal ownContext)
    ++ [UserText (sceneBlock <> "\n\n" <> closing)]
   where
     identity = "This journal entry is " <> name <> "'s own private account -- write strictly from "

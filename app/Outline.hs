@@ -97,7 +97,7 @@ outlineAction outFile guidance = do
   -- @outline.md@'s own content is separate, read directly below (it's the
   -- document being expanded, not surrounding context).
   writerVal <- resolveContext1 @Main "context.writer" "outline.md"
-  fileCtx <- map Render.messageToBlock <$> runContextValue @Main (valueDefault writerVal)
+  fileCtx <- runContextValue @Main (valueDefault writerVal)
   ExistingContent outline <- fileExists @(BranchTag Main) "outline.md" >>= \case
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) "outline.md"
     False -> return (ExistingContent "")

@@ -18,6 +18,7 @@ module Storyteller.Context.DSL.RenderingSpec (spec) where
 
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Test.Hspec
 
 import Polysemy (Members, Sem, run)
@@ -37,7 +38,7 @@ import Server.TestStack
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Storyteller.Core.LLM.Role (ProseModel)
 import Storyteller.Context.DSL.Compile (Library, currentScope)
-import Storyteller.Context.DSL.Library (contextLore)
+import Storyteller.Context.DSL.Library (contextLore, contextCharacter)
 import Storyteller.Context.DSL.Rendering
 import Storyteller.Context.DSL.Value
 
@@ -69,13 +70,66 @@ spec :: Spec
 spec = do
   renderContextSpec
   renderFileSystemSpec
+  contextAllMessagesSpec
   monoidSpec
+
+-- | The distinction between 'renderText'\/'renderMessages' (this node's own
+--   default) and 'contextAllMessages' (own default plus each child's), on
+--   the shape that actually makes them differ.
+--
+--   This is a regression guard for a real bug, not a completeness exercise.
+--   'Storyteller.Context.DSL.Library.contextCharacterDef''s @"full"@ bucket
+--   is a @for f in **\/*: as f: read f@ loop -- every file lands in a named
+--   child and the bucket's own default stays empty. A caller reaching for
+--   that bucket with 'renderText' gets the empty string and no error, which
+--   is exactly how 'Storyteller.Writer.Agent.AskCharacter' briefly stopped
+--   sending a character's own files while every existing test still passed.
+--   The fixture below is that shape deliberately: content only in children.
+contextAllMessagesSpec :: Spec
+contextAllMessagesSpec = describe "contextAllMessages vs renderText" $ do
+  -- Deliberately NOT contextLore: its per-file loop folds each entry's
+  -- content into its own top-level default as well as exporting it by name
+  -- (see 'renderText''s Haddock), so renderText finds the content there and
+  -- the two traversals agree -- a fixture that would pass with the bug
+  -- present. context.character's "full" is the shape that actually differs:
+  -- the loop *is* the bucket's body, so its own default is empty.
+  it "reads context.character's \"full\" bucket, whose own default is empty and whose files are all children" $
+    run (testStack $ do
+      seedBranch "main" []
+      seedBranch "character/mira"
+        [ ("sheet.md", "Mira, a locksmith")
+        , ("history.md", "she left the city in winter")
+        , ("voice.md", "clipped, dry")
+        ]
+      runDslOn (BranchName "main") (do
+        scope   <- currentScope
+        charVal <- contextCharacter scope emptyLib "mira"
+        ctx     <- renderContext charVal
+        case namedChild "full" ctx of
+          Nothing   -> fail "no \"full\" bucket"
+          Just full -> pure ( map messageText (contextAllMessages full)
+                            , renderText full )))
+    `shouldSatisfy` \case
+        Right (allMsgs, ownOnly) ->
+          -- Both non-sheet files reachable through the children...
+          all (\t -> any (T.isInfixOf t) allMsgs) ["left the city", "clipped, dry"]
+          -- ...and none of it through the bucket's own default, which is
+          -- what made the regression silent rather than loud.
+          && T.null (T.strip ownOnly)
+        Left _ -> False
+
+  it "does not walk grandchildren -- one level only, matching valueAllMessages" $
+    let leaf t   = Node [ContextItem (User t) defaultMeta] []
+        tree     = Node [ContextItem (User "own") defaultMeta]
+                        [("child", Node [ContextItem (User "childOwn") defaultMeta]
+                                        [("grandchild", leaf "deep")])]
+    in map messageText (contextAllMessages tree) `shouldBe` ["own", "childOwn"]
 
 -- | 'RenderedContext''s 'Semigroup'\/'Monoid' instance -- plain
 --   concatenation, content then entries, in that order. What
 --   'Server.Writer.File.chatWriter' uses to fold its independently-
 --   resolved slots (@context.lore@, chapters, @context.other@) into one
---   'Storyteller.Writer.Agent.Context.WorldContext', and separately to
+--   stream, and separately to
 --   fold each @fcPinnedPrograms@ entry's own rendered result in alongside
 --   the client's plain pinned items.
 monoidSpec :: Spec

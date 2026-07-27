@@ -47,13 +47,14 @@ import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent
-  (Prose(..), CharLabel(..), CharContextBlock(..), WordCount(..), ExistingContent(..))
+  (Prose(..), CharLabel(..), WordCount(..), ExistingContent(..))
 import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), chapterProse, chapterProseByBeat)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 import Storyteller.Context.DSL.Value (valueDefault)
+import qualified Storyteller.Context.DSL.Value as DSL
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
@@ -124,7 +125,7 @@ chapterAction mode sheetPath outFile activeChars = do
     True  -> ExistingContent . TE.decodeUtf8 <$> readFile @(BranchTag Main) outFile
     False -> return (ExistingContent "")
   let charContexts = concatMap
-        (\(CharLabel name, bs) -> CharContextBlock ("## Character: " <> name) : bs)
+        (\(CharLabel name, bs) -> DSL.User ("## Character: " <> name) : bs)
         charBlocks
 
   Prose generated <- case mode of

@@ -55,7 +55,8 @@ import Storyteller.Core.LLM.Role (AgentModel, LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
-import Storyteller.Writer.Agent (ContextBlock(..), Instruction(..), Prompt(..), Prose(..), PastChaptersMode(..))
+import Storyteller.Writer.Agent (Instruction(..), Prompt(..), Prose(..), PastChaptersMode(..))
+import qualified Storyteller.Context.DSL.Value as DSL
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), ChapterBeats(..), OutlineDoc(..), splitOutlineAgent)
 import Storyteller.Writer.Agent.Write (writeAgent)
 
@@ -82,10 +83,10 @@ type JourneyEffects r =
 -- | The flat @context.writer@ render ('Server.Writer.File.flatMainMessages'
 --   in production) -- what every step below reads surrounding context
 --   through now, instead of a local 'gatherFileContext' read.
-flatMainContext :: JourneyEffects r => FilePath -> Sem r [ContextBlock]
+flatMainContext :: JourneyEffects r => FilePath -> Sem r [DSL.Message]
 flatMainContext path = do
   writerVal <- resolveContext1 @Main "context.writer" (T.pack path)
-  map Render.messageToBlock <$> runContextValue @Main (valueDefault writerVal)
+  runContextValue @Main (valueDefault writerVal)
 
 -- | The three requests a Writer-tab session issues, and what each produced.
 data JourneyResult = JourneyResult

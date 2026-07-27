@@ -38,9 +38,10 @@ import Polysemy.Fail
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
+import qualified Storyteller.Context.DSL.Value as DSL
 
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
-import Storyteller.Writer.Agent (Instruction(..), Prose(..), CharContextBlock(..), ExistingContent(..), WordCount(..))
+import Storyteller.Writer.Agent (Instruction(..), Prose(..), ExistingContent(..), WordCount(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 
 -- | Ask the LLM to produce new prose given fully assembled context.
@@ -66,7 +67,7 @@ proseAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
   => Maybe WordCount        -- ^ approximate desired output length
-  -> [CharContextBlock]     -- ^ character context blocks
+  -> [DSL.Message]          -- ^ character context
   -> [Message ProseModel]   -- ^ branch context, already bound -- a caller's own 'Storyteller.Context.DSL.Context.Context', forced and rendered via 'Storyteller.Context.DSL.Render.dslMessageToLLM' at its own call site (see this module's own Haddock)
   -> ExistingContent        -- ^ current content of the file being continued
   -> Instruction
@@ -124,7 +125,7 @@ defaultWriterInstructions = ""
 --   @extraInstructions@ (see 'defaultWriterInstructions'), inserted
 --   verbatim at a single fixed point.
 writerTrailingMessage
-  :: [CharContextBlock]
+  :: [DSL.Message]
   -> T.Text            -- ^ existing file content
   -> T.Text            -- ^ extra standing instructions (may be empty)
   -> T.Text            -- ^ per-call instruction
@@ -144,7 +145,10 @@ writerTrailingMessage charContexts existing extraInstructions instruction output
       | null charContexts = ""
       | otherwise =
           "Character information:\n\n"
-          <> T.intercalate "\n\n" [ t | CharContextBlock t <- charContexts ]
+          -- This one really is a single flattened prompt (see the module
+          -- Haddock), so roles get dropped here, at the point the string is
+          -- built -- not upstream where every other caller would inherit it.
+          <> T.intercalate "\n\n" (map DSL.messageText charContexts)
           <> "\n\n"
 
     existingSection

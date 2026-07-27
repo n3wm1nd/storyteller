@@ -13,11 +13,12 @@ module Storyteller.Writer.Agent
   , Instruction(..)
   , Prompt(..)
   , Prose(..)
-  , CharContextBlock(..)
   , CharLabel(..)
   , CharSummary(..)
   , flattenCharSummary
-  , ContextBlock(..)
+    -- * Why there are no ContextBlock\/CharContextBlock newtypes
+    --
+    -- $blocks
   , ExistingContent(..)
   , WordCount(..)
   , PastChaptersMode(..)
@@ -27,6 +28,7 @@ module Storyteller.Writer.Agent
 import Data.Text (Text)
 import qualified Data.Text as T
 
+import Storyteller.Context.DSL.Value (Message)
 import Storyteller.Core.Types (TickType(..), TickData(..), Tick(..), encodeDraft, decodePayload)
 
 -- | Raw text from the user — no semantic assumption about intent.
@@ -62,10 +64,28 @@ instance TickType Prompt where
 newtype Prose = Prose Text
   deriving (Show, Eq)
 
--- | A formatted block of character information, ready for inclusion in an
---   LLM prompt. Produced by 'charSummaryAgent'; passed to 'proseAgent' as a list.
-newtype CharContextBlock = CharContextBlock Text
-  deriving (Show, Eq)
+-- $blocks
+--
+-- There used to be two newtypes here -- @ContextBlock@ and
+-- @CharContextBlock@, both @newtype _ = _ Text@ -- for "a chunk of context
+-- ready to go into a prompt." Both are gone, and what replaced them is
+-- 'Storyteller.Context.DSL.Value.Message': the same chunk, still carrying
+-- who said it.
+--
+-- They looked like the natural currency and were a lossy projection.
+-- 'Storyteller.Context.DSL.Library.chapterEntryDef' is @> read f@, so a
+-- chapter arrives as an 'Storyteller.Context.DSL.Value.Assistant' message
+-- -- prior prose framed as the model's own, which is what makes a
+-- continuation read as one conversation. Wrapping that in a @Text@ newtype
+-- silently demoted it to user-role reference material, and joining several
+-- of them with blank lines destroyed the message boundaries a provider
+-- caches on. Neither loss was visible at any call site.
+--
+-- So context travels as @['Storyteller.Context.DSL.Value.Message']@ and is
+-- flattened once, at the point an actual LLM call is built --
+-- 'Storyteller.Context.DSL.Render.dslMessageToLLM' for a real message,
+-- 'Storyteller.Context.DSL.Value.messageText' where a caller genuinely
+-- needs plain text (a system prompt, say).
 
 -- | Display label for a character — used as a section header in LLM prompts.
 --   Distinct from 'BranchName': a character branch may have a label that
@@ -94,9 +114,9 @@ newtype CharLabel = CharLabel Text
 --   rest, call the cheaper read directly instead of computing all three and
 --   throwing two away.
 data CharSummary = CharSummary
-  { csSheet   :: [CharContextBlock]
-  , csContext :: [CharContextBlock]
-  , csJournal :: [CharContextBlock]
+  { csSheet   :: [Message]
+  , csContext :: [Message]
+  , csJournal :: [Message]
   } deriving (Show, Eq)
 
 -- | Collapse a 'CharSummary' back into the flat list shape a single-shot
@@ -104,13 +124,8 @@ data CharSummary = CharSummary
 --   adapter for callers not yet rebuilt around a real per-chapter
 --   '[Message]' history. Order matches 'CharSummary's own field order:
 --   sheet, then other context, then journal.
-flattenCharSummary :: CharSummary -> [CharContextBlock]
+flattenCharSummary :: CharSummary -> [Message]
 flattenCharSummary (CharSummary sheet ctx journal) = sheet ++ ctx ++ journal
-
--- | A formatted block of branch context (see 'renderEmbeddedFile'), ready
---   for inclusion in an LLM prompt alongside character and file content.
-newtype ContextBlock = ContextBlock Text
-  deriving (Show, Eq)
 
 -- | Render a branch file's raw content as an explicitly fenced block --
 --   distinct from a live instruction even if a provider concatenates this

@@ -41,7 +41,6 @@ import Storyteller.Context.DSL.Compile (currentScope)
 import Storyteller.Context.DSL.Library (contextChapters, contextLore)
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Agent (ContextBlock(..))
 
 seedBranch :: Text -> [(FilePath, Text)] -> Sem (StoryStorage : TestEffects '[]) ()
 seedBranch name files = do
@@ -102,21 +101,26 @@ valueMessagesSpec = describe "valueMessages (via contextChapters' own default)" 
       , (LLM.Assistant, "chapter eleven prose")
       ]
 
+-- | Lore, unlike chapters, carries no @>@ so every entry stays user-role --
+--   but each file is still its own message, and a 'FileRead' still renders
+--   through 'renderEmbeddedFile'\'s fencing. This used to assert against a
+--   @ContextBlock@ (a @Text@ newtype); the fencing is unchanged, the role is
+--   now visible rather than discarded on the way out.
 valueBlocksSpec :: Spec
-valueBlocksSpec = describe "valueBlocks (via contextLore's own default)" $
-  it "flattens contextLore into a heading plus one fenced ContextBlock per file" $
+valueBlocksSpec = describe "dslMessageToLLM (via contextLore's own default)" $
+  it "renders contextLore as a heading plus one fenced, user-role message per file" $
     run (testStack $ do
       seedBranch "main"
         [ ("lore/places/tavern.md", "the tavern")
         , ("lore/notes.md", "a note")
         ]
       runDslOn (BranchName "main")
-        (map Render.messageToBlock
+        (map describeMessage . map Render.dslMessageToLLM
            <$> (ownMessages =<< (currentScope >>= \s -> contextLore s (fst (buildContextLibrary @Main Map.empty))))))
     `shouldBe` Right
-      [ ContextBlock "## Story background"
-      , ContextBlock "## lore/notes.md"
-      , ContextBlock "<context-file path=\"lore/notes.md\">\na note\n</context-file>"
-      , ContextBlock "## lore/places/tavern.md"
-      , ContextBlock "<context-file path=\"lore/places/tavern.md\">\nthe tavern\n</context-file>"
+      [ (LLM.User, "## Story background")
+      , (LLM.User, "## lore/notes.md")
+      , (LLM.User, "<context-file path=\"lore/notes.md\">\na note\n</context-file>")
+      , (LLM.User, "## lore/places/tavern.md")
+      , (LLM.User, "<context-file path=\"lore/places/tavern.md\">\nthe tavern\n</context-file>")
       ]
