@@ -135,8 +135,9 @@ import Storage.Tick (FileTick(..))
 
 import Runix.Git (Git)
 
-import Storyteller.Core.Branch (BranchOp, runStorage)
-import Storyteller.Core.Snapshot (readSnapshotFile)
+import Storyteller.Core.Branch (BranchOp, Branches, runStorage, withBranch)
+import Runix.FileSystem (FileSystemRead(..))
+import Storyteller.Core.Git (BranchTag, runStoryFSRead)
 import Storyteller.Core.Storage (StoryStorage, getBranch, listBranches)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
@@ -505,8 +506,8 @@ makeSem ''Cast
 --   every call site of picking an arbitrary branch to pass) simply goes
 --   away.
 runCast
-  :: forall r a
-  .  Members '[StoryStorage, BranchResolve, Git, Fail] r
+  :: forall castBranch r a
+  .  Members '[StoryStorage, Branches castBranch, Fail] r
   => Sem (Cast ': r) a -> Sem r a
 runCast = interpret $ \case
   KnownCast -> do
@@ -517,10 +518,19 @@ runCast = interpret $ \case
     toCastMember :: Branch -> Sem r CastMember
     toCastMember b = do
       let name = branchName b
-      mCommit <- send (ResolveBranch name)
-      sheet <- case mCommit of
-        Nothing     -> pure ""
-        Just commit -> maybe "" TE.decodeUtf8 <$> readSnapshotFile commit "sheet.md"
+      -- Enters each character's own branch and reads through the ordinary
+      -- filesystem effect. The capability to do that ('Branches') lives
+      -- here, in the interpreter, and stops here: a caller only ever holds
+      -- 'Cast' and learns nothing about branches, which is what makes this
+      -- effect worth having rather than exporting "list the character
+      -- branches" and letting every caller open them itself.
+      --
+      -- The raw 'ReadFile' constructor rather than
+      -- 'Runix.FileSystem.readFile', because a character branch with no
+      -- sheet yet is a legitimate cast member (see 'CastMember') -- the
+      -- miss is an empty answer here, not a 'Fail'.
+      sheet <- withBranch @castBranch name $ runStoryFSRead @castBranch name $
+        either (const "") TE.decodeUtf8 <$> send @(FileSystemRead (BranchTag castBranch)) (ReadFile "sheet.md")
       pure CastMember
         { cmBranch = name
         , cmSheet  = sheet

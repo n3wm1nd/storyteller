@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
@@ -65,13 +66,15 @@ import Storyteller.Core.Image (Image(..))
 import Storyteller.Core.Runtime (Main)
 import qualified Storyteller.Core.Storage as Storage
 import Storyteller.Core.Storage (StoryStorage, getBranch)
-import Storyteller.Core.Snapshot (readSnapshotFile)
+import Storyteller.Core.Branch (Branches, withBranch)
+import Storyteller.Core.Git (BranchTag, runStoryFSRead)
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..), fromTick)
 import Storyteller.Core.Git (BranchTag, BranchOp, runStorage)
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import qualified Runix.FileSystem as FS
 
 -- | The effects live once a file connection has entered its branch's scope —
 --   one 'BranchOp'/filesystem instance for the connection's whole
@@ -328,15 +331,14 @@ referenceImage path assetPath caption = do
 --   Same two failure modes as before, from the same two places: a missing
 --   branch is an 'Error' ('withBranch' threw it), a missing file is a
 --   'Fail' ('Runix.FileSystem.readFile' failed on it).
-readFileContent :: (Members '[StoryStorage, Error String, Git, Fail] r) => T.Text -> FilePath -> Sem r BS.ByteString
+readFileContent
+  :: Members '[StoryStorage, Branches Main, Error String, Fail] r
+  => T.Text -> FilePath -> Sem r BS.ByteString
 readFileContent branch path =
   getBranch (BranchName branch) >>= \case
     Nothing -> throw ("branch not found: " <> T.unpack branch)
-    Just b  -> readSnapshotFile (branchCommit b) path >>= \case
-      Just bs -> pure bs
-      Nothing -> fail (path <> ": not found")
-  where
-    branchCommit b = Ops.ObjectHash (unTickId (branchHead b))
+    Just _  -> withBranch @Main (BranchName branch)
+                 (runStoryFSRead @Main (BranchName branch) (FS.readFile @(BranchTag Main) path))
 
 -- ---------------------------------------------------------------------------
 -- Internal

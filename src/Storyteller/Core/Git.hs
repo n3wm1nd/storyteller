@@ -58,6 +58,8 @@ module Storyteller.Core.Git
   , runStorage
   , runBranchOpGit
   , runBranchOpGitFrom
+  , runBranchesGit
+  , runStoryFSRead
   , runStoryFSGit
   , runBranchAndFS
   , runBranchAndFSFrom
@@ -76,12 +78,14 @@ import Control.Monad (when)
 import Control.Monad.State.Strict (lift)
 import qualified Data.List as List
 import Data.Map.Strict (Map)
+import Control.Monad.Trans.Class (lift)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 import Data.Maybe (fromMaybe, isJust)
+import Polysemy.Scoped (runScopedNew)
 import Polysemy.State (State, get, put, modify, evalState, execState, runState)
 
 -- 'readCommit'\/'writeCommit'\/'readObject'\/'writeObject' hidden and
@@ -99,9 +103,10 @@ import qualified System.FilePath.Glob as Glob
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
-import Storyteller.Core.Branch (BranchOp(..), runStorage)
+import Storyteller.Core.Branch (BranchOp(..), Branches, runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
+import qualified Storage.Query as Query
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 
@@ -601,6 +606,22 @@ runBranchOpGit branch action = do
     (\newHead -> setRef branch (Just newHead))
     action
 
+-- | Discharges 'Storyteller.Core.Branch.Branches' -- the "may enter a
+--   branch named at runtime" door -- by opening a real git branch scope
+--   per entry, which is just 'runBranchOpGit' applied to whatever name the
+--   scope was entered with.
+--
+--   This is the only place the door's cost is decided, and the reason the
+--   door is worth having: a caller holding 'Branches' says nothing about
+--   git, refs, or scopes, and a different backend discharges the same
+--   effect its own way. Wired once, project-wide, next to
+--   'runStoryStorageGit'.
+runBranchesGit
+  :: forall branch r a
+  .  Members '[Git, StoryStorage, Fail] r
+  => Sem (Branches branch ': r) a -> Sem r a
+runBranchesGit = runScopedNew (runBranchOpGit @branch)
+
 -- | The general interpreter 'runBranchOpGit' is just one particular
 --   instance of: seed the scope from an explicit object hash rather than
 --   resolving one from a named branch, and publish an advanced head
@@ -733,6 +754,65 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
         Right <$> runStorage @branch (FS.createDirectory path)
       Remove recursive path ->
         Right <$> runStorage @branch (if recursive then FS.removeRecursive path else FS.remove path)
+
+-- | 'runStoryFSGit''s read-only twin: the same branch, the same
+--   'BranchOp' capability, but no 'FileSystemWrite' in the row at all --
+--   so "this cannot mutate story state" is a fact about the type -- and
+--   only readable content is visible, an uploaded portrait or anything
+--   else that opted out of atom tracking simply isn't there.
+--
+--   Exists because reading a branch's current content is /not/ time
+--   travel, and must not have to say that it is. Callers wanting exactly
+--   this (the lore tree, a character sheet, the DSL's ambient scope) were
+--   reaching for "Storyteller.Core.Snapshot" purely to get the
+--   readable-content filter and the cheap read path, and paying for it by
+--   declaring the ability to enter other versions -- which they never do.
+--   'Storyteller.Core.Snapshot.Snapshot' is now strictly for a position
+--   that is not this branch's head.
+--
+--   The tree is read once, on entry, and every operation is served from
+--   it: the readable-content set costs a chain walk
+--   ('Storage.Query.liveWorkingTree'), so deferring it per call would mean
+--   re-walking history on every read. Same shape, and the same reasoning,
+--   as 'Storyteller.Core.Snapshot.runTextSnapshotFS' -- which is the
+--   point: whether a caller is reading this branch's head or some other
+--   version, it is writing identical 'Runix.FileSystem' code either way.
+runStoryFSRead
+  :: forall branch r a
+  .  Member (BranchOp branch) r
+  => BranchName
+  -> Sem ( FileSystemRead (BranchTag branch)
+         : FileSystem     (BranchTag branch)
+         : r ) a
+  -> Sem r a
+runStoryFSRead name action = do
+  tree <- runStorage @branch (Core.headHash >>= Query.liveWorkingTree)
+  interpretFS tree (interpretRead tree action)
+  where
+    interpretRead
+      :: Member (BranchOp branch) r'
+      => Core.WorkingTree -> Sem (FileSystemRead (BranchTag branch) : r') b -> Sem r' b
+    interpretRead tree = interpret $ \case
+      ReadFile path -> case Map.lookup path tree of
+        Just (Core.FSFile h) -> runStorage @branch (lift (Core.readObject h)) >>= \case
+          Core.BlobObject bs -> pure (Right bs)
+          Core.TreeObject _  -> pure (Left (path <> ": is a directory"))
+        Just Core.FSDir      -> pure (Left (path <> ": is a directory"))
+        -- A never-atom-tracked path is reported exactly as a genuinely
+        -- absent one: the point of this view is that it isn't there.
+        Nothing              -> pure (Left (path <> ": not found"))
+
+    interpretFS
+      :: Core.WorkingTree -> Sem (FileSystem (BranchTag branch) : r') b -> Sem r' b
+    interpretFS tree = interpret $ \case
+      GetFileSystem    -> pure (BranchTag name)
+      GetCwd           -> pure (Right "/")
+      ListFiles dir    -> pure (Right (FS.listChildrenIn dir tree))
+      IsDirectory path -> pure (Right (FS.isDirectoryIn path tree))
+      FileExists path  -> pure (Right (FS.existsIn path tree || FS.isDirectoryIn path tree))
+      Glob base pat    -> pure . Right
+        . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
+        $ FS.listUnderIn base tree
 
 -- | Interpret 'BranchOp branch' and all three filesystem effects for a
 --   branch together — takes a 'Branch' obtained from 'StoryStorage' — the

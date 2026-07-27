@@ -59,7 +59,7 @@ main = do
     (envEndpoint env)
     (BranchName (envBranch env))
     modelConfigs
-    (interpretPromptStorageFS (runCast (presenceAction target)))
+    (interpretPromptStorageFS (runCast @Main (presenceAction target)))
 
   case result of
     Left err       -> hPutStrLn stderr ("Error: " <> err) >> exitFailure

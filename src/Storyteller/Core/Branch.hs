@@ -7,6 +7,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | The Polysemy effect boundary for "Storage.Core" ('StoreT') —
 --   backend-agnostic, mirroring how 'Storyteller.Core.Storage' declares
@@ -21,11 +22,19 @@
 module Storyteller.Core.Branch
   ( BranchOp(..)
   , runStorage
+
+    -- * Entering a branch named at runtime
+  , Branches
+  , Visited
+  , withBranch
   ) where
 
 import Polysemy
+import Polysemy.Scoped (Scoped, scoped)
 
 import qualified Storage.Core as Core
+
+import Storyteller.Core.Types (BranchName)
 
 -- | A single first-order effect boundary per branch scope: the
 --   constructor's argument is rank-2-polymorphic in an independent monad
@@ -56,3 +65,60 @@ runStorage
   .  Member (BranchOp branch) r
   => (forall n. Core.StoreM n => Core.StoreT n a) -> Sem r a
 runStorage comp = send @(BranchOp branch) (RunStorage comp)
+
+-- | The capability to __enter__ a branch whose name is only known at
+--   runtime -- a door, not an operation.
+--
+--   'BranchOp' says "I am working in /the/ branch scope that is open."
+--   Plenty of code genuinely needs that and no more. But some code has to
+--   visit branches it can only name at runtime, and often several of them:
+--   'Storyteller.Core.ContentEffects.runCast' walks every @character/*@
+--   branch; the context DSL's @in (charname | branch): ...@ resolves a
+--   character branch mid-evaluation. There is no way to express that with
+--   'BranchOp' alone, since a row fixes how many scopes exist at compile
+--   time -- and the shape it pushed people toward instead was reaching
+--   past the abstraction for the storage backend, which is how @Git@ ends
+--   up in signatures that only wanted to read a file.
+--
+--   So this is the missing door. Holding it means exactly one thing: "I
+--   may need to go work in a branch other than the one I'm in." What you
+--   get on the other side is an ordinary 'BranchOp' scope -- and, via
+--   'Storyteller.Core.Git.runStoryFSGit' applied inside it (itself needing
+--   nothing but 'BranchOp'), ordinary 'Runix.FileSystem' vocabulary. So
+--   everything written against those stays reusable against any branch,
+--   any snapshot, or a test filesystem, exactly as before; only the code
+--   that genuinely /travels/ declares that it does.
+--
+--   Compare 'Storyteller.Core.Snapshot.Snapshot', the same pattern for a
+--   different destination: that one enters another /version/ and is
+--   read-only, this one enters another /branch/ at its current head and
+--   is not. Both are cashed in for filesystem effects; neither exposes a
+--   storage primitive to the code that walks through it.
+--
+--   Scopes nest by shadowing, so @branch@ is a tag for disambiguation
+--   rather than a per-destination identity -- the same reasoning
+--   'Storyteller.Core.Snapshot.SnapshotTag' rests on.
+type Branches branch = Scoped BranchName (BranchOp branch)
+
+-- | The tag for a scope entered through 'withBranch' -- "some branch I
+--   stepped into," as distinct from the branch a caller was already
+--   working in.
+--
+--   A dedicated tag rather than reusing a caller's own: the scope
+--   'withBranch' opens is always a fresh one, so the tag is a label for
+--   disambiguation on the row, never an identity. Reusing @Main@ would
+--   both misdescribe it (the branch entered is usually a character's) and
+--   force a choice between the two unrelated @Main@ tags this codebase
+--   happens to have ('Storyteller.Core.Runtime.Main' and
+--   'Server.Core.Branch.Main' are different types). Nested entries shadow,
+--   same as 'Storyteller.Core.Snapshot.SnapshotTag'.
+data Visited
+
+-- | Run @action@ in @name@'s own branch scope. The interpreter that
+--   discharges 'Branches' decides what that costs and what backs it (see
+--   'Storyteller.Core.Git.runBranchesGit'); nothing here knows.
+withBranch
+  :: forall branch r a
+  .  Member (Branches branch) r
+  => BranchName -> Sem (BranchOp branch ': r) a -> Sem r a
+withBranch = scoped @BranchName @(BranchOp branch)

@@ -25,7 +25,10 @@ import Runix.Git (Git)
 import Runix.LLM (LLM(..))
 import Runix.Logging (Logging, loggingNull)
 
+import Storyteller.Core.Branch (Branches)
+import Storyteller.Core.Snapshot (Snapshot, runSnapshotGit)
 import Storyteller.Core.ContentEffects (BranchResolve, runBranchResolve)
+import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Context (ContextStorage, interpretContextStorageMap)
 import Storyteller.Core.Git
 import Storyteller.Core.LLM.Role (AgentModel, ProseModel)
@@ -33,7 +36,7 @@ import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageMap)
 import Storyteller.Core.Storage (StoryStorage)
 
 type TestEffects r =
-  BranchResolve : StoryStorage : LLM ProseModel : LLM AgentModel : PromptStorage : ContextStorage : Git : State GitState : Logging : Fail : Error String : r
+  Snapshot : Branches Main : BranchResolve : StoryStorage : LLM ProseModel : LLM AgentModel : PromptStorage : ContextStorage : Git : State GitState : Logging : Fail : Error String : r
 
 -- | A way to run a whole test action to completion. 'testStack' commits
 --   every 'StoryStorage' write eagerly, as it happens. 'testStackTransactional'
@@ -87,6 +90,8 @@ runTestEffects =
   . stubLLM @ProseModel
   . runStoryStorageGit
   . runBranchResolve
+  . runBranchesGit @Main
+  . runSnapshotGit
 
 -- | A stub 'LLM' interpreter that always fails -- see 'runTestEffects'.
 stubLLM :: forall model r a. Sem (LLM model ': r) a -> Sem r a

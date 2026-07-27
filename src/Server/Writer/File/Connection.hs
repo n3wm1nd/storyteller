@@ -106,6 +106,7 @@ import Server.Core.Run (SessionEffects)
 import Server.Writer.Run (actionStack, wsAction, loggingWS)
 import Server.Core.Util (withBranch)
 import Storyteller.Common.Splitter (Splitter, splitMarkdownAware)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, atGeneric, runBranchAndFSFrom, runBranchOpGitFrom, runStorage, withStorage)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
@@ -128,7 +129,7 @@ targetBranch = fst . T.breakOn "@"
 
 openTarget
   :: forall r a
-  .  Members '[StoryStorage, Error String, Git, Fail] r
+  .  Members '[StoryStorage, Error String, Branches Main, Git, Fail] r
   => T.Text
   -> Sem ( FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)

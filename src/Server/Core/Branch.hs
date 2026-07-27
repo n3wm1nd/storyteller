@@ -41,13 +41,19 @@ import Server.Core.Protocol (Update(..), tickToWireTick)
 
 import qualified Storyteller.Common.Annotation as Annotation
 import Storyteller.Core.Git (BranchTag, BranchOp, runStorage)
+import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.FS as FS
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storyteller.Core.Types (TickId(..), tickId, unTickId)
 
-data Main
+-- (re-exported from "Storyteller.Core.Runtime" -- this module used to
+-- define a second, unrelated @Main@ of its own. Nothing caught it, because
+-- every user opened its branch scope by calling an interpreter inline, so
+-- two modules could disagree about which @Main@ they meant and still
+-- compile. Once "entering a branch" became a row member
+-- ('Storyteller.Core.Branch.Branches') they had to agree, and they didn't.)
 
 -- | The effects live once a branch connection has entered its branch's
 --   scope — reopened fresh per command by the connection handler, not held

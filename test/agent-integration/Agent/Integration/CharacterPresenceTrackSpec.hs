@@ -97,10 +97,11 @@ spec runner = describe "retroactive presence tracking (real LLM, cached)" $
         pure ()
 
       -- 'runCast' no longer borrows a branch scope's object store via
-      -- 'TreeAccess' -- it reads each sheet at that character branch's own
-      -- resolved position -- so there's no @treeBranch@ to name here, and
-      -- no 'runTreeAccess' wrapper to supply one.
-      decisions <- runCast $ trackPresenceFor @Main sceneFile
+      -- 'runCast' enters each character branch itself (via the 'Branches'
+      -- door) and reads its sheet through the ordinary filesystem effects,
+      -- so there's no scope to name here beyond the tag the door is wired
+      -- at.
+      decisions <- runCast @Main $ trackPresenceFor @Main sceneFile
       info $ "presence decisions: " <> T.pack (show decisions)
 
       -- The scene's own text has both characters explicitly leave at the

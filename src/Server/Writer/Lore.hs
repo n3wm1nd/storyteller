@@ -47,15 +47,12 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
-import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
-import Runix.Git (Git)
+import Runix.FileSystem (FileSystem, FileSystemRead, getFileSystem, listAllFiles, readFile)
 
 import Server.Core.Branch (Main, BranchOpen)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, buildContextLibrary, getContextOverrides, resolveOverrideDefinition, runContextValue)
-import Storyteller.Core.Git (runStorage)
-import Storyteller.Core.Snapshot (Snapshot, runTextSnapshotFS)
-import qualified Storage.Core as Core
+import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Context.DSL.AST (defParams)
 import Storyteller.Context.DSL.Compile (bval, runDefinition)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
@@ -68,10 +65,14 @@ import Prelude hiding (readFile)
 --   'Storyteller.Writer.Lore.isLoreEligible'), paired with the first
 --   non-blank line and the parsed, mention-filtered aliases of its own
 --   content, built into a tree.
-loreTree :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r) => Sem r [LoreNode]
+loreTree :: (BranchOpen r, Members '[ContextStorage, BranchResolve] r) => Sem r [LoreNode]
 loreTree = do
-  head'  <- runStorage @Main Core.headHash
-  files  <- runTextSnapshotFS head' (loreEntries @Snapshot)
+  -- The ambient branch filesystem is already in the row, but it shows
+  -- every path; 'loreEntries' must only see readable content. So shadow it
+  -- for the duration with the filtered read-only view of the same branch,
+  -- taking the branch's own name from the filesystem already open on it.
+  BranchTag name <- getFileSystem @(BranchTag Main)
+  files  <- runStoryFSRead @Main name (loreEntries @(BranchTag Main))
   active <- activeMentionAliases (concatMap (\(_, _, aliases) -> aliases) files)
   return (buildLoreTree [ (path, b, filter (`Set.member` active) aliases) | (path, b, aliases) <- files ])
 
@@ -108,7 +109,7 @@ loreEntries = do
 --   second time for just to populate a field no default or override
 --   actually looks at yet.
 activeMentionAliases
-  :: (BranchOpen r, Members '[ContextStorage, BranchResolve, Git] r)
+  :: (BranchOpen r, Members '[ContextStorage, BranchResolve] r)
   => [T.Text] -> Sem r (Set T.Text)
 activeMentionAliases aliasNames = do
   let candidate = Value

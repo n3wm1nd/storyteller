@@ -54,8 +54,10 @@ import Server.Writer.GitWorker (runGitViaWorker)
 import Server.Writer.Notification (BranchNotification(..))
 import Storyteller.Core.LLM.Registry (SomeProseLLMRunner(..), SomeAgentLLMRunner(..))
 import Storyteller.Core.LLM.Role (ProseModel, AgentModel, reinterpretProse, reinterpretAgent)
-import Storyteller.Core.Runtime (runInfrastructureWithCancellation)
+import Storyteller.Core.Runtime (Main, runInfrastructureWithCancellation)
 import Storyteller.Core.ContentEffects (BranchResolve, runBranchResolve)
+import Storyteller.Core.Branch (Branches)
+import Storyteller.Core.Git (runBranchesGit)
 import Storyteller.Core.Prompt (interpretPromptStorageFS, PromptStorage)
 import Storyteller.Core.Context (interpretContextStorageFS, ContextStorage)
 import Storyteller.Core.Git (runStoryStorageGitNotify)
@@ -159,7 +161,7 @@ actionStack
   => ServerEnv
   -> TVar Bool
   -> Sem ( LLM ProseModel : LLM AgentModel
-         : Config StreamingEnabled : ContextStorage : BranchResolve : PromptStorage : StoryStorage : Undo
+         : Config StreamingEnabled : ContextStorage : Branches Main : BranchResolve : PromptStorage : StoryStorage : Undo
          : Random : HTTP : HTTPStreaming : Sleep : Time : Git
          : Fail : Error String : Logging : r) a
   -> Sem (Logging : r) (Either String a)
@@ -178,6 +180,7 @@ actionStack env cancelFlag action =
       . runStoryStorageGitNotify (notifyRemaps (envNotifyChan env))
       . interpretPromptStorageFS
       . runBranchResolve
+      . runBranchesGit @Main
       . interpretContextStorageFS
       . runConfig (StreamingEnabled True)
       . agentRunner

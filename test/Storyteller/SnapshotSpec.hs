@@ -23,13 +23,14 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Test.Hspec
 
-import Polysemy (Sem, run)
+import qualified Data.ByteString as BS
+import Polysemy (Sem, run, send)
 
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, glob, listAllFiles, listFiles, readFile)
+import Runix.FileSystem (FileSystem, FileSystemRead(..), FileSystemWrite, glob, listAllFiles, listFiles, readFile)
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runStorage)
-import Storyteller.Core.Snapshot (Snapshot, readSnapshotFile, runSnapshotFS, runTextSnapshotFS)
+import Storyteller.Core.Snapshot (Snapshot, SnapshotTag, runSnapshotFS, runTextSnapshotFS)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
 
@@ -59,24 +60,38 @@ headPosition = do
     Nothing -> fail "branch vanished"
     Just b  -> pure (Core.ObjectHash (unTickId (branchHead b)))
 
+-- | One file read at one position, through the ordinary filesystem
+--   vocabulary. The raw 'ReadFile' constructor rather than
+--   'Runix.FileSystem.readFile' so a miss is an ordinary 'Left' these
+--   specs can assert on, instead of a 'Fail' that would abort the stack.
+readAtPos :: Core.ObjectHash -> FilePath -> Stack (Either String BS.ByteString)
+readAtPos pos path = runSnapshotFS pos (send @(FileSystemRead SnapshotTag) (ReadFile path))
+
 spec :: Spec
 spec = describe "Storyteller.Core.Snapshot" $ do
 
-  describe "readSnapshotFile" $ do
+  -- Reads go through 'Runix.FileSystem' at a snapshot interpreter, never
+  -- a positioned read function of their own. There used to be a
+  -- @readSnapshotFile commit path@ export doing the same underlying read,
+  -- and these specs used it; it was deleted precisely because it let a
+  -- caller read story content while declaring no read capability at all.
+  -- The properties below are unchanged -- they are properties of reading
+  -- at a position, not of that function.
+  describe "reading at a position" $ do
 
     it "reads a committed file's content at a position" $ do
       let result = withStory $ do
             _   <- runStorage @Main (Ops.addAtom "notes.md" "hello\n")
             pos <- headPosition
-            readSnapshotFile pos "notes.md"
-      result `shouldBe` Right (Just "hello\n")
+            readAtPos pos "notes.md"
+      result `shouldBe` Right (Right "hello\n")
 
-    it "answers Nothing for a path that isn't there" $ do
+    it "reports a path that isn't there as a miss" $ do
       let result = withStory $ do
             _   <- runStorage @Main (Ops.addAtom "notes.md" "hello\n")
             pos <- headPosition
-            readSnapshotFile pos "nope.md"
-      result `shouldBe` Right Nothing
+            readAtPos pos "nope.md"
+      result `shouldBe` Right (Left "nope.md: not found")
 
     -- The distinguishing property, half one: a position is a *committed*
     -- snapshot. An ambient write that hasn't been reconciled into the
@@ -91,9 +106,9 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             runStorage @Main (Core.writeFile "notes.md" "pending\n")
             ambient  <- runStorage @Main (Core.readFile "notes.md")
             -- ...the snapshot at the same position does not.
-            snapshot <- readSnapshotFile pos "notes.md"
+            snapshot <- readAtPos pos "notes.md"
             pure (ambient, snapshot)
-      result `shouldBe` Right ("pending\n", Just "committed\n")
+      result `shouldBe` Right ("pending\n", Right "committed\n")
 
     -- Half two: the position is a hash, not a branch name, so it stays
     -- meaningful after the branch moves — which is exactly what lets a
@@ -105,9 +120,9 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             early <- headPosition
             _     <- runStorage @Main (Ops.addAtom "notes.md" "second\n")
             now   <- headPosition
-            (,) <$> readSnapshotFile early "notes.md"
-                <*> readSnapshotFile now   "notes.md"
-      result `shouldBe` Right (Just "first\n", Just "first\nsecond\n")
+            (,) <$> readAtPos early "notes.md"
+                <*> readAtPos now   "notes.md"
+      result `shouldBe` Right (Right "first\n", Right "first\nsecond\n")
 
   describe "runSnapshotFS" $ do
 
@@ -119,7 +134,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             _        <- runStorage @Main (Ops.addAtom "lore/world.md" "the world\n")
             pos      <- headPosition
             viaScope <- readFile @(BranchTag Main) "lore/world.md"
-            viaSnap  <- runSnapshotFS pos (readFile @Snapshot "lore/world.md")
+            viaSnap  <- runSnapshotFS pos (readFile @SnapshotTag"lore/world.md")
             pure (viaScope, viaSnap)
       case result of
         Left err          -> expectationFailure err
@@ -131,7 +146,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             _   <- runStorage @Main (Ops.addAtom "lore/b.md" "b\n")
             _   <- runStorage @Main (Ops.addAtom "top.md"    "t\n")
             pos <- headPosition
-            runSnapshotFS pos (listFiles @Snapshot "lore")
+            runSnapshotFS pos (listFiles @SnapshotTag"lore")
       fmap (fmap T.pack) result `shouldBe` Right ["lore/a.md", "lore/b.md"]
 
     it "globs against the snapshot's own tree" $ do
@@ -139,7 +154,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             _   <- runStorage @Main (Ops.addAtom "lore/a.md"  "a\n")
             _   <- runStorage @Main (Ops.addAtom "lore/b.txt" "b\n")
             pos <- headPosition
-            runSnapshotFS pos (glob @Snapshot "/" "lore/*.md")
+            runSnapshotFS pos (glob @SnapshotTag"/" "lore/*.md")
       result `shouldBe` Right ["lore/a.md"]
 
     -- Same failure vocabulary as the ambient interpreter, so a caller's
@@ -151,7 +166,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             pos <- headPosition
             f pos
           viaScope = readVia (\_   -> TE.decodeUtf8 <$> readFile @(BranchTag Main) "nope.md")
-          viaSnap  = readVia (\pos -> runSnapshotFS pos (TE.decodeUtf8 <$> readFile @Snapshot "nope.md"))
+          viaSnap  = readVia (\pos -> runSnapshotFS pos (TE.decodeUtf8 <$> readFile @SnapshotTag"nope.md"))
       viaSnap `shouldBe` viaScope
 
   -- Ported from the deleted 'Storyteller.ContextFilterSpec', which covered
@@ -167,7 +182,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             runStorage @Main (Core.writeFile "portrait.png" "\xFF\xFE\x00")
             _ <- runStorage @Main (Ops.commitFiles ["portrait.png"])
             pos <- headPosition
-            runTextSnapshotFS pos (listAllFiles @Snapshot "/")
+            runTextSnapshotFS pos (listAllFiles @SnapshotTag"/")
       result `shouldBe` Right ["scene.md"]
 
     it "leaves the listing untouched when nothing is binary" $ do
@@ -175,7 +190,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             _   <- runStorage @Main (Ops.addAtom "scene.md" "p1\n")
             _   <- runStorage @Main (Ops.addAtom "other.md" "p2\n")
             pos <- headPosition
-            runTextSnapshotFS pos (listAllFiles @Snapshot "/")
+            runTextSnapshotFS pos (listAllFiles @SnapshotTag"/")
       fmap (\ps -> length ps) result `shouldBe` Right 2
 
     -- The error text changes deliberately versus the interceptor (which
@@ -188,7 +203,7 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             runStorage @Main (Core.writeFile "portrait.png" "\xFF\xFE\x00")
             _   <- runStorage @Main (Ops.commitFiles ["portrait.png"])
             pos <- headPosition
-            runTextSnapshotFS pos (TE.decodeUtf8 <$> readFile @Snapshot "portrait.png")
+            runTextSnapshotFS pos (TE.decodeUtf8 <$> readFile @SnapshotTag"portrait.png")
       result `shouldBe` Left "portrait.png: not found"
 
     -- The correctness fix that motivated making this an interpreter rather
@@ -211,5 +226,5 @@ spec = describe "Storyteller.Core.Snapshot" $ do
             _ <- createBranch (BranchName "story")
             runBranchAndFS @Main (BranchName "story") $ do
               _ <- runStorage @Main (Ops.addAtom "unrelated.md" "story\n")
-              runTextSnapshotFS otherPos (listAllFiles @Snapshot "/")
+              runTextSnapshotFS otherPos (listAllFiles @SnapshotTag"/")
       result `shouldBe` Right ["notes.md"]

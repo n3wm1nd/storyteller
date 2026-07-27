@@ -33,7 +33,9 @@ import Server.Writer.Branch (importCharacterCard)
 import Server.Writer.Character (CharacterState(..), characterState)
 import Server.Writer.Env (ServerEnv, requestCancel)
 import Server.Writer.Session.Protocol
-import Storyteller.Core.Snapshot (Snapshot, runSnapshotFS)
+import Server.Core.Branch (Main)
+import Storyteller.Core.Branch (withBranch)
+import Storyteller.Core.Git (BranchTag, runStoryFSRead)
 import Storyteller.Core.Storage (listBranches, createBranch, getBranch, deleteBranch)
 import Storyteller.Core.Types (BranchName(..), branchHead, branchName, unTickId)
 import Storyteller.Core.Undo (UndoEntry(..), listUndo, resetToUndo)
@@ -149,11 +151,11 @@ characterSummaries = do
       -- something deleted it in between. An empty summary is the same
       -- answer a branch with no sheet already gets.
       Nothing -> pure (CharacterSummary branch Nothing False)
-      Just b  -> do
-        st <- runSnapshotFS (commitOf b) (characterState @Snapshot branch)
+      Just _  -> do
+        st <- withBranch @Main (BranchName branch) $
+                runStoryFSRead @Main (BranchName branch)
+                  (characterState @(BranchTag Main) branch)
         pure (CharacterSummary branch (charSheet st) (charHasAvatar st))
-
-    commitOf b = Core.ObjectHash (unTickId (branchHead b))
 
 -- | The undo log, wire-shaped and chronological (oldest first) — shared by
 --   the connection's initial push and its notifier (see

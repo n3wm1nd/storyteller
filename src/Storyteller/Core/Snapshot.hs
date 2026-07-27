@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -74,13 +75,19 @@
 --   ambient edits -- it reads what @commit@ actually committed. That's
 --   the point of a position, not a limitation of it.
 module Storyteller.Core.Snapshot
-  ( Snapshot(..)
+  ( -- * The capability to enter another version
+    --
+    -- $entering
+    Snapshot
+  , runSnapshotGit
+    -- * Reading one, once entered
+  , SnapshotTag(..)
   , runSnapshotFS
   , runTextSnapshotFS
-  , readSnapshotFile
   ) where
 
 import Data.ByteString (ByteString)
+import Data.Kind (Type)
 import Polysemy
 import Polysemy.Fail (Fail)
 
@@ -102,9 +109,65 @@ import Storyteller.Core.Storage (StoryStorage)
 -- ambient sibling, which lives in that module for the same reason.
 import Storyteller.Core.Git ()
 
+-- $entering
+--
+-- 'Snapshot' is the capability to __enter__ another version of the story.
+-- It is not the ability to read one -- that is
+-- 'Runix.FileSystem.FileSystemRead', which you get /inside/ a
+-- 'runSnapshotFS', and which is what every function that merely reads
+-- files should be written against. Keeping those apart is the whole point
+-- of this module: a function typed @Members '[FileSystemRead p, ...]@ runs
+-- against a real directory, a test filesystem, or a historical commit
+-- without knowing or caring which, while a function typed @Member Snapshot
+-- r@ is saying precisely one thing -- "I may need to go look at a
+-- different version."
+--
+-- __The constructors are deliberately not exported, and neither are
+-- @makeSem@ smart constructors for them.__ Ideally this effect would hand
+-- back a 'Runix.FileSystem.FileSystem' interpreter through 'send' and
+-- expose nothing else at all; that isn't expressible, so it exposes the
+-- two primitives an interpreter genuinely needs -- read the tree as of a
+-- position, read a blob by id -- and hides them. 'runSnapshotFS' and
+-- 'runTextSnapshotFS', in this module, are their only callers.
+--
+-- That hiding is load-bearing rather than tidiness. Those two operations
+-- can serve a file read, so if they were reachable, reads would start
+-- getting written against them -- and any function that did so would
+-- acquire a 'Snapshot' dependency for what is only a file read, welding it
+-- to snapshots and to nothing else. Summarizing a character would come to
+-- depend on the ability to travel between versions. Unexported
+-- constructors turn "don't do that" from a comment into a type error: the
+-- only door from 'Snapshot' to a file is 'runSnapshotFS'.
+
+-- | The two primitives an interpreter needs to serve a read-only
+--   filesystem as of a position, and nothing more. Internal by
+--   construction -- see the note above on why the constructors stay in
+--   this module.
+data Snapshot (m :: Type -> Type) a where
+  -- | Every path as of @commit@, structure only. @live@ applies the
+  --   readable-content (atom-tracked) filter; see 'runTextSnapshotFS'.
+  ReadTree :: Bool -> Core.ObjectHash -> Snapshot m Core.WorkingTree
+  -- | One blob by its own id, as handed out by 'ReadTree'.
+  ReadBlob :: Core.ObjectHash -> Snapshot m (Either String ByteString)
+
+-- | The git-backed interpreter -- the /only/ place in the snapshot stack
+--   that mentions 'Git' or 'StoryStorage'. Wired once, project-wide,
+--   alongside 'Storyteller.Core.Git.runBranchOpGit'; everything above it
+--   (every 'runSnapshotFS', and every function reading through the
+--   filesystem effects it provides) is backend-agnostic.
+runSnapshotGit :: Members '[Git, StoryStorage, Fail] r => Sem (Snapshot ': r) a -> Sem r a
+runSnapshotGit = interpret $ \case
+  ReadTree live commit
+    | live      -> fst <$> Core.runStoreTFrom (commit, Core.emptyWorkingTree)
+                             (Query.liveWorkingTree commit)
+    | otherwise -> Core.loadWorkingTree commit
+  ReadBlob h -> Core.readObject h >>= \case
+    Core.BlobObject bs -> pure (Right bs)
+    Core.TreeObject _  -> pure (Left "is a directory")
+
 -- | The @project@ phantom for a positioned, read-only filesystem view,
 --   carrying the commit it reads at -- so @'Runix.FileSystem.getFileSystem'
---   \@Snapshot@ reports the real position, the same way
+--   \@SnapshotTag@ reports the real position, the same way
 --   'Storyteller.Core.Git.BranchTag' reports a real branch name.
 --
 --   One tag serves every snapshot scope rather than a phantom per
@@ -114,77 +177,34 @@ import Storyteller.Core.Git ()
 --   semantics for @in (charname | branch): ...@ anyway. If a caller ever
 --   genuinely needs two addressable at once, that's the point to add a
 --   phantom -- not before.
-newtype Snapshot = Snapshot Core.ObjectHash
+newtype SnapshotTag = SnapshotTag Core.ObjectHash
+  deriving (Eq, Ord, Show)
 
 -- | Run @action@'s reads against @commit@'s own committed tree.
 --
---   'ReadFile' is a direct 'Core.readPathAt' -- a walk down the path's
---   own segments, cost proportional to its depth, never a whole-tree
---   materialization and never a history walk, since a commit already
---   carries its complete tree snapshot.
+--   Needs only 'Snapshot' -- no 'Git', no 'StoryStorage', not even 'Fail'.
+--   That is the point: a caller holding 'Snapshot' can open a filesystem
+--   at any position it can name, while everything it then runs inside is
+--   ordinary 'Runix.FileSystem.FileSystem' \/
+--   'Runix.FileSystem.FileSystemRead' code that would run just as well
+--   against a live branch or a test filesystem.
 --
---   The listing operations do need the whole tree, so they load one --
---   but only when actually asked, per call. That's already the inversion
---   that matters versus a branch scope, where 'Core.freshScope'
---   materializes the tree eagerly at entry whether or not anything asks:
---   a scope that only ever reads files by name (every caller today) never
---   pays for a tree at all. It is deliberately *not* memoized across
---   calls within one scope -- that needs a 'State' layer threaded under
---   two effects, and no caller yet lists more than once, so it would be
---   machinery bought against a cost nobody has measured. If the context
---   DSL's port makes repeated listings real, the natural fix is a
---   'Polysemy.Reader.Reader' established once by the caller, not a memo
---   hidden in here.
+--   The tree is read once, on entry, and every operation -- listings and
+--   'ReadFile' alike -- is served from it, so a read is one blob fetch and
+--   a structural question is a pure lookup ("Storage.FS"'s own query
+--   core). An earlier version deferred the tree and served 'ReadFile' by
+--   a direct positioned path walk, which made a read O(path depth) with no
+--   tree at all; that is the better trade only for a scope that reads one
+--   or two known files and never lists. Every caller that matters here
+--   lists first and then reads much of what it listed, which paid for the
+--   tree anyway and then re-walked per read.
 runSnapshotFS
   :: forall r a
-  .  Members '[Git, StoryStorage, Fail] r
+  .  Member Snapshot r
   => Core.ObjectHash
-  -> Sem (FileSystemRead Snapshot ': FileSystem Snapshot ': r) a
+  -> Sem (FileSystemRead SnapshotTag ': FileSystem SnapshotTag ': r) a
   -> Sem r a
-runSnapshotFS commit = interpretFS . interpretRead
-  where
-    tree :: Members '[Git, StoryStorage, Fail] r' => Sem r' Core.WorkingTree
-    tree = Core.loadWorkingTree commit
-
-    interpretRead
-      :: Members '[Git, StoryStorage, Fail] r'
-      => Sem (FileSystemRead Snapshot ': r') b
-      -> Sem r' b
-    interpretRead = interpret $ \case
-      ReadFile path -> Core.readPathAt commit path >>= \case
-        Just bs -> pure (Right bs)
-        -- Only the *miss* path pays for a tree, and only to tell "it's a
-        -- directory" from "it isn't there" -- the same two answers
-        -- 'Storyteller.Core.Git.runStoryFSGit' distinguishes, so an error
-        -- message doesn't change shape depending on which interpreter
-        -- happened to serve the read.
-        Nothing -> do
-          wt <- tree
-          pure . Left $
-            if FS.isDirectoryIn path wt
-              then path <> ": is a directory"
-              else path <> ": not found"
-
-    interpretFS
-      :: Members '[Git, StoryStorage, Fail]  r'
-      => Sem (FileSystem Snapshot ': r') b
-      -> Sem r' b
-    interpretFS = interpret $ \case
-      GetFileSystem     -> pure (Snapshot commit)
-      GetCwd            -> pure (Right "/")
-      ListFiles dir     -> Right . FS.listChildrenIn dir <$> tree
-      IsDirectory path  -> Right . FS.isDirectoryIn path <$> tree
-      -- 'existsIn' answers for files only, matching 'Storage.FS.exists';
-      -- a directory counts as existing here, same as 'runStoryFSGit'.
-      FileExists path   -> do
-        wt <- tree
-        pure (Right (FS.existsIn path wt || FS.isDirectoryIn path wt))
-      -- Working-tree paths carry a leading @/@ but glob patterns are
-      -- written relative, so the slash is stripped for the match only --
-      -- identical to 'runStoryFSGit''s own 'Glob' case.
-      Glob base pat     ->
-        Right . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
-          . FS.listUnderIn base <$> tree
+runSnapshotFS = snapshotFSAt False
 
 -- | 'runSnapshotFS' with every never-atom-tracked path hidden -- an
 --   uploaded portrait, or anything else that opted out of atom tracking,
@@ -213,54 +233,69 @@ runSnapshotFS commit = interpretFS . interpretRead
 --   at the commit being read, so the answer belongs to the position it
 --   describes.
 --
---   Unlike 'runSnapshotFS', the tree is loaded *eagerly*, once, and every
---   operation is served from it -- including 'ReadFile', which therefore
---   loses that function's O(path depth) property. That's not an oversight:
---   no question in this view can be answered without the tracked set, and
---   the tracked set costs a chain walk (worst case, for a path that never
+--   The tracked set costs a chain walk (worst case, for a path that never
 --   had an atom, all the way to root -- precisely the binaries this is
---   filtering). Deferring it per call would mean re-walking history on
---   every read. A caller that doesn't need the policy should use
---   'runSnapshotFS' and keep the cheap reads.
+--   filtering), which is the one real cost difference from 'runSnapshotFS';
+--   both otherwise behave identically, and both pay for it once at entry
+--   rather than per call.
 runTextSnapshotFS
   :: forall r a
-  .  Members '[Git, StoryStorage, Fail] r
+  .  Member Snapshot r
   => Core.ObjectHash
-  -> Sem (FileSystemRead Snapshot ': FileSystem Snapshot ': r) a
+  -> Sem (FileSystemRead SnapshotTag ': FileSystem SnapshotTag ': r) a
   -> Sem r a
-runTextSnapshotFS commit action = do
-  -- Seeded with an empty ambient tree rather than via 'Core.runStoreT',
-  -- whose own 'Core.freshScope' would load the whole tree a second time
-  -- just to populate ambient state this computation never touches.
-  (visible, _) <- Core.runStoreTFrom (commit, Core.emptyWorkingTree)
-                    (Query.liveWorkingTree commit)
-  interpretFS visible (interpretRead visible action)
+runTextSnapshotFS = snapshotFSAt True
+
+-- | 'runSnapshotFS' and 'runTextSnapshotFS' differ only in whether the
+--   tree they serve has the readable-content filter applied, so they share
+--   everything else here rather than restating two nearly-identical
+--   interpreter pairs that could drift apart.
+--
+--   Both 'Snapshot' operations are used from exactly this function, which
+--   is the whole reason its constructors are not exported: a file read
+--   should be reached through 'Runix.FileSystem.readFile' at the
+--   filesystem this provides, never by a caller sending 'ReadBlob' itself.
+snapshotFSAt
+  :: forall r a
+  .  Member Snapshot r
+  => Bool
+  -> Core.ObjectHash
+  -> Sem (FileSystemRead SnapshotTag ': FileSystem SnapshotTag ': r) a
+  -> Sem r a
+snapshotFSAt live commit action = do
+  tree <- send (ReadTree live commit)
+  interpretFS tree (interpretRead tree action)
   where
     interpretRead
-      :: Members '[Git, StoryStorage, Fail] r'
-      => Core.WorkingTree -> Sem (FileSystemRead Snapshot ': r') b -> Sem r' b
-    interpretRead visible = interpret $ \case
-      ReadFile path -> case Map.lookup path visible of
-        Just (Core.FSFile h) -> Core.readObject h >>= \case
-          Core.BlobObject bs -> pure (Right bs)
-          Core.TreeObject _  -> pure (Left (path <> ": is a directory"))
+      :: Member Snapshot r'
+      => Core.WorkingTree -> Sem (FileSystemRead SnapshotTag ': r') b -> Sem r' b
+    interpretRead tree = interpret $ \case
+      ReadFile path -> case Map.lookup path tree of
+        Just (Core.FSFile h) -> either (\e -> Left (path <> ": " <> e)) Right
+                                  <$> send (ReadBlob h)
         Just Core.FSDir      -> pure (Left (path <> ": is a directory"))
-        -- A hidden binary is reported exactly as a genuinely absent path:
-        -- the point of this view is that it isn't there.
+        -- Under 'runTextSnapshotFS' a hidden binary is reported exactly as
+        -- a genuinely absent path: the point of that view is that it isn't
+        -- there.
         Nothing              -> pure (Left (path <> ": not found"))
 
-    -- No store access at all: given the already-filtered tree, every
-    -- structural question is a pure lookup ("Storage.FS"'s own query core).
-    interpretFS :: Core.WorkingTree -> Sem (FileSystem Snapshot ': r') b -> Sem r' b
-    interpretFS visible = interpret $ \case
-      GetFileSystem    -> pure (Snapshot commit)
+    -- No effect access at all: given the tree, every structural question
+    -- is a pure lookup ("Storage.FS"'s own query core).
+    interpretFS :: Core.WorkingTree -> Sem (FileSystem SnapshotTag ': r') b -> Sem r' b
+    interpretFS tree = interpret $ \case
+      GetFileSystem    -> pure (SnapshotTag commit)
       GetCwd           -> pure (Right "/")
-      ListFiles dir    -> pure (Right (FS.listChildrenIn dir visible))
-      IsDirectory path -> pure (Right (FS.isDirectoryIn path visible))
-      FileExists path  -> pure (Right (FS.existsIn path visible || FS.isDirectoryIn path visible))
+      ListFiles dir    -> pure (Right (FS.listChildrenIn dir tree))
+      IsDirectory path -> pure (Right (FS.isDirectoryIn path tree))
+      -- 'existsIn' answers for files only, matching 'Storage.FS.exists';
+      -- a directory counts as existing here, same as 'runStoryFSGit'.
+      FileExists path  -> pure (Right (FS.existsIn path tree || FS.isDirectoryIn path tree))
+      -- Working-tree paths carry a leading @/@ but glob patterns are
+      -- written relative, so the slash is stripped for the match only --
+      -- identical to 'runStoryFSGit''s own 'Glob' case.
       Glob base pat    -> pure . Right
         . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
-        $ FS.listUnderIn base visible
+        $ FS.listUnderIn base tree
 
 -- | Read one file at @commit@, without opening a scope of any kind --
 --   'runSnapshotFS' at its smallest useful size, for the very common
