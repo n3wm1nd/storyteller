@@ -1,9 +1,18 @@
 "use client";
 
-// Layer 1 / Layer 2 of the context UI. Layer 1 (the default view) is the
-// casual editor: plain-language toggles, no DSL visible. Layer 2 (the
-// "Edit as code" view, behind one click) is the power-user surface: a
-// small pinned-snippet editor + a saved-snippets library.
+// Layer 1 of the context UI: the casual editor -- plain-language toggles
+// over this call's own wire slots, plus the saved-snippets library.
+//
+// There is deliberately no general "edit this call as DSL" surface here.
+// A pinned snippet is a real file (`context/<name>.dsl` on the contexts
+// branch), so authoring one at length belongs in the file view's own DSL
+// editor (dsl-file-view.tsx), which edits that file directly and shows
+// what it resolves to. A second editor here could only ever write the
+// same files at one remove from them -- what it showed and what the call
+// used had no way to stay the same thing. What survives is the two
+// inline editors that *do* edit a per-call field and nothing else:
+// LoreRow's and OtherRow's, each captioned with the wire field it
+// generates.
 //
 // The panel mounts as an expandable region above the InputBar's textarea
 // (fileview.tsx). It's dismissable (Esc, click-outside, or the close
@@ -36,9 +45,9 @@
 // `pinnedProgramNames` -- the direct replacement for the old "load a
 // whole context program" flow.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  BookOpen, FileText, StickyNote, X, Save, Code2, ChevronLeft, ChevronRight, Pencil, Check,
+  BookOpen, FileText, StickyNote, X, Save, ChevronRight, Pencil, Check,
 } from "lucide-react";
 import { useCallContext } from "@/lib/callContextStore";
 import {
@@ -50,7 +59,6 @@ import {
   useLoreDraft, useOtherDraft, useContextEntries,
 } from "@/lib/contextBranch";
 import { setError } from "@/lib/uiStore";
-import { DSLEditor } from "./dsl-editor";
 import { ContextLibrary } from "./context-library";
 import { CodeCostEditor, useAdhocCostFetcher } from "./code-cost-editor";
 
@@ -126,6 +134,15 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
   const resetLore = useCallContext((s) => s.resetLore);
   const [expanded, setExpanded] = useState(false);
   const fetchCosts = useAdhocCostFetcher(expanded ? branch : null);
+  // Bound to the open file, so a `path:`-headed draft (every
+  // `context.other` program) actually resolves instead of failing for want
+  // of an argument. Harmless for a 0-arity draft: a program takes only what
+  // it declares. Memoized because CodeCostEditor re-estimates off this
+  // function's identity (see its `fetchCosts` prop).
+  const fetchCostsForFile = useCallback(
+    (program: string) => fetchCosts(program, path),
+    [fetchCosts, path],
+  );
   // `context.lore`'s own real, live entry set (see contextBranch.ts's
   // useContextEntries) -- 0-arity, so no `path` argument; excluded here
   // client-side purely for display symmetry with `context.lore`'s own
@@ -265,11 +282,7 @@ function LoreRow({ path, branch }: { path: string; branch: string }) {
               value={draft}
               onChange={(next) => setLoreOverride(path, next === resetTarget ? null : next)}
               placeholder='e.g. read "lore/**"'
-              // Bound to the open file, so a `path:`-headed draft (every
-              // `context.other` program) actually resolves instead of
-              // failing for want of an argument. Harmless for a 0-arity
-              // draft: a program takes only what it declares.
-              fetchCosts={(program) => fetchCosts(program, path)}
+              fetchCosts={fetchCostsForFile}
               minHeight="90px"
             />
           </div>
@@ -306,6 +319,15 @@ function OtherRow({ path, branch }: { path: string; branch: string }) {
   const resetOther = useCallContext((s) => s.resetOther);
   const [expanded, setExpanded] = useState(false);
   const fetchCosts = useAdhocCostFetcher(expanded ? branch : null);
+  // Bound to the open file, so a `path:`-headed draft (every
+  // `context.other` program) actually resolves instead of failing for want
+  // of an argument. Harmless for a 0-arity draft: a program takes only what
+  // it declares. Memoized because CodeCostEditor re-estimates off this
+  // function's identity (see its `fetchCosts` prop).
+  const fetchCostsForFile = useCallback(
+    (program: string) => fetchCosts(program, path),
+    [fetchCosts, path],
+  );
   const allPaths = useContextEntries(expanded ? branch : null, "context.other", path);
 
   const { draft, resetTarget, hasOverride } = useOtherDraft(path, branch);
@@ -427,11 +449,7 @@ function OtherRow({ path, branch }: { path: string; branch: string }) {
               value={draft}
               onChange={(next) => setOtherOverride(path, next === resetTarget ? null : next)}
               placeholder='e.g. read "notes/**"'
-              // Bound to the open file, so a `path:`-headed draft (every
-              // `context.other` program) actually resolves instead of
-              // failing for want of an argument. Harmless for a 0-arity
-              // draft: a program takes only what it declares.
-              fetchCosts={(program) => fetchCosts(program, path)}
+              fetchCosts={fetchCostsForFile}
               minHeight="90px"
             />
           </div>
@@ -532,7 +550,6 @@ export function ContextPanel({ path, branch, onClose }: ContextPanelProps) {
   const removePinnedProgram = useCallContext((s) => s.removePinnedProgram);
   const resetToDefault = useCallContext((s) => s.resetToDefault);
 
-  const [view, setView] = useState<"casual" | "dsl">("casual");
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -573,22 +590,6 @@ export function ContextPanel({ path, branch, onClose }: ContextPanelProps) {
         <span style={{ fontSize: 11, fontWeight: 500, color: "var(--foreground)", flex: 1 }}>
           Context for this call
         </span>
-        {view === "dsl" && (
-          <button onClick={() => setView("casual")} style={headerBtnStyle}>
-            <ChevronLeft style={{ width: 10, height: 10 }} /> Back
-          </button>
-        )}
-        <button
-          onClick={() => setView((v) => (v === "casual" ? "dsl" : "casual"))}
-          title="Edit pinned snippets as DSL (advanced)"
-          style={{
-            ...headerBtnStyle,
-            background: view === "dsl" ? "var(--accent-tint, var(--amber-tint))" : "transparent",
-            color: view === "dsl" ? "var(--accent, var(--amber))" : "var(--text-dim)",
-          }}
-        >
-          <Code2 style={{ width: 10, height: 10 }} /> DSL
-        </button>
         <button onClick={onClose} title="Close" style={headerBtnStyle}>
           <X style={{ width: 11, height: 11 }} />
         </button>
@@ -596,13 +597,9 @@ export function ContextPanel({ path, branch, onClose }: ContextPanelProps) {
 
       {/* Body */}
       <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px" }}>
-        {view === "dsl" ? (
-          // Layer 2 -- power-user
-          <PowerUserView path={path} branch={branch} />
-        ) : saveAsOpen ? (
+        {saveAsOpen ? (
           <SaveAsDialog onCancel={() => setSaveAsOpen(false)} onSave={handleSaveAs} />
         ) : (
-          // Layer 1 -- casual editor
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <section>
               <SectionLabel>Standing context</SectionLabel>
@@ -708,20 +705,6 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
       color: "var(--text-ghost)", marginBottom: 4,
     }}>
       {children}
-    </div>
-  );
-}
-
-// ─── Power-user view (DSL editor + library) ───────────────────────────────
-
-function PowerUserView({ path, branch }: { path: string; branch: string }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <DSLEditor path={path} branch={branch} />
-      <div>
-        <SectionLabel>Saved snippets</SectionLabel>
-        <ContextLibrary path={path} />
-      </div>
     </div>
   );
 }

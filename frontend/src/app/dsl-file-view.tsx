@@ -93,8 +93,11 @@ export function DslFileView({ branch, path }: {
     const costs = await fetchCosts(program, ADHOC_PATH_ARG);
     setTotalChars(costs ? costs.reduce((sum, c) => sum + Math.max(0, c.chars), 0) : null);
     return costs;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolveBranch]);
+    // Keyed on the fetcher (i.e. on `resolveBranch`) rather than rebuilt
+    // per render: CodeCostEditor re-estimates off this function's identity,
+    // so this is what makes the gutter follow the "resolve against"
+    // dropdown instead of only the text.
+  }, [fetchCosts]);
 
   useEffect(() => {
     let cancelled = false;

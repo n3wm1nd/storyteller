@@ -80,7 +80,8 @@ export function ContextLibrary({ path }: ContextLibraryProps) {
         padding: 8, fontSize: 10.5, color: "var(--text-ghost)", fontStyle: "italic",
         border: "1px dashed var(--border-subtle)", borderRadius: 5,
       }}>
-        No saved snippets yet. Use the editor above to author one, or the casual panel's "Save new snippet…".
+        No saved snippets yet. Use &ldquo;Save new snippet…&rdquo; below, or author a{" "}
+        <code>context/*.dsl</code> file directly on the contexts branch.
       </div>
     );
   }

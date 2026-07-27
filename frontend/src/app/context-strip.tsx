@@ -10,8 +10,10 @@
 // no more "named function replaces everything" mode: pinning a saved
 // snippet just adds one more chip, same as any other pinned program.
 //
-// "Edit as code →" lives in the corner, behind an explicit click --
-// power-user territory, never the default surface.
+// Clicking anywhere on the line opens the panel (context-panel.tsx) --
+// the same toggles, spelled out. There's no "edit as code" affordance
+// here: a saved snippet is a real `context/*.dsl` file, edited in the
+// file view's own DSL editor, not through this call's strip.
 //
 // Styling matches the existing InputBar context strip (the "N atoms
 // selected" line above the textarea, see fileview.tsx's InputBar): same
@@ -19,7 +21,7 @@
 // same clickable × to clear.
 
 import { useMemo } from "react";
-import { BookOpen, FileText, Pin, X, Code2, Clock } from "lucide-react";
+import { BookOpen, FileText, Pin, X, ChevronRight, Clock } from "lucide-react";
 import { useCallContext, isFileDirty, EMPTY_MENTIONS } from "@/lib/callContextStore";
 import { DEFAULT_EDITS, isLoreProgramCheckboxOwned } from "@/lib/dslCompose";
 import { useServerCache } from "@/lib/serverCacheStore";
@@ -222,15 +224,7 @@ export function ContextStrip({ path, onOpenPanel }: ContextStripProps) {
             Reset
           </button>
         )}
-        <span
-          style={{
-            display: "inline-flex", alignItems: "center", gap: 3,
-            fontSize: 10, color: "var(--text-ghost)",
-          }}
-          title="Edit as code (advanced)"
-        >
-          <Code2 style={{ width: 10, height: 10 }} /> DSL
-        </span>
+        <ChevronRight style={{ width: 11, height: 11, color: "var(--text-ghost)" }} />
       </span>
     </div>
   );

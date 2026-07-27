@@ -37,7 +37,7 @@
 // paragraph-shaped atoms an ordinary reconciled save would mint in a file
 // that has no paragraphs worth tracking.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronRight, FileText, Sliders, BookOpen, Plus,
   PenLine, Wrench, RefreshCw, Split, MessageSquare, Bot,
@@ -435,6 +435,12 @@ function ContextSlotEditor({ path, filePath, branch }: { path: string; filePath:
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const fetchCosts = useAdhocCostFetcher(branch);
+  // Memoized on the fetcher (i.e. on `branch`) and `filePath`: CodeCostEditor
+  // re-estimates off this function's identity, see its `fetchCosts` prop.
+  const fetchCostsForFile = useCallback(
+    (program: string) => fetchCosts(program, filePath),
+    [fetchCosts, filePath],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -489,7 +495,7 @@ function ContextSlotEditor({ path, filePath, branch }: { path: string; filePath:
         value={draft}
         onChange={setDraft}
         placeholder={'A Context DSL program, e.g.:\n\nread "lore/**"'}
-        fetchCosts={(program) => fetchCosts(program, filePath)}
+        fetchCosts={fetchCostsForFile}
         minHeight="90px"
       />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

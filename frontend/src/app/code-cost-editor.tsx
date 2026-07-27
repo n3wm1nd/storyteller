@@ -17,7 +17,7 @@
 // modelling the DSL's indentation-sensitive layout, which highlighting
 // doesn't need and nothing has asked for yet.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorView, gutter, GutterMarker } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
@@ -33,10 +33,18 @@ const DEBOUNCE_MS = 600;
 // against `branch` (a pinned snippet, a lore override draft, whatever the
 // caller is currently editing) via
 // Storyteller.Writer.Agent.ContextCost.buildAdhocProgramCosts. Shared by
-// every CodeCostEditor call site (dsl-editor.tsx's pinned-snippet editor,
-// context-panel.tsx's inline lore-override editor) rather than duplicated
-// per site, since the connection itself has no opinion on what it's
-// estimating -- only the caller's own draft text does.
+// every CodeCostEditor call site (context-panel.tsx's inline lore/other
+// override editors, agentstab.tsx's slot editors, dsl-file-view.tsx)
+// rather than duplicated per site, since the connection itself has no
+// opinion on what it's estimating -- only the caller's own draft text
+// does.
+//
+// The returned function's *identity* is part of its contract: it changes
+// exactly when `branch` does, which is what lets CodeCostEditor re-estimate
+// on a branch switch by depending on the fetcher itself (see its own note
+// on that). A caller that wraps it (to bind a `path` argument, say) has to
+// preserve that -- memoize the wrapper on the fetcher, never rebuild it
+// per render.
 export function useAdhocCostFetcher(branch: string | null | undefined) {
   const connRef = useRef<ReturnType<typeof contextViewConn> | null>(null);
   const pendingRef = useRef<{ resolve: (c: LineCost[] | null) => void } | null>(null);
@@ -78,14 +86,14 @@ export function useAdhocCostFetcher(branch: string | null | undefined) {
   // meaningful file passes the empty glob "[]" rather than omitting it —
   // omitting it means a `path:`-headed program has no argument to bind
   // and can only fail, which is what an empty cost estimate used to be.
-  return async (program: string, path?: string): Promise<LineCost[] | null> => {
+  return useCallback(async (program: string, path?: string): Promise<LineCost[] | null> => {
     const conn = connRef.current;
     if (!conn) return null;
     return new Promise((resolve) => {
       pendingRef.current = { resolve };
       conn.send({ type: "context.cost.adhoc", program, ...(path !== undefined ? { path } : {}) });
     });
-  };
+  }, [branch]);
 }
 
 // 'useAdhocCostFetcher''s own sibling for `context.preview.adhoc` (see
@@ -94,7 +102,7 @@ export function useAdhocCostFetcher(branch: string | null | undefined) {
 // project-default context slot or a saved pinned snippet's own editor
 // needs to preview -- never staged as a whole `context.writer` override
 // the way contextViewConn's plain `context.preview` command works (that
-// one is DSLEditor/RawEditPanel's whole-file preview, a different
+// one is the whole-`context.writer`-override preview, a different
 // question). A separate connection from useAdhocCostFetcher (rather than
 // sharing one) so a caller that only wants one of cost/preview doesn't
 // pay for the other's connection lifecycle -- DSLFileEditor below uses
@@ -137,14 +145,14 @@ export function useAdhocPreviewFetcher(branch: string | null | undefined) {
   // `path`: same contract as useAdhocCostFetcher's above — the two have to
   // agree about what they're resolving, or a preview and its own cost
   // breakdown would describe different programs.
-  return async (program: string, path?: string): Promise<PreviewNode | null> => {
+  return useCallback(async (program: string, path?: string): Promise<PreviewNode | null> => {
     const conn = connRef.current;
     if (!conn) return null;
     return new Promise((resolve) => {
       pendingRef.current = { resolve };
       conn.send({ type: "context.preview.adhoc", program, ...(path !== undefined ? { path } : {}) });
     });
-  };
+  }, [branch]);
 }
 
 // ─── Cost gutter ────────────────────────────────────────────────────────
@@ -234,13 +242,20 @@ interface CodeCostEditorProps {
   minHeight?: string;
   // Fill the parent instead of sitting in a fixed 160–320px box — for a
   // whole-pane instance (dsl-file-view.tsx) rather than one embedded in a
-  // panel among other controls (dsl-editor.tsx, context-panel.tsx). The
+  // panel among other controls (context-panel.tsx, agentstab.tsx). The
   // parent must be a flex column with a bounded height of its own; the
   // editor owns the scrolling either way.
   fill?: boolean;
   // Fetches costs for `program` (the current draft) — the caller owns the
-  // WS connection (see dsl-editor.tsx), this component only decides when
-  // to ask and how to render what comes back.
+  // WS connection (see useAdhocCostFetcher above), this component only
+  // decides when to ask and how to render what comes back.
+  //
+  // Must be memoized on everything the estimate depends on besides the
+  // draft text — above all the branch it resolves against, which the user
+  // can change while an editor stays mounted (dsl-file-view.tsx's "resolve
+  // against" dropdown). Re-estimating is driven off this function's own
+  // identity, so an unmemoized inline lambda would both re-estimate on
+  // every keystroke-render and never settle.
   fetchCosts: (program: string) => Promise<LineCost[] | null>;
 }
 
@@ -274,8 +289,7 @@ export function CodeCostEditor({
       viewRef.current?.dispatch({ effects: setCosts.of(byLine) });
     }, DEBOUNCE_MS);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }, [value, fetchCosts]);
 
   return (
     <div style={fill
