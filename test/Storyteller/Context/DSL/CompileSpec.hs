@@ -176,7 +176,7 @@ charname:
 |]
 
 crossBranchSpec :: Spec
-crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $
+crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $ do
   it "reads a named character's own branch, not the calling branch" $
     run (testStack $ do
          seedBranch "main" []
@@ -184,6 +184,50 @@ crossBranchSpec = describe "in (charname | branch): ... (cross-branch read)" $
          runDslOn (BranchName "main")
            (messagesText <$> (valueDefault =<< crossBranchDsl @Main (CtxLibrary.hostLibrary @Main) (textArg "aria"))))
        `shouldBe` Right "Aria is a wandering rogue."
+
+  -- The case above cannot distinguish "read the right branch" from "read
+  -- the wrong branch and find nothing": @main@ has no @sheet.md@, so any
+  -- misdirected read fails loudly. Here *both* branches carry @sheet.md@
+  -- with different content, so getting it wrong is a wrong answer rather
+  -- than an error -- and the assertion pins which text came from where.
+  --
+  -- What this does *not* test, despite appearances: whether
+  -- 'Storyteller.Context.DSL.Compile.branchBinding' forces its scope before
+  -- leaving the character's filesystem. That was the worry, and it turns
+  -- out not to be a testable one -- an unforced 'Value' built there carries
+  -- that filesystem's effects in its own type and cannot leave the
+  -- interpreter at all, so dropping the force is a compile error, not a
+  -- silent misread. Verified by removing it.
+  --
+  -- What it does test is interpreter *shadowing*, which types don't decide:
+  -- the cross-branch read runs a second @ContextFS@-tagged filesystem
+  -- inside the outer one, and this pins that the inner handler wins while
+  -- it's live (@cross@) and the outer is intact once it isn't (@own@) --
+  -- plus that @branch@ resolves a bare name to @character/\<name\>@.
+  it "keeps the character's own file when the calling branch has the same path, and restores the caller's scope after" $
+    run (testStack $ do
+         seedBranch "main"           [("sheet.md", "MAIN sheet -- must never be what a cross-branch read returns")]
+         seedBranch "character/aria" [("sheet.md", "Aria is a wandering rogue.")]
+         runDslOn (BranchName "main") (do
+           v      <- bothScopesDsl @Main (CtxLibrary.hostLibrary @Main) (textArg "aria")
+           Just crossAction <- pure (lookup "cross" (valueEntries v))
+           cross  <- messagesText <$> (valueDefault =<< crossAction)
+           Just ownAction   <- pure (lookup "own" (valueEntries v))
+           own    <- messagesText <$> (valueDefault =<< ownAction)
+           pure (cross, own)))
+       `shouldBe` Right
+         ( "Aria is a wandering rogue."
+         , "MAIN sheet -- must never be what a cross-branch read returns"
+         )
+
+-- | Reads the same path either side of an @in (charname | branch)@ -- see
+--   'crossBranchSpec'\'s second case.
+bothScopesDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, BranchResolve, Fail] r => Library r -> Binding r -> Action r (Value r)
+bothScopesDsl = [dslWith|
+charname:
+  as "cross": in (charname | branch): read "sheet.md"
+  as "own": read "sheet.md"
+|]
 
 -- | Shared by 'forLoopSpec' (checks the container's own default text)
 --   and 'forLoopEntriesSpec' (checks what's inside each entry) -- both

@@ -1088,15 +1088,20 @@ readMaybeInt t = case reads (T.unpack t) of
 --   name, enters that branch, and builds a scope from its filesystem
 --   exactly like the initial scope was built.
 --
---   The scope is forced before the branch is left, and that is not
---   optional. A 'Value' is thunks in a row; leaving the character's
---   filesystem with unforced leaves would mean each one resolving against
---   whatever filesystem is live when the outer evaluation finally forces
---   it -- the /main/ branch -- so @charname | branch@ would quietly read
---   main's files under the character's paths. Wrong content, no error, no
---   type to catch it. Forcing here costs reading that character's own
---   files, which every real use of this (@context.character@'s @sheet@\/
---   @full@\/@journalFull@ buckets) goes on to read anyway.
+--   The scope is forced before the branch is left, and it is not possible
+--   to forget. A 'Value' is thunks in a row, so an unforced one built here
+--   has the character's own filesystem effects /in its type/
+--   (@Value (FileSystemRead ContextFS : FileSystem ContextFS : BranchOp
+--   Visited : r)@) and simply cannot be returned from the interpreter that
+--   discharges them. 'forceValue'\/'forcedValue' is how the value is made
+--   to escape at all, not a discipline guarding against a silent bug --
+--   dropping it is a type error, not a wrong answer. (Checked by removing
+--   it: GHC rejects the result, it does not miscompile.)
+--
+--   What that costs is reading the character's own files eagerly, which
+--   every real use of this (@context.character@'s @sheet@\/@full@\/
+--   @journalFull@ buckets) goes on to read anyway. What it is /not/ doing
+--   is protecting correctness by convention; the row does that.
 branchBinding :: forall r. Members '[Branches, Fail] r => Binding r
 branchBinding = fn1 go
   where

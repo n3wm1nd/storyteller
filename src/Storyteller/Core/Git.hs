@@ -773,12 +773,29 @@ runStoryFSGit name = interpretFS . interpretFSRead . interpretFSWrite
 --   that is not this branch's head.
 --
 --   The tree is read once, on entry, and every operation is served from
---   it: the readable-content set costs a chain walk
---   ('Storage.Query.liveWorkingTree'), so deferring it per call would mean
---   re-walking history on every read. Same shape, and the same reasoning,
---   as 'Storyteller.Core.Snapshot.runTextSnapshotFS' -- which is the
---   point: whether a caller is reading this branch's head or some other
---   version, it is writing identical 'Runix.FileSystem' code either way.
+--   it. That is not a cost this pays for the filter's sake -- it is what
+--   being read-only buys. A cached tree is only sound while nothing can
+--   invalidate it, and here nothing can: there is no 'FileSystemWrite' in
+--   the row to change what was loaded, so one snapshot at entry is valid
+--   for the scope's whole life. The alternative -- re-deriving per call --
+--   would exist only to track changes that cannot happen.
+--
+--   And it makes reads /cheaper/ than the ambient filesystem's, not
+--   dearer. 'runStoryFSGit'\'s own 'ReadFile' is three working-tree
+--   operations ('Storage.Ops.exists', 'FS.isDirectory', 'Core.readFile')
+--   dispatched into the scope; here a read is a pure 'Map.lookup' plus one
+--   'Core.readObject', and every structural question
+--   ('Runix.FileSystem.listFiles'\/'Runix.FileSystem.isDirectory'\/
+--   'Runix.FileSystem.glob') is pure. Anything reading more than about one
+--   file comes out ahead, which every real caller does.
+--
+--   The one genuinely added cost is 'Storage.Query.liveWorkingTree'\'s
+--   chain walk -- and that buys the readable-content filter, which
+--   'runStoryFSGit' does not do at all and which context assembly needs.
+--   Same shape, and the same reasoning, as
+--   'Storyteller.Core.Snapshot.runTextSnapshotFS' -- which is the point:
+--   whether a caller is reading this branch's head or some other version,
+--   it is writing identical 'Runix.FileSystem' code either way.
 --   Takes the @project@ tag as a /value/, rather than always answering
 --   'Runix.FileSystem.getFileSystem' with a 'BranchTag'. A caller reading
 --   a branch by name wants exactly that and passes @'BranchTag' name@; a
