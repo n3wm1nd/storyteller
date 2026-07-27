@@ -114,8 +114,8 @@ import UniversalLLM.Tools
   , ToolResult(..)
   )
 
-import Storyteller.Core.ContentEffects (Cast, CastMember(..), fileTicksOf, knownCast, runFileTicks)
-import Storyteller.Core.Git (BranchOp, BranchTag)
+import Storyteller.Core.ContentEffects (Cast, CastMember(..), knownCast)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
 import Storyteller.Core.Storage (StoryStorage)
@@ -410,7 +410,7 @@ trackPresenceFor path = do
       present   <- map unCharacter <$> activeCharactersFor @branch path
       info $ "trackPresenceFor: " <> T.pack path <> ": " <> T.pack (show (length cast)) <> " known character(s)"
       decisions <- presenceAgent cast present sceneText
-      ticks     <- runFileTicks @branch (fileTicksOf @branch path)
+      ticks     <- runStorage @branch (Tick.fileTicksOf path)
       anchored  <- mapMaybe id <$> mapM (resolveAnchor path ticks) decisions
       _ <- recordPresenceForFile @branch path anchored
       return decisions

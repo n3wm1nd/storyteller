@@ -51,14 +51,15 @@ import Server.TestStack
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, runContextValue)
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Storyteller.Context.DSL.Compile (ContextFS)
-import Storyteller.Core.ContentEffects (BranchResolve, Presence, Summarized, JournalCuration(..))
+import Storyteller.Core.ContentEffects (BranchResolve, Presence, JournalCuration(..))
+import Storyteller.Writer.Agent.Summarizer (SummaryQuery)
 
 import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Compile (Binding, Library, bval, currentScope, fn1, journalDelta)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.QQ (dsl, dslWith)
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer (runSummarization, runSummarizerForPath)
 import Storyteller.Writer.Presence (enters, leaves)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
@@ -392,7 +393,7 @@ charname:
 --   rather than the raw branch. Eager, like @read@: the summarized text
 --   is already settled by the time this 'Value' comes back, not a
 --   deferred handle a caller resolves later.
-summarizedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Summarized branch, Fail] r => Library r -> Action r (Value r)
+summarizedDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, SummaryQuery, Fail] r => Library r -> Action r (Value r)
 summarizedDsl = [dslWith|
 "chapter.md" | summarized("prose/chapter")
 |]
@@ -403,7 +404,7 @@ summarizedFilterSpec = describe "path | summarized(kind) (reads a file through i
     run (testStack $ do
       seedBranch "main" [("chapter.md", "a very long chapter, in full")]
       runBranchOpGit @Main (BranchName "main") $
-        void (runSummarizerForPath @Main "prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
+        runSummarization @Main (void (runSummarizerForPath"prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized")))
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedDsl @Main (CtxLibrary.hostLibrary @Main))))
     `shouldBe` Right "chapter one, summarized"
 
@@ -417,7 +418,7 @@ summarizedFilterSpec = describe "path | summarized(kind) (reads a file through i
 --   counterpart: only the *first* kind in the given hierarchy is ever
 --   considered, so a caller listing a coarser tier after a finer one
 --   never falls through to it, unlike @summarized@.
-summarizedOnceDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS,Summarized branch, Fail] r => Library r -> Action r (Value r)
+summarizedOnceDsl :: forall branch r. Members '[FileSystem ContextFS, FileSystemRead ContextFS, SummaryQuery, Fail] r => Library r -> Action r (Value r)
 summarizedOnceDsl = [dslWith|
 "chapter.md" | summarizedOnce("prose/chapter prose/book")
 |]
@@ -427,9 +428,9 @@ summarizedOnceFilterSpec = describe "path | summarizedOnce(kinds) (reads exactly
   it "stops at the finest kind's own summary, ignoring a coarser kind listed after it" $
     run (testStack $ do
       seedBranch "main" [("chapter.md", "a very long chapter, in full")]
-      runBranchOpGit @Main (BranchName "main") $ do
-        void (runSummarizerForPath @Main "prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
-        void (runSummarizerForPath @Main "prose/book" "chapter.md" (\_ -> pure "whole book, summarized"))
+      runBranchOpGit @Main (BranchName "main") $ runSummarization @Main $ do
+        void (runSummarizerForPath"prose/chapter" "chapter.md" (\_ -> pure "chapter one, summarized"))
+        runSummarization @Main (void (runSummarizerForPath"prose/book" "chapter.md" (\_ -> pure "whole book, summarized")))
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedOnceDsl @Main (CtxLibrary.hostLibrary @Main))))
     `shouldBe` Right "chapter one, summarized"
 
@@ -437,7 +438,7 @@ summarizedOnceFilterSpec = describe "path | summarizedOnce(kinds) (reads exactly
     run (testStack $ do
       seedBranch "main" [("chapter.md", "a very long chapter, in full")]
       runBranchOpGit @Main (BranchName "main") $
-        void (runSummarizerForPath @Main "prose/book" "chapter.md" (\_ -> pure "whole book, summarized"))
+        runSummarization @Main (void (runSummarizerForPath"prose/book" "chapter.md" (\_ -> pure "whole book, summarized")))
       runDslOn (BranchName "main") (messagesText <$> (valueDefault =<< summarizedOnceDsl @Main (CtxLibrary.hostLibrary @Main))))
     `shouldBe` Right "a very long chapter, in full"
 
@@ -541,8 +542,8 @@ as "kept":
 --   Pinned here, at the level a DSL author actually observes it, rather
 --   than only where it happens to be implemented. The filter has moved
 --   twice already -- from an interceptor wrapped around agent context
---   assembly, into 'Storage.Query.loadLiveWorkingTree' behind the
---   'TreeAccess' interpreter -- and neither move was visible to a single
+--   assembly, into 'Storage.Query.liveWorkingTree' behind the DSL's own
+--   filesystem interpreter -- and neither move was visible to a single
 --   existing test, because no test in this suite ever put a binary file
 --   on a branch. The policy could have been dropped outright at any point
 --   and the whole suite would have stayed green.

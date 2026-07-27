@@ -80,9 +80,10 @@ import Storyteller.Core.Branch (BranchOp, runStorage)
 import Runix.FileSystem (FileSystem, FileSystemRead)
 import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.ContentEffects
-  ( Presence, JournalAccess, ConversationAccess, Summarized, BranchResolve
-  , runPresence, runJournalAccess, runConversationAccess, runSummarized
+  ( Presence, JournalAccess, ConversationAccess, BranchResolve
+  , runPresence, runJournalAccess, runConversationAccess
   )
+import Storyteller.Writer.Agent.Summarizer (SummaryQuery, runSummaryQuery)
 import Storyteller.Core.Git (runBranchOpGit, runStoryFSRead)
 import Storyteller.Core.Runtime (Contexts)
 import Storyteller.Core.Storage (StoryStorage, createBranch, getBranch)
@@ -142,7 +143,7 @@ makeSem ''ContextStorage
 --   rather than something each definition could be trusted to filter.
 type ContextRow branch r =
   FileSystemRead Compile.ContextFS ': FileSystem Compile.ContextFS
-    ': Presence branch ': JournalAccess branch ': ConversationAccess branch ': Summarized branch ': r
+    ': Presence branch ': JournalAccess branch ': ConversationAccess branch ': SummaryQuery ': r
 
 -- | The one well-known branch name this module owns -- exported the same
 --   way 'Storyteller.Core.Prompt.promptsBranchName' is, so
@@ -218,7 +219,7 @@ interpretContextStorageFS action = do
 --   actually decides pass/fail per name; a name whose own text doesn't
 --   even parse can't be a candidate for that decision at all.
 spliceOverrides
-  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
+  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, SummaryQuery, Fail] r
   => Map Name Text -> [(Name, Definition)]
 spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEntries
   where
@@ -271,7 +272,7 @@ spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEn
 --   every rejected name, so a caller can surface *which* commits didn't
 --   take instead of the previous silent fallback.
 buildContextLibrary
-  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
+  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, SummaryQuery, Fail] r
   => Map Name Text -> (Library r, [Name])
 buildContextLibrary overrides =
   case compileWith overrides of
@@ -338,8 +339,8 @@ interpretContextStorageMap overrides action =
     action
 
 -- | Runs a Context DSL 'Action' against @branch@ -- interprets
---   'Storyteller.Core.ContentEffects.TreeAccess'\/'Presence'\/
---   'JournalAccess'\/'ConversationAccess' locally and fresh, scoped to
+--   'Presence'\/'JournalAccess'\/'ConversationAccess'\/'SummaryQuery', plus
+--   the DSL's own filesystem, locally and fresh, scoped to
 --   this one call's @branch@ (never wired globally to one fixed branch --
 --   see 'ContextRow's own Haddock), then runs @act@. @act@ is already
 --   fully compiled by the time it's handed here -- every identifier
@@ -360,7 +361,7 @@ runContextValue
   .  Members '[BranchOp branch, Fail] r
   => Action (ContextRow branch r) a -> Sem r a
 runContextValue act =
-    runSummarized @branch
+    runSummaryQuery @branch
   . runConversationAccess @branch
   . runJournalAccess @branch
   . runPresence @branch

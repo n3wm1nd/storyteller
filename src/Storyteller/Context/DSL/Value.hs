@@ -13,8 +13,9 @@
 --
 --   'Value' carries a Polysemy effect row @r@ -- what a DSL library
 --   function actually needs is named vocabulary from
---   "Storyteller.Core.ContentEffects" (@TreeAccess@, @Presence@,
---   @ConversationAccess@, ...), not a concrete storage monad, so 'Action'
+--   "Storyteller.Core.ContentEffects" (@Presence@, @JournalAccess@,
+--   @ConversationAccess@, ...) plus 'Runix.FileSystem' for plain file
+--   reads, not a concrete storage monad, so 'Action'
 --   is @ContextLibrary r -> Sem r a@, not 'Core.StoreT'-shaped the way it
 --   used to be. Deliberately *not* given a closed, fixed @Members@ list
 --   here -- see @project_mcp_export_effect_boundary@: a host builds its
@@ -60,7 +61,6 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import qualified Storage.Core as Core
 
 import Storyteller.Context.DSL.AST (Name)
 
@@ -151,7 +151,7 @@ instance Member Fail r => MonadFail (Action r) where
 -- | Lifts an arbitrary 'Sem' computation into 'Action' -- the only way in,
 --   since 'Action's own constructor is exactly @Sem r a@. Every DSL
 --   library function that reaches for a named effect
---   ('Storyteller.Core.ContentEffects.treeSnapshot', 'askBranch', ...)
+--   ('Storyteller.Core.ContentEffects.charactersPresent', 'askBranch', ...)
 --   goes through this; there is no separate "storage-specific" lift the
 --   way 'liftStore' used to be, because nothing here is storage-specific
 --   any more -- it's just entering the underlying effect monad.

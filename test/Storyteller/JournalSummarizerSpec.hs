@@ -39,6 +39,7 @@ import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Common.Summary (Summary(..), lastSummaryOf, summaryContent, summariesTouching)
 import Storyteller.Writer.Library (journalPath)
+import Storyteller.Writer.Agent.Summarizer (runSummarization)
 import Storyteller.Writer.Agent.JournalSummarizer
 
 data TestBranch
@@ -52,7 +53,7 @@ runOne action =
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "branch")
-      runBranchAndFS @TestBranch (BranchName "branch") action
+      runBranchAndFS @TestBranch (BranchName "branch") (runSummarization @TestBranch action)
 
 -- | A deterministic stand-in for the real LLM call: joins its items with a
 --   marker unlikely to appear in test fixtures, so a test can tell exactly
@@ -96,7 +97,7 @@ spec = do
     it "writes nothing when there are fewer than a full group's worth of entries" $ do
       let result = runOne $ do
             addEntries (map (T.pack . show) [1 .. defaultJournalGroupSize - 1 :: Int])
-            wrote <- journalSummarize @TestBranch stubCompress
+            wrote <- journalSummarize stubCompress
             content <- tierZeroContent
             return (wrote, content)
       result `shouldBe` Right (False, Nothing)
@@ -104,7 +105,7 @@ spec = do
     it "writes exactly one chunk once a full group accumulates, from raw entries in order" $ do
       let result = runOne $ do
             addEntries (map (T.pack . show) [1 .. defaultJournalGroupSize :: Int])
-            wrote <- journalSummarize @TestBranch stubCompress
+            wrote <- journalSummarize stubCompress
             content <- tierZeroContent
             return (wrote, content)
       result `shouldBe` Right (True, Just "C[1,2,3,4,5,6,7,8,9,10]")
@@ -112,8 +113,8 @@ spec = do
     it "a second call with nothing new is a genuine no-op" $ do
       let result = runOne $ do
             addEntries (map (T.pack . show) [1 .. defaultJournalGroupSize :: Int])
-            _      <- journalSummarize @TestBranch stubCompress
-            wrote2 <- journalSummarize @TestBranch stubCompress
+            _      <- journalSummarize stubCompress
+            wrote2 <- journalSummarize stubCompress
             content <- tierZeroContent
             return (wrote2, content)
       result `shouldBe` Right (False, Just "C[1,2,3,4,5,6,7,8,9,10]")
@@ -122,10 +123,10 @@ spec = do
       let n = defaultJournalGroupSize
           bulkResult = runOne $ do
             addEntries (map (T.pack . show) [1 .. 2 * n :: Int])
-            _ <- journalSummarize @TestBranch stubCompress
+            _ <- journalSummarize stubCompress
             tierZeroContent
           incrementalResult = runOne $ do
-            mapM_ (\i -> addEntries [T.pack (show i)] >> journalSummarize @TestBranch stubCompress) [1 .. 2 * n :: Int]
+            mapM_ (\i -> addEntries [T.pack (show i)] >> journalSummarize stubCompress) [1 .. 2 * n :: Int]
             tierZeroContent
       bulkResult `shouldBe` incrementalResult
       bulkResult `shouldBe` Right (Just "C[1,2,3,4,5,6,7,8,9,10]C[11,12,13,14,15,16,17,18,19,20]")
@@ -134,11 +135,11 @@ spec = do
       let n = defaultJournalGroupSize
           result = runOne $ do
             addEntries (map (T.pack . show) [1 .. n + 3 :: Int])
-            _  <- journalSummarize @TestBranch stubCompress
+            _  <- journalSummarize stubCompress
             -- Only one full group (1..10) should have been consumed; the
             -- trailing 11,12,13 must still show up as candidates now.
             addEntries (map (T.pack . show) [14 .. n + 10 :: Int])
-            _ <- journalSummarize @TestBranch stubCompress
+            _ <- journalSummarize stubCompress
             tierZeroContent
       result `shouldBe` Right (Just "C[1,2,3,4,5,6,7,8,9,10]C[11,12,13,14,15,16,17,18,19,20]")
 
@@ -146,7 +147,7 @@ spec = do
       let n = defaultJournalGroupSize
           result = runOne $ do
             addEntries (map (T.pack . show) [1 .. (n * n) - 1 :: Int]) -- one raw entry short of a full tier-1 group
-            _ <- journalSummarize @TestBranch stubCompress
+            _ <- journalSummarize stubCompress
             tierOneContent
       result `shouldBe` Right Nothing
 
@@ -154,7 +155,7 @@ spec = do
       let n = defaultJournalGroupSize
           result = runOne $ do
             addEntries (map (T.pack . show) [1 .. n * n :: Int])
-            _ <- journalSummarize @TestBranch stubCompress
+            _ <- journalSummarize stubCompress
             tierOneContent
       case result of
         Left err -> expectationFailure err
@@ -170,7 +171,7 @@ spec = do
       let n = defaultJournalGroupSize
           result = runOne $ do
             addEntries (map (T.pack . show) [1 .. n * n :: Int])
-            _      <- journalSummarize @TestBranch stubCompress
+            _      <- journalSummarize stubCompress
             zero   <- tierZeroContent
             one    <- tierOneContent
             -- The real branch's own most recent "journal" tick is still
@@ -189,7 +190,7 @@ spec = do
     it "flushes whatever's pending right now, even under a full group -- the manual-creation entry point" $ do
       let result = runOne $ do
             addEntries (map (T.pack . show) [1 .. defaultJournalGroupSize - 3 :: Int])
-            wrote <- journalCreateManual @TestBranch
+            wrote <- journalCreateManual
             content <- tierZeroContent
             return (wrote, content)
       result `shouldBe` Right (True, Just "")
@@ -197,8 +198,8 @@ spec = do
     it "a second manual call with nothing new since is a genuine no-op, same contract as an automatic pass" $ do
       let result = runOne $ do
             addEntries (map (T.pack . show) [1 .. 3 :: Int])
-            _      <- journalCreateManual @TestBranch
-            wrote2 <- journalCreateManual @TestBranch
+            _      <- journalCreateManual
+            wrote2 <- journalCreateManual
             content <- tierZeroContent
             return (wrote2, content)
       result `shouldBe` Right (False, Just "")
@@ -206,21 +207,21 @@ spec = do
     it "an automatic pass afterward only re-covers what's genuinely new since the manual flush" $ do
       let result = runOne $ do
             addEntries (map (T.pack . show) [1 .. 3 :: Int])
-            _ <- journalCreateManual @TestBranch
+            _ <- journalCreateManual
             addEntries (map (T.pack . show) [4 .. defaultJournalGroupSize + 3 :: Int])
-            _ <- journalSummarize @TestBranch stubCompress
+            _ <- journalSummarize stubCompress
             tierZeroContent
       result `shouldBe` Right (Just ("" <> "C[4,5,6,7,8,9,10,11,12,13]"))
 
     it "does nothing when there's nothing pending at all (never summarized, no entries yet)" $ do
-      let result = runOne (journalCreateManual @TestBranch)
+      let result = runOne (journalCreateManual)
       result `shouldBe` Right False
 
     it "still only recurses into tier 1 when a full group of tier-0 chunks has actually accumulated -- manual creation doesn't force nesting" $ do
       let n = defaultJournalGroupSize
           result = runOne $ do
             addEntries (map (T.pack . show) [1 .. n - 1 :: Int]) -- one short of tier 0's own first group
-            _ <- journalCreateManual @TestBranch
+            _ <- journalCreateManual
             tierOneContent
       result `shouldBe` Right Nothing
 
@@ -228,7 +229,7 @@ spec = do
       let n = defaultJournalGroupSize
           result = runOne $ do
             addEntries (map (T.pack . show) [1 .. n * n :: Int])
-            _ <- journalSummarize @TestBranch stubCompress
+            _ <- journalSummarize stubCompress
             mTierZero <- runStorage @TestBranch (lastSummaryOf "journal")
             case mTierZero of
               Nothing      -> return Nothing

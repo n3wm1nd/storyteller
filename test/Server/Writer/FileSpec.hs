@@ -22,7 +22,8 @@ import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..), TickId(..), fromTick, tickParent)
 import Storyteller.Writer.Agent (Prompt(..))
-import Storyteller.Writer.Agent.Summarizer (runSummarizer)
+import Storyteller.Writer.Agent.Summarizer
+  (Summarization, SummaryQuery, runSummarization, runSummaryQuery, runSummarizer)
 import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, defaultJournalGroupSize)
 import Storyteller.Writer.Library (journalPath)
 import qualified Storage.Core as Core
@@ -42,7 +43,9 @@ import Prelude hiding (readFile)
 withFile_
   :: TestRunner
   -> BranchName
-  -> Sem ( FileSystemWrite (BranchTag Main)
+  -> Sem ( SummaryQuery
+         : Summarization
+         : FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
          : BranchOp Main
@@ -51,7 +54,7 @@ withFile_
   -> Either String a
 withFile_ runner name action = run $ runner $ do
   _ <- createBranch name
-  runBranchAndFS @Main name action
+  runBranchAndFS @Main name (runSummarization @Main (runSummaryQuery @Main action))
 
 spec :: TestRunner -> Spec
 spec runner = do
@@ -71,7 +74,7 @@ spec runner = do
     it "includes a synthetic summary tick once this path's kind has been summarized" $ do
       let result = withFile_ runner (BranchName "b") $ do
             _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one.")
-            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed."))
+            _ <- runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed."))
             fileStateWithSummaries "chapters/ch1.md" Nothing
       case result of
         Left err -> expectationFailure err
@@ -83,7 +86,7 @@ spec runner = do
     it "leaves the real atom head untouched by a summary -- presence still tracks only real content" $ do
       let result = withFile_ runner (BranchName "b") $ do
             _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one.")
-            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed."))
+            _ <- runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed."))
             fileStateWithSummaries "chapters/ch1.md" Nothing
       case result of
         Left err -> expectationFailure err
@@ -116,7 +119,7 @@ spec runner = do
           stubCompress items = pure ("C[" <> T.intercalate "," items <> "]")
           result = withFile_ runner (BranchName "b") $ do
             mapM_ (\i -> runStorage @Main (Ops.addAtom journalPath (T.pack (show i)))) [1 .. n * n :: Int]
-            _ <- journalSummarize @Main stubCompress
+            _ <- journalSummarize stubCompress
             fileStateWithSummaries journalPath Nothing
       case result of
         Left err -> expectationFailure err
@@ -151,9 +154,9 @@ spec runner = do
     it "two sequential chapter-summary passes produce two summary WireTicks with distinct, real anchor ids" $ do
       let result = withFile_ runner (BranchName "b") $ do
             _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one.")
-            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1"))
+            _ <- runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1"))
             _ <- runStorage @Main (Ops.addAtom "chapters/ch1.md" "para two.")
-            _ <- runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v2"))
+            _ <- runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v2"))
             fileStateWithSummaries "chapters/ch1.md" Nothing
       case result of
         Left err -> expectationFailure err

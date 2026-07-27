@@ -32,8 +32,9 @@ import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent (Instruction)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.ContentEffects (FileTick(..), fileTicksOf, runFileTicks)
-import Storyteller.Core.Git (BranchOp)
+import Storage.Tick (FileTick(..))
+import qualified Storage.Tick as Tick
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Types (TickId(..))
 
 -- | Always the 'AgentModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
@@ -44,7 +45,7 @@ fixAgent
   -> [TickId]                -- ^ targets: atoms flagged for fixing (non-empty)
   -> Instruction
   -> Sem r [TickId]
-fixAgent path targets instruction = runFileTicks @branch $ do
-  ticks0 <- fileTicksOf @branch path
+fixAgent path targets instruction = do
+  ticks0 <- runStorage @branch (Tick.fileTicksOf path)
   let idxs = mapMaybe (\t -> elemIndex (unTickId t) (map ftTickId ticks0)) targets
-  raise (reworkAtomsAt @branch path instruction idxs)
+  reworkAtomsAt @branch path instruction idxs

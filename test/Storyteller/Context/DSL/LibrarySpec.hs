@@ -49,7 +49,7 @@ import Storyteller.Context.DSL.Library
   (contextCharacter, contextLore, contextMentionFilter, contextWriter)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Context.DSL.Value
-import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer (runSummarization, runSummarizerForPath)
 import Storyteller.Writer.Presence (enters, leaves)
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 
@@ -432,7 +432,7 @@ contextChaptersCompressedSpec = describe "contextChaptersCompressed (the compres
     run (testStack $ do
       seedBranch "main" [("chapters/ch2.md", "chapter two, the long version")]
       runBranchOpGit @Main (BranchName "main") $
-        void (runSummarizerForPath @Main "prose" "chapters/ch2.md" (\_ -> pure "chapter two, summarized"))
+        runSummarization @Main (void (runSummarizerForPath"prose" "chapters/ch2.md" (\_ -> pure "chapter two, summarized")))
       runDslOn (BranchName "main") go)
     `shouldBe` Right
       [ User "## Chapters written so far (compressed)"

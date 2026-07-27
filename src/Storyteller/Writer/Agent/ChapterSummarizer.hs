@@ -30,7 +30,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
-import Runix.Git (Git)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
@@ -39,7 +38,6 @@ import Storyteller.Core.Atom (Atom(..), contentFor)
 import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.LLM.Role (LLMs, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
-import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (Tick, fromTick)
 import Storyteller.Writer.Agent.Summarizer (withTrailingNewline)
 import Storyteller.Writer.Agent.SummaryAccess (rawContent)
@@ -98,7 +96,7 @@ unitSummaryCandidates = List.foldl' step Map.empty
 --   over that one optimization is the point.
 chapterSummaryGenerate
   :: forall source r
-  .  (LLMs r, Members '[BranchOp source, StoryStorage, Git, PromptStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[BranchOp source, PromptStorage, Fail, Logging] r)
   => Text -> [Tick] -> Sem r (Map FilePath Text)
 chapterSummaryGenerate kind candidates = do
   let paths = Map.keys (unitSummaryCandidates candidates)

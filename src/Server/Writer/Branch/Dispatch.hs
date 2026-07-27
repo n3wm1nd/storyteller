@@ -30,7 +30,7 @@ module Server.Writer.Branch.Dispatch
   ) where
 
 import qualified Data.Text as T
-import Polysemy (Sem)
+import Polysemy (Member, Sem)
 
 import Server.Core.Branch (Main, BranchOpen, addNote, moveTickInBranch, deleteTickFromBranch)
 import Server.Writer.Branch (trackFiles, charGen, summarize, syncTasksOnBranch, suggestTasksOnBranch)
@@ -40,9 +40,10 @@ import Server.Core.Run (SessionEffects)
 import Storyteller.Core.Git (atGeneric)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Branches (branchDisplayName)
+import Storyteller.Writer.Agent.Summarizer (Summarization)
 
 runCommand
-  :: (BranchOpen r, SessionEffects r)
+  :: (BranchOpen r, Member Summarization r, SessionEffects r)
   => T.Text -> BranchCommand -> Sem r [BranchEvent]
 runCommand branch cmd =
   let name = BranchName branch

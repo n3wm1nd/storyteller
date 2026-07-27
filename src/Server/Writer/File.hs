@@ -59,11 +59,11 @@ import Storyteller.Writer.Lore (isLoreEligible)
 import Storyteller.Writer.Agent.JournalSummarizer (journalKind, journalSummarize, journalCreateManual, journalChunkAgent, currentSheet)
 import Storyteller.Writer.Agent.ChapterSummarizer (chapterSummaryAgent)
 import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryAgent)
-import Storyteller.Writer.Agent.Summarizer (runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer
+  (Summarization, SummaryQuery, runSummarizerForPath, summaryOccurrences)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Storage (StoryStorage)
-import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Common.Summary as Summary
 import Storyteller.Writer.Agent.Chat (chatAgent, historyFromFileTicks)
 import Storyteller.Writer.Agent.AskCharacter (askCharacterAgent)
@@ -642,16 +642,16 @@ summaryKindsFor path
 --   current content in, its compression out", exactly the shape
 --   'runSummarizerForPath' wants.
 summarizePath
-  :: (LLMs r, Members '[BranchOp Main, Git, StoryStorage, PromptStorage, Logging, Fail, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)] r)
+  :: (LLMs r, Members '[BranchOp Main, Summarization, PromptStorage, Logging, Fail, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)] r)
   => FilePath -> Sem r (Maybe TickId)
 summarizePath path = case summaryKindsFor path of
   [] -> return Nothing
   (kind : _)
     | path == journalPath      -> do
         sheet <- currentSheet @Main
-        Nothing <$ journalSummarize @Main (journalChunkAgent sheet)
-    | kind == "prose/chapter"  -> runSummarizerForPath @Main kind path chapterSummaryAgent
-    | kind == "lore/article"   -> runSummarizerForPath @Main kind path loreSummaryAgent
+        Nothing <$ journalSummarize (journalChunkAgent sheet)
+    | kind == "prose/chapter"  -> runSummarizerForPath kind path chapterSummaryAgent
+    | kind == "lore/article"   -> runSummarizerForPath kind path loreSummaryAgent
     | otherwise                 -> return Nothing
 
 -- | Manual creation: an empty occurrence, positioned exactly where an
@@ -672,13 +672,13 @@ summarizePath path = case summaryKindsFor path of
 --   creation calls none of them -- both go through the identical
 --   const-empty generation hook.
 summarizePathManual
-  :: Members '[BranchOp Main, Git, StoryStorage, Logging, Fail] r
+  :: Members '[BranchOp Main, Summarization, Logging, Fail] r
   => FilePath -> Sem r (Maybe TickId)
 summarizePathManual path = case summaryKindsFor path of
   [] -> return Nothing
   (kind : _)
-    | path == journalPath -> Nothing <$ journalCreateManual @Main
-    | otherwise            -> runSummarizerForPath @Main kind path (const (pure ""))
+    | path == journalPath -> Nothing <$ journalCreateManual
+    | otherwise            -> runSummarizerForPath kind path (const (pure ""))
 
 -- | @path@'s summary history, as synthetic 'WireTick's riding along in
 --   the ordinary push -- not a request/response command. A
@@ -734,11 +734,11 @@ summarizePathManual path = case summaryKindsFor path of
 --   as *their* parent), it just breaks the walk. A client positions this
 --   tick by its own 'wtRefs' anchor against the atoms already present in
 --   that relinked chain, same as it already does for a top-level occurrence.
-summaryTicksFor :: FileOpen r => FilePath -> Sem r [WireTick]
+summaryTicksFor :: (FileOpen r, Member SummaryQuery r) => FilePath -> Sem r [WireTick]
 summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
   where
     oneKind kind = do
-      occurrences <- SummaryAccess.summariesTouchingFor @Main kind path
+      occurrences <- summaryOccurrences kind path
       mapM (toWireTick kind) occurrences
 
     toWireTick kind occ = do
@@ -773,7 +773,7 @@ summaryTicksFor path = concat <$> mapM oneKind (summaryKindsFor path)
 --   threads this signature alongside 'updateHead' in its own "since"
 --   cursor so a summarize pass is never invisible to an already-open
 --   connection (see 'summaryTicksFor's own Haddock for why that matters).
-fileStateWithSummaries :: FileOpen r => FilePath -> Maybe T.Text -> Sem r (Update, T.Text)
+fileStateWithSummaries :: (FileOpen r, Member SummaryQuery r) => FilePath -> Maybe T.Text -> Sem r (Update, T.Text)
 fileStateWithSummaries path since = do
   upd   <- Core.fileStateSince path since
   extra <- summaryTicksFor path

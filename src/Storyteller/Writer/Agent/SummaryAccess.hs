@@ -5,13 +5,21 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Agent-facing entry points for *using* summaries, once some
---   "Storyteller.Writer.Agent.Summarizer" has produced them -- deliberately
---   the part of this subsystem that needs the most polish, since the whole
---   point of summarization is to let a context-assembly agent say "this is
---   getting long, use the summarized version" or "budget is 5k tokens,
---   compress until it fits" without knowing anything about how many
---   summarizers exist or what they're called.
+-- | How a summary is actually read off an alternate chain -- the
+--   implementation behind
+--   'Storyteller.Writer.Agent.Summarizer.SummaryQuery', not an API.
+--
+--   __Nothing outside that interpreter should import this.__ Every
+--   function here knows the representation: that a compression lives on an
+--   alternate chain, that a level is a 'Summary' tick on the open scope,
+--   that completeness means folding in whatever landed since. Reading a
+--   file "as compressed as it gets" is
+--   'Storyteller.Writer.Agent.Summarizer.densest', and it goes through the
+--   effect precisely so that none of the above is a caller's problem.
+--
+--   This module used to *be* the API, which is why the write side went
+--   through an effect while every read reached around it. What's left here
+--   is the "how"; the "what" is one module up.
 --
 --   Everything here runs inside a caller's already-open @source@ branch
 --   scope ('Storyteller.Core.Git.BranchOp') -- there is no branch to open
@@ -29,15 +37,10 @@
 --   standing guarantee of this module, not a per-function distinction, so
 --   it isn't spelled out in every name.
 module Storyteller.Writer.Agent.SummaryAccess
-  ( ZoomLevel(..)
-  , zoomLevels
-  , contentAt
-  , rawContent
+  ( zoomLevels
   , completeContents
+  , rawContent
   , unsummarizedTailSince
-  , densestWithin
-  , densest
-  , withinBudget
   , summariesTouchingFor
   ) where
 
@@ -144,62 +147,6 @@ completeContents path = mapM oneLevel
       case zlSummary lvl of
         Nothing -> return content  -- the raw level: already current, nothing to append
         Just s  -> (content <>) <$> unsummarizedTailSince @source s path
-
--- | @path@'s content, at the *densest* (most compressed) available level
---   (among @kinds@, finest first) that still satisfies @ok@ -- a plain
---   acceptability predicate over the candidate text, e.g.
---   @(<= 500) . wordCount@; this module has no opinion on what
---   "acceptable" means. Every candidate 'completeContents' considers is
---   already complete (see its own Haddock), so the choice of level never
---   trades completeness away for density -- only for whichever's
---   *finest* still satisfying @ok@.
---
---   The two extremes this generalizes are just particular predicates:
---
---   * @ok = const True@ -- satisfied immediately, at the raw level --
---     is "give me the file, unsummarized" ('densest' with the
---     compression turned off).
---   * @ok = const False@ -- never satisfied, so this falls through to
---     the coarsest available level -- is exactly 'densest': "as
---     compressed as this file gets, however that came out."
---   * Anything in between (a token/word-count budget) picks the finest
---     level that fits -- see 'withinBudget'.
---
---   If no level satisfies @ok@ at all, falls back to the coarsest
---   available level anyway (still complete, just not under @ok@) and
---   reports 'False', so the caller knows to fall back to truncation or
---   another strategy of its own rather than being told a silent lie about
---   whether the budget held.
-densestWithin
-  :: forall source r
-  .  Member (BranchOp source) r
-  => [Text] -> (Text -> Bool) -> FilePath -> Sem r (Text, Bool)
-densestWithin kinds ok path = do
-  levels     <- zoomLevels @source kinds path
-  candidates <- completeContents @source path levels
-  return (pick candidates)
-  where
-    pick cs = case break ok cs of
-      (_, found : _) -> (found, True)
-      (_, [])        -> (last cs, False)  -- 'cs' is never empty: 'zoomLevels' always includes the raw level
-
--- | @path@'s densest complete view -- 'densestWithin' with @ok = const
---   False@, so it always falls through to the coarsest available level.
---   No marker separates the appended tail from the summary proper in the
---   returned 'Text' -- plain concatenation, same convention prose atoms
---   already use for appending.
-densest :: forall source r. Member (BranchOp source) r => [Text] -> FilePath -> Sem r Text
-densest kinds path = fst <$> densestWithin @source kinds (const False) path
-
--- | @path@'s content, using the least-compressed level that still fits
---   @budget@ under @estimate@ -- a plain cost function, e.g.
---   @T.length \`div\` 4@ or a real tokenizer. 'densestWithin' with
---   @ok = (<= budget) . estimate@.
-withinBudget
-  :: forall source r
-  .  Member (BranchOp source) r
-  => [Text] -> (Text -> Int) -> Int -> FilePath -> Sem r (Text, Bool)
-withinBudget kinds estimate budget = densestWithin @source kinds (\t -> estimate t <= budget)
 
 -- | Whatever's been written to @path@ since *its own* compression in
 --   @s@'s alternate chain was actually produced -- not since @s@'s own

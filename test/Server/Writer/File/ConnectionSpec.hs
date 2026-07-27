@@ -51,7 +51,7 @@ import Server.Core.File (fileStateSince, editFileAtom)
 import Server.Core.Protocol (Update(..), WireTick(..))
 import Server.Writer.File (fileStateWithSummaries, summarizePathManual)
 import Server.Writer.File.Connection (openTarget)
-import Storyteller.Writer.Agent.SummaryAccess (densest)
+import Storyteller.Writer.Agent.Summarizer (densest)
 import Server.TestStack (TestRunner)
 
 spec :: TestRunner -> Spec
@@ -90,7 +90,7 @@ spec runner = describe "openTarget" $ do
     let result = run_ $ do
           _   <- createBranch (BranchName "b")
           _   <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
-          _   <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
+          _   <- openCmd "b" (runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
           upd <- openCmd "b@prose/chapter" (fileStateSince "chapters/ch1.md" Nothing)
           return (map wtContent (updateTicks upd))
     result `shouldBe` Right [Just "condensed v1"]
@@ -99,10 +99,10 @@ spec runner = describe "openTarget" $ do
     let result = run_ $ do
           _    <- createBranch (BranchName "b")
           _    <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
-          _    <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
+          _    <- openCmd "b" (runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
           upd1 <- openCmd "b@prose/chapter" (fileStateSince "chapters/ch1.md" Nothing)
           _    <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "\n\nraw v2."))
-          _    <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v2")))
+          _    <- openCmd "b" (runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v2")))
           upd2 <- openCmd "b@prose/chapter" (fileStateSince "chapters/ch1.md" Nothing)
           return (map wtContent (updateTicks upd1), map wtContent (updateTicks upd2))
     result `shouldBe` Right ([Just "condensed v1"], [Just "condensed v2"])
@@ -111,7 +111,7 @@ spec runner = describe "openTarget" $ do
     let result = run_ $ do
           _   <- createBranch (BranchName "b")
           _   <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "para one."))
-          _   <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
+          _   <- openCmd "b" (runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
           -- New raw content lands *after* the summary pass -- nothing has
           -- reprocessed it yet, so it must stay visible as an
           -- unsummarized tail no matter what happens to the summary next.
@@ -126,14 +126,14 @@ spec runner = describe "openTarget" $ do
           -- invisible to 'densest' -- not a display quirk, a real loss
           -- from every reader's own context assembly.
           _    <- openCmd "b@prose/chapter" (runStorage @Main (Ops.append "chapters/ch1.md" " (hand note)"))
-          openCmd "b" (densest @Main ["prose/chapter"] "chapters/ch1.md")
+          openCmd "b" (densest["prose/chapter"] "chapters/ch1.md")
     result `shouldBe` Right "condensed v1 (hand note)\n\n\npara two, never seen by any pass."
 
   it "editing through name@kind lands in the alternate chain, mints a fresh Summary tick, and never touches the real file" $ do
     let result = run_ $ do
           _         <- createBranch (BranchName "b")
           _         <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
-          _         <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
+          _         <- openCmd "b" (runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
           Just (oldTickId, _) <- openCmd "b" (runStorage @Main (lastSummaryOf "prose/chapter"))
           upd0      <- openCmd "b@prose/chapter" (fileStateSince "chapters/ch1.md" Nothing)
           let [editTid] = map (TickId . wtTickId) (updateTicks upd0)
@@ -162,7 +162,7 @@ spec runner = describe "openTarget" $ do
     let result = run_ $ do
           _ <- createBranch (BranchName "b")
           _ <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "raw v1."))
-          _ <- openCmd "b" (runSummarizer @Main "prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
+          _ <- openCmd "b" (runSummarizer"prose/chapter" (\_ -> pure (Map.singleton "chapters/ch1.md" "condensed v1")))
           Just (tid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf "prose/chapter"))
           let target = "b@prose/chapter#" <> unTickId tid
           _       <- openCmd target (runStorage @Main (Ops.append "chapters/ch1.md" "hand note"))
@@ -184,7 +184,7 @@ spec runner = describe "openTarget" $ do
         result = run_ $ do
           _ <- createBranch (BranchName "b")
           mapM_ (\i -> openCmd "b" (runStorage @Main (Ops.addAtom journalPath (T.pack (show i))))) [1 .. n * n :: Int]
-          _ <- openCmd "b" (journalSummarize @Main stubCompress)
+          _ <- openCmd "b" (journalSummarize stubCompress)
           Just (topTid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf journalKind))
           let target1 = "b@" <> journalKind <> "#" <> unTickId topTid
           (upd1, _) <- openCmd target1 (fileStateWithSummaries journalPath Nothing)
@@ -217,7 +217,7 @@ spec runner = describe "openTarget" $ do
         result = run_ $ do
           _ <- createBranch (BranchName "b")
           mapM_ (\i -> openCmd "b" (runStorage @Main (Ops.addAtom journalPath (T.pack (show i))))) [1 .. n * n :: Int]
-          _ <- openCmd "b" (journalSummarize @Main stubCompress)
+          _ <- openCmd "b" (journalSummarize stubCompress)
           Just (latestTid, _) <- openCmd "b" (runStorage @Main (lastSummaryOf journalKind))
           let target = "b@" <> journalKind <> "#" <> unTickId latestTid
           (upd, _sig) <- openCmd target (fileStateWithSummaries journalPath Nothing)
@@ -256,7 +256,7 @@ spec runner = describe "openTarget" $ do
             -- rebases any inner command, must never see this.
             _        <- openCmd "b" (runStorage @Main (Ops.addAtom "chapters/ch1.md" "\n\npara two, after the cursor."))
             _        <- openCmd "b" (atGeneric @Main (TickId (unObjectHash cursor)) (summarizePathManual "chapters/ch1.md"))
-            openCmd "b" (densest @Main ["prose/chapter"] "chapters/ch1.md")
+            openCmd "b" (densest["prose/chapter"] "chapters/ch1.md")
       -- The empty occurrence covers only "para one." (everything up to the
       -- cursor); "para two" -- written after it -- surfaces as densest's
       -- own unsummarized tail, exactly like the hand-edit test above pins

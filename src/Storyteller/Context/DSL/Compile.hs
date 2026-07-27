@@ -108,11 +108,12 @@ import Runix.FileSystem (FileSystem, FileSystemRead)
 import qualified Runix.FileSystem as FS
 
 import Storyteller.Core.ContentEffects
-  ( Presence, JournalAccess, ConversationAccess, Summarized
+  ( Presence, JournalAccess, ConversationAccess
   , BranchResolve, Turn(..), JournalCuration(..)
   , charactersPresent, journalWindow
-  , conversationTurns, resolveBranch, readSummarized
+  , conversationTurns, resolveBranch
   )
+import Storyteller.Writer.Agent.Summarizer (SummaryQuery, densest)
 import Storyteller.Core.Branch (Branches, Visited, withBranch)
 import Storyteller.Core.Git (BranchTag, runStoryFSRead)
 import Storyteller.Core.Types (BranchName(..))
@@ -1148,11 +1149,11 @@ charactersInBinding = fn1 go
 --   resolves a plain file -- context assembly stays one deterministic
 --   pass with a predictable cache boundary, rather than deferring "which
 --   version" to render time.
-summarizedGo :: forall branch r. Members '[Summarized branch, Fail] r => ([Text] -> [Text]) -> Action r (Value r) -> Action r (Value r) -> Action r (Value r)
+summarizedGo :: forall branch r. Members '[SummaryQuery, Fail] r => ([Text] -> [Text]) -> Action r (Value r) -> Action r (Value r) -> Action r (Value r)
 summarizedGo narrow vPath vKind = do
   path  <- T.unpack . messagesText <$> (valueDefault =<< vPath)
   kinds <- narrow . T.words . messagesText <$> (valueDefault =<< vKind)
-  text  <- liftSem (readSummarized @branch kinds path)
+  text  <- liftSem (densest kinds path)
   pure (leafValue [FileRead path text])
 
 -- | @summarized@'s own implementation, as an ordinary 'Binding' -- same
@@ -1175,7 +1176,7 @@ summarizedGo narrow vPath vKind = do
 --   "give me the deepest compression" and "give me exactly the next zoom
 --   level" are two different questions a caller asks, not two settings
 --   of the same one.
-summarizedBinding :: forall branch r. Members '[Summarized branch, Fail] r => Binding r
+summarizedBinding :: forall branch r. Members '[SummaryQuery, Fail] r => Binding r
 summarizedBinding = fn2 (summarizedGo @branch id)
 
 -- | @summarizedOnce@'s own implementation -- 'summarizedBinding''s
@@ -1185,7 +1186,7 @@ summarizedBinding = fn2 (summarizedGo @branch id)
 --   coarser tier the way 'summarizedBinding' does, even if more kinds are
 --   listed. What a caller reaches for to show "the next zoom level up,"
 --   as a deliberately distinct step from "how compressed can this get."
-summarizedOnceBinding :: forall branch r. Members '[Summarized branch, Fail] r => Binding r
+summarizedOnceBinding :: forall branch r. Members '[SummaryQuery, Fail] r => Binding r
 summarizedOnceBinding = fn2 (summarizedGo @branch (take 1))
 
 -- | 'treeValueOfCommit' for a named branch -- resolves the name via
@@ -1329,7 +1330,7 @@ injectShallow isTurnStart lo hi toInsert history
 --   imports "Storyteller.Context.DSL.QQ" for 'dsl'\/'defQuote').
 --   Re-exported from "Storyteller.Context.DSL.Library" for every existing
 --   caller.
-hostLibrary :: forall branch r. Members '[BranchResolve, Branches, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r => Library r
+hostLibrary :: forall branch r. Members '[BranchResolve, Branches, Presence branch, JournalAccess branch, ConversationAccess branch, SummaryQuery, Fail] r => Library r
 hostLibrary = Library
   [ ("readconversation", readConversation @branch)
   , ("embedshallow",     embedShallow)

@@ -31,15 +31,16 @@ import Runix.Logging (Logging)
 
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Context (ContextStorage)
-import Storyteller.Core.ContentEffects (BranchResolve, fileTicksOf, runFileTicks)
-import Storyteller.Core.Storage (StoryStorage, ticksSince)
+import qualified Storage.Tick as Tick
+import Storyteller.Core.ContentEffects (BranchResolve)
+import Storyteller.Core.Storage (ticksSince)
 import Storyteller.Writer.Agent (Instruction(..), Prose, PastChaptersMode)
 import Storyteller.Writer.Agent.Context (Lore, Other, PinnedContext)
 import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Branch (Branches)
-import Storyteller.Core.Git (BranchOp)
+import Storyteller.Core.Git (BranchOp, runStorage)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. Everything besides @path@\/@flowTid@ is the same
@@ -56,7 +57,7 @@ import Storyteller.Core.Types (TickId(..))
 --   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Branches, StoryStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchResolve, BranchOp branch, Branches, Fail, Logging] r)
   => FilePath                    -- ^ file being continued
   -> TickId                      -- ^ flowTid: HEAD when the user started typing
   -> Lore                        -- ^ see 'writeAgent's own Haddock
@@ -66,10 +67,9 @@ flowWriteAgent
   -> Instruction
   -> Sem r ([TickId], Prose)
 flowWriteAgent path flowTid lore other chaptersMode pinned instruction = do
-  inFlightIdxs <- runFileTicks @branch $ do
-    allTicks <- fileTicksOf @branch path
-    let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
-    pure [length allTicks - inFlightCount .. length allTicks - 1]
+  allTicks <- runStorage @branch (Tick.fileTicksOf path)
+  let inFlightCount = length (ticksSince (Just (unTickId flowTid)) allTicks)
+      inFlightIdxs  = [length allTicks - inFlightCount .. length allTicks - 1]
   reworkedTids <- if null inFlightIdxs
     then return []
     else reworkAtomsAt @branch path (flowInstruction instruction) inFlightIdxs

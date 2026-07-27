@@ -20,7 +20,6 @@ import qualified Data.Text as T
 
 import Polysemy
 import Polysemy.Fail (Fail)
-import Runix.Git (Git)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
@@ -30,7 +29,6 @@ import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt)
-import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
@@ -49,7 +47,7 @@ import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 --   longer needs to open that branch's filesystem first.
 askCharacterAgent
   :: forall branch r
-  .  (LLMs r, Members '[BranchOp branch, Branches, BranchResolve, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
   charVal <- resolveContext1 @branch "context.character" charname

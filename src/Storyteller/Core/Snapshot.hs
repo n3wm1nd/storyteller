@@ -59,9 +59,10 @@
 --   is only discovered at runtime ('Storyteller.Core.ContentEffects.runCast'
 --   iterating @listBranches@; the context DSL resolving @charname | branch@
 --   mid-evaluation). That doesn't need a *second read vocabulary* the way
---   'Storyteller.Core.ContentEffects.TreeAccess' assumed -- it needs the
---   same one, discharged per position with the position as an ordinary
---   value argument. Callers are sequential (each scope is discharged
+--   the @TreeAccess@ effect this replaced assumed (see
+--   "Storyteller.Core.ContentEffects"'s own note on why it's gone) -- it
+--   needs the same one, discharged per position with the position as an
+--   ordinary value argument. Callers are sequential (each scope is discharged
 --   before the next opens), so one fixed 'Snapshot' tag serves all of
 --   them; nothing here mints a type at runtime.
 --
@@ -296,15 +297,3 @@ snapshotFSAt live commit action = do
       Glob base pat    -> pure . Right
         . filter (Glob.match (Glob.compile pat) . dropWhile (== '/'))
         $ FS.listUnderIn base tree
-
--- | Read one file at @commit@, without opening a scope of any kind --
---   'runSnapshotFS' at its smallest useful size, for the very common
---   "resolve a branch, read one known file off it" shape
---   ('Storyteller.Core.ContentEffects.runCast', the HTTP asset endpoint).
---   'Nothing' for an absent path, rather than 'Fail': every caller of
---   this shape so far treats a missing file as a legitimate empty answer,
---   not an error.
-readSnapshotFile
-  :: Members '[Git, StoryStorage, Fail] r
-  => Core.ObjectHash -> FilePath -> Sem r (Maybe ByteString)
-readSnapshotFile commit path = Core.readPathAt commit path

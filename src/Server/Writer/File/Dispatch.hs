@@ -36,6 +36,7 @@ import Server.Writer.File.Protocol (FileCommand(..), FileEvent(..), AtBranch(..)
 import Server.Core.Run (SessionEffects)
 import Storyteller.Common.Splitter (Splitter)
 import Storyteller.Core.Runtime (Main)
+import Storyteller.Writer.Agent.Summarizer (Summarization)
 import Storyteller.Core.Git (atGeneric, runBranchAndFS)
 import Storyteller.Core.Types (BranchName(..), TickId(..))
 import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
@@ -47,7 +48,9 @@ import Storyteller.Writer.Types (Character(..), PresenceEvent(..))
 --   same role 'Server.Writer.Branch.CharBranch' plays there.
 data ConnectedBranch
 
-runCommand :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> FileCommand -> Sem r [FileEvent]
+runCommand
+  :: (FileOpen r, Member Splitter r, Member Summarization r, SessionEffects r)
+  => FilePath -> FileCommand -> Sem r [FileEvent]
 runCommand path cmd = case cmd of
 
   CreateFile _mid ->

@@ -70,6 +70,10 @@ module Storyteller.Core.ContentEffects
     --
     -- $treeaccess
 
+    -- * Why there is no file-tick effect here either
+    --
+    -- $filetickswasnothere
+
     -- * Character presence (tick-history dependent)
     Presence(..)
   , charactersPresent
@@ -88,16 +92,9 @@ module Storyteller.Core.ContentEffects
   , conversationTurns
   , runConversationAccess
 
-    -- * A file's own tick list (tick-history dependent)
-  , FileTicks(..)
-  , FileTick(..)
-  , fileTicksOf
-  , runFileTicks
-
-    -- * Reading a file through its own compressed (summarized) form
-  , Summarized(..)
-  , readSummarized
-  , runSummarized
+    -- * Why there is no summarized-read effect here
+    --
+    -- $summarized
 
     -- * Branch name resolution
   , BranchResolve(..)
@@ -109,13 +106,8 @@ module Storyteller.Core.ContentEffects
   , CastMember(..)
   , knownCast
   , runCast
-
-    -- * The whole vocabulary, one branch, one backend
-  , runContentEffectsGit
   ) where
 
-import Control.Monad.Trans.Class (lift)
-import Data.ByteString (ByteString)
 import Data.Kind (Type)
 import Data.Set (Set)
 import Data.Text (Text)
@@ -125,18 +117,13 @@ import Polysemy
 import Polysemy.Fail (Fail)
 
 import qualified Storage.Core as Core
-import qualified Storage.Query as Query
 import qualified Storage.Tick as Tick
-import Storage.Tick (FileTick(..))
-
-import Runix.Git (Git)
 
 import Storyteller.Core.Branch (BranchOp, Branches, runStorage, withBranch)
 import Runix.FileSystem (FileSystemRead(..))
 import Storyteller.Core.Git (BranchTag(..), runStoryFSRead)
 import Storyteller.Core.Storage (StoryStorage, getBranch, listBranches)
 import Storyteller.Core.Types (Branch(..), BranchName(..), TickId(..))
-import qualified Storyteller.Writer.Agent.SummaryAccess as SummaryAccess
 import qualified Storyteller.Writer.Presence as WriterPresence
 import Storyteller.Writer.Types (Character(..))
 
@@ -279,62 +266,59 @@ runConversationAccess = interpret $ \case
       "atom"   -> [AssistantTurn (maybe (Tick.ftMessage ft) id (Tick.ftContent ft))]
       _        -> []
 
--- ---------------------------------------------------------------------------
--- A file's own tick list
--- ---------------------------------------------------------------------------
+-- $filetickswasnothere
+--
+-- There used to be a @FileTicks branch@ effect here: "@path@'s own current
+-- ticks," one constructor, whose interpreter was
+-- @runStorage \@branch (Storage.Tick.fileTicksOf path)@. It is gone, and
+-- why is worth recording, because on paper it looked like exactly the
+-- reuse this module argues for -- three agents had each written that same
+-- line by hand, so it got a name.
+--
+-- But a name is not an abstraction. Every one of its callers discharged it
+-- at its own call site (@runFileTicks \@branch $ ...@), and the
+-- interpreter needed 'BranchOp' @branch@ -- which those callers already
+-- held. So @Member (FileTicks branch) r@ never appeared in a single
+-- signature anywhere: no caller could be given a different interpreter,
+-- because no caller ever named the capability. What it actually bought was
+-- one more layer of ceremony over the line it replaced, in four places,
+-- while four *other* sites ("Storyteller.Writer.Agent.Write",
+-- "Storyteller.Writer.Presence", "Server.Writer.File",
+-- "Server.Writer.Library") went on writing that line raw.
+--
+-- The test that distinguishes it from its neighbours is simple, and worth
+-- applying before adding anything here: does some function's *type* name
+-- this capability, leaving the choice of interpreter to whoever runs it?
+-- 'Presence', 'JournalAccess' and 'ConversationAccess' all
+-- pass (they are 'Member' constraints throughout
+-- "Storyteller.Context.DSL.Compile", discharged per branch by
+-- 'Storyteller.Core.Context.runContextValue'), and 'Cast' passes
+-- ("Storyteller.Writer.Agent.PresenceTrack" holds it, @app/Presence.hs@
+-- interprets it). An effect that fails it is a rename, and a rename is
+-- cheaper as a function -- or, as here, as the one line it was hiding.
 
--- | @path@'s own current ticks, in 'Storage.Tick.FileTick's already-decoded
---   shape (role, content, refs, hide flag) -- not derived or curated
---   further the way 'Presence'\/'JournalAccess' fold the same underlying
---   read into a narrower answer; this is the plain "what are this file's
---   ticks" question several agents each want as their own starting point
---   (locating a target atom by id, finding an in-flight span, re-reading
---   before every step of a rebase-sensitive loop) rather than one already
---   folded into "who's present" or "a curated window." Naming it once
---   here, rather than each of
---   'Storyteller.Writer.Agent.Fix'\/'Storyteller.Writer.Agent.FlowWrite'\/
---   'Storyteller.Writer.Agent.ReplaceTool' independently writing
---   @runStorage \@branch (Storage.Tick.fileTicksOf path)@, is exactly the
---   "reuse before inventing" step this module's own design doc argues for
---   -- discovered only once three separate agents had each already
---   written it by hand.
-data FileTicks (branch :: k) (m :: Type -> Type) a where
-  FileTicksOf :: FilePath -> FileTicks branch m [Tick.FileTick]
-
-makeSem ''FileTicks
-
-runFileTicks :: forall branch r a. Member (BranchOp branch) r => Sem (FileTicks branch ': r) a -> Sem r a
-runFileTicks = interpret $ \case
-  FileTicksOf path -> runStorage @branch (Tick.fileTicksOf path)
-
--- ---------------------------------------------------------------------------
--- Summarized reads
--- ---------------------------------------------------------------------------
-
--- | @path@'s content read through its own compressed form -- an eager,
---   whole-file read exactly like 'TreeAccess', not a lazy handle a caller
---   resolves later: 'ReadSummarized' picks and reads one summary level
---   the moment it's called (see 'Storyteller.Writer.Agent.SummaryAccess.densest'),
---   so what lands in a DSL 'Storyteller.Context.DSL.Value.Value' is
---   already-settled text, giving context assembly the same "one
---   deterministic pass, predictable cache boundary" shape 'ERead' already
---   has for a plain file. @kinds@ is the summarizer hierarchy to consider,
---   finest first (see 'Storyteller.Writer.Agent.SummaryAccess.zoomLevels');
---   the caller names it explicitly rather than this effect assuming one
---   fixed kind, since which summarizer(s) exist is app/DSL-call
---   vocabulary, not something this effect boundary should hardcode.
---   Always complete (never missing content written since the summary was
---   last produced -- see 'SummaryAccess.completeContents'), and always
---   succeeds: a @path@\/@kinds@ with nothing summarized yet falls back to
---   @path@'s own raw content, the same as 'SummaryAccess.densest' does.
-data Summarized (branch :: Type) (m :: Type -> Type) a where
-  ReadSummarized :: [Text] -> FilePath -> Summarized branch m Text
-
-makeSem ''Summarized
-
-runSummarized :: forall branch r a. Member (BranchOp branch) r => Sem (Summarized branch ': r) a -> Sem r a
-runSummarized = interpret $ \case
-  ReadSummarized kinds path -> SummaryAccess.densest @branch kinds path
+-- $summarized
+--
+-- There used to be a @Summarized branch@ effect here, one constructor
+-- (@ReadSummarized kinds path@) whose interpreter was a single call to
+-- what is now 'Storyteller.Writer.Agent.Summarizer.densest'. It is gone,
+-- and the DSL holds 'Storyteller.Writer.Agent.Summarizer.SummaryQuery'
+-- instead.
+--
+-- It failed the same test 'FileTicks' did, one step removed: it named a
+-- capability that already had a name. Summaries are
+-- "Storyteller.Writer.Agent.Summarizer"'s concept -- it is the module that
+-- decides what a compression is and produces them -- so a second effect
+-- here, existing only to forward one call into that module, made the DSL's
+-- reads look independent of it while being a thin alias for it. Two doors
+-- to one room, and the far door was the one that could actually be given
+-- another backend.
+--
+-- The branch phantom that made it look like a peer of 'Presence' and
+-- 'JournalAccess' turned out not to be needed either: 'SummaryQuery' is
+-- interpreted per call by 'Storyteller.Core.Context.runContextValue',
+-- exactly where those are, and that application site is what fixes the
+-- branch.
 
 -- ---------------------------------------------------------------------------
 -- Branch resolution
@@ -349,10 +333,13 @@ runSummarized = interpret $ \case
 --   through 'Storyteller.Core.Storage.StoryStorage', which is already
 --   project-global, not scoped to any one already-open branch.
 --
---   FIXME: returns a raw 'Core.ObjectHash' -- see 'TreeAccess''s own
---   Haddock for why that leaks a content-addressing assumption this
---   effect boundary shouldn't presuppose, and what to do about it
---   (an opaque position type owned here instead).
+--   FIXME: returns a raw 'Core.ObjectHash', which presupposes that a
+--   position is a content address -- true of git, not of every backend a
+--   'BranchResolve' interpreter might have. What callers actually do with
+--   the result is hand it straight back as a position
+--   ('Storyteller.Core.Snapshot.runSnapshotFS'), never inspect it, so an
+--   opaque position type owned by this module would serve them all
+--   identically and presuppose nothing.
 data BranchResolve (m :: Type -> Type) a where
   ResolveBranch :: BranchName -> BranchResolve m (Maybe Core.ObjectHash)
 
@@ -405,17 +392,35 @@ data Cast (m :: Type -> Type) a where
 
 makeSem ''Cast
 
--- | Built entirely on 'StoryStorage' (list every branch, filter to
---   @character/*@) plus this module's own 'TreeAccess' (resolve each
---   character branch's head, read @sheet.md@'s blob from its tree) --
---   never a fresh 'BranchOp'\/filesystem scope opened per character.
---   @treeBranch@ is only ever used for its underlying git object store,
---   never its own content: a blob is addressed by hash, the same hash
---   regardless of which branch's 'BranchOp' scope happens to be open when
---   it's read (see 'TreeAccess' own Haddock, "safe to call against a
---   foreign commit without disturbing the caller's own position") -- so
---   any already-open branch works as @treeBranch@, not specifically a
---   character's own.
+-- | Built on 'StoryStorage' (list every branch, filter to @character/*@)
+--   plus 'Branches': each character's branch is entered
+--   ('Storyteller.Core.Branch.withBranch') and its @sheet.md@ read through
+--   the ordinary 'Runix.FileSystem' vocabulary, exactly as any other
+--   file read in this codebase is.
+--
+--   __That read is not the cheapest possible one, on purpose.__
+--   'Storyteller.Core.Git.runStoryFSRead' materializes the branch's whole
+--   readable-content tree on entry -- references only, but the
+--   atom-tracked filter behind it is a chain walk, so the cost grows with
+--   that character's history and is paid once per cast member. A
+--   positioned single-path read ('Storage.Core.readPathAt') would be O(path
+--   depth) and history-independent.
+--
+--   The filesystem effects are the primary way file data is reached here,
+--   and that is worth more than the difference. A function written against
+--   'Runix.FileSystem.FileSystemRead' runs against a branch, a snapshot, a
+--   real directory or a test filesystem without knowing which; a function
+--   written against a positioned read primitive runs against exactly one
+--   backend and drags that backend into its own signature. Paying a
+--   bounded, references-only overhead to keep every reader portable is the
+--   trade this codebase makes deliberately -- see
+--   'Storyteller.Core.Snapshot's own note on the same choice.
+--
+--   What /would/ be worth revisiting is not the per-read cost but how many
+--   times a scope gets opened at all: this opens one per cast member, and
+--   callers above it sometimes re-enter branches an outer scope already
+--   had. That is a structuring question about scope lifetimes, not an
+--   argument for reaching past the filesystem effects.
 --
 --   The @character/@ prefix check below is inlined rather than reusing
 --   'Storyteller.Writer.Branches.classifyBranch' (the one real place that
@@ -424,27 +429,6 @@ makeSem ''Cast
 --   which imports this module, so pulling it in here would be a real
 --   compile-time cycle, not just a style preference. Keep the two in sync
 --   if the convention ever changes (see WRITER.md's "Branch naming").
---   Reads each sheet with 'Storyteller.Core.Snapshot.readSnapshotFile' --
---   a direct positioned read of one known path, no scope opened and no
---   listing -- rather than 'TreeAccess', which it used to lean on for
---   want of anything better. That was a bad fit in both directions.
---   'treeSnapshot' hands back a whole branch's files so this could
---   @lookup "sheet.md"@ in it, which meant materializing the entire tree
---   *and* (since a readable-content listing is history-dependent, see
---   'TreeAccess') walking that branch's chain -- measured at 54 object
---   reads against 3 for a character branch with fifty journal entries,
---   growing with history, once per cast member. And every one of those
---   reads was provably incapable of changing the answer: @sheet.md@ is
---   always atom-tracked, so the filter could only ever remove entries
---   this never looks at.
---
---   Losing the @treeBranch@ phantom is the other half of the fix. It was
---   only ever there to name *some* already-open branch scope to borrow an
---   object store from -- explicitly not the character's own, since a blob
---   is addressed by hash regardless of which scope reads it. A positioned
---   read needs no scope at all, so the parameter (and the ceremony at
---   every call site of picking an arbitrary branch to pass) simply goes
---   away.
 runCast
   :: forall castBranch r a
   .  Members '[StoryStorage, Branches, Fail] r
@@ -475,34 +459,3 @@ runCast = interpret $ \case
         { cmBranch = name
         , cmSheet  = sheet
         }
-
--- ---------------------------------------------------------------------------
--- The whole vocabulary, one branch, one backend
--- ---------------------------------------------------------------------------
-
--- | Every branch-scoped effect above, discharged at once against a single
---   git-backed branch -- the one thing a caller composing this onto its
---   own interpreter stack actually wants: "give me the whole vocabulary
---   for this branch," not six individual lines to remember to keep in
---   sync. Composes directly onto an existing stack (no @runM@ inside,
---   same as every interpreter above), and can be applied more than once
---   at different @branch@ type applications within the same stack (see
---   the module Haddock) -- a different backend supplies its own
---   equivalent of this function, discharging whichever subset of the
---   five effects it can honestly back. 'BranchResolve' isn't included --
---   it has no @branch@ of its own to be scoped to; wire it separately
---   (once, project-wide) via 'runBranchResolve'. Neither is file reading,
---   which isn't part of this vocabulary at all -- see the module's own
---   note on why ($treeaccess).
-runContentEffectsGit
-  :: forall branch r a
-  .  Member (BranchOp branch) r
-  => Sem ( Presence branch ': JournalAccess branch ': ConversationAccess branch
-         ': FileTicks branch ': Summarized branch ': r ) a
-  -> Sem r a
-runContentEffectsGit =
-    runSummarized @branch
-  . runFileTicks @branch
-  . runConversationAccess @branch
-  . runJournalAccess @branch
-  . runPresence @branch

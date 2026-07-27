@@ -95,7 +95,6 @@ import Polysemy
 import Polysemy.Fail (Fail)
 import qualified Runix.FileSystem as RFS
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, PathFilter(..), filterWrite, listAllFiles)
-import Runix.Git (Git)
 import Runix.LLM (queryLLM)
 import Runix.LLM.ToolExecution (executeTool)
 import Runix.Logging (Logging, info)
@@ -103,8 +102,8 @@ import qualified Runix.Tools as Tools
 import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools (ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition)
 
-import Storyteller.Core.Branch (Branches)
-import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS)
+import Storyteller.Core.Branch (Branches, withBranch)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStoryFSGit)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
@@ -113,7 +112,6 @@ import Storyteller.Core.LLM.Interceptor (withToolCallBudget)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
 import Storyteller.Core.Runtime (Main)
-import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent (CharContextBlock(..), CharLabel(..), CharSummary(..), Prose(..))
 import Storyteller.Writer.Agent.Context (WorldContext(..))
@@ -142,7 +140,7 @@ type Exchange = (Text, Text, Text)
 --   model's job; whether they get asked at all isn't.
 roleplayAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, BranchResolve, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, BranchResolve, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
   => WorldContext               -- ^ scene context: existing prose, world lore -- rendered into a concrete model's own messages only right before each call actually reaches 'queryLLM' (see 'Storyteller.Writer.Agent.Continuation.proseAgent's own Haddock on why upstream binding is wrong)
   -> [(CharLabel, Character)]  -- ^ every character present
   -> Text                      -- ^ the author's direction; may be empty
@@ -174,14 +172,14 @@ roleplayAgent sceneContext characters prompt = do
 --   seeing in the log even when nothing else is.
 askCharacter
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, BranchResolve, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, BranchResolve, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
   => Character -> Text -> WorldContext -> Text -> Sem r Text
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
   charVal    <- resolveContext1 @Main "context.character" ident
   ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
-  answer <- runBranchAndFS @RoleplayChar (BranchName branchName) $
+  answer <- withBranch @RoleplayChar (BranchName branchName) $ runStoryFSGit @RoleplayChar (BranchName branchName) $
     characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question
   info (name <> " answers: " <> answer)
   pure answer

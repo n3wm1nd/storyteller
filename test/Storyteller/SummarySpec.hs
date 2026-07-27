@@ -23,7 +23,7 @@ import Storyteller.Common.Summary
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (createBranch)
 import Storyteller.Core.Types
-import Storyteller.Writer.Agent.Summarizer (extendAltChain, runSummarizer, runSummarizerForPath)
+import Storyteller.Writer.Agent.Summarizer (runSummarization, runSummarizer, runSummarizerForPath)
 
 -- ---------------------------------------------------------------------------
 -- Phantom + single-branch runner. There's no alt branch to open -- an
@@ -33,6 +33,11 @@ import Storyteller.Writer.Agent.Summarizer (extendAltChain, runSummarizer, runSu
 
 data Source
 
+-- | The tag a hand-edit's own alternate-chain scope is addressed by --
+--   'Server.Writer.File.Connection.openTarget' opens exactly one of these
+--   per summary-tier connection.
+data Alt
+
 runOne action =
   run
   . runFail
@@ -41,7 +46,7 @@ runOne action =
   . runStoryStorageGit
   $ do
       _ <- createBranch (BranchName "source")
-      runBranchAndFS @Source (BranchName "source") action
+      runBranchAndFS @Source (BranchName "source") (runSummarization @Source action)
 
 -- | Always writes the same one file, so 'runSummarizer' has something to
 --   commit every time it's called.
@@ -64,7 +69,7 @@ spec = do
     it "extends the alternate chain and records a Summary tick on source" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Core.store (Core.NonAtom [] "some narrative"))
-            mtid <- runSummarizer @Source "prose/chapter"
+            mtid <- runSummarizer"prose/chapter"
               (generateFixed "chapter one, summarized")
             sums <- runStorage @Source (availableSummaries Nothing)
             content <- case sums of
@@ -81,16 +86,16 @@ spec = do
     it "returns Nothing when there is nothing new to summarize" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Core.store (Core.NonAtom [] "some narrative"))
-            _ <- runSummarizer @Source "prose/chapter" (generateFixed "first pass")
-            runSummarizer @Source "prose/chapter" (generateFixed "should never run")
+            _ <- runSummarizer"prose/chapter" (generateFixed "first pass")
+            runSummarizer"prose/chapter" (generateFixed "should never run")
       result `shouldBe` Right Nothing
 
     it "a second summarization appends: content updates, but the earlier commit stays reachable through its own Summary tick" $ do
       let result = runOne $ do
             _     <- runStorage @Source (Core.store (Core.NonAtom [] "part one"))
-            mtid1 <- runSummarizer @Source "prose/chapter" (generateFixed "summary v1")
+            mtid1 <- runSummarizer"prose/chapter" (generateFixed "summary v1")
             _     <- runStorage @Source (Core.store (Core.NonAtom [] "part two"))
-            mtid2 <- runSummarizer @Source "prose/chapter" (generateFixed "summary v2")
+            mtid2 <- runSummarizer"prose/chapter" (generateFixed "summary v2")
 
             sums <- runStorage @Source (availableSummaries (Just "prose/chapter"))
             -- most-recent-first: the live content is whichever the *newest* tick names.
@@ -132,7 +137,7 @@ spec = do
     it "only covers what's new since the last summary of that kind" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Core.store (Core.NonAtom [] "one"))
-            _ <- runSummarizer @Source "prose/chapter" (generateFixed "s1")
+            _ <- runSummarizer"prose/chapter" (generateFixed "s1")
             _ <- runStorage @Source (Core.store (Core.NonAtom [] "two"))
             runStorage @Source (ticksSinceLastSummary "prose/chapter")
       case result of
@@ -143,7 +148,7 @@ spec = do
     it "finds the exact Summary tick that produced a batch's alt-chain commit, covering every file the batch wrote" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Core.store (Core.NonAtom [] "narrative"))
-            mtid <- runSummarizer @Source "prose/chapter"
+            mtid <- runSummarizer"prose/chapter"
               (generateTwoFiles "summary of a" "summary of b")
             case mtid of
               Nothing  -> return (mtid, Nothing)
@@ -164,7 +169,7 @@ spec = do
     it "returns Nothing for a commit hash no Summary tick points at" $ do
       let result = runOne $ do
             _ <- runStorage @Source (Core.store (Core.NonAtom [] "narrative"))
-            _ <- runSummarizer @Source "prose/chapter" (generateFixed "s1")
+            _ <- runSummarizer"prose/chapter" (generateFixed "s1")
             runStorage @Source (summaryTickFor (Core.ObjectHash "not-a-real-alt-commit"))
       result `shouldBe` Right Nothing
 
@@ -173,7 +178,7 @@ spec = do
       let result = runOne $ do
             _ <- runStorage @Source (Ops.addAtom "a.md" "para one. ")
             _ <- runStorage @Source (Ops.addAtom "a.md" "para two.")
-            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            _ <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary of a")
             runStorage @Source (summariesTouching "prose/chapter" "a.md")
       case result of
         Left err -> expectationFailure err
@@ -188,8 +193,8 @@ spec = do
       let result = runOne $ do
             _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
             _ <- runStorage @Source (Ops.addAtom "b.md" "b content")
-            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
-            _ <- runSummarizerForPath @Source "prose/chapter" "b.md" (\_ -> pure "summary of b")
+            _ <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary of a")
+            _ <- runSummarizerForPath"prose/chapter" "b.md" (\_ -> pure "summary of b")
             occsA <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
             occsB <- runStorage @Source (summariesTouching "prose/chapter" "b.md")
             return (occsA, occsB)
@@ -202,9 +207,9 @@ spec = do
     it "two sequential passes of the same kind on the same file both appear, oldest-first, each anchored to the atom present at that pass" $ do
       let result = runOne $ do
             h1  <- runStorage @Source (Ops.addAtom "a.md" "para one.")
-            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v1")
+            _   <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary v1")
             h2  <- runStorage @Source (Ops.addAtom "a.md" "para two.")
-            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v2")
+            _   <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary v2")
             occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
             return (TickId (Core.unObjectHash h1), TickId (Core.unObjectHash h2), occs)
       case result of
@@ -230,11 +235,11 @@ spec = do
     it "three sequential passes each anchor to their own atom, not shifted back by one" $ do
       let result = runOne $ do
             h1  <- runStorage @Source (Ops.addAtom "a.md" "para one.")
-            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v1")
+            _   <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary v1")
             h2  <- runStorage @Source (Ops.addAtom "a.md" "para two.")
-            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v2")
+            _   <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary v2")
             h3  <- runStorage @Source (Ops.addAtom "a.md" "para three.")
-            _   <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v3")
+            _   <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary v3")
             occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
             return
               ( TickId (Core.unObjectHash h1), TickId (Core.unObjectHash h2), TickId (Core.unObjectHash h3)
@@ -258,7 +263,7 @@ spec = do
     it "a superseding tick (hand-edit: new alt content, empty real-file span) merges into its predecessor -- one occurrence, read at the edited tip" $ do
       let result = runOne $ do
             h1    <- runStorage @Source (Ops.addAtom "a.md" "para one.")
-            mtid1 <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary v1")
+            mtid1 <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary v1")
             case mtid1 of
               Nothing   -> fail "first pass unexpectedly wrote nothing"
               Just tid1 -> do
@@ -269,8 +274,16 @@ spec = do
                 -- span is empty by construction.
                 tick1 <- runStorage @Source (Tick.readTypesTick (Core.ObjectHash (unTickId tid1)))
                 s1 <- maybe (fail "not a Summary tick") return (fromTick @Summary tick1)
-                (_, editedHead) <- extendAltChain @() (Just (summaryAltHead s1))
-                  (runStorage @() (Ops.saveFileAsNew "a.md" "a.md" "summary v1, hand-edited"))
+                -- Opened exactly the way a real summary-tier connection
+                -- opens one ('runBranchAndFSFrom', seeded at the tick's own
+                -- altHead), rather than through the summarizer's internal
+                -- chain helper -- this test is about what a hand-edit
+                -- through that connection does to occurrence merging, so it
+                -- should go in by the same door the connection uses.
+                editedHead <- runBranchAndFSFrom @Alt (BranchName "a.md@prose/chapter")
+                  (Core.ObjectHash (unTickId (summaryAltHead s1))) (\_ -> return ()) $ do
+                    runStorage @Alt (Ops.saveFileAsNew "a.md" "a.md" "summary v1, hand-edited")
+                    TickId . Core.unObjectHash <$> runStorage @Alt Core.headHash
                 _ <- atGeneric @Source tid1
                   (runStorage @Source (Tick.storeAs (Summary "prose/chapter" editedHead)))
                 occs <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
@@ -301,8 +314,8 @@ spec = do
       let result = runOne $ do
             _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
             _ <- runStorage @Source (Ops.addAtom "b.md" "b content")
-            _ <- runSummarizerForPath @Source "prose/chapter" "b.md" (\_ -> pure "summary of b")
-            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            _ <- runSummarizerForPath"prose/chapter" "b.md" (\_ -> pure "summary of b")
+            _ <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary of a")
             occsA <- runStorage @Source (summariesTouching "prose/chapter" "a.md")
             occsB <- runStorage @Source (summariesTouching "prose/chapter" "b.md")
             return (occsA, occsB)
@@ -316,11 +329,11 @@ spec = do
       let result = runOne $ do
             _ <- runStorage @Source (Ops.addAtom "a.md" "a content")
             _ <- runStorage @Source (Ops.addAtom "b.md" "b content")
-            _ <- runSummarizerForPath @Source "prose/chapter" "a.md" (\_ -> pure "summary of a")
+            _ <- runSummarizerForPath"prose/chapter" "a.md" (\_ -> pure "summary of a")
             -- A second same-kind pass touching only b.md -- a.md's own
             -- compression is carried forward unchanged, so this must not
             -- show up as a second occurrence for a.md.
-            _ <- runSummarizerForPath @Source "prose/chapter" "b.md" (\_ -> pure "summary of b")
+            _ <- runSummarizerForPath"prose/chapter" "b.md" (\_ -> pure "summary of b")
             runStorage @Source (summariesTouching "prose/chapter" "a.md")
       case result of
         Left err -> expectationFailure err

@@ -26,7 +26,9 @@ import Server.Core.Branch (Main)
 import Server.Writer.Branch (summarize, uploadFiles, importCharacterCard)
 import Server.TestStack
 import Storyteller.Core.Storage (getBranch)
-import Storyteller.Writer.Agent.SummaryAccess (densest)
+import Storyteller.Writer.Agent.Summarizer (densest)
+import Storyteller.Writer.Agent.Summarizer
+  (Summarization, SummaryQuery, runSummarization, runSummaryQuery)
 
 import Prelude hiding (readFile)
 
@@ -42,7 +44,9 @@ import Prelude hiding (readFile)
 withBranch_
   :: TestRunner
   -> BranchName
-  -> Sem ( FileSystemWrite (BranchTag Main)
+  -> Sem ( SummaryQuery
+         : Summarization
+         : FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
          : BranchOp Main
@@ -51,7 +55,7 @@ withBranch_
   -> Either String a
 withBranch_ runner name action = run $ runner $ do
   _ <- createBranch name
-  runBranchAndFS @Main name action
+  runBranchAndFS @Main name (runSummarization @Main (runSummaryQuery @Main action))
 
 spec :: TestRunner -> Spec
 spec runner = do
@@ -141,7 +145,7 @@ summarizeSpec runner = describe "summarize" $ do
     let result = withBranch_ runner (BranchName "test") $ do
           _    <- runStorage @Main (Ops.addAtom "story.md" "chapter one.")
           mtid <- summarize "raw"
-          content <- densest @Main ["raw"] "story.md"
+          content <- densest["raw"] "story.md"
           return (mtid, content)
     case result of
       Left err -> expectationFailure err

@@ -92,6 +92,8 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import qualified Storage.Core as Core
 import qualified Storage.Tick as Tick
 import Storyteller.Common.Summary (Summary(..), bootstrapAltHead, lastSummaryOf, supersedingTipFrom)
+import Storyteller.Writer.Agent.Summarizer
+  (Summarization, SummaryQuery, runSummarization, runSummaryQuery)
 import Server.Writer.Env (ServerEnv(..), registerCancel, unregisterCancel)
 import Server.Core.File (FileOpen)
 import Server.Core.Logging (logCommand)
@@ -131,13 +133,15 @@ openTarget
   :: forall r a
   .  Members '[StoryStorage, Error String, Branches, Git, Fail] r
   => T.Text
-  -> Sem ( FileSystemWrite (BranchTag Main)
+  -> Sem ( SummaryQuery
+         : Summarization
+         : FileSystemWrite (BranchTag Main)
          : FileSystemRead  (BranchTag Main)
          : FileSystem      (BranchTag Main)
          : BranchOp Main
          : r ) a
   -> Sem r a
-openTarget target action = case T.breakOn "@" target of
+openTarget target action0 = case T.breakOn "@" target of
   (branch, "") -> withBranch @Main branch action
   (branch, kindWithAt) -> do
     let (kind, hopsPart) = T.breakOn "#" (T.drop 1 kindWithAt)
@@ -184,6 +188,19 @@ openTarget target action = case T.breakOn "@" target of
           (remintHop branch kind hopChain (length hopChain - 1))
           action
   where
+    -- | Both summarization effects are discharged here, at the one point a
+    --   file connection's branch scope is actually opened -- alongside that
+    --   scope, never inside the summarizers themselves. That is what lets
+    --   'Storyteller.Writer.Agent.Summarizer.runSummarizer', the summary
+    --   pushes, and every command reaching either of them name the
+    --   capability they want instead of the git it happens to be made of.
+    action :: Sem ( FileSystemWrite (BranchTag Main)
+                  : FileSystemRead  (BranchTag Main)
+                  : FileSystem      (BranchTag Main)
+                  : BranchOp Main
+                  : r ) a
+    action = runSummarization @Main (runSummaryQuery @Main action0)
+
     -- | Resolve each hop in sequence, each within its parent's own chain
     --   (hop 0 against the real branch's current head, hop @i@ against
     --   hop @i-1@'s resolved altHead), following every hop's superseding
@@ -326,7 +343,7 @@ onNotify target conn path since note = case note of
 --   (summary tiers riding along via 'fileStateWithSummaries' never affect
 --   that -- a file with only a stale summary ghost and no real atoms left
 --   is still absent, see 'pushIncremental's own presence handling).
-pushInitial :: (FileOpen r, Member (Embed IO) r) => WS.Connection -> FilePath -> Sem r ()
+pushInitial :: (FileOpen r, Members '[SummaryQuery, Embed IO] r) => WS.Connection -> FilePath -> Sem r ()
 pushInitial conn path = do
   (upd, _sig) <- fileStateWithSummaries path Nothing
   if T.null (updateHead upd)
@@ -384,7 +401,7 @@ commandLoop env target conn path cancelFlag = loop
 -- checked for that, not 'updateTicks', which a stale summary ghost could
 -- leave non-empty even once every real atom is gone.
 pushIncremental
-  :: (FileOpen r, Member (Embed IO) r, Member (Error String) r)
+  :: (FileOpen r, Members '[SummaryQuery, Embed IO, Error String] r)
   => WS.Connection -> FilePath -> Maybe (T.Text, T.Text) -> Sem r (Maybe (T.Text, T.Text))
 pushIncremental conn path since =
   catch @String
