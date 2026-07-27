@@ -103,7 +103,7 @@ import qualified System.FilePath.Glob as Glob
 
 import Storyteller.Core.Types hiding (draft)
 import Storyteller.Core.Storage
-import Storyteller.Core.Branch (BranchOp(..), Branches, runStorage)
+import Storyteller.Core.Branch (BranchOp(..), Branches, Visited, runStorage)
 import qualified Storage.Core as Core
 import qualified Storage.FS as FS
 import qualified Storage.Query as Query
@@ -615,12 +615,14 @@ runBranchOpGit branch action = do
 --   door is worth having: a caller holding 'Branches' says nothing about
 --   git, refs, or scopes, and a different backend discharges the same
 --   effect its own way. Wired once, project-wide, next to
---   'runStoryStorageGit'.
+--   'runStoryStorageGit' -- once total, not once per tag, since 'Branches'
+--   carries no tag of its own (see 'Storyteller.Core.Branch.withBranch',
+--   which relabels the opened scope for its caller).
 runBranchesGit
-  :: forall branch r a
+  :: forall r a
   .  Members '[Git, StoryStorage, Fail] r
-  => Sem (Branches branch ': r) a -> Sem r a
-runBranchesGit = runScopedNew (runBranchOpGit @branch)
+  => Sem (Branches ': r) a -> Sem r a
+runBranchesGit = runScopedNew (runBranchOpGit @Visited)
 
 -- | The general interpreter 'runBranchOpGit' is just one particular
 --   instance of: seed the scope from an explicit object hash rather than

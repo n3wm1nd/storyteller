@@ -20,8 +20,7 @@ import Runix.Logging (Logging)
 import Runix.Random (Random)
 import Runix.Time (Time, Sleep)
 
-import Storyteller.Core.Runtime (Main)
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Storage (StoryStorage)
@@ -54,11 +53,12 @@ type SessionEffects r =
              , PromptStorage
              , ContextStorage
              , BranchResolve
-             , Branches Main
-             -- The context DSL's own door, at its own tag: @charname |
-             -- branch@ steps into a character branch mid-evaluation, which
-             -- is a different thing from a handler opening the branch its
-             -- connection is for (see 'Storyteller.Core.Branch.Visited').
-             , Branches Visited
+             -- One door, whoever walks through it: a handler opening the
+             -- branch its connection is for, and the context DSL stepping
+             -- into a character branch mid-evaluation (@charname | branch@),
+             -- are the same capability -- they differ only in the tag each
+             -- addresses the opened scope by, which 'withBranch' takes as a
+             -- caller's choice rather than the effect's.
+             , Branches
              ] r
   )

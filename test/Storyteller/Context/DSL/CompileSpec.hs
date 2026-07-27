@@ -40,7 +40,7 @@ import Polysemy.Fail (Fail)
 
 import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -86,7 +86,7 @@ seedBranch name files = do
 --   each @where@-bound @go@ can carry an explicit signature (needed:
 --   without one, a plain @go = do ...@ gets a monomorphic inferred type
 --   that can't unify with 'runDslOn's own rank-2 argument).
-type DslR r = Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r
+type DslR r = Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r
 
 runDslOn
   :: forall a

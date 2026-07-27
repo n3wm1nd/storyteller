@@ -1097,7 +1097,7 @@ readMaybeInt t = case reads (T.unpack t) of
 --   type to catch it. Forcing here costs reading that character's own
 --   files, which every real use of this (@context.character@'s @sheet@\/
 --   @full@\/@journalFull@ buckets) goes on to read anyway.
-branchBinding :: forall r. Members '[Branches Visited, Fail] r => Binding r
+branchBinding :: forall r. Members '[Branches, Fail] r => Binding r
 branchBinding = fn1 go
   where
     go vArg = do
@@ -1187,7 +1187,7 @@ summarizedOnceBinding = fn2 (summarizedGo @branch (take 1))
 --   'resolveBranch', then delegates. The one case a Reader-scope switch
 --   genuinely does correspond to a different commit (contrast
 --   'currentScope', which needs no name or lookup at all).
-treeValueOfBranch :: forall r. Members '[Branches Visited, Fail] r => BranchName -> Action r (Value r)
+treeValueOfBranch :: forall r. Members '[Branches, Fail] r => BranchName -> Action r (Value r)
 treeValueOfBranch name =
   fmap forcedValue . Action . withBranch @Visited name . runStoryFSRead @ContextFS @Visited ContextFS . runAction $
     forceValue =<< scopeOfFileSystem @ContextFS
@@ -1324,7 +1324,7 @@ injectShallow isTurnStart lo hi toInsert history
 --   imports "Storyteller.Context.DSL.QQ" for 'dsl'\/'defQuote').
 --   Re-exported from "Storyteller.Context.DSL.Library" for every existing
 --   caller.
-hostLibrary :: forall branch r. Members '[BranchResolve, Branches Visited, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r => Library r
+hostLibrary :: forall branch r. Members '[BranchResolve, Branches, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r => Library r
 hostLibrary = Library
   [ ("readconversation", readConversation @branch)
   , ("embedshallow",     embedShallow)

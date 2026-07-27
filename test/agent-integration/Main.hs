@@ -28,7 +28,6 @@ import Storyteller.Core.ContentEffects (runBranchResolve)
 import Storyteller.Core.LLM.Role (reinterpretProse, reinterpretAgent)
 import Storyteller.Core.Prompt (interpretPromptStorageMap)
 import Storyteller.Core.Context (interpretContextStorageMap)
-import Storyteller.Core.Branch (Visited)
 import Storyteller.Core.Storage (createBranch)
 
 import Agent.Integration.Harness
@@ -187,8 +186,7 @@ main = do
               . runGitMock
               . runStoryStorageGit
               . runBranchResolve
-              . runBranchesGit @Main
-              . runBranchesGit @Visited
+              . runBranchesGit
               $ do
                   _ <- createBranch mainBranch
                   runBranchAndFS @Main mainBranch action

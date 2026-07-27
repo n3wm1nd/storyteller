@@ -26,7 +26,7 @@ import Runix.Logging (Logging)
 import qualified Storage.Ops as Ops
 import Storyteller.Common.Splitter (Splitter, splitAtoms)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..))
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs)
@@ -58,7 +58,7 @@ data ActiveChar
 runRoleplayTurn
   :: forall r
   .  ( LLMs r
-     , Members '[ PromptStorage, ContextStorage, BranchResolve, Git, StoryStorage, BranchOp Main, Branches Visited, Splitter
+     , Members '[ PromptStorage, ContextStorage, BranchResolve, Git, StoryStorage, BranchOp Main, Branches, Splitter
                 , FileSystem (BranchTag Main), FileSystemRead (BranchTag Main)
                 , Logging, Fail] r
      )

@@ -37,7 +37,7 @@ import Storyteller.Context.DSL.AST (Name)
 import Storyteller.Context.DSL.Rendering (RenderedContext(..), ContextItem(..), renderContext)
 import Storyteller.Context.DSL.Value (messageText, listPaths)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Branch (BranchOp, Branches, Visited)
+import Storyteller.Core.Branch (BranchOp, Branches)
 import Storyteller.Core.Context
   (ContextStorage, resolveContext0, resolveContext1, resolveAdhoc, runContextValue, setContextOverride)
 import Storyteller.Core.ContentEffects (BranchResolve)
@@ -64,7 +64,7 @@ fromRendered (Node content entries) =
 --   @correct.group@ call sending the same program would see.
 buildPreview
   :: forall branch r
-  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => FilePath -> Text -> Sem r PreviewNode
 buildPreview path program = do
   setContextOverride "context.writer" program
@@ -94,7 +94,7 @@ buildPreview path program = do
 --   before this parameter existed.
 buildAdhocPreview
   :: forall branch r
-  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Text -> Maybe FilePath -> Sem r PreviewNode
 buildAdhocPreview program mPath = do
   v <- resolveAdhoc @branch program (maybe [] (pure . T.pack) mPath)
@@ -125,7 +125,7 @@ buildAdhocPreview program mPath = do
 --   sensibly pick between them for the same name.
 buildEntries0
   :: forall branch r
-  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Name -> Sem r [Text]
 buildEntries0 name = do
   v <- resolveContext0 @branch name
@@ -133,7 +133,7 @@ buildEntries0 name = do
 
 buildEntries1
   :: forall branch r
-  .  Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  .  Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Name -> FilePath -> Sem r [Text]
 buildEntries1 name path = do
   v <- resolveContext1 @branch name (T.pack path)

@@ -41,7 +41,7 @@ import Polysemy.Fail (Fail)
 --   'Storyteller.Core.Git.runBranchesGit''s business, wired once.
 withBranch
   :: forall branch r a
-  .  Members '[StoryStorage, Error String, Branches branch, Fail] r
+  .  Members '[StoryStorage, Error String, Branches, Fail] r
   => T.Text
   -> Sem ( FileSystemWrite (BranchTag branch)
          : FileSystemRead  (BranchTag branch)

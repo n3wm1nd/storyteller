@@ -332,7 +332,7 @@ referenceImage path assetPath caption = do
 --   branch is an 'Error' ('withBranch' threw it), a missing file is a
 --   'Fail' ('Runix.FileSystem.readFile' failed on it).
 readFileContent
-  :: Members '[StoryStorage, Branches Main, Error String, Fail] r
+  :: Members '[StoryStorage, Branches, Error String, Fail] r
   => T.Text -> FilePath -> Sem r BS.ByteString
 readFileContent branch path =
   getBranch (BranchName branch) >>= \case

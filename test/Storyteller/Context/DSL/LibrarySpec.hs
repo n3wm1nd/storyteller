@@ -34,7 +34,7 @@ import Polysemy.Fail (Fail)
 import qualified Storage.Ops as Ops
 import Storyteller.Core.Context (ContextRow, ContextStorage, buildContextLibrary, getContextOverrides, interpretContextStorageMap, runContextValue)
 import Storyteller.Core.ContentEffects (BranchResolve)
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -67,7 +67,7 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname $ do
   overrides <- getContextOverrides
@@ -82,7 +82,7 @@ runDslOn bname act = runBranchAndFS @Main bname $ do
 runDslOnWith
   :: forall a
   .  Map Name Text -> BranchName
-  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Library (ContextRow Main r) -> Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOnWith overrides bname act =
   runBranchAndFS @Main bname $ interpretContextStorageMap overrides $ do

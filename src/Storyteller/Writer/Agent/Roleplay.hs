@@ -103,7 +103,7 @@ import qualified Runix.Tools as Tools
 import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools (ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition)
 
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
@@ -142,7 +142,7 @@ type Exchange = (Text, Text, Text)
 --   model's job; whether they get asked at all isn't.
 roleplayAgent
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches Visited, BranchResolve, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, BranchResolve, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
   => WorldContext               -- ^ scene context: existing prose, world lore -- rendered into a concrete model's own messages only right before each call actually reaches 'queryLLM' (see 'Storyteller.Writer.Agent.Continuation.proseAgent's own Haddock on why upstream binding is wrong)
   -> [(CharLabel, Character)]  -- ^ every character present
   -> Text                      -- ^ the author's direction; may be empty
@@ -174,7 +174,7 @@ roleplayAgent sceneContext characters prompt = do
 --   seeing in the log even when nothing else is.
 askCharacter
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches Visited, BranchResolve, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, BranchResolve, Git, StoryStorage, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
   => Character -> Text -> WorldContext -> Text -> Sem r Text
 askCharacter (Character (BranchName branchName)) name sceneContext question = do
   info ("ask " <> name <> ": " <> question)

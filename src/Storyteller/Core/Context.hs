@@ -78,7 +78,7 @@ import Runix.Git (Git)
 import qualified Storage.FS as FS
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Runix.FileSystem (FileSystem, FileSystemRead)
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.ContentEffects
   ( Presence, JournalAccess, ConversationAccess, Summarized, BranchResolve
   , runPresence, runJournalAccess, runConversationAccess, runSummarized
@@ -218,7 +218,7 @@ interpretContextStorageFS action = do
 --   actually decides pass/fail per name; a name whose own text doesn't
 --   even parse can't be a candidate for that decision at all.
 spliceOverrides
-  :: forall branch r. Members '[BranchResolve, Branches Visited, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
+  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
   => Map Name Text -> [(Name, Definition)]
 spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEntries
   where
@@ -271,7 +271,7 @@ spliceOverrides overrides = concatMap applyOverride defaultLibraryOrder ++ newEn
 --   every rejected name, so a caller can surface *which* commits didn't
 --   take instead of the previous silent fallback.
 buildContextLibrary
-  :: forall branch r. Members '[BranchResolve, Branches Visited, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
+  :: forall branch r. Members '[BranchResolve, Branches, FileSystem Compile.ContextFS, FileSystemRead Compile.ContextFS, Presence branch, JournalAccess branch, ConversationAccess branch, Summarized branch, Fail] r
   => Map Name Text -> (Library r, [Name])
 buildContextLibrary overrides =
   case compileWith overrides of
@@ -379,7 +379,7 @@ runContextValue act =
 --   override, with no second, parallel "or call this Haskell function
 --   instead" path needed.
 resolveContext0
-  :: forall branch r. Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Name -> Sem r (Value (ContextRow branch r))
 resolveContext0 name = do
   overrides <- getContextOverrides
@@ -389,7 +389,7 @@ resolveContext0 name = do
 -- | 'resolveContext0''s 1-arity counterpart -- what every real
 --   @context.character@\/@context.writer@ call site wants.
 resolveContext1
-  :: forall branch r. Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Name -> Text -> Sem r (Value (ContextRow branch r))
 resolveContext1 name arg = do
   overrides <- getContextOverrides
@@ -413,7 +413,7 @@ resolveContext1 name arg = do
 --   swallowing the error would just mean silently contributing nothing,
 --   worse than telling the caller their program didn't run.
 resolveAdhoc0
-  :: forall branch r. Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Text -> Sem r (Value (ContextRow branch r))
 resolveAdhoc0 src = resolveAdhoc @branch src []
 
@@ -433,7 +433,7 @@ resolveAdhoc0 src = resolveAdhoc @branch src []
 --   declared name to and the resulting failure would otherwise be a
 --   confusing "unknown identifier" from inside the body.
 resolveAdhoc
-  :: forall branch r. Members '[BranchOp branch, Branches Visited, BranchResolve, ContextStorage, Fail] r
+  :: forall branch r. Members '[BranchOp branch, Branches, BranchResolve, ContextStorage, Fail] r
   => Text -> [Text] -> Sem r (Value (ContextRow branch r))
 resolveAdhoc src available = do
   overrides <- getContextOverrides

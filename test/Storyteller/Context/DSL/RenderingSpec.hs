@@ -26,7 +26,7 @@ import Polysemy.Fail (Fail)
 import qualified UniversalLLM as LLM
 
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, runBranchAndFS, runBranchOpGit, runStorage)
 import Storyteller.Core.Storage (StoryStorage, createBranch)
 import Storyteller.Core.Types (BranchName(..))
@@ -51,14 +51,14 @@ seedBranch name files = do
 runDslOn
   :: forall a
   .  BranchName
-  -> (forall r. Members '[BranchOp Main, Branches Visited, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
+  -> (forall r. Members '[BranchOp Main, Branches, BranchResolve, ContextStorage, Fail] r => Action (ContextRow Main r) a)
   -> Sem (StoryStorage : TestEffects '[]) a
 runDslOn bname act = runBranchAndFS @Main bname (runContextValue @Main act)
 
 -- | No overrides are ever staged in this spec -- just the compiled-in
 --   defaults, same as 'buildContextLibrary' would build from an empty
 --   override map.
-emptyLib :: forall r. Members '[Branches Visited, BranchResolve, Fail] r => Library (ContextRow Main r)
+emptyLib :: forall r. Members '[Branches, BranchResolve, Fail] r => Library (ContextRow Main r)
 emptyLib = fst (buildContextLibrary @Main Map.empty)
 
 describeMessage :: LLM.Message m -> (LLM.MessageDirection, Text)

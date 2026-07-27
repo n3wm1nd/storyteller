@@ -26,7 +26,6 @@ import qualified Data.Map.Strict as Map
 import Git.Mock (GitState, emptyGitState, runGitMock)
 import Storyteller.Core.Git (BranchTag, BranchOp, runBranchAndFS, runBranchesGit, runStorage, withStorage, runStoryStorageGit)
 import Storyteller.Core.ContentEffects (runBranchResolve)
-import Storyteller.Core.Branch (Visited)
 import Storyteller.Core.Snapshot (runSnapshotGit)
 import Storyteller.Core.LLM.Role (AgentModel, ProseModel)
 import Storyteller.Core.Context (interpretContextStorageMap)
@@ -447,8 +446,7 @@ spec runner = do
             . stubLLM @ProseModel
             . runStoryStorageGit
             . runBranchResolve
-            . runBranchesGit @Visited
-            . runBranchesGit @Main
+            . runBranchesGit
             . runSnapshotGit
             $ action
 

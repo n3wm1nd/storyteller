@@ -447,7 +447,7 @@ makeSem ''Cast
 --   away.
 runCast
   :: forall castBranch r a
-  .  Members '[StoryStorage, Branches castBranch, Fail] r
+  .  Members '[StoryStorage, Branches, Fail] r
   => Sem (Cast ': r) a -> Sem r a
 runCast = interpret $ \case
   KnownCast -> do

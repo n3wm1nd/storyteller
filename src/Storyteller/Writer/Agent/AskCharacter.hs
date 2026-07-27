@@ -25,7 +25,7 @@ import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import UniversalLLM (Message(..), ModelConfig(..))
 
-import Storyteller.Core.Branch (Branches, Visited)
+import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp)
 import Storyteller.Core.ContentEffects (BranchResolve)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
@@ -49,7 +49,7 @@ import Storyteller.Writer.Agent (CharContextBlock(..), flattenCharSummary)
 --   longer needs to open that branch's filesystem first.
 askCharacterAgent
   :: forall branch r
-  .  (LLMs r, Members '[BranchOp branch, Branches Visited, BranchResolve, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
+  .  (LLMs r, Members '[BranchOp branch, Branches, BranchResolve, Git, StoryStorage, ContextStorage, PromptStorage, Fail, Logging] r)
   => T.Text -> T.Text -> Sem r T.Text
 askCharacterAgent charname question = do
   charVal <- resolveContext1 @branch "context.character" charname
