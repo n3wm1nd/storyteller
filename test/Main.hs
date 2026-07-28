@@ -28,7 +28,6 @@ import qualified Storyteller.LoreSummarizerSpec
 import qualified Storyteller.JournalSummarizerSpec
 import qualified Storyteller.TasksSpec
 import qualified Storyteller.CharGenSpec
-import qualified Storyteller.CharContextSpec
 import qualified Storyteller.PresenceSpec
 import qualified Storyteller.Writer.CharacterAnswerSpec
 import qualified Storyteller.Writer.WriteSpec
@@ -97,7 +96,6 @@ main = hspec $ do
   describe "Storyteller.Writer.Agent.JournalSummarizer" Storyteller.JournalSummarizerSpec.spec
   describe "Storyteller.Writer.Agent.Tasks" Storyteller.TasksSpec.spec
   describe "Storyteller.CharGen"        Storyteller.CharGenSpec.spec
-  describe "Storyteller.Writer.Agent.CharContext" Storyteller.CharContextSpec.spec
   describe "Storyteller.Presence"       Storyteller.PresenceSpec.spec
   describe "Storyteller.Writer.Types.CharacterAnswer" Storyteller.Writer.CharacterAnswerSpec.spec
   describe "Storyteller.Writer.Agent.Write (buildChapterMessages)" Storyteller.Writer.WriteSpec.spec

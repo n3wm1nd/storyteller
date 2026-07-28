@@ -29,12 +29,12 @@ import Storyteller.Core.Branch (Branches)
 import Storyteller.Core.Git (BranchOp, BranchTag, runBranchAndFS, runStorage)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage)
-import Storyteller.Core.Context (ContextStorage)
+import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import Storyteller.Core.Runtime (Main)
 import Storyteller.Core.Storage (StoryStorage)
 import Storyteller.Core.Types (BranchName(..))
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Writer.Agent (CharLabel(..), Prose(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryFull)
 import Storyteller.Writer.Agent.Context (SceneContext(..))
 import Storyteller.Writer.Agent.Roleplay (roleplayAgent, characterReflectAgent)
 import Storyteller.Writer.Branches (branchDisplayName)
@@ -74,9 +74,15 @@ runRoleplayTurn path prompt = do
     characterLabel (Character (BranchName name)) = branchDisplayName name
 
     reflectFor narrative sceneRef character@(Character branch) = do
+      -- Same @context.character@ resolution 'Storyteller.Writer.Agent.
+      -- Roleplay.askCharacter' uses for the identical "their own pre-scene
+      -- context" need -- resolved from @Main@, no need to open the
+      -- character's own branch just to read it.
+      let ident = characterLabel character
+      charVal    <- resolveContext1 @Main "context.character" ident
+      ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
       entry <- runBranchAndFS @ActiveChar branch $ do
-        ownContext <- charSummaryFull @(BranchTag ActiveChar) (const True)
-        entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
+        entry <- characterReflectAgent @(BranchTag ActiveChar) ident ownContext narrative
         void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] "journal.md" entry)
         pure entry
-      pure (CharLabel (characterLabel character), entry)
+      pure (CharLabel ident, entry)

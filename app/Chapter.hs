@@ -40,28 +40,26 @@ import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, fileExists
 import Runix.Logging (Logging)
 
 import Storyteller.Core.Branch (Branches)
-import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runBranchAndFS, runStorage)
+import Storyteller.Core.Runtime (Main, runStoryGit, BranchTag(..), Git, BranchOp, runStorage)
+import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Core.Prompt (PromptStorage, interpretPromptStorageFS)
 import Storyteller.Core.Storage (StoryStorage)
 import qualified Storage.Ops as Ops
-import Storyteller.Core.Types (BranchName(..))
 import Storyteller.Writer.Agent
-  (Prose(..), CharLabel(..), WordCount(..), ExistingContent(..))
-import Storyteller.Writer.Agent.CharContext (charSummaryAgent)
+  (Prose(..), CharLabel(..), WordCount(..), ExistingContent(..), flattenCharSummary)
 import Storyteller.Writer.Agent.Outline (BeatSheet(..), chapterProse, chapterProseByBeat)
+import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Common.Splitter (Splitter, splitAtoms, splitMarkdownAware)
 import Storyteller.Core.CLI.Env (StoryEnv(..), loadEnv, modelConfigs)
 
 import Storyteller.Context.DSL.Value (valueDefault)
 import qualified Storyteller.Context.DSL.Value as DSL
+import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue, interpretContextStorageFS)
 
 import Prelude hiding (readFile)
-
--- | Phantom tag for character branches opened temporarily within the action.
-data Char_
 
 -- | Which prose driver to run.
 data Mode = Whole | ByBeat
@@ -107,10 +105,17 @@ chapterAction mode sheetPath outFile activeChars = do
     True  -> BeatSheet . TE.decodeUtf8 <$> readFile @(BranchTag Main) sheetPath
     False -> fail ("beat sheet not found: " <> sheetPath)
 
+  -- Same @context.character@ resolution production reads through --
+  -- 'Storyteller.Writer.Agent.Write.activeCharacterContext' is the
+  -- reference shape (branch override on @contexts@, then
+  -- 'Storyteller.Context.DSL.Library.contextCharacter' as fallback),
+  -- just driven by @activeChars@'s own explicit list here instead of
+  -- presence ticks.
   charBlocks <- forM activeChars $ \charBranch -> do
-    blocks <- runBranchAndFS @Char_ (BranchName charBranch)
-            $ charSummaryAgent @(BranchTag Char_) (const True)
-    return (CharLabel charBranch, blocks)
+    let ident = branchDisplayName charBranch
+    charVal <- resolveContext1 @Main "context.character" ident
+    summary <- runContextValue @Main (CtxLibrary.characterSummaryOf "journal" charVal)
+    return (CharLabel ident, flattenCharSummary summary)
 
   -- Same @context.writer@ definition every WS-driven prose path reads
   -- through now -- see 'Server.Writer.File.flatMainMessages'. @outFile@'s

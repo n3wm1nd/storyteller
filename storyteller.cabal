@@ -43,7 +43,6 @@ library
                   , Storyteller.Core.LLM.Interceptor
                   , Storyteller.Writer.Agent.Continuation
                   , Storyteller.Writer.Agent.Chat
-                  , Storyteller.Writer.Agent.CharContext
                   , Storyteller.Writer.Agent.AskCharacter
                   , Storyteller.Common.Splitter
                   , Storyteller.Writer.Agent.Tracker
@@ -285,7 +284,6 @@ test-suite storyteller-test
                   , Storyteller.JournalSummarizerSpec
                   , Storyteller.TasksSpec
                   , Storyteller.CharGenSpec
-                  , Storyteller.CharContextSpec
                   , Storyteller.PresenceSpec
                   , Storyteller.Writer.CharacterAnswerSpec
                   , Storyteller.Writer.WriteSpec
