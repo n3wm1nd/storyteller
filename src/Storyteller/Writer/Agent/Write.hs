@@ -120,7 +120,14 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --        This module no longer knows or cares which part of it is "lore"
 --        versus "a chapter" -- that distinction lived here only because
 --        this module used to reassemble the two from separate parameters;
---        now it's exactly one already-ordered stream.
+--        now it's exactly one already-ordered stream. Resolved via
+--        @context.chaptersWithout@\/@context.chaptersCompressedWithout@
+--        (not the bare @context.chapters@\/@context.chaptersCompressed@),
+--        excluding @path@ -- the chapter under active development belongs
+--        in step 3's reconstructed conversation, never here as "earlier"
+--        content; folding it in here would also change on every single
+--        turn (this chapter's own prose keeps growing), breaking the
+--        provider's cache prefix for everything after it in the sequence.
 --     2. This chapter's "identity" block -- every active character's
 --        'csSheet'\/'csContext', under a @"## Character: {name}"@ header
 --        each (see 'flattenCharBlocks') -- mostly stable for the whole
@@ -173,8 +180,8 @@ writeAgent path (Lore lore) (Other other) chaptersMode (PinnedContext pinned) in
   configs          <- getConfig "agent.writer" defaultWriterConfig
 
   chaptersV <- case chaptersMode of
-    FullChapters       -> resolveContext0 @branch "context.chapters"
-    CompressedChapters -> resolveContext0 @branch "context.chaptersCompressed"
+    FullChapters       -> resolveContext1 @branch "context.chaptersWithout" (T.pack path)
+    CompressedChapters -> resolveContext1 @branch "context.chaptersCompressedWithout" (T.pack path)
   styleV <- resolveContext0 @branch "context.style"
   (chapters, style) <- runContextValue @branch $ do
     c <- renderContext chaptersV

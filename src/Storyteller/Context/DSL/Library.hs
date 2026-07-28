@@ -341,6 +341,17 @@ in (x | sortBy):
 contextChaptersCompressed :: forall r. Member Fail r => Value r -> Library r -> Action r (Value r)
 contextChaptersCompressed scope lib = compileDefinition lib contextChaptersCompressedDef scope []
 
+-- | 'contextChaptersCompressedDef', minus one path -- 'contextChaptersWithoutDef''s
+--   own compressed twin, identical reasoning: calls @context.chaptersCompressed@
+--   by name so a project's own override is seen, excludes @path@ via
+--   'exclude', and emits its own banner unconditionally.
+contextChaptersCompressedWithoutDef :: Definition
+contextChaptersCompressedWithoutDef = [defQuote|
+path:
+  "## Chapters written so far (compressed)"
+  in (context.chaptersCompressed | exclude(path)): read **/*
+|]
+
 -- | The catch-all: any file that isn't under @lore@\/@chapters@' own
 --   convention, or @style.md@, or the @chat/**@ scratch convention, or
 --   @path@ (the file a caller is about to write to -- dropped so a query
@@ -820,6 +831,7 @@ defaultLibraryOrder =
   , ("context.chaptersWithout", contextChaptersWithoutDef)  -- needs chapterEntry (above)
   , ("chapterEntryCompressed",     chapterEntryCompressedDef)
   , ("context.chaptersCompressed", contextChaptersCompressedDef)
+  , ("context.chaptersCompressedWithout", contextChaptersCompressedWithoutDef)  -- needs chapterEntryCompressed (above)
   , ("context.other",     contextOtherDef)
   , ("context.style",     contextStyleDef)
   , ("character.blurb",   characterBlurbDef)
