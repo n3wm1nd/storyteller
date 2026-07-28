@@ -60,6 +60,8 @@ module Storyteller.Writer.Agent.Tasks
     -- * The two LLM calls
   , tasksReconcileAgent
   , tasksGenerateAgent
+    -- * Reading
+  , readTasksFile
   ) where
 
 import Control.Monad (when)

@@ -96,6 +96,7 @@ spec :: Spec
 spec = do
   contextWriterSpec
   contextChaptersCompressedSpec
+  contextChaptersCompressedWithoutSpec
   contextWriterLoreOverrideSpec
   contextWriterLoreOverrideWithEntriesSpec
   contextLoreSpec
@@ -441,6 +442,40 @@ contextChaptersCompressedSpec = describe "contextChaptersCompressed (the compres
   where
     go :: forall r. Members '[Branches, BranchOp Main, ContextStorage, Fail] r => Library (ContextRow r) -> Action (ContextRow r) [Message]
     go table = valueDefault =<< (currentScope >>= \s -> CtxLibrary.contextChaptersCompressed s table)
+
+-- | The regression test for the cache-busting bug 'Storyteller.Writer.
+--   Agent.Write.writeAgent' had: it used to resolve the bare
+--   @context.chapters@\/@context.chaptersCompressed@ (no path excluded),
+--   so the chapter currently being written showed up in its own "chapters
+--   written so far" -- content that changes every single turn, breaking
+--   the provider's prompt-cache prefix for the whole message list. Fixed
+--   by resolving @context.chaptersWithout@\/@context.chaptersCompressedWithout@
+--   instead, excluding @path@ -- 'contextWriterSpec''s "excludes the
+--   target path from chapters" case already covers the full variant via
+--   @contextWriter@; this is @context.chaptersCompressedWithout@'s own
+--   proof, since 'writeAgent' reaches it directly rather than through
+--   @contextWriter@.
+contextChaptersCompressedWithoutSpec :: Spec
+contextChaptersCompressedWithoutSpec = describe "context.chaptersCompressedWithout" $
+  it "excludes the target path from the compressed chapter stream" $
+    run (testStack $ do
+      seedBranch "main"
+        [ ("chapters/ch2.md", "chapter two, the long version")
+        , ("chapters/ch3.md", "chapter three, being written right now")
+        ]
+      runDslOn (BranchName "main") go)
+    `shouldBe` Right
+      [ User "## Chapters written so far (compressed)"
+      , User "## Chapter: chapters/ch2.md"
+      , Assistant "chapter two, the long version"
+      ]
+  where
+    go :: forall r. Members '[Branches, BranchOp Main, ContextStorage, Fail] r => Library (ContextRow r) -> Action (ContextRow r) [Message]
+    go table = case lookup "context.chaptersCompressedWithout" (Compile.libraryEntries table) of
+      Just (Binding 1 fn) -> do
+        scope <- Compile.currentScope
+        valueDefault =<< fn [pure (leafValue [User "chapters/ch3.md"])] scope
+      _ -> fail "expected context.chaptersCompressedWithout to be a 1-arity binding"
 
 -- | 'contextLore'\/'contextOther' each on their own -- self-describing
 --   *and* keeping per-file entries, both at once (see 'contextLore''s own

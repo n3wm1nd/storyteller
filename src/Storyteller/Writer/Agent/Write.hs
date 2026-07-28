@@ -82,7 +82,7 @@ import Storage.Tick (FileTick)
 
 import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Core.Branch (BranchOp, Branches, runStorage)
+import Storyteller.Core.Branch (BranchOp, Branches, Visited, runStorage, withBranch)
 import Storyteller.Core.Context (ContextStorage, resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Core.LLM.Role (LLMs)
 import Storyteller.Writer.Agent
@@ -93,6 +93,7 @@ import Storyteller.Writer.Agent.Context (Lore(..), Other(..), PinnedContext(..))
 import Storyteller.Writer.Agent.Chat (historyFromFileTicks)
 import Storyteller.Writer.Agent.MessageWindow (injectAtWindow)
 import Storyteller.Writer.Agent.Continuation (defaultWriterSystemPrompt, defaultWriterConfig)
+import Storyteller.Writer.Agent.Tasks (readTasksFile)
 import Storyteller.Writer.Branches (branchDisplayName)
 import Storyteller.Writer.Presence (activeCharactersFor)
 import Storyteller.Writer.Types (Character(..))
@@ -142,7 +143,19 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --     4. A shallow splice -- pinned\/short-term context plus every active
 --        character's 'csJournal' excerpt -- one message, inserted mid-depth
 --        rather than at either end (see 'Storyteller.Writer.Agent.
---        MessageWindow.injectAtWindow's Haddock).
+--        MessageWindow.injectAtWindow's Haddock), followed by a short
+--        synthetic 'AssistantText' acknowledgment ('spliceAck'). Every
+--        message the splice contributes is 'UserText', and whatever
+--        follows it -- the next reconstructed turn's own 'UserText', or
+--        step 6's instruction if the splice landed at the tail -- is
+--        'UserText' too; without something 'Assistant'-roled between them
+--        a provider has no turn boundary to key on and folds the two into
+--        one blended user turn, silently losing the distinction between
+--        "ambient journal context" and "what was actually asked". The ack
+--        is what step 1's chapters get for free from their own
+--        @> read f@ User\/Assistant pairing (see 'writeAgent's own
+--        Haddock); the splice has no such natural bracket, so this
+--        supplies one.
 --     5. The recent tail of this chapter's conversation -- same source as
 --        step 3, just the turns inside the depth window.
 --     6. The new instruction -- always the last message, literally
@@ -189,6 +202,7 @@ writeAgent path (Lore lore) (Other other) chaptersMode (PinnedContext pinned) in
     pure (c, s)
 
   chars <- activeCharacterContext @branch path
+  tasks <- tasksForActiveCharacters @branch path
 
   currentTicks <- runStorage @branch (Tick.fileTicksOf path)
 
@@ -197,7 +211,7 @@ writeAgent path (Lore lore) (Other other) chaptersMode (PinnedContext pinned) in
       pinnedBlocks      = pinned
       sysText           = T.intercalate "\n\n" (filter (not . T.null) [sysPrompt, styleText, chapterContinuationNote])
       configsWithPrompt = SystemPrompt sysText : configs
-      messages          = buildChapterMessages contextMsgs chars pinnedBlocks currentTicks instruction
+      messages          = buildChapterMessages contextMsgs chars tasks pinnedBlocks currentTicks instruction
 
   info "writeAgent: querying model..."
   response <- queryLLM configsWithPrompt messages
@@ -227,6 +241,31 @@ activeCharacterContext path = do
       summary <- runContextValue @branch (CtxLibrary.characterSummaryOf "journal" charVal)
       pure (CharLabel ident, summary)
 
+-- | Every currently-active character's @tasks.md@, verbatim, as it stands
+--   right now -- reading it straight off the character's own branch via
+--   'withBranch'\/'readTasksFile' rather than through @context.character@\/
+--   @resolveContext1@ like 'activeCharacterContext' does for sheet\/
+--   context\/journal. Deliberately not DSL-routed: unlike a character's
+--   summary (a project can override @context.character@ wholesale) or
+--   even the journal curation inside it (still reached through that same
+--   overridable name, even though the curation logic itself lives in
+--   Haskell), there is no user-influenceable step here at all -- "read
+--   this branch's own tasks.md" has nothing for an override to mean, so
+--   it stays a direct effectful call rather than composing through a
+--   layer whose whole purpose is exposing an override surface.
+tasksForActiveCharacters
+  :: forall branch r
+  .  Members '[BranchOp branch, Branches, Fail] r
+  => FilePath -> Sem r [(CharLabel, DSL.Message)]
+tasksForActiveCharacters path = do
+  active <- activeCharactersFor @branch path
+  fmap concat . mapM tasksOf $ active
+  where
+    tasksOf (Character bname@(BranchName name)) = do
+      let ident = branchDisplayName name
+      mtasks <- withBranch @Visited bname (runStorage @Visited (readTasksFile "tasks.md"))
+      pure [ (CharLabel ident, DSL.User t) | Just t <- [mtasks], not (T.null t) ]
+
 -- | Standing per-turn instruction that used to be templated into every
 --   single instruction message ('buildChapterMessages'\'s old
 --   @"## Instruction..."@ wrapper). It never varies call to call, so it
@@ -249,11 +288,12 @@ buildChapterMessages
   :: forall m
   .  [Message m]                 -- ^ world context -- lore, earlier chapters, everything else, already ordered and already built as real messages -- see 'writeAgent's own Haddock: this used to be two separate parameters (flattened lore text, plus a pre-built earlier-chapters list) reassembled here; now it's whatever assembled the caller's own context (typically @'Storyteller.Context.DSL.Library.contextWriter'@) handed through as one already-ordered stream
   -> [(CharLabel, CharSummary)]  -- ^ every active character's summary
+  -> [(CharLabel, DSL.Message)]  -- ^ every active character's current @tasks.md@, one message each (see 'tasksForActiveCharacters') -- deliberately not part of 'CharSummary': unlike sheet\/context\/journal, reading it has no overridable step for a 'CharSummary'-shaped resolution to sit behind
   -> [DSL.Message]               -- ^ pinned/short-term context
   -> [FileTick]                  -- ^ this chapter's own tick history so far, oldest-first
   -> Instruction
   -> [Message m]
-buildChapterMessages context chars pinned currentTicks (Instruction instr) =
+buildChapterMessages context chars tasks pinned currentTicks (Instruction instr) =
   context ++ chapterStartMsgs ++ conversationMsgs ++ [instructionMsg]
   where
     -- 'flattenCharBlocks' always prepends a header per entry, so a
@@ -270,7 +310,17 @@ buildChapterMessages context chars pinned currentTicks (Instruction instr) =
     chapterStartMsgs = map dslMessageToLLM identityBlocks
 
     journalBlocks = flattenCharBlocks [ (label, csJournal cs) | (label, cs) <- chars, not (null (csJournal cs)) ]
-    spliceMsgs = map dslMessageToLLM (pinned ++ journalBlocks)
+    taskBlocks = flattenCharBlocks [ (label, [msg]) | (label, msg) <- tasks ]
+    -- Journal and tasks are each their own bracketed block, in that
+    -- order, rather than joined into one -- tasks land as their own
+    -- embedded block right after the journal's (see 'tasksForActiveCharacters's
+    -- own Haddock: a separate read, so it gets a separate splice entry),
+    -- not folded into it, so an edit to one doesn't reshape the other's
+    -- boundaries. 'spliceAck' only follows real content -- an empty
+    -- section contributes nothing at all ('injectAtWindow''s own
+    -- empty-input no-op covers the case where everything here is empty).
+    ackIfNonEmpty msgs = if null msgs then [] else map dslMessageToLLM msgs ++ [spliceAck]
+    spliceMsgs = ackIfNonEmpty pinned ++ ackIfNonEmpty journalBlocks ++ ackIfNonEmpty taskBlocks
 
     -- The splice sits at a depth inside the reconstructed conversation
     -- rather than at either end -- see 'Storyteller.Writer.Agent.
@@ -287,6 +337,14 @@ buildChapterMessages context chars pinned currentTicks (Instruction instr) =
 isUserTurn :: Message m -> Bool
 isUserTurn (UserText _) = True
 isUserTurn _            = False
+
+-- | Closes the splice with an 'Assistant'-roled turn so it never sits
+--   directly against the 'UserText' that follows it -- either the next
+--   reconstructed turn (mid-history) or 'instructionMsg' itself (tail) --
+--   see 'buildChapterMessages'\'s own Haddock, step 4, for why an
+--   unbracketed splice would otherwise blend into that message.
+spliceAck :: Message m
+spliceAck = AssistantText "Noted."
 
 -- | The splice's depth window: at least @recentWindowMin@, at most
 --   @recentWindowMax@ turns stay after it. Kept as a real range rather than
