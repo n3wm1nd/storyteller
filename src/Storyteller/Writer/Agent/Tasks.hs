@@ -56,6 +56,7 @@ module Storyteller.Writer.Agent.Tasks
   , suggestTasksWith
   , syncTasks
   , suggestTasks
+  , PendingTasksMaterial(..)
     -- * The two LLM calls
   , tasksReconcileAgent
   , tasksGenerateAgent
@@ -129,14 +130,25 @@ firstHeadingName content = case filter (T.isPrefixOf "# ") (T.lines content) of
 -- first-pass-vs-delta read strategy) those questions happen to be answered
 -- with today.
 
--- | @characterName@, tasks.md's own current content (or @\"\"@), and the
+-- | What a sync\/suggest pass needs to run: the character this @tasks.md@
+--   belongs to, its current content (or @\"\"@ if it doesn't exist yet),
+--   and the new material to fold in. A record, not a bare triple: all
+--   three fields are 'Text' and a positional mixup between 'ptmCurrent'
+--   and 'ptmSourceText' (also always 'Text') would silently typecheck.
+data PendingTasksMaterial = PendingTasksMaterial
+  { ptmCharacterName :: Text
+  , ptmCurrent       :: Text
+  , ptmSourceText    :: Text
+  }
+
+-- | The character name, tasks.md's own current content (or @\"\"@), and the
 --   concatenated new source text restricted to @isSource@ -- or 'Nothing'
 --   if there's genuinely nothing new (or nothing new that @isSource@
 --   accepts) to reconcile.
 pendingSyncMaterial
   :: forall branch r
   .  Members '[BranchOp branch, Logging] r
-  => Text -> (FilePath -> Bool) -> FilePath -> Sem r (Maybe (Text, Text, Text))
+  => Text -> (FilePath -> Bool) -> FilePath -> Sem r (Maybe PendingTasksMaterial)
 pendingSyncMaterial fallbackName isSource tasksPath = do
     (characterName, mOld, lastSynced) <- runStorage @branch $ do
       name <- resolveCharacterName "sheet.md" fallbackName
@@ -154,9 +166,9 @@ pendingSyncMaterial fallbackName isSource tasksPath = do
           then do
             info ("syncTasksWith: " <> T.pack (show (length newTicks)) <> " new tick(s), none matched by the source filter -- skipping")
             return Nothing
-          else return (Just (characterName, fromMaybe "" mOld, sourceText))
+          else return (Just (PendingTasksMaterial characterName (fromMaybe "" mOld) sourceText))
 
--- | @characterName@, tasks.md's own current content (or @\"\"@), and the
+-- | The character name, tasks.md's own current content (or @\"\"@), and the
 --   assembled context material (full unfiltered branch dump on a genuine
 --   first pass, sheet.md plus the delta since on every later one) -- or
 --   'Nothing' if there's nothing to draw on yet, or nothing new since the
@@ -164,7 +176,7 @@ pendingSyncMaterial fallbackName isSource tasksPath = do
 pendingSuggestMaterial
   :: forall branch r
   .  Members '[BranchOp branch, Logging] r
-  => Text -> FilePath -> Sem r (Maybe (Text, Text, Text))
+  => Text -> FilePath -> Sem r (Maybe PendingTasksMaterial)
 pendingSuggestMaterial fallbackName tasksPath = do
     (characterName, mOld, lastSynced, sheetText) <- runStorage @branch $ do
       name  <- resolveCharacterName "sheet.md" fallbackName
@@ -210,7 +222,7 @@ pendingSuggestMaterial fallbackName tasksPath = do
       then do
         info "suggestTasksWith: no new character context to draw on -- skipping"
         return Nothing
-      else return (Just (characterName, fromMaybe "" mOld, sourceText))
+      else return (Just (PendingTasksMaterial characterName (fromMaybe "" mOld) sourceText))
 
 -- | Record one sync\/suggest pass as a single unit: checkpoint whatever
 --   was on @tasksPath@ before (skipped if it didn't exist yet), replace it
@@ -287,26 +299,26 @@ resolveCharacterName sheetPath fallbackName = do
 syncTasksWith
   :: forall branch r
   .  Members '[BranchOp branch, Logging] r
-  => (Text -> Text -> Text -> Sem r Text)
+  => (PendingTasksMaterial -> Sem r Text)
   -> Text -> (FilePath -> Bool) -> FilePath -> Sem r Bool
 syncTasksWith reconcile fallbackName isSource tasksPath = do
   info ("syncTasksWith: checking " <> T.pack tasksPath <> " for new source material...")
   mPending <- pendingSyncMaterial @branch fallbackName isSource tasksPath
   case mPending of
     Nothing -> return False
-    Just (characterName, current, sourceText) -> do
-      newContent <- reconcile characterName current sourceText
+    Just pending -> do
+      newContent <- reconcile pending
       recordTasksPass @branch tasksPath newContent
       info ("syncTasksWith: wrote updated " <> T.pack tasksPath)
       return True
 
 -- | Propose new tasks for this branch's character. The *first* pass ever
 --   (no sync marker yet) reads a full, *unfiltered* dump of every file on
---   the branch -- deliberately not
---   'Storyteller.Writer.Agent.CharContext.charSummaryWithJournal' (the
---   windowed read 'Server.Writer.File.activeCharacterContext' uses for
+--   the branch -- deliberately not the curated @"journal"@ bucket of
+--   'Storyteller.Context.DSL.Library.characterSummaryOf' (the windowed
+--   read 'Storyteller.Writer.Agent.Write.activeCharacterContext' uses for
 --   ambient generation context), even though both read "a character's
---   context": that function's journal windowing also *deduplicates* --
+--   context": that bucket's journal windowing also *deduplicates* --
 --   'Storage.Tick.recentAtomsOf' drops any journal atom whose content is
 --   byte-identical to what it refs, which is every ordinary
 --   'Storyteller.Writer.Agent.Tracker'-copied entry (a verbatim copy of
@@ -348,15 +360,15 @@ syncTasksWith reconcile fallbackName isSource tasksPath = do
 suggestTasksWith
   :: forall branch r
   .  Members '[BranchOp branch, Logging] r
-  => (Text -> Text -> Text -> Sem r Text)
+  => (PendingTasksMaterial -> Sem r Text)
   -> Text -> FilePath -> Sem r Bool
 suggestTasksWith generate fallbackName tasksPath = do
   info ("suggestTasksWith: reading character context for " <> T.pack tasksPath <> "...")
   mPending <- pendingSuggestMaterial @branch fallbackName tasksPath
   case mPending of
     Nothing -> return False
-    Just (characterName, current, sourceText) -> do
-      newContent <- generate characterName current sourceText
+    Just pending -> do
+      newContent <- generate pending
       recordTasksPass @branch tasksPath newContent
       info ("suggestTasksWith: wrote updated " <> T.pack tasksPath)
       return True
@@ -403,11 +415,8 @@ suggestTasks = suggestTasksWith @branch tasksGenerateAgent
 --   "tasks" to fall into without being told otherwise).
 tasksReconcileAgent
   :: (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => Text  -- ^ the character this tasks.md belongs to
-  -> Text  -- ^ current tasks.md content, or empty if it doesn't exist yet
-  -> Text  -- ^ new source material (journal content) since the last sync
-  -> Sem r Text
-tasksReconcileAgent characterName current newMaterial = do
+  => PendingTasksMaterial -> Sem r Text
+tasksReconcileAgent (PendingTasksMaterial characterName current newMaterial) = do
   configsWithPrompt <- getConfigWithPrompt "agent.tasks.sync" defaultSyncSystemPrompt defaultSyncConfig
   Prompt extraInstructions <- getPrompt "agent.tasks.sync.instructions" defaultSyncInstructions
 
@@ -423,11 +432,8 @@ tasksReconcileAgent characterName current newMaterial = do
 --   reasoning exactly.
 tasksGenerateAgent
   :: (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => Text  -- ^ the character these tasks are for
-  -> Text  -- ^ current tasks.md content, or empty if it doesn't exist yet
-  -> Text  -- ^ full character context (sheet, other context files, recent journal)
-  -> Sem r Text
-tasksGenerateAgent characterName current material = do
+  => PendingTasksMaterial -> Sem r Text
+tasksGenerateAgent (PendingTasksMaterial characterName current material) = do
   configsWithPrompt <- getConfigWithPrompt "agent.tasks.suggest" defaultSuggestSystemPrompt defaultSuggestConfig
   Prompt extraInstructions <- getPrompt "agent.tasks.suggest.instructions" defaultSuggestInstructions
 

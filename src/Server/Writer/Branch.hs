@@ -55,10 +55,9 @@ import Storyteller.Writer.Agent.LoreSummarizer (loreSummaryGenerate)
 import Storyteller.Writer.Agent.JournalSummarizer (journalSummarize, journalChunkAgent, currentSheet)
 import Storyteller.Writer.Agent.CharGen (charGenAgent, drawSeed, unSheet, ScenarioTemplate(..), RngSeed(..))
 import Storyteller.Writer.Agent.Summarizer (runSummarizer)
-import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent)
+import Storyteller.Writer.Agent.Tasks (syncTasks, suggestTasksWith, tasksGenerateAgent, PendingTasksMaterial(..))
 import Storyteller.Writer.Agent.Tracker (trackBranch)
 import Storyteller.Context.DSL.Value (valueDefault, messageText)
-import qualified Storyteller.Context.DSL.Render as Render
 import Storyteller.Core.Context (resolveContext0, resolveContext1, runContextValue)
 import Storyteller.Writer.Presence (presentAt)
 import Storyteller.Writer.Types (Character(..))
@@ -415,7 +414,7 @@ suggestTasksOnBranch
   => T.Text -> Maybe BranchName -> FilePath -> Sem r Bool
 suggestTasksOnBranch fallbackName loreSource toFile = do
   lore <- maybe (return "") fetchLore loreSource
-  let generate cName current material = tasksGenerateAgent cName current (foldLore lore material)
+  let generate pending = tasksGenerateAgent pending { ptmSourceText = foldLore lore (ptmSourceText pending) }
   suggestTasksWith @Main generate fallbackName toFile
   where
     foldLore lore material
@@ -432,7 +431,7 @@ suggestTasksOnBranch fallbackName loreSource toFile = do
 --   classification). Each piece's own @valueDefault@ is already the
 --   complete, self-describing thing (see
 --   'Storyteller.Context.DSL.Library.contextLore''s own Haddock) -- read
---   directly, not 'Storyteller.Context.DSL.Render.valueBlocks', which
+--   directly, not 'Storyteller.Context.DSL.Render.valueAllMessages', which
 --   would double-count by also walking the same content again through
 --   'valueEntries'. No real target file to exclude here (@branch@'s own
 --   content, not @toFile@, is what's being read), so @path@ is passed as

@@ -11,8 +11,8 @@
 -- for that one kind (see its own docstring: "swap this out, per kind, once
 -- [a real summarizer] exists").
 --
--- Split the way 'Storyteller.Writer.Agent.Continuation.gatherFileContext'\/
--- 'proseAgent' are: 'unitSummaryCandidates' is the pure read-side (which
+-- Split the same way "Storyteller.Writer.Agent.Continuation" is:
+-- 'unitSummaryCandidates' is the pure read-side (which
 -- files changed), 'chapterSummaryGenerate' is the effectful glue (read
 -- each touched file's *current* content, call the model, assemble the
 -- result), 'chapterSummaryAgent' is the one LLM call.
@@ -195,7 +195,7 @@ defaultSummarizerInstructions :: Prompt
 defaultSummarizerInstructions = ""
 
 -- | Assemble the user-facing prompt directly, same reasoning as
---   'Storyteller.Writer.Agent.Continuation.writerUserMessage': fixed
+--   'Storyteller.Writer.Agent.Continuation.writerTrailingMessage': fixed
 --   section order/headers, no named-placeholder template to typo.
 summarizerUserMessage :: Text -> Text -> Text
 summarizerUserMessage content extraInstructions =

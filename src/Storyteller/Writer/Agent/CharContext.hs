@@ -11,7 +11,7 @@
 -- __Status: unused in production as of 2026-07-20.__ Every real caller
 -- (ambient scene generation, 'Storyteller.Writer.Agent.AskCharacter',
 -- 'Storyteller.Writer.Agent.Roleplay') now reads character context through
--- 'Storyteller.Context.DSL.Library.characterSummary' instead — see that
+-- 'Storyteller.Context.DSL.Library.characterSummaryOf' instead — see that
 -- module's Haddock for the four/five-bucket ('"sheet"'\/'"blurb"'\/
 -- '"full"'\/'"journal"'\/'"journalFull"') shape this module's functions
 -- collapse to. Kept anyway (2026-07-23): 'readCharFiles'\/'renderCharContext'\/
@@ -29,7 +29,7 @@
 -- its own former Haddock), was removed instead of converted: nothing calls
 -- it in production either, and the tests that did have been rewired to
 -- build a 'Storyteller.Writer.Agent.CharSummary' the same way
--- 'Server.Writer.File.activeCharacterContext' now does (@resolveContext1@ +
+-- 'Storyteller.Writer.Agent.Write.activeCharacterContext' now does (@resolveContext1@ +
 -- 'Storyteller.Context.DSL.Library.contextCharacter' +
 -- 'Storyteller.Context.DSL.Library.characterSummaryOf').
 --

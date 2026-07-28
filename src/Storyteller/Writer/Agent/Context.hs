@@ -1,29 +1,33 @@
--- | The newtype-wrapped 'Storyteller.Context.DSL.Rendering.Context'
---   shapes an agent actually takes as a parameter, one per distinct
---   purpose -- kept in their own module (not
---   "Storyteller.Writer.Agent", the base shared-vocabulary module)
---   because "Storyteller.Context.DSL.Rendering" transitively imports
+-- | The context an agent takes as a /parameter/, one newtype per distinct
+--   purpose -- kept in their own module (not "Storyteller.Writer.Agent",
+--   the base shared-vocabulary module) because
+--   "Storyteller.Context.DSL.Rendering" transitively imports
 --   "Storyteller.Context.DSL.Render", which already imports
---   "Storyteller.Writer.Agent" for 'Storyteller.Writer.Agent.ContextBlock'\/
---   'Storyteller.Writer.Agent.renderEmbeddedFile" -- putting these
+--   "Storyteller.Writer.Agent" for
+--   'Storyteller.Writer.Agent.renderEmbeddedFile' -- putting these
 --   newtypes there too would be a module cycle.
 --
---   Each wraps the identical underlying 'Storyteller.Context.DSL.Rendering.Context'
---   tree; the newtype is purely a label distinguishing "world context" from
---   "style" from "pinned/short-term context" at a call site and in a type
---   signature, the same reason 'Storyteller.Writer.Agent.CharLabel' wraps
---   plain 'Data.Text.Text'. An agent receiving one of these renders it
---   itself, at the point it builds its own LLM call
---   ('Storyteller.Context.DSL.Rendering.renderMessages'\/
---   'Storyteller.Context.DSL.Rendering.renderText'), rather than receiving
---   already-flattened @['UniversalLLM.Message']@\/'Storyteller.Writer.Agent.ContextBlock's
---   the way it used to -- see "Storyteller.Writer.Agent.Write"'s own
---   Haddock for why that move matters (rendering now happens where the
---   model and budget are actually known, not upstream in
---   "Server.Writer.File").
+--   What lands here versus what an agent resolves for itself is one line:
+--   anything a /user/ could influence for this particular call is a
+--   parameter; anything the agent's own function determines is the
+--   agent's to read. So @context.lore@ and @context.other@ arrive
+--   pre-resolved ('Lore', 'Other') because /which/ lore is relevant is a
+--   judgement only a caller can make, while
+--   'Storyteller.Writer.Agent.Write.writeAgent' reads earlier chapters,
+--   style, who is present and their own context directly from @path@ and
+--   the branch -- needing those at all is what @writeAgent@ /is/. That
+--   those definitions are themselves overrideable doesn't move them: the
+--   user is customising how the slot renders, not deciding that the agent
+--   wants it.
+--
+--   Two agents look inconsistent on characters and aren't.
+--   'Storyteller.Writer.Agent.Roleplay.roleplayAgent' resolves
+--   @context.character@ itself, because presence ticks decide who is in
+--   the scene; 'Storyteller.Writer.Agent.AskCharacter' takes a
+--   'CharacterContext' parameter, because there the user picked the
+--   character.
 module Storyteller.Writer.Agent.Context
   ( SceneContext(..)
-  , StyleContext(..)
   , PinnedContext(..)
   , CharacterContext(..)
   , ProgramContext(..)
@@ -63,8 +67,6 @@ import Storyteller.Context.DSL.Value (Message)
 --   'Lore''s own Haddock warns about -- bundling caller-supplied lore
 --   together with agent-derived material into one anonymous blob.
 newtype SceneContext = SceneContext [Message]
-
-newtype StyleContext = StyleContext [Message]
 
 newtype PinnedContext = PinnedContext [Message]
 

@@ -18,9 +18,9 @@
 --   build a real alternating-turn sequence (a header, then its content
 --   re-tagged @Assistant@ via the widened @>@ -- see
 --   'Storyteller.Context.DSL.AST.Expr''s own haddock on 'EAssistant') that
---   survives translation intact; 'valueBlocks'\/'valueCharBlocks' flatten
---   the same walk into plain 'ContextBlock's\/'CharContextBlock's for a
---   slot where role isn't meaningful.
+--   survives translation intact. There is no role-discarding variant of
+--   that walk any more -- see 'valueAllMessages' for what replaced the
+--   two there used to be, and why.
 --
 --   A bare 'FileRead' -- role deliberately left undecided by the DSL
 --   itself (see 'Storyteller.Context.DSL.Value.Message's own haddock) --

@@ -39,9 +39,9 @@ data JournalCuration = JournalCuration
 
 -- | @path@'s curated recent entries, oldest first, as their own message
 --   text. Callers wrap this into whatever presentation shape they need (a
---   DSL 'Storyteller.Context.DSL.Value.Message', a
---   'Storyteller.Writer.Agent.CharContext.CharContextBlock', ...) with
---   their own framing header, rather than this committing to one.
+--   DSL 'Storyteller.Context.DSL.Value.Message', a bucket of a
+--   'Storyteller.Writer.Agent.CharSummary', ...) with their own framing
+--   header, rather than this committing to one.
 journalWindow
   :: forall branch r
   .  Member (BranchOp branch) r

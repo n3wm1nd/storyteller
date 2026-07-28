@@ -106,7 +106,6 @@ import Storyteller.Core.Branch (Branches, withBranch)
 import Storyteller.Core.Git (BranchOp, BranchTag, runStoryFSGit)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
-import Storyteller.Context.DSL.Rendering (renderMessages)
 import Storyteller.Core.LLM.Interceptor (withToolCallBudget)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel, ProseModel)
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getConfigWithPrompt, getPrompt)
@@ -132,8 +131,14 @@ data RoleplayChar
 -- ---------------------------------------------------------------------------
 
 -- | One question, one answer, per present character -- a label for display
---   and prompt-building.
-type Exchange = (Text, Text, Text)
+--   and prompt-building. A record, not a triple: 'exQuestion' and
+--   'exAnswer' are both free-form 'Text' and a positional mixup between
+--   them would silently typecheck.
+data Exchange = Exchange
+  { exLabel    :: Text
+  , exQuestion :: Text
+  , exAnswer   :: Text
+  }
 
 -- | Direct one beat of a scene. See the module Haddock: this is a plain
 --   iteration over @characters@, not a tool the model chooses to call, so
@@ -152,7 +157,7 @@ roleplayAgent sceneContext characters prompt = do
   exchanges <- forM characters $ \(CharLabel label, character) -> do
     question <- questionForCharacterAgent sceneContext roster label prompt
     answer   <- askCharacter character label sceneContext question
-    pure (label, question, answer)
+    pure (Exchange label question answer)
   Prose <$> composeSceneAgent sceneContext exchanges prompt
 
 -- | Read @character@'s own full context via the Context DSL --
@@ -260,7 +265,7 @@ renderComposeTrailing exchanges prompt =
     direction
       | T.null (T.strip prompt) = "No specific direction was given -- continue the scene naturally from here."
       | otherwise                = "Direction from the author: " <> prompt
-    renderExchange (label, question, answer) =
+    renderExchange (Exchange label question answer) =
       "Asked " <> label <> ": " <> question <> "\n\n" <> label <> "'s stated intent (their planned "
       <> "action, mood, and a few lines they might say -- material to write from, not a script to "
       <> "copy verbatim):\n\n" <> answer
@@ -376,7 +381,8 @@ characterIntentAgent name ownContext sceneContext question = do
 --   right alongside a deliberate overwrite attempt if the filter reached
 --   them too.
 --
---   Lore access ('loreGlobTool'\/'loreReadFileTool') is deliberately the
+--   Lore access (the @lore_glob@\/@lore_read_file@ entries in
+--   'characterTools') is deliberately the
 --   read-only counterpart: shared world lore is common ground truth, not
 --   something any one character privately misremembers -- see the design
 --   note this settled on. It has its own tool names (@lore_glob@\/

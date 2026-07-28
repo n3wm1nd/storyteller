@@ -27,7 +27,7 @@ import Polysemy (embed)
 import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
-import Storyteller.Writer.Agent.Tasks (tasksReconcileAgent)
+import Storyteller.Writer.Agent.Tasks (tasksReconcileAgent, PendingTasksMaterial(..))
 
 import Agent.Integration.Harness (Runner, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
@@ -71,7 +71,7 @@ spec
 spec runner = describe "tasksReconcileAgent (real LLM, cached)" $
   it "drops a task the new material resolves while leaving unrelated tasks untouched" $
     runExpect @judgeModel runner $ do
-      updated <- tasksReconcileAgent "Lena" currentTasks newMaterial
+      updated <- tasksReconcileAgent (PendingTasksMaterial "Lena" currentTasks newMaterial)
       info ("tasksReconcileAgent output:\n" <> updated)
       embed $ updated `shouldNotBe` ""
 

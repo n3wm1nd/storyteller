@@ -80,7 +80,7 @@ import UniversalLLM (Message(..), ModelConfig(..))
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick)
 
-import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText, contextAllMessages)
+import Storyteller.Context.DSL.Rendering (renderContext, renderMessages, renderText)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.Branch (BranchOp, Branches, runStorage)
 import Storyteller.Core.Context (ContextStorage, resolveContext0, resolveContext1, runContextValue)
@@ -121,23 +121,23 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --        versus "a chapter" -- that distinction lived here only because
 --        this module used to reassemble the two from separate parameters;
 --        now it's exactly one already-ordered stream.
---     3. This chapter's "identity" block -- every active character's
+--     2. This chapter's "identity" block -- every active character's
 --        'csSheet'\/'csContext', under a @"## Character: {name}"@ header
 --        each (see 'flattenCharBlocks') -- mostly stable for the whole
 --        chapter, so it sits once near its start.
---     4. This chapter's own conversation so far, reconstructed via
+--     3. This chapter's own conversation so far, reconstructed via
 --        'historyFromFileTicks' -- alternating 'UserText' (what was
 --        asked) and 'AssistantText' (what got written), oldest first, split
 --        at a depth between 'recentWindowMin' and 'recentWindowMax' turns
 --        from the end: the older side sits here, before the splice; the
---        recent side sits after it (see step 5a). All of it, on one side or
+--        recent side sits after it (see step 5). All of it, on one side or
 --        the other, when the splice has nothing to say.
---     5. A shallow splice -- pinned\/short-term context plus every active
+--     4. A shallow splice -- pinned\/short-term context plus every active
 --        character's 'csJournal' excerpt -- one message, inserted mid-depth
 --        rather than at either end (see 'Storyteller.Writer.Agent.
 --        MessageWindow.injectAtWindow's Haddock).
---     5a. The recent tail of this chapter's conversation -- same source as
---        step 4, just the turns inside the depth window.
+--     5. The recent tail of this chapter's conversation -- same source as
+--        step 3, just the turns inside the depth window.
 --     6. The new instruction -- always the last message, literally
 --        @UserText instr@ now (no per-message boilerplate -- see
 --        'chapterContinuationNote').

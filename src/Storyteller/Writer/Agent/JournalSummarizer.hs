@@ -16,7 +16,7 @@
 -- @log_N@-depth tree of summaries, not two hardcoded levels).
 --
 -- __None of that is in this module.__ It is
--- 'Storyteller.Writer.Agent.Summarizer.TieredSummary', and the whole of
+-- 'Storyteller.Writer.Agent.Summarizer.tieredPass', and the whole of
 -- what this module supplies is the reduce step: what @journal.md@ is, how
 -- big a group should be, and a prompt for turning ten entries into one
 -- paragraph. Where a group boundary falls, where each 'Summary' tick
@@ -51,7 +51,7 @@ import Prelude hiding (readFile)
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
-import Polysemy (Member, Members, Sem)
+import Polysemy (Members, Sem)
 import Polysemy.Fail (Fail)
 import Runix.FileSystem (FileSystem, FileSystemRead, listAllFiles, readFile)
 import Runix.LLM (queryLLM)
@@ -80,7 +80,7 @@ journalKind = "journal"
 -- | Compress @journal.md@ in tiers, using @compress@ to reduce each full
 --   group. Everything else -- where a group boundary falls, where each
 --   tick lands, how one tier's output becomes the next tier's input --
---   belongs to 'Storyteller.Writer.Agent.Summarizer.TieredSummary's
+--   belongs to 'Storyteller.Writer.Agent.Summarizer.tieredPass's
 --   interpreter, not here. 'True' if this call wrote anything at tier 0.
 --
 --   Takes the compression step as a parameter, same "no agent's real
@@ -104,7 +104,8 @@ journalSummarize =
 --   where an automatic pass would have; the only difference is *when* a
 --   chunk boundary closes.
 --
---   Deeper tiers are never forced (see 'TieredSummary'), so a manual
+--   Deeper tiers are never forced (see
+--   'Storyteller.Writer.Agent.Summarizer.tieredPass'), so a manual
 --   tier-0 entry contributes one more ordinary item to tier 1's count and
 --   nothing more.
 journalCreateManual

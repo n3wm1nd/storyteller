@@ -37,7 +37,7 @@ import Polysemy (embed)
 import UniversalLLM (HasTools, ProviderOf, SupportsSystemPrompt)
 
 import Runix.Logging (info)
-import Storyteller.Writer.Agent.Tasks (tasksGenerateAgent)
+import Storyteller.Writer.Agent.Tasks (tasksGenerateAgent, PendingTasksMaterial(..))
 
 import Agent.Integration.Harness (Runner, runExpect)
 import Agent.Integration.Judge (Verdict(..), judge)
@@ -101,7 +101,7 @@ spec
 spec runner = describe "tasksGenerateAgent (real LLM, cached)" $
   it "proposes tasks concretely grounded in a real journal, not generic mood" $
     runExpect @judgeModel runner $ do
-      content <- tasksGenerateAgent "Doran" "" doranJournal
+      content <- tasksGenerateAgent (PendingTasksMaterial "Doran" "" doranJournal)
       info ("tasksGenerateAgent output:\n" <> content)
       embed $ do
         content `shouldNotBe` ""

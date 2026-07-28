@@ -339,8 +339,8 @@ data TierAcc = TierAcc
 --   suffix, no @level@ parameter anywhere -- because a tier /is/ just this
 --   same function applied to a chain one level deeper, and "how far up" a
 --   tick sits is exactly how many alternate chains you would open to reach
---   it ('Storyteller.Common.Summary.expandSummary' discovers that by
---   walking; nothing declares it).
+--   it -- discovered by walking from a 'Summary' tick's own
+--   'Storyteller.Common.Summary.summaryAltHead'; nothing declares it.
 --
 tieredPass
   :: forall source r

@@ -59,8 +59,8 @@ runOne action =
 -- | A stub reconcile\/generate step: records every @(characterName,
 --   current, material)@ call it received, and returns whatever @respond@
 --   says.
-recordingAgent :: Member (Output (Text, Text, Text)) r => Text -> Text -> Text -> Text -> Sem r Text
-recordingAgent respond characterName current material = do
+recordingAgent :: Member (Output (Text, Text, Text)) r => Text -> PendingTasksMaterial -> Sem r Text
+recordingAgent respond (PendingTasksMaterial characterName current material) = do
   output (characterName, current, material)
   return respond
 
