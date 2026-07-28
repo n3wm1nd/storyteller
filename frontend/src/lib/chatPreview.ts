@@ -7,7 +7,7 @@
 import type { ChatPreviewEvent } from "./ws";
 import { getServerCache, mirrorServerEvent } from "./serverCacheStore";
 import { useUI } from "./uiStore";
-import { atRebase } from "./wsHelpers";
+import { atRebase, newCommandId } from "./wsHelpers";
 
 // Shows the preview strip (as a "Generating…" placeholder) a beat after a
 // chat.prompt is sent, in case the real chat.preview.start takes a while to
@@ -92,7 +92,7 @@ function flushPendingSubmit() {
   useUI.setState({ pendingSubmit: null });
   const fc = getServerCache().openFiles[pending.path];
   if (!fc) return;
-  const cmd = { ...pending.cmd, id: crypto.randomUUID() };
+  const cmd = { ...pending.cmd, id: newCommandId() };
   mirrorServerEvent({ previewCommandId: cmd.id });
   fc.conn.send(atRebase(useUI.getState().rebaseMarker, fc.ticks, cmd, useUI.getState().journalMarkers));
 }

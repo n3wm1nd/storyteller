@@ -5,6 +5,20 @@
 
 import type { WireTick, Update, ChatPreviewEvent, FileCommand } from "./ws";
 
+// crypto.randomUUID only exists in a "secure context" (HTTPS, or localhost)
+// — accessed over plain HTTP from another host's IP/hostname it's simply
+// undefined, so a command built for a fresh 'id' needs a fallback.
+// crypto.getRandomValues has no such restriction, so a hand-rolled v4 UUID
+// built from it works everywhere randomUUID does not.
+export function newCommandId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function applyUpdate(ticks: Record<string, WireTick>, upd: Update): Record<string, WireTick> {
   const next = { ...ticks };
   for (const t of upd.ticks) next[t.tickId] = t;

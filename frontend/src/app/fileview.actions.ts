@@ -9,7 +9,7 @@ import { fileConn, branchConn, saveRawFileAsNew } from "@/lib/ws";
 import type { FileCommand, ContextItem } from "@/lib/ws";
 import { getServerCache, mirrorServerEvent } from "@/lib/serverCacheStore";
 import { useUI, dropFromSelection, setConnStatus, removeConn, bumpActivity, setError } from "@/lib/uiStore";
-import { applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase } from "@/lib/wsHelpers";
+import { applyFileUpdate, isChatPreviewEvent, remapTickId, remapSet, atRebase, newCommandId } from "@/lib/wsHelpers";
 import { clearPreviewDelayTimer, schedulePreviewPlaceholder, handleChatPreview } from "@/lib/chatPreview";
 import { tickChain, promptGroupForAtom } from "@/lib/utils";
 import { resolveMentions } from "@/lib/mentions";
@@ -279,7 +279,7 @@ function sendChatCommand(path: string, buildCmd: (flowTid?: string) => FileComma
   if (getServerCache().preview !== null) {
     useUI.setState({ pendingSubmit: { path, cmd: buildCmd(fc.head ?? undefined) } });
   } else {
-    const cmd = { ...buildCmd(undefined), id: crypto.randomUUID() };
+    const cmd = { ...buildCmd(undefined), id: newCommandId() };
     mirrorServerEvent({ previewCommandId: cmd.id });
     schedulePreviewPlaceholder();
     sendFileCommand(path, cmd);
