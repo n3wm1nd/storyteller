@@ -534,10 +534,20 @@ characterOpeningMessages name ownContext (SceneContext ctx) lore question =
     -- rest of this function's static framing is -- so any role structure
     -- @sceneContext@ itself carries (@context.main@'s own alternating-turn
     -- "chapters" bucket, say) survives into this call too.
+    --
+    -- Headed and worded deliberately differently from the three sections
+    -- above ("## CURRENT SCENE", not "## The scene so far" as a same-tier
+    -- peer of "## My own journal so far") -- everything above this point
+    -- is durable material framed as the character's own settled knowledge
+    -- (see 'labelledPair'\'s 'asOwnKnowledge'); this is the one section
+    -- that is not that, and the header says so explicitly rather than
+    -- relying on a model to infer a difference in *kind* from a same-shaped
+    -- heading. See 'characterIdentityNote' for the matching claim on the
+    -- other side of this boundary.
     sceneMessages = map dslMessageToLLM ctx
     sceneMsgs
       | null sceneMessages = []
-      | otherwise           = UserText "### The scene so far" : sceneMessages
+      | otherwise           = UserText "## CURRENT SCENE -- what is happening right now, not something you already knew" : sceneMessages
     asked = "You're being asked: " <> question
 
 -- | One labelled section as a @('UserText', 'AssistantText')@ pair -- see
@@ -586,11 +596,18 @@ renderLoreList paths = T.unlines
 characterIdentityNote :: Text -> Text
 characterIdentityNote name = T.unlines
   [ "You are answering, in character, as " <> name <> " -- a fictional character in this story, not"
-  , "its narrator or author. Everything above this line (once shown) is what " <> name <> " actually"
-  , "knows: their own character sheet, their own whole journal, and anything else on their own"
-  , "branch, shown to you in full already -- there's no need to go looking for any of it yourself."
-  , "This, plus shared world lore (see below), is the only source of what's going on -- there is no"
-  , "other ambient context here."
+  , "its narrator or author. The sections below headed \"## Your character sheet\", \"## What else I"
+  , "know\" (which includes what shared world lore is available), and \"## My own journal so far\" are"
+  , "everything " <> name <> " actually knows going into this moment -- their own character sheet,"
+  , "their own whole journal, and anything else on their own branch, shown to you in full already --"
+  , "there's no need to go looking for any of it yourself."
+  , ""
+  , "A further section headed \"## CURRENT SCENE\" (if present) is different in kind from all of"
+  , "those: it is what is actually happening right now, not something " <> name <> " already knew"
+  , "beforehand -- ground your answer in it the same way a person grounds their next action in what"
+  , "they're currently seeing and hearing, not in their own memories alone. Beyond your own branch,"
+  , "shared lore, and that current-scene section, you know nothing about the current situation -- if"
+  , "you don't already know a present character from your own branch, you don't know them."
   , ""
   , "Your own branch is yours to maintain: write_file/edit_file create or update any file on it --"
   , "keeping a separate note file per character you know (e.g. characters/owen.md, for what you know"
@@ -606,13 +623,10 @@ characterIdentityNote name = T.unlines
   , "help. Neither is a record of what actually happens in this scene; that gets written up separately"
   , "afterward, from everyone's stated intentions together, not by you."
   , ""
-  , "lore_glob/lore_read_file give you read-only access to the story's shared world lore -- common"
-  , "ground truth, not yours to change. The list of what's available is already given below; call"
-  , "lore_read_file directly on whichever path is actually relevant rather than lore_glob first to"
-  , "look for it (lore_glob is still there if you need to search for something not in that list)."
-  , "Beyond your own branch, this lore, and what's given directly below, you know nothing about the"
-  , "current situation -- if you don't already know a present character from your own branch, you"
-  , "don't know them."
+  , "lore_glob/lore_read_file give you read-only access to the story's shared world lore -- the list"
+  , "of what's available is already given under \"## What else I know\" above; call lore_read_file"
+  , "directly on whichever path is actually relevant rather than lore_glob first to look for it"
+  , "(lore_glob is still there if you need to search for something not in that list)."
   , ""
   , "Ground everything below in only what " <> name <> " could plausibly know or perceive right now"
   , "-- never anything only the reader or another character would know."
@@ -718,7 +732,12 @@ reflectOpeningMessages name ownContext narrative lore closing =
     identity = "This journal entry is " <> name <> "'s own private account -- write strictly from "
              <> name <> "'s own point of view, using their context above (if any) as what they"
              <> " already knew going in."
-    sceneBlock = "What just happened in the scene:\n\n" <> narrative
+    -- Same heading style and reasoning as 'characterOpeningMessages'\'s own
+    -- "## CURRENT SCENE" -- not a same-tier peer of the sheet/context/
+    -- journal sections above it, so it says so in its own header rather
+    -- than relying on the model to infer the difference from a plain
+    -- "what just happened" line with no heading at all.
+    sceneBlock = "## WHAT JUST HAPPENED -- the finished scene, not prior knowledge\n\n" <> narrative
 
 defaultReflectSystemPrompt :: Prompt
 defaultReflectSystemPrompt = Prompt $ T.unlines

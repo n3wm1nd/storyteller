@@ -290,6 +290,7 @@ test-suite storyteller-test
                   , Storyteller.Writer.RoleplaySpec
                   , Storyteller.Writer.MessageWindowSpec
                   , Storyteller.Writer.ReplaceToolSpec
+                  , Storyteller.Writer.ConversationSpec
                   , Storyteller.UndoSpec
                   , Storyteller.ChatSpec
                   , Storyteller.LibrarySpec

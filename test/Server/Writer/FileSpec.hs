@@ -229,6 +229,50 @@ spec runner = do
         Left err -> expectationFailure err
         Right typed -> fromTick @Prompt typed `shouldBe` Just (Prompt "chat/f.md" "v2")
 
+    -- Regression for 'chatConverseSwipe''s own history-boundary bug: it
+    -- finds "everything before the prompt" by 'span'-ing 'fileTicksOf'
+    -- against @promptTid@ verbatim (see its Haddock). A *second* swipe in a
+    -- row hands back the id from before the *first* swipe's own
+    -- 'editChatPrompt' rebase -- the client only learns the rebased id once
+    -- the broadcasted update round-trips, and a fast second click beats it.
+    -- Against a stale id, 'span's predicate ("not yet this id") is true for
+    -- every tick (nothing in the current chain has that id any more), so
+    -- @before@ becomes the *entire* history instead of stopping at the
+    -- prompt -- burying the just-submitted prompt in duplicated history
+    -- instead of leaving it as the trailing message, which is what "the
+    -- second regenerate swallows the prompt" actually was. This pins the
+    -- fix: resolving @promptTid@ first (same discipline as
+    -- 'Storyteller.Common.Swipe.swapAtomContent') makes the boundary land
+    -- on the prompt's *current* position no matter how many prior swipes
+    -- rebased it out from under the id the caller is holding.
+    it "the span boundary still stops at the prompt after an earlier swipe rebased its id" $ do
+      let result = withFile_ runner (BranchName "b") $ do
+            -- 'lifetimeTicksOf's walk gates on tree presence: a 'Prompt' is
+            -- a 'NonAtom' and never touches the tree itself, so the file
+            -- must already be present (a real prior atom, exactly like a
+            -- genuine chat's first exchange leaves behind) for the walk to
+            -- continue back past the prompt at all.
+            _ <- runStorage @Main (Ops.append "chat/f.md" "reply zero")
+            h <- runStorage @Main (Tick.storeAs (Prompt "chat/f.md" "v0"))
+            let staleTid = TickId (Core.unObjectHash h)
+            _ <- runStorage @Main (Ops.append "chat/f.md" "reply one")
+            editChatPrompt staleTid "v1"  -- first swipe's rebase; staleTid is now stale
+            resolved <- runStorage @Main (Core.resolveId h)
+            ticksUnresolved <- runStorage @Main (Tick.fileTicksOf "chat/f.md")
+            let (beforeStale, _) = span ((/= unTickId staleTid) . Tick.ftTickId) ticksUnresolved
+                (beforeResolved, _) = span ((/= Core.unObjectHash resolved) . Tick.ftTickId) ticksUnresolved
+            return (length beforeStale, length beforeResolved, length ticksUnresolved)
+      case result of
+        Left err -> expectationFailure err
+        Right (staleCount, resolvedCount, total) -> do
+          -- The stale id matches nothing in the current chain, so the
+          -- unresolved span degenerates to "everything" -- exactly the bug.
+          staleCount `shouldBe` total
+          -- Resolving first finds the prompt's current position (right
+          -- after the seed reply), so the boundary correctly stops there
+          -- instead of swallowing the prompt into "everything".
+          resolvedCount `shouldSatisfy` (< total)
+
   describe "correcting an instruction group (delete group, regenerate at its captured parent)" $ do
 
     -- Pins the assumption 'Server.Writer.File.correctGroup' depends on:

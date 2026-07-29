@@ -46,3 +46,23 @@ spec = describe "turnsFromFileTicks" $ do
   it "never trims a user (prompt) turn -- only assistant turns carry split artifacts" $
     turnsFromFileTicks [promptTick "Write the next scene.\n\n"]
       `shouldBe` [UserTurn "Write the next scene.\n\n"]
+
+  it "substitutes a placeholder for an assistant turn whose content is empty" $
+    turnsFromFileTicks [atomTick ""]
+      `shouldBe` [AssistantTurn "(No text was written for this turn.)"]
+
+  it "substitutes a placeholder for an assistant turn that is all newlines" $
+    turnsFromFileTicks [atomTick "\n\n\n"]
+      `shouldBe` [AssistantTurn "(No text was written for this turn.)"]
+
+  it "substitutes a placeholder for an assistant turn that is only whitespace" $
+    turnsFromFileTicks [atomTick "   \n  \n"]
+      `shouldBe` [AssistantTurn "(No text was written for this turn.)"]
+
+  it "keeps a blank assistant turn as a real role boundary between two prompts" $
+    turnsFromFileTicks [promptTick "Write the next scene.", atomTick "", promptTick "Try again."]
+      `shouldBe`
+        [ UserTurn "Write the next scene."
+        , AssistantTurn "(No text was written for this turn.)"
+        , UserTurn "Try again."
+        ]

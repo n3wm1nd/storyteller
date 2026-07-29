@@ -54,10 +54,19 @@
 -- Under the hood this is @UniversalLLM@'s tool-calling support (see
 -- @TOOLCALLS.md@ in universal-llm): the tool given to the model is a plain
 -- function wrapped with 'mkToolWithMeta'.
+--
+-- 'reworkWholeFile' is the free-roam twin, for when the caller has no
+-- target atoms at all: rather than a per-atom decision loop, it hands the
+-- model 'Runix.Tools.editFile' directly against the real working-tree
+-- file and lets it call that (an agentic loop, same shape as
+-- @Storyteller.Writer.Agent.Chat.chatAgent@) as many times as it finds
+-- warranted, reconciling the result back into the chain with one
+-- 'Storage.Ops.commitFiles' once it's done.
 module Storyteller.Writer.Agent.ReplaceTool
   ( ReplaceProposal(..)
   , reworkAtom
   , reworkAtomsAt
+  , reworkWholeFile
   , replaceOnce
   ) where
 
@@ -65,12 +74,15 @@ import Autodocodec (HasCodec(..), dimapCodec, object, requiredField, parseJSONVi
 import Data.Aeson.Types (parseEither)
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Polysemy
 import Polysemy.Fail (Fail)
+import Runix.FileSystem (FileSystemRead, FileSystemWrite, readFile)
 import Runix.LLM (queryLLM)
 import Runix.LLM.ToolInstances ()
-import Runix.Logging (Logging, info)
-import UniversalLLM (Message(..), ModelConfig(..))
+import Runix.Logging (Logging, info, warning)
+import qualified Runix.Tools as Tools
+import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools
   ( ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition
   , executeToolCallFromList, ToolResult(..)
@@ -79,12 +91,15 @@ import UniversalLLM.Tools
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
 import Storyteller.Writer.Agent (Instruction(..))
 import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfigWithPrompt)
-import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
+import qualified Storage.Core as Core
 import qualified Storage.Ops as Ops
 import qualified Storage.Tick as Tick
 import Storage.Tick (FileTick(..))
 import Storyteller.Core.Types (TickId(..))
 import Storyteller.Common.Types (Fixup(..))
+
+import Prelude hiding (readFile)
 
 -- | The model's proposed replacement: the new text plus its reason. Plain
 --   data — whether and how it gets applied is entirely up to the caller.
@@ -126,12 +141,24 @@ proposeReplacement newText (FixDescription reason) = pure (ReplaceProposal newTe
 --   over, not a model-supplied parameter -- the model names a span, it
 --   doesn't retype the whole atom just to hand it back unchanged), run
 --   'replaceOnce' and package whichever text comes out. A failed match
---   (see 'replaceOnce') comes back as @content@ unchanged, not an error —
---   'reworkAtom' is what turns "unchanged" into "no proposal" for this
---   call.
+--   (see 'replaceOnce') comes back as @content@ unchanged, tagged with
+--   'matchFailedMarker' prepended to the reason -- distinct from the text
+--   just happening to come back unchanged for some other cause, so
+--   'reworkAtom' can log "model tried and the span didn't match" instead
+--   of silently treating a failed match identically to "model looked and
+--   declined to change anything."
 proposeTextReplacement :: forall r. T.Text -> T.Text -> T.Text -> FixDescription -> Sem r ReplaceProposal
 proposeTextReplacement content oldText newText (FixDescription reason) =
-  pure $ ReplaceProposal (maybe content id (replaceOnce oldText newText content)) reason
+  case replaceOnce oldText newText content of
+    Nothing       -> pure $ ReplaceProposal content (matchFailedMarker <> reason)
+    Just replaced -> pure $ ReplaceProposal replaced reason
+
+-- | Prefix 'proposeTextReplacement' tags a failed-match reason with --
+--   never model-supplied, so its presence unambiguously means "this
+--   specific call's own @old_text@ didn't match," not "the model happened
+--   to phrase its decline this way."
+matchFailedMarker :: T.Text
+matchFailedMarker = "\0old_text-no-match\0"
 
 -- | Replace the one occurrence of @old@ in @haystack@ with @new@ -- 'Nothing'
 --   if @old@ is empty, absent, or ambiguous (appears more than once).
@@ -150,12 +177,24 @@ replaceOnce old new haystack
 --   The pure decision core: only 'LLM'/'Fail', no filesystem or storage
 --   access — applying a proposal is 'reworkAtomsAt's job.
 --
+--   @wholeFile@ is the file's full current text, given purely as
+--   read-only reference — surrounding paragraphs the model needs to judge
+--   whether the target atom's own wording still fits (a name, a detail, a
+--   tense established elsewhere), the same reason 'writeAgent' hands a
+--   generation call the chapter-so-far rather than just the next
+--   instruction. It never becomes an editable target itself: both tools
+--   stay closed over @content@ (this atom's own text) exactly as before,
+--   so a model proposing a span from elsewhere in @wholeFile@ simply fails
+--   'replaceOnce's exactly-once-in-@content@ match and is treated as no
+--   proposal, same as any other unmatched span. This is what keeps
+--   "more context" from becoming "laxer about what it's here to fix."
+--
 --   Always the 'AgentModel' role -- see 'Storyteller.Core.LLM.Role.LLMs'.
 reworkAtom
   :: forall r
-  .  (LLMs r, Members '[PromptStorage, Fail] r)
-  => T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
-reworkAtom content (Instruction instr) = do
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
+  => T.Text -> T.Text -> Instruction -> Sem r (Maybe ReplaceProposal)
+reworkAtom wholeFile content (Instruction instr) = do
   configsWithPrompt <- getConfigWithPrompt "agent.fixer" defaultFixerSystemPrompt defaultFixerConfig
   Prompt guidance   <- getPrompt "agent.fixer.instructions" defaultFixerInstructions
 
@@ -173,7 +212,9 @@ reworkAtom content (Instruction instr) = do
                "new_text" "The text to replace it with"
                "reason"   "Brief explanation of why this atom needed to change, for later tracing"
       tools = [LLMTool replaceAtomTool, LLMTool replaceTextTool]
-      prompt = "Atom under review:\n\n" <> content <> "\n\nInstruction: " <> instr <> "\n\n" <> guidance
+      prompt = "Full file, for context only -- you may only change the atom under review below, nothing else in this file:\n\n"
+             <> wholeFile
+             <> "\n\nAtom under review:\n\n" <> content <> "\n\nInstruction: " <> instr <> "\n\n" <> guidance
 
   response <- queryLLM
     (Tools (map llmToolToDefinition tools) : configsWithPrompt)
@@ -184,11 +225,17 @@ reworkAtom content (Instruction instr) = do
       case toolResultOutput result of
         Right value -> case parseEither parseJSONViaCodec value of
           -- A 'replace_text' call whose 'old_text' didn't uniquely match
-          -- comes back as @content@ unchanged (see 'proposeTextReplacement'
-          -- / 'replaceOnce') -- treated the same as no proposal at all,
-          -- rather than applying a no-op edit with a Fixup tick that
-          -- explains nothing.
+          -- comes back as @content@ unchanged, its reason tagged with
+          -- 'matchFailedMarker' (see 'proposeTextReplacement') -- logged
+          -- loudly rather than silently treated the same as "the model
+          -- looked and declined": the model's own final reply still tends
+          -- to describe what it *meant* to change, which otherwise reads
+          -- to a caller as a successful fix that just didn't happen.
           Right proposal
+            | matchFailedMarker `T.isPrefixOf` rpReason proposal -> do
+                warning $ "fixAgent: replace_text: old_text didn't match this atom exactly once, left unchanged ("
+                        <> T.drop (T.length matchFailedMarker) (rpReason proposal) <> ")"
+                return Nothing
             | rpNewText proposal == content -> return Nothing
             | otherwise                     -> return (Just proposal)
           Left _ -> return Nothing
@@ -241,9 +288,15 @@ defaultFixerConfig = [MaxTokens 1024, Temperature 0.5]
 --   look identical to a hang between one atom's streamed tokens ending and
 --   the next atom's starting -- the "N of M" progress line is what tells
 --   the two apart for a user actually watching it run.
+--
+--   The whole file is re-read fresh before every attempt, same as
+--   @ticks@ -- an earlier target's own edit in this same loop changes
+--   what "the rest of the file" currently says, so a later target's
+--   reference context has to reflect that rather than whatever the file
+--   looked like when the loop started.
 reworkAtomsAt
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, BranchOp branch, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, FileSystemRead (BranchTag branch), Fail, Logging] r)
   => FilePath -> Instruction -> [Int] -> Sem r [TickId]
 reworkAtomsAt path instruction idxs = do
   info $ "fixAgent: reviewing " <> T.pack (show total) <> " atom(s) in " <> T.pack path
@@ -254,10 +307,11 @@ reworkAtomsAt path instruction idxs = do
     total = length idxs
     oneAt (n, idx) = do
       ticks <- runStorage @branch (Tick.fileTicksOf path)
+      wholeFile <- TE.decodeUtf8 <$> readFile @(BranchTag branch) path
       case drop idx ticks of
         (FileTick { ftTickId = tid, ftContent = Just content } : _) -> do
           info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": querying model..."
-          mProposal <- reworkAtom content instruction
+          mProposal <- reworkAtom wholeFile content instruction
           case mProposal of
             Nothing -> do
               info $ "fixAgent: atom " <> T.pack (show n) <> "/" <> T.pack (show total) <> ": left unchanged"
@@ -268,6 +322,97 @@ reworkAtomsAt path instruction idxs = do
                 newHash <- Ops.editAtomAt (Ops.ObjectHash tid) newText
                 let tid' = TickId (Ops.unObjectHash newHash)
                 _ <- Tick.storeAs (Fixup [tid'] reason)
+                -- 'editAtomAt' only ever moves the chain (head) -- it
+                -- never touches the ambient tree ('Ops.addAtom' is the
+                -- one that does that itself, via its own explicit
+                -- 'Ops.appendFile'). Without this, the *next* target's
+                -- own 'wholeFile' read above (and this file as seen by
+                -- anything reading through 'FileSystemRead' afterward)
+                -- would still show the pre-edit text, even though the
+                -- edit landed for real on the chain -- exactly the
+                -- "nothing visibly changed" symptom a caller watching the
+                -- file, not the tick chain, would see.
+                Core.reset
                 return tid')
               return (Just newTid)
         _ -> return Nothing
+
+-- | Free-roam pass: no caller-selected targets, the model reviews the
+--   whole file against @instruction@ and edits it directly with
+--   'Runix.Tools.editFile' -- the same exact-match-once, read-modify-write
+--   tool @chatAgent@ already exposes for read access, here given write
+--   access instead since this agent's whole job is editing. Reused as-is
+--   rather than a bespoke tool: an exact-span, must-match-once replacement
+--   against a real file is exactly what this needed, no atom-resolution
+--   step required at all -- each call lands straight on the working tree,
+--   and one 'Ops.commitFiles' once the model is done reconciles whichever
+--   atoms actually ended up different (unchanged atoms keep their ids),
+--   same as 'Server.Writer.File.chatChapterRegen'. An agentic tool loop,
+--   same shape as 'Storyteller.Writer.Agent.Chat.chatAgent' -- stops the
+--   moment a turn comes back with no tool calls, which is also how a
+--   model that finds nothing worth fixing signals "done" without ever
+--   touching the file.
+--
+--   Deliberately not a variant of 'reworkAtomsAt': that one decides
+--   per-atom, in isolation, whether *that* atom needs to change --
+--   exactly the right shape when the caller already knows which atoms are
+--   in scope. Here nothing is in scope yet; scoping is the model's own
+--   job, and doing it by exact-span replacement (rather than by naming
+--   atom indices, which the model has no stable way to refer to) keeps
+--   the same "must match exactly once" safety rail that already governs
+--   every localized fix, just widened from one atom's text to the whole
+--   file's.
+--
+--   The pass records one 'Fixup' for the instruction as a whole, not one
+--   per edit: unlike a targeted fix (always exactly one atom, one clear
+--   ref), a free-roam pass may land on several atoms whose post-commit
+--   ids aren't known until 'Ops.commitFiles' has already folded them back
+--   into the chain, so there's no single atom this note is "about" --
+--   refs empty, same as any note not anchored to a specific tick. Only
+--   recorded if the file actually ended up different, so a pass that
+--   found nothing worth changing leaves no trace.
+reworkWholeFile
+  :: forall branch r
+  .  (LLMs r, Members '[PromptStorage, BranchOp branch, FileSystemRead (BranchTag branch), FileSystemWrite (BranchTag branch), Fail, Logging] r)
+  => FilePath -> Instruction -> Sem r ()
+reworkWholeFile path (Instruction instr) = do
+  before <- readFile @(BranchTag branch) path
+  go (1 :: Int)
+  after <- readFile @(BranchTag branch) path
+  if after == before
+    then info "fixAgent: whole-file pass: nothing changed"
+    else do
+      _ <- runStorage @branch (Ops.commitFiles [path])
+      _ <- runStorage @branch (Tick.storeAs (Fixup [] instr))
+      info "fixAgent: whole-file pass: done"
+  where
+    go turnNo = do
+      Prompt guidance   <- getPrompt "agent.fixer.instructions.wholefile" defaultFixerWholeFileInstructions
+      configsWithPrompt <- getConfigWithPrompt "agent.fixer" defaultFixerSystemPrompt defaultFixerConfig
+      wholeFile <- TE.decodeUtf8 <$> readFile @(BranchTag branch) path
+
+      let tools = [LLMTool (Tools.editFile @(BranchTag branch))]
+          prompt = "Full file:\n\n" <> wholeFile <> "\n\nInstruction: " <> instr <> "\n\n" <> guidance
+
+      info $ "fixAgent: whole-file pass, turn " <> T.pack (show turnNo) <> ": querying model..."
+      response <- queryLLM
+        (Tools (map llmToolToDefinition tools) : configsWithPrompt)
+        [UserText prompt]
+      case [tc | AssistantTool tc <- response] of
+        [] -> return ()
+        calls -> do
+          mapM_ (\tc -> info ("fixAgent: whole-file pass, turn " <> T.pack (show turnNo) <> ": calling " <> getToolCallName tc)) calls
+          _ <- mapM (executeToolCallFromList tools) calls
+          go (turnNo + 1)
+
+-- | Fallback for @agent.fixer.instructions.wholefile@ -- the free-roam
+--   twin of 'defaultFixerInstructions', framing the edit tool as
+--   repeatable (find everything worth fixing, not just one span) since
+--   there's no caller-selected target narrowing scope for this pass.
+defaultFixerWholeFileInstructions :: Prompt
+defaultFixerWholeFileInstructions =
+  "Review the whole file against the instruction. Edit it directly, as many times as \
+  \warranted, once per distinct fix -- each edit's old_string must match the file's \
+  \current text exactly once, so make it specific enough to be unambiguous. Only change \
+  \what the instruction is actually about; leave everything else exactly as it is. Once \
+  \nothing more needs fixing, stop editing and reply briefly."

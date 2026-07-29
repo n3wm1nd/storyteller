@@ -14,7 +14,7 @@ import Test.Hspec
 
 import Polysemy
 
-import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite, readFile)
 
 import Storyteller.Core.Git
 import Storyteller.Core.Storage (StoryStorage, createBranch)
@@ -27,6 +27,8 @@ import Storyteller.Core.Types
 import Server.Core.File
 import Server.Core.Protocol (Update(..), WireTick(..))
 import Server.TestStack
+
+import Prelude hiding (readFile)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -313,6 +315,37 @@ spec runner = do
       case result of
         Left err  -> expectationFailure err
         Right upd -> length (updateTicks upd) `shouldBe` 2
+
+    -- Regression for a bug found in 'Storyteller.Writer.Agent.ReplaceTool.
+    -- reworkAtomsAt', which calls 'Ops.editAtomAt' directly (same as
+    -- 'editFileAtom' above) but then, still inside the *same* open scope,
+    -- reads the file back via 'FileSystemRead' to build the next target's
+    -- own reference context. 'Ops.editAtomAt' is a chain-only primitive --
+    -- unlike 'Ops.addAtom' (which explicitly follows its own 'store' with
+    -- 'Ops.appendFile' to keep the ambient tree in sync), it only moves
+    -- head; the ambient tree a 'readFile' actually reads from is left
+    -- exactly as it was. A single 'editFileAtom' call never notices (each
+    -- WS command reopens its scope fresh from head -- see
+    -- 'Server.Core.File's module Haddock), but a caller that edits an atom
+    -- and then reads the file back *within the same scope* -- like this
+    -- test's own 'withFile_', which wraps its whole action in one scope --
+    -- sees the pre-edit text until something re-syncs the ambient tree
+    -- with 'Storage.Core.reset'.
+    it "editAtomAt alone leaves a same-scope readFile seeing the pre-edit text; Core.reset fixes it" $ do
+      let resultNoReset = withFile_ runner (BranchName "b") $ do
+            t1 <- appendAtom "f.md" "original\n"
+            _  <- runStorage @Main (Ops.editAtomAt (Core.ObjectHash (unTickId t1)) "edited\n")
+            readFile @(BranchTag Main) "f.md"
+          resultWithReset = withFile_ runner (BranchName "b") $ do
+            t1 <- appendAtom "f.md" "original\n"
+            _  <- runStorage @Main (Ops.editAtomAt (Core.ObjectHash (unTickId t1)) "edited\n" <* Core.reset)
+            readFile @(BranchTag Main) "f.md"
+      case (resultNoReset, resultWithReset) of
+        (Left err, _) -> expectationFailure err
+        (_, Left err) -> expectationFailure err
+        (Right stale, Right fresh) -> do
+          stale `shouldBe` "original\n"
+          fresh `shouldBe` "edited\n"
 
   describe "cycleAtomSwipe" $ do
 

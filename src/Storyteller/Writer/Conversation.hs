@@ -32,6 +32,7 @@ module Storyteller.Writer.Conversation
 
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Polysemy
 
 import qualified Storage.Tick as Tick
@@ -52,13 +53,57 @@ data Turn = UserTurn Text | AssistantTurn Text
 --   possibly-elided 'Tick.ftMessage'), every other kind on the file --
 --   notes, presence -- is conversational noise and dropped, as is anything
 --   explicitly hidden.
+--
+--   An 'AssistantTurn''s trailing newlines are stripped here, not carried
+--   through verbatim from storage. 'Storyteller.Common.Splitter.byParagraph'
+--   is deliberately lossless — every non-final atom it produces keeps the
+--   *entire* blank-line run that split it from the next paragraph, baked
+--   into its own stored text (see its Haddock) — which is exactly right
+--   for storage (nothing is silently rewritten) but wrong to hand back to
+--   a model verbatim as its own prior turn: a model shown its own past
+--   output ending in a visible @"\\n\\n"@ (or more, if it already
+--   overshot) has no signal that the blank line is structural rather than
+--   something worth imitating, so it starts adding its own explicit
+--   blank-line padding before the next paragraph too — which gets split
+--   and stored the same lossless way, then replayed back next turn,
+--   compounding turn over turn. Stripped only in this model-facing
+--   projection, not in storage: 'Tick.ftContent'\/the atom itself keeps
+--   every byte the model actually wrote.
+--
+--   An 'AssistantTurn' that comes out blank after that stripping (an atom
+--   whose stored content was empty or all-newlines -- an aborted or
+--   genuinely empty past generation) gets 'blankAssistantPlaceholder'
+--   substituted in rather than being kept as a bare @AssistantTurn ""@ or
+--   dropped outright. Dropping it is exactly as wrong as keeping it empty:
+--   the surrounding turns are real (a prompt was sent, another prompt
+--   followed), so removing this one turn would fuse two separate 'UserTurn's
+--   back to back with no role boundary between them once rendered -- the
+--   same blended-into-one-user-turn failure
+--   'Storyteller.Writer.Agent.Write.spliceAck' exists to prevent for the
+--   splice, just reached from the other direction. A real turn boundary
+--   the model actually took has to stay a turn boundary; it just can't be
+--   handed back as literally nothing, which is what a blank assistant turn
+--   in history reads as -- not "the assistant produced empty output that
+--   time" but "produce nothing/garbage here", which is a bad thing to
+--   anchor the model's own voice to right before its next continuation.
 turnsFromFileTicks :: [Tick.FileTick] -> [Turn]
 turnsFromFileTicks = concatMap turnOf . filter (not . ftHidden)
   where
     turnOf ft
       | Tick.ftIsType @Prompt ft = [UserTurn (Tick.ftMessage ft)]
-      | Tick.ftIsType @Atom   ft = [AssistantTurn (fromMaybe (Tick.ftMessage ft) (Tick.ftContent ft))]
+      | Tick.ftIsType @Atom   ft =
+          let content = T.dropWhileEnd (== '\n') (fromMaybe (Tick.ftMessage ft) (Tick.ftContent ft))
+          in [AssistantTurn (if T.null (T.strip content) then blankAssistantPlaceholder else content)]
       | otherwise                = []
+
+-- | Substituted for an 'AssistantTurn' whose real content came out blank
+--   (see 'turnsFromFileTicks'). Deliberately not @"..."@ or silence -- a
+--   short, explicit, in-voice acknowledgement that this turn produced
+--   nothing, the same honesty 'Storyteller.Writer.Agent.Write.spliceAck'
+--   gives a synthetic turn, just phrased for a real one instead of an
+--   injected splice.
+blankAssistantPlaceholder :: Text
+blankAssistantPlaceholder = "(No text was written for this turn.)"
 
 -- | 'turnsFromFileTicks' against the branch scope the caller is already
 --   in, oldest turn first.

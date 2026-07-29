@@ -34,6 +34,7 @@ import qualified Storyteller.Writer.WriteSpec
 import qualified Storyteller.Writer.RoleplaySpec
 import qualified Storyteller.Writer.MessageWindowSpec
 import qualified Storyteller.Writer.ReplaceToolSpec
+import qualified Storyteller.Writer.ConversationSpec
 import qualified Storyteller.UndoSpec
 import qualified Storyteller.ChatSpec
 import qualified Storyteller.LibrarySpec
@@ -102,6 +103,7 @@ main = hspec $ do
   describe "Storyteller.Writer.Agent.Roleplay (opening messages)" Storyteller.Writer.RoleplaySpec.spec
   describe "Storyteller.Writer.Agent.MessageWindow" Storyteller.Writer.MessageWindowSpec.spec
   describe "Storyteller.Writer.Agent.ReplaceTool (replaceOnce)" Storyteller.Writer.ReplaceToolSpec.spec
+  describe "Storyteller.Writer.Conversation (turnsFromFileTicks)" Storyteller.Writer.ConversationSpec.spec
   describe "Storyteller.Undo"           Storyteller.UndoSpec.spec
   describe "Storyteller.Writer.Agent.Chat" Storyteller.ChatSpec.spec
   describe "Storyteller.Writer.Library"    Storyteller.LibrarySpec.spec

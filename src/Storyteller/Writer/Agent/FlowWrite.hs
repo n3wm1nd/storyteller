@@ -27,6 +27,7 @@ module Storyteller.Writer.Agent.FlowWrite
 
 import Polysemy
 import Polysemy.Fail (Fail)
+import Runix.FileSystem (FileSystemRead)
 import Runix.Logging (Logging)
 
 import Storyteller.Core.LLM.Role (LLMs)
@@ -39,7 +40,7 @@ import Storyteller.Writer.Agent.Write (writeAgent)
 import Storyteller.Writer.Agent.ReplaceTool (reworkAtomsAt)
 import Storyteller.Core.Prompt (PromptStorage)
 import Storyteller.Core.Branch (Branches)
-import Storyteller.Core.Git (BranchOp, runStorage)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStorage)
 import Storyteller.Core.Types (TickId(..))
 
 -- | See module header. Everything besides @path@\/@flowTid@ is the same
@@ -56,7 +57,7 @@ import Storyteller.Core.Types (TickId(..))
 --   a single call -- see 'Storyteller.Core.LLM.Role.LLMs'.
 flowWriteAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchOp branch, Branches, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, ContextStorage, BranchOp branch, Branches, FileSystemRead (BranchTag branch), Fail, Logging] r)
   => FilePath                    -- ^ file being continued
   -> TickId                      -- ^ flowTid: HEAD when the user started typing
   -> Lore                        -- ^ see 'writeAgent's own Haddock

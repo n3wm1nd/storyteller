@@ -340,17 +340,13 @@ correctGroup path promptTid targets prompt pinnedItems mLore mOther chaptersMode
       deleteFileTicks (promptTid : targets)
       atGeneric @Main parentTid (chatWriter path prompt pinnedItems mLore mOther chaptersMode pinnedPrograms Nothing)
 
--- | Store a prompt tick then run the Fixer agent against the given targets.
---   With no targets, there's nothing to rework — that's a different policy
---   ("just write") from the Fixer's, so it's handled here as a fall through
---   to the same Writer path 'chatWriter' takes, rather than living inside
---   'Storyteller.Writer.Agent.Fix.fixAgent'. 'chatFixer' itself never had
---   any of 'chatWriter''s own per-call context slots (unlike 'chatWriter'\/
---   'correctGroup') -- the fallthrough passes the all-default values
---   (@Nothing@ lore, @Nothing@ other, 'FullChapters', no pinned programs),
---   same as any caller that never sent them at all.
-chatFixer :: (FileOpen r, Member Splitter r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
-chatFixer path prompt pinnedItems [] = chatWriter path prompt pinnedItems Nothing Nothing FullChapters [] Nothing
+-- | Store a prompt tick then run the Fixer agent against the given
+--   targets, or -- with none given -- let it range over the whole file
+--   itself (see 'Storyteller.Writer.Agent.Fix.fixAgent'). Both are "rework
+--   what's already there," never plain generation, so both go through the
+--   same Fixer path; "just write more" is 'chatWriter''s own, separate
+--   command, not something an empty target list here falls through to.
+chatFixer :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> [ContextItem] -> [TickId] -> Sem r ()
 chatFixer path prompt _pinnedItems targets = do
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "fixer agent starting: " <> T.pack path
@@ -411,8 +407,21 @@ chatConverse path prompt = do
 --   find a match (the id it's searching for is already gone) and silently
 --   fall back to "everything", including the very reply this call exists
 --   to replace.
+--
+--   @promptTid@ is 'Ops.resolveId'd up front for the same reason
+--   'Storyteller.Common.Swipe.swapAtomContent' resolves its target: the
+--   caller's id can already be stale by the time this runs — a second
+--   swipe in a row hands back the id from before the *first* swipe's
+--   'editChatPrompt' rebase, since the client only learns the new one once
+--   the broadcasted chain update round-trips. Without resolving first, the
+--   'span' above silently hit the "no match, fall back to everything"
+--   case described above on every swipe past the first, feeding the agent
+--   the whole conversation (including the reply being replaced) instead of
+--   the intended trailing prompt — the prompt wasn't literally dropped, it
+--   was drowned in duplicated history ahead of it.
 chatConverseSwipe :: (FileOpen r, SessionEffects r) => FilePath -> TickId -> TickId -> T.Text -> Sem r ()
-chatConverseSwipe path promptTid atomTid newPromptText = do
+chatConverseSwipe path promptTid0 atomTid newPromptText = do
+  promptTid <- TickId . Ops.unObjectHash <$> runStorage @Main (Ops.resolveId (Ops.ObjectHash (unTickId promptTid0)))
   ticks <- runStorage @Main (Tick.fileTicksOf path)
   let (before, _fromPrompt) = span ((/= unTickId promptTid) . Tick.ftTickId) ticks
       history = historyFromFileTicks before
