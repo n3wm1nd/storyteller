@@ -340,10 +340,11 @@ export function ProseFileView({
   }
 
   function handleFix(text: string) {
-    if (activeKey) {
-      const hasSelection = activeTicksChain.some((t) => t.kind === "atom" && contextAtoms.has(t.tickId));
-      if (hasSelection) chatFix(activeKey, text);
-    }
+    // No selection is a real mode now, not a no-op: the Fixer reviews the
+    // whole file itself and fixes whatever it finds warranted (see
+    // Storyteller.Writer.Agent.Fix.fixAgent's empty-targets path) rather
+    // than being limited to atoms the user picked out by hand.
+    if (activeKey) chatFix(activeKey, text);
     for (const [jBranch, jc] of Object.entries(openJournals)) {
       if (!jc) continue;
       const targets = tickChain(jc.ticks, jc.head)

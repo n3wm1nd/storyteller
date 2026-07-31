@@ -141,26 +141,35 @@ import Storyteller.Core.Prompt (Prompt(..), PromptStorage, getPrompt, getConfig)
 --        recent side sits after it (see step 5). All of it, on one side or
 --        the other, when the splice has nothing to say.
 --     4. A shallow splice -- pinned\/short-term context plus every active
---        character's 'csJournal' excerpt -- one message, inserted mid-depth
---        rather than at either end (see 'Storyteller.Writer.Agent.
---        MessageWindow.injectAtWindow's Haddock), followed by a short
---        synthetic 'AssistantText' acknowledgment ('spliceAck'). Every
---        message the splice contributes is 'UserText', and whatever
---        follows it -- the next reconstructed turn's own 'UserText', or
---        step 6's instruction if the splice landed at the tail -- is
---        'UserText' too; without something 'Assistant'-roled between them
---        a provider has no turn boundary to key on and folds the two into
---        one blended user turn, silently losing the distinction between
---        "ambient journal context" and "what was actually asked". The ack
---        is what step 1's chapters get for free from their own
---        @> read f@ User\/Assistant pairing (see 'writeAgent's own
---        Haddock); the splice has no such natural bracket, so this
---        supplies one.
+--        character's 'csJournal' excerpt and current @tasks.md@ -- inserted
+--        mid-depth rather than at either end (see 'Storyteller.Writer.Agent.
+--        MessageWindow.injectAtWindow's Haddock), bracketed by 'spliceOpen'
+--        and 'spliceClose'. This isn't just a turn-boundary trick anymore --
+--        it's a plain-language frame: 'spliceOpen' tells the model in so
+--        many words that what follows is reference material, not story text
+--        and not something the author said, so it never gets mistaken for
+--        either; 'spliceClose' says so again on the way out and hands
+--        control back to whatever comes next. Without the frame, pinned\/
+--        journal\/task content arrives as bare 'UserText' indistinguishable
+--        from the author actually talking mid-chapter, which is exactly the
+--        kind of role confusion that derails smaller\/local models -- see
+--        this module's own investigation into how SillyTavern frames
+--        depth-injected world info\/author's-note content for the same
+--        reason. 'spliceClose' is still 'Assistant'-roled underneath (same
+--        turn-boundary need as always: without something 'Assistant'-roled
+--        between two 'UserText's, a provider has no boundary to key on and
+--        folds them into one blended user turn), but its content now does
+--        real work instead of being a content-free "Noted." placeholder --
+--        a non-sequitur ack is itself a source of confusion, not just cache
+--        filler.
 --     5. The recent tail of this chapter's conversation -- same source as
 --        step 3, just the turns inside the depth window.
 --     6. The new instruction -- always the last message, literally
---        @UserText instr@ now (no per-message boilerplate -- see
---        'chapterContinuationNote').
+--        @UserText instr@ (no per-message boilerplate -- see
+--        'chapterContinuationNote' -- and no framing wrapper either: it
+--        must stay byte-identical to its own later replay as history, see
+--        'writeAgent's cache-prefix paragraph above). 'spliceClose' is what
+--        actually marks the handoff when the splice lands at the tail.
 --
 --   Every parameter here is one a *caller* can meaningfully supply: @path@
 --   (which file), @lore@ (already-resolved @context.lore@ -- a caller like
@@ -316,11 +325,18 @@ buildChapterMessages context chars tasks pinned currentTicks (Instruction instr)
     -- embedded block right after the journal's (see 'tasksForActiveCharacters's
     -- own Haddock: a separate read, so it gets a separate splice entry),
     -- not folded into it, so an edit to one doesn't reshape the other's
-    -- boundaries. 'spliceAck' only follows real content -- an empty
-    -- section contributes nothing at all ('injectAtWindow''s own
-    -- empty-input no-op covers the case where everything here is empty).
-    ackIfNonEmpty msgs = if null msgs then [] else map dslMessageToLLM msgs ++ [spliceAck]
-    spliceMsgs = ackIfNonEmpty pinned ++ ackIfNonEmpty journalBlocks ++ ackIfNonEmpty taskBlocks
+    -- boundaries.
+    rawSpliceMsgs = concat [pinned, journalBlocks, taskBlocks]
+    -- The whole splice -- not each section -- gets one 'spliceOpen'/
+    -- 'spliceClose' bracket: sectioning is about keeping each source's own
+    -- edits from reshaping a neighbour's boundaries (still true, still done
+    -- above), but the model doesn't need three separate "this is
+    -- reference material" announcements back to back, just one, around
+    -- everything that isn't the story or the conversation. Empty when
+    -- there's nothing to say ('injectAtWindow''s own empty-input no-op
+    -- then covers the whole splice).
+    spliceMsgs = if null rawSpliceMsgs then [] else
+      spliceOpen : map dslMessageToLLM rawSpliceMsgs ++ [spliceClose]
 
     -- The splice sits at a depth inside the reconstructed conversation
     -- rather than at either end -- see 'Storyteller.Writer.Agent.
@@ -332,19 +348,50 @@ buildChapterMessages context chars tasks pinned currentTicks (Instruction instr)
       injectAtWindow isUserTurn recentWindowMin recentWindowMax spliceMsgs
         (historyFromFileTicks currentTicks)
 
+    -- Deliberately @UserText instr@, the raw prompt text, unwrapped -- see
+    -- 'writeAgent's own Haddock, the paragraph above this one: it must stay
+    -- byte-identical to what 'historyFromFileTicks' later replays a
+    -- @"prompt"@ tick as, once this turn's own prompt is persisted, or the
+    -- cache-prefix discipline the whole splice-window mechanism exists for
+    -- breaks on literally the next turn. The handoff into it is instead
+    -- 'spliceClose''s job when the splice lands at the tail -- it already
+    -- says the reference material has ended; no separate framing wrapper
+    -- is worth risking that invariant for.
     instructionMsg = UserText instr
 
 isUserTurn :: Message m -> Bool
 isUserTurn (UserText _) = True
 isUserTurn _            = False
 
+-- | Opens the splice by telling the model, in plain terms, that what
+--   follows is reference material -- not story text, not something the
+--   author said -- so it doesn't get read as either. Without this, pinned
+--   context/journal/task blocks arrive as bare 'UserText' indistinguishable
+--   from the author actually talking, which is exactly the kind of
+--   role-collapse that confuses a model mid-generation (see this module's
+--   own investigation into how SillyTavern frames depth-injected world
+--   info/author's-note content for the same reason).
+spliceOpen :: Message m
+spliceOpen = UserText
+  "(The following is background reference material for you to draw on --\
+  \ character journals, pinned notes, task lists. It is not part of the\
+  \ story, and nobody in the conversation said it.)"
+
 -- | Closes the splice with an 'Assistant'-roled turn so it never sits
 --   directly against the 'UserText' that follows it -- either the next
 --   reconstructed turn (mid-history) or 'instructionMsg' itself (tail) --
 --   see 'buildChapterMessages'\'s own Haddock, step 4, for why an
---   unbracketed splice would otherwise blend into that message.
-spliceAck :: Message m
-spliceAck = AssistantText "Noted."
+--   unbracketed splice would otherwise blend into that message. Says what
+--   it's actually doing (categorising the block that just ended, then
+--   handing back to whatever comes next -- the rest of the reconstructed
+--   conversation, or the new instruction) rather than a placeholder like
+--   "Noted." -- a content-free ack reads as a non-sequitur the model then
+--   has to explain away, exactly the kind of confusion this bracket exists
+--   to prevent, not just cache-friendliness filler.
+spliceClose :: Message m
+spliceClose = AssistantText
+  "Understood -- that was reference material, not part of the story or the\
+  \ conversation. Continuing from where the story left off."
 
 -- | The splice's depth window: at least @recentWindowMin@, at most
 --   @recentWindowMax@ turns stay after it. Kept as a real range rather than

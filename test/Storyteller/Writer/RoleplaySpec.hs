@@ -14,7 +14,7 @@ import Storyteller.Writer.Agent (CharSummary(..))
 import Storyteller.Writer.Agent.Context (SceneContext(..))
 import Storyteller.Writer.Agent.Roleplay (characterOpeningMessages, reflectOpeningMessages)
 
-opening :: CharSummary -> SceneContext -> [FilePath] -> T.Text -> [Message AgentModel]
+opening :: CharSummary -> SceneContext -> [FilePath] -> T.Text -> T.Text -> [Message AgentModel]
 opening = characterOpeningMessages "Ren"
 
 -- | No scene context at all -- the empty tree, same as a caller with
@@ -37,6 +37,12 @@ allText msgs = [ t | m <- msgs, t <- case m of UserText t' -> [t']; AssistantTex
 occurrences :: T.Text -> [Message AgentModel] -> Int
 occurrences needle msgs = length (filter (needle `T.isInfixOf`) (allText msgs))
 
+-- | Whether some message's text is exactly (not just contains) @needle@ --
+-- distinguishes a section label actually being emitted as its own message
+-- from the identity note's own prose merely mentioning the same header text.
+isUserTextExactly :: T.Text -> [Message AgentModel] -> Bool
+isUserTextExactly needle msgs = any (== needle) (allText msgs)
+
 -- | Worst case for a provider that concatenates adjacent same-role
 --   messages -- merge every run of consecutive same-role messages into one.
 --   Used to prove the *reason* every labelled section is a role-switching
@@ -53,7 +59,7 @@ spec = do
   describe "characterOpeningMessages" $ do
 
     it "with no own-branch context, still opens with the identity note and closes with the question" $ do
-      let msgs = opening noSummary noContext [] "what do you do?"
+      let msgs = opening noSummary noContext [] "what do you do?" ""
       case msgs of
         (UserText identity : _) -> identity `shouldSatisfy` ("Ren" `T.isInfixOf`)
         other                    -> expectationFailure ("expected identity note first, got " <> show other)
@@ -67,7 +73,7 @@ spec = do
             , csContext = [DSL.User "### tasks.md\n\nkeep Elias distracted"]
             , csJournal = [DSL.User "### journal.md\n\nI keep thinking about the mark."]
             }
-          msgs = opening cs noContext [] "what do you ask Iskra?"
+          msgs = opening cs noContext [] "what do you ask Iskra?" ""
       occurrences "I keep thinking about the mark." msgs `shouldBe` 1
       occurrences "keep Elias distracted" msgs `shouldBe` 1
       occurrences "# Ren" msgs `shouldBe` 1
@@ -78,7 +84,7 @@ spec = do
             , csContext = [DSL.User "### tasks.md\n\nsome tasks"]
             , csJournal = [DSL.User "### journal.md\n\nsome journal entry"]
             }
-          msgs = opening cs noContext [] "what do you ask?"
+          msgs = opening cs noContext [] "what do you ask?" ""
       case reverse msgs of
         (finalMsg : AssistantText journalContent : UserText _label : _rest) -> do
           finalMsg `shouldSatisfy` (== UserText "You're being asked: what do you ask?")
@@ -87,8 +93,23 @@ spec = do
 
     it "drops an empty journal section instead of emitting an empty pair" $ do
       let cs = CharSummary { csSheet = [DSL.User "### sheet.md\n\n# Ren"], csContext = [], csJournal = [] }
-          msgs = opening cs noContext [] "go"
-      occurrences "## My own journal so far" msgs `shouldBe` 0
+          msgs = opening cs noContext [] "go" ""
+      -- The identity note's own prose mentions "## My own journal so far" by
+      -- name, so a bare substring count can't tell "section present" from
+      -- "just referenced" -- the real signal is whether the exact label
+      -- (the pair's opening message, verbatim and alone) was ever emitted
+      -- as its own message.
+      isUserTextExactly "## My own journal so far" msgs `shouldBe` False
+
+    it "drops the author's-direction section entirely when the prompt is empty" $ do
+      let msgs = opening noSummary noContext [] "what do you do?" ""
+      occurrences "Ren decides to leave the room." msgs `shouldBe` 0
+      occurrences "AUTHOR'S DIRECTION FOR THIS BEAT -- not yet part of the story" msgs `shouldBe` 0
+
+    it "includes the author's own direction, verbatim, when given" $ do
+      let msgs = opening noSummary noContext [] "what do you do?" "Ren decides to leave the room."
+      occurrences "AUTHOR'S DIRECTION FOR THIS BEAT -- not yet part of the story" msgs `shouldBe` 1
+      occurrences "Ren decides to leave the room." msgs `shouldBe` 1
 
     it "survives a provider that concatenates adjacent same-role messages: the journal never ends up merged with stable content" $ do
       let cs = CharSummary
@@ -96,7 +117,7 @@ spec = do
             , csContext = [DSL.User "### tasks.md\n\nsome tasks"]
             , csJournal = [DSL.User "### journal.md\n\nsome journal entry"]
             }
-          msgs      = opening cs noContext [] "what happens next?"
+          msgs      = opening cs noContext [] "what happens next?" ""
           flattened = mergeSameRole msgs
           journalMsg = [ t | m <- flattened, t <- allText [m], "some journal entry" `T.isInfixOf` t ]
       case journalMsg of

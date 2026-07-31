@@ -12,17 +12,22 @@
 --   go find out, not assume.
 --
 --   'roleplayAgent' is plain Haskell orchestration, not a tool-calling
---   loop: it iterates directly over every present character (an ordinary
---   'forM', not a tool the model has to remember to call) and, for each
---   one, makes two real function calls -- 'questionForCharacterAgent' to
---   choose what to ask them, then 'characterIntentAgent' to actually ask.
---   *Whether* a character gets interrogated is therefore unconditional,
---   guaranteed by the iteration itself, never left to a model's judgement;
---   *what* gets asked is the one genuinely agentic decision in that step.
---   Once every present character has answered, 'composeSceneAgent' writes
---   the finished scene from their answers in one more plain call. None of
---   this needs a tool at all -- there's nothing here for the model to
---   decide to invoke or skip.
+--   loop. Before any character is asked anything, 'planBeatAgent' decides
+--   once, for the whole beat, what it should actually accomplish -- the one
+--   shared throughline every subsequent call is built around, so
+--   independent per-character questions can't each reasonably pull the
+--   scene a different way. It then iterates directly over every present
+--   character (an ordinary 'forM', not a tool the model has to remember to
+--   call) and, for each one, makes two real function calls --
+--   'questionForCharacterAgent' to choose what to ask them, then
+--   'characterIntentAgent' to actually ask. *Whether* a character gets
+--   interrogated is therefore unconditional, guaranteed by the iteration
+--   itself, never left to a model's judgement; *what* gets asked is the one
+--   genuinely agentic decision in that step. Once every present character
+--   has answered, 'composeSceneAgent' writes the finished scene from their
+--   answers (and the same shared plan) in one more plain call. None of this
+--   needs a tool at all -- there's nothing here for the model to decide to
+--   invoke or skip.
 --
 --   'characterIntentAgent' is the one real subagent in this module -- not a
 --   single structured call, but a full tool-calling loop, scoped to one
@@ -154,11 +159,12 @@ roleplayAgent
   -> Sem r Prose
 roleplayAgent sceneContext characters prompt = do
   let roster = [ label | (CharLabel label, _) <- characters ]
+  plan <- planBeatAgent sceneContext roster prompt
   exchanges <- forM characters $ \(CharLabel label, character) -> do
-    question <- questionForCharacterAgent sceneContext roster label prompt
-    answer   <- askCharacter character label sceneContext question
+    question <- questionForCharacterAgent sceneContext roster label prompt plan
+    answer   <- askCharacter character label sceneContext question prompt
     pure (Exchange label question answer)
-  Prose <$> composeSceneAgent sceneContext exchanges prompt
+  Prose <$> composeSceneAgent sceneContext exchanges prompt plan
 
 -- | Read @character@'s own full context via the Context DSL --
 --   @context.character@ (a branch override on the @contexts@ branch, then
@@ -180,55 +186,131 @@ roleplayAgent sceneContext characters prompt = do
 askCharacter
   :: forall r
   .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
-  => Character -> Text -> SceneContext -> Text -> Sem r Text
-askCharacter (Character (BranchName branchName)) name sceneContext question = do
+  => Character -> Text -> SceneContext -> Text -> Text -> Sem r Text
+askCharacter (Character (BranchName branchName)) name sceneContext question prompt = do
   info ("ask " <> name <> ": " <> question)
   let ident = branchDisplayName branchName
   charVal    <- resolveContext1 @Main "context.character" ident
   ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
   answer <- withBranch @RoleplayChar (BranchName branchName) $ runStoryFSGit @RoleplayChar (BranchName branchName) $
-    characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question
+    characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question prompt
   info (name <> " answers: " <> answer)
   pure answer
 
+-- | Decide, once per beat before any character is asked anything, where this
+--   beat should actually go -- the one thing every subsequent call in
+--   'roleplayAgent' (every 'questionForCharacterAgent', then
+--   'composeSceneAgent') shares, so they all pull toward the same
+--   throughline instead of each independently guessing at one. Without
+--   this, nothing stops one character's question from nudging the scene
+--   toward escalation while another's nudges it toward resolution -- both
+--   individually reasonable, jointly incoherent. A plain prose call, same
+--   shape as 'questionForCharacterAgent': no tools, nothing to look up.
+--   Deliberately not persisted or shown to the author -- an internal,
+--   single-beat plan, thrown away once this beat's 'composeSceneAgent'
+--   call has used it.
+planBeatAgent
+  :: forall r
+  .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
+  => SceneContext -> [Text] -> Text -> Sem r Text
+planBeatAgent (SceneContext ctx) roster prompt = do
+  configsWithPrompt <- getConfigWithPrompt "agent.roleplay.plan" defaultPlanSystemPrompt defaultPlanConfig
+  let contextMsgs = map dslMessageToLLM ctx
+  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderPlanTrailing roster prompt)])
+  pure (T.strip (mconcat [t | AssistantText t <- response]))
+
+renderPlanTrailing :: [Text] -> Text -> Text
+renderPlanTrailing roster prompt =
+  T.intercalate "\n\n" [rosterLine, direction, ask]
+  where
+    rosterLine = "Characters present in this scene: " <> T.intercalate ", " roster
+    direction
+      | T.null (T.strip prompt) = "No specific direction was given by the author for this beat."
+      | otherwise                = "Direction from the author for this beat: " <> prompt
+    ask = "What should this beat actually accomplish?"
+
+defaultPlanSystemPrompt :: Prompt
+defaultPlanSystemPrompt = Prompt $ T.unlines
+  [ "You are directing one beat of a scene in a collaborative story, about to decide what this beat"
+  , "needs to accomplish before anyone is asked anything. This plan is internal -- nobody in the story"
+  , "sees it, and it is not prose -- a couple of sentences naming the concrete throughline: what"
+  , "changes, develops, escalates, or resolves by the end of this beat. When the author gave a"
+  , "direction, your plan is how to actually get there from the scene as it stands. When none was"
+  , "given, decide for yourself -- the scene still has to go somewhere; never plan a beat that only"
+  , "restates or holds its present moment. This plan is what every character's question and the"
+  , "finished scene will be built around, so name a real throughline, not a vague mood or a restatement"
+  , "of the current situation. Output only the plan itself, nothing else."
+  ]
+
+defaultPlanConfig :: [ModelConfig ProseModel]
+defaultPlanConfig = [MaxTokens 5000, Temperature 0.8]
+
 -- | Choose what to ask @label@ -- the one genuinely agentic decision in the
 --   interrogation phase (see the module Haddock). A plain prose call: no
---   tools, nothing to look up, just a judgement call given the scene and
---   the author's direction.
+--   tools, nothing to look up, just a judgement call given the scene, the
+--   author's direction, and 'planBeatAgent''s shared throughline for this
+--   beat.
 questionForCharacterAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => SceneContext -> [Text] -> Text -> Text -> Sem r Text
-questionForCharacterAgent (SceneContext ctx) roster label prompt = do
+  => SceneContext -> [Text] -> Text -> Text -> Text -> Sem r Text
+questionForCharacterAgent (SceneContext ctx) roster label prompt plan = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay.question" defaultQuestionSystemPrompt defaultQuestionConfig
   let contextMsgs = map dslMessageToLLM ctx
-  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderQuestionTrailing roster label prompt)])
+  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderQuestionTrailing roster label prompt plan)])
   pure (T.strip (mconcat [t | AssistantText t <- response]))
 
 -- | Everything after @sceneContext@'s own (now real, separate) messages --
 --   genuinely new/synthesized each call, never DSL conversational
 --   structure, so flattening it into one trailing message loses nothing.
-renderQuestionTrailing :: [Text] -> Text -> Text -> Text
-renderQuestionTrailing roster label prompt =
-  T.intercalate "\n\n" [rosterLine, direction, ask]
+renderQuestionTrailing :: [Text] -> Text -> Text -> Text -> Text
+renderQuestionTrailing roster label prompt plan =
+  T.intercalate "\n\n" [rosterLine, direction, planLine, ask]
   where
     rosterLine = "Characters present in this scene: " <> T.intercalate ", " roster
     direction
-      | T.null (T.strip prompt) = "No specific direction was given -- the scene continues naturally from here."
+      | T.null (T.strip prompt) = "No specific direction was given -- the scene still needs to move somewhere \
+                                   \from here, not stay where it already was."
       | otherwise                = "Direction from the author: " <> prompt
+    planLine = "What this beat is meant to accomplish: " <> plan
     ask = "What do you ask " <> label <> "?"
 
 defaultQuestionSystemPrompt :: Prompt
 defaultQuestionSystemPrompt = Prompt $ T.unlines
   [ "You are directing one beat of a scene in a collaborative story. You're about to ask one present"
   , "character what they'd do or say right now -- your only job here is deciding exactly what to ask"
-  , "them: a short, specific question about their action, reaction, or line of dialogue in this"
-  , "moment, grounded in the scene and the author's direction. Output only the question itself, one"
-  , "or two sentences, nothing else -- no preamble, no quotation marks around it."
+  , "them: a specific question about their action, reaction, or line of dialogue in this moment,"
+  , "grounded in the scene and the author's direction. The character also gets the scene and the"
+  , "author's direction directly, so you don't need to relay either -- use the question itself only for"
+  , "context they wouldn't otherwise have: some fact of the moment, or what specifically you're asking"
+  , "them to react to or decide, so their answer doesn't have to guess at that."
+  , ""
+  , "Keep any such context and the actual question structurally distinct, never fused into one flowing"
+  , "narrative paragraph. Write context as plain, flat statements of fact (a short, direct sentence"
+  , "naming what just changed or what's now true), not as scene prose with its own pacing or a"
+  , "rhetorical question folded into its last clause -- that reads as story text to continue, not a"
+  , "question to answer, and is exactly how a character ends up parroting your own narration back as"
+  , "their answer instead of responding in character. End with one direct, clearly separate question,"
+  , "addressed to this character by name or \"you\", never phrased as something someone else does to"
+  , "them ending in a question mark. A one-sentence question with no context at all is fine when nothing"
+  , "more is needed -- don't pad it out for its own sake -- but don't force it short either when a"
+  , "genuine fact needs stating first."
+  , ""
+  , "Stick to the scene, not the character: give them information about what's happening, never"
+  , "instructions about who they are or how they feel -- don't tell them their own mood, personality,"
+  , "or how to react (\"you're furious\", \"as the shy one, you...\"). That's theirs to answer from their"
+  , "own sheet and journal, not yours to hand them."
+  , ""
+  , "The scene has to actually go somewhere, turn by turn -- it can't just sit in place repeating"
+  , "itself. When the author gave a direction, ask toward that. When none was given, still ask toward"
+  , "some real change or development, however small -- never a question that only invites the scene to"
+  , "restate or circle its own present moment. Output only the question itself (context plus the ask),"
+  , "nothing else -- no preamble, no quotation marks around it."
   ]
 
--- | Deliberately well above what a one- or two-sentence question needs --
---   see 'Storyteller.Writer.Agent.AskCharacter.defaultAskConfig's own
+-- | Deliberately well above what a short question (with or without a bit of
+--   supplied context ahead of the actual ask) needs -- see
+--   'Storyteller.Writer.Agent.AskCharacter.defaultAskConfig's own
 --   Haddock: a reasoning-capable model's thinking tokens draw from this
 --   same budget before any answer text, and a cap sized only for the
 --   visible answer leaves nothing for the answer once reasoning runs.
@@ -245,12 +327,12 @@ defaultQuestionConfig = [MaxTokens 5000, Temperature 0.8]
 composeSceneAgent
   :: forall r
   .  (LLMs r, Members '[PromptStorage, Fail, Logging] r)
-  => SceneContext -> [Exchange] -> Text -> Sem r Text
-composeSceneAgent (SceneContext ctx) exchanges prompt = do
+  => SceneContext -> [Exchange] -> Text -> Text -> Sem r Text
+composeSceneAgent (SceneContext ctx) exchanges prompt plan = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay" defaultComposeSystemPrompt defaultComposeConfig
   info "roleplayAgent: composing the scene..."
   let contextMsgs = map dslMessageToLLM ctx
-  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderComposeTrailing exchanges prompt)])
+  response <- queryLLM configsWithPrompt (contextMsgs ++ [UserText (renderComposeTrailing exchanges prompt plan)])
   let narrative = T.strip (mconcat [t | AssistantText t <- response])
   info ("roleplayAgent: finished scene (" <> T.pack (show (T.length narrative)) <> " chars):\n" <> narrative)
   pure narrative
@@ -258,13 +340,18 @@ composeSceneAgent (SceneContext ctx) exchanges prompt = do
 -- | Everything after @sceneContext@'s own (now real, separate) messages --
 --   see 'renderQuestionTrailing's own Haddock for why flattening the rest
 --   loses nothing.
-renderComposeTrailing :: [Exchange] -> Text -> Text
-renderComposeTrailing exchanges prompt =
-  T.intercalate "\n\n" ([direction] ++ map renderExchange exchanges ++ [closing])
+renderComposeTrailing :: [Exchange] -> Text -> Text -> Text
+renderComposeTrailing exchanges prompt plan =
+  T.intercalate "\n\n" ([direction, planLine] ++ map renderExchange exchanges ++ [closing])
   where
     direction
-      | T.null (T.strip prompt) = "No specific direction was given -- continue the scene naturally from here."
-      | otherwise                = "Direction from the author: " <> prompt
+      | T.null (T.strip prompt) = "No specific direction was given -- the scene still has to move somewhere \
+                                   \from here, not settle into repeating or holding its present moment."
+      | otherwise                = "Direction from the author (not yet part of the story -- even if it "
+                                 <> "reads as dialogue or a completed action, nothing in it has happened "
+                                 <> "yet; write it into the scene, don't treat it as already narrated): "
+                                 <> prompt
+    planLine = "What this beat is meant to accomplish: " <> plan
     renderExchange (Exchange label question answer) =
       "Asked " <> label <> ": " <> question <> "\n\n" <> label <> "'s stated intent (their planned "
       <> "action, mood, and a few lines they might say -- material to write from, not a script to "
@@ -280,6 +367,25 @@ defaultComposeSystemPrompt = Prompt $ T.unlines
   , "the story forward. Their stated lines are options, not a script -- use your own judgement for the"
   , "actual wording, blocking, and pacing; don't just concatenate what they gave you. Do not invent a"
   , "significant action or line of dialogue that isn't grounded in what a character actually stated."
+  , "The author's own direction for this beat, given below, is not yet part of the story either --"
+  , "even when it's phrased as dialogue or a completed action (\"she slaps him and storms out\"),"
+  , "nothing in it has actually happened until you write it into the prose. Fold it in as something"
+  , "that occurs during this continuation, in your own wording and pacing, not as a fact you can take"
+  , "for granted or skip past because it was already stated."
+  , ""
+  , "Continue directly from wherever the story actually left off -- the last line of existing prose is"
+  , "a moment already in progress, not a clean stopping point to restart from. If nothing in the"
+  , "direction or the characters' stated intent calls for a jump cut (a new scene, a time skip, a"
+  , "change of location), don't write one -- find the throughline that connects what was already"
+  , "happening to what happens next, even if that means a transitional beat before the substance of"
+  , "this turn. Only cut away cleanly when the material itself warrants it."
+  , ""
+  , "The story has to actually move: when the author gave a direction, this beat moves toward it; when"
+  , "none was given, it still needs to change something real -- and advance a beat, reveal something,"
+  , "shift a relationship, escalate or resolve tension -- never just restate or hold the moment it"
+  , "already opened with. A scene that ends in the same place, emotionally and situationally, that it"
+  , "started in has not done its job even if every line in it is well-written."
+  , ""
   , "Output only the finished prose, nothing else."
   ]
 
@@ -331,13 +437,14 @@ characterIntentAgent
   -> CharSummary            -- ^ their own full, uncurated branch context (see 'Storyteller.Context.DSL.Library.characterSummaryOf')
   -> SceneContext          -- ^ the scene's own context (existing prose, world lore)
   -> Text                  -- ^ the question put to them
+  -> Text                  -- ^ the author's own direction for this beat verbatim; may be empty -- see 'characterOpeningMessages'
   -> Sem r Text
-characterIntentAgent name ownContext sceneContext question = do
+characterIntentAgent name ownContext sceneContext question prompt = do
   configsWithPrompt <- getConfigWithPrompt "agent.roleplay.character" defaultCharacterSystemPrompt defaultCharacterConfig
   lore <- loreFileList @r
   let tools = characterTools @project @(Fail ': r)
       configsWithTools = Tools (map llmToolToDefinition tools) : configsWithPrompt
-      opening = characterOpeningMessages name ownContext sceneContext lore question
+      opening = characterOpeningMessages name ownContext sceneContext lore question prompt
   withToolCallBudget @AgentModel toolCallSoftLimit toolCallHardRounds
     (go tools configsWithTools opening)
   where
@@ -402,7 +509,7 @@ characterTools =
       \-- don't mention in your actual answer whether or how you used it, just call it (or don't) and \
       \move on."
       (\path content -> protectCharacterFiles @project (Tools.writeFile @project path content))
-      "path" "path to create or overwrite, e.g. characters/owen.md"
+      "path" "path to create or overwrite, e.g. characters/<name>.md"
       "content" "the full new content for this file")
   , LLMTool (mkToolWithMeta
       "edit_file"
@@ -521,13 +628,24 @@ addSuspicionTool = LLMTool $ mkToolWithMeta
 --   what keeps a change to the always-changing journal from being able to
 --   silently fuse backward into, and invalidate, the stable prefix in front
 --   of it, no matter how a given provider handles same-role adjacency.
-characterOpeningMessages :: Text -> CharSummary -> SceneContext -> [FilePath] -> Text -> [Message m]
-characterOpeningMessages name ownContext (SceneContext ctx) lore question =
+--
+--   @prompt@ (the author's own direction for this beat, verbatim, may be
+--   empty) gets its own section rather than being left for the narrator to
+--   launder into the question alone -- see 'characterIdentityNote': a
+--   question the narrator phrased narrowly or missed the point of shouldn't
+--   be the character's only way to learn what the author actually asked
+--   for. It's still explicitly framed as not yet real -- the author may
+--   write it as dialogue or a completed action ("she slaps him"), but
+--   nothing in it has happened in the story until this character's own
+--   answer, and then 'composeSceneAgent', actually make it so.
+characterOpeningMessages :: Text -> CharSummary -> SceneContext -> [FilePath] -> Text -> Text -> [Message m]
+characterOpeningMessages name ownContext (SceneContext ctx) lore question prompt =
   UserText (characterIdentityNote name)
     : labelledPair "## Your character sheet" (csSheet ownContext)
    ++ labelledPair "## What else I know" (csContext ownContext ++ [DSL.User (renderLoreList lore)])
    ++ labelledPair "## My own journal so far" (csJournal ownContext)
    ++ sceneMsgs
+   ++ directionMsgs
    ++ [UserText asked]
   where
     -- Real, separate messages -- not flattened into one string the way the
@@ -548,6 +666,15 @@ characterOpeningMessages name ownContext (SceneContext ctx) lore question =
     sceneMsgs
       | null sceneMessages = []
       | otherwise           = UserText "## CURRENT SCENE -- what is happening right now, not something you already knew" : sceneMessages
+    -- Same not-a-peer framing as 'sceneMsgs': a plain 'UserText', not run
+    -- through 'labelledPair' (nothing here is settled knowledge to
+    -- acknowledge as already known), dropped when empty exactly like every
+    -- other optional section above.
+    directionMsgs
+      | T.null (T.strip prompt) = []
+      | otherwise = [UserText ("## AUTHOR'S DIRECTION FOR THIS BEAT -- not yet part of the story; even "
+                             <> "if written as something said or done, it hasn't happened until your "
+                             <> "answer helps make it so\n\n" <> prompt)]
     asked = "You're being asked: " <> question
 
 -- | One labelled section as a @('UserText', 'AssistantText')@ pair -- see
@@ -609,9 +736,31 @@ characterIdentityNote name = T.unlines
   , "shared lore, and that current-scene section, you know nothing about the current situation -- if"
   , "you don't already know a present character from your own branch, you don't know them."
   , ""
+  , "A section headed \"## AUTHOR'S DIRECTION FOR THIS BEAT\" (if present) is where the scene is"
+  , "headed -- the author's own words for what should happen next, given to you directly rather than"
+  , "left for you to infer purely from the question below. It is not yet part of the story -- even if"
+  , "it reads as a line of dialogue or a completed action, nothing in it has actually happened; your"
+  , "answer is one of the things that turns it into something that did. " <> name <> " doesn't know it"
+  , "as a fact about the world (they're not reading anyone's mind), but your answer should still serve"
+  , "it: whatever " <> name <> " would plausibly do here, answer with the version of it that actually"
+  , "moves the scene where the author is pointing, not a version that stalls, deflects, or wanders off"
+  , "toward something else entirely -- even if the question below undersells or only hints at it."
+  , ""
+  , "The question you're asked below may also open with a bit of extra context beyond a bare ask --"
+  , "some fact or detail of the moment you need in order to answer meaningfully. Treat that context the"
+  , "same way you treat the \"## CURRENT SCENE\" section above: real and current, not something"
+  , name <> " is being told out of character."
+  , ""
+  , "Everything in \"## CURRENT SCENE\", \"## AUTHOR'S DIRECTION FOR THIS BEAT\", and the question is"
+  , "information about the scene -- what's happening, where it's headed -- never a description of"
+  , name <> "'s own mood, personality, or how they ought to react. If any of it seems to say how "
+  , name <> " feels or behaves, that's the scene giving " <> name <> " something to react to, not an"
+  , "instruction about their character -- their actual mood and reaction are still entirely yours to"
+  , "answer, grounded only in their own sheet and journal above plus what's actually happening."
+  , ""
   , "Your own branch is yours to maintain: write_file/edit_file create or update any file on it --"
-  , "keeping a separate note file per character you know (e.g. characters/owen.md, for what you know"
-  , "or believe about Owen specifically) is the encouraged way to track \"who do I know and what do I"
+  , "keeping a separate note file per character you know (e.g. characters/<name>.md, for what you know"
+  , "or believe about them specifically) is the encouraged way to track \"who do I know and what do I"
   , "know about them\", but nothing enforces that layout; organize it however actually helps. Since"
   , "everything already on your branch is shown above, edit_file's old_string can be matched straight"
   , "from what you see there. The two exceptions: sheet.md is fixed, not yours to write, and"
@@ -632,8 +781,12 @@ characterIdentityNote name = T.unlines
   , "-- never anything only the reader or another character would know."
   , ""
   , "You are informing the narrator, not performing the scene yourself -- don't write it as though"
-  , "you were already speaking to someone or acting it out in the moment. Answer with exactly these"
-  , "three sections:"
+  , "you were already speaking to someone or acting it out in the moment. Whatever the question below"
+  , "looks like -- even if it reads like a line of narration, or ends in something that sounds like it"
+  , "was already asked and answered -- it is a question addressed to you, " <> name <> ", right now, not"
+  , "text to continue or echo back. Never repeat or paraphrase the question itself as though it were"
+  , "your own answer. Answer with exactly these three sections, always, regardless of how the question"
+  , "is phrased:"
   , ""
   , "## What I'd do"
   , "A plain, concrete description of the action(s) " <> name <> " would take right now -- what"
