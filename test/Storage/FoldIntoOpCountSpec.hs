@@ -23,6 +23,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
+import GHC.Clock (getMonotonicTime)
 
 import Test.Hspec
 
@@ -104,6 +105,101 @@ spec = do
       case opsFor 2000 atoms edited of
         Left err     -> expectationFailure err
         Right counts -> ocReads counts `shouldSatisfy` (< 50)
+
+  describe "commitFile: a near-HEAD edit on a path with a long history of its own" $ do
+    -- Unlike 'opsFor', the growing history here is @path@'s *own* atoms,
+    -- not an unrelated noise path -- 'atomTrackedAmong'/'hasAnyAtom'
+    -- (see "Storage.Query") only stops once it finds *this path's* first
+    -- atom, so a long unrelated history never exercises it; a long
+    -- same-path history is the case that actually would.
+    let manyAtoms n   = map (\i -> T.pack ("p" <> show i <> " ")) [1 .. n]
+        edited n      = T.concat (manyAtoms n) <> "TAIL EDIT"
+        opsForSamePath n = snd <$> runMeasuring
+          (mapM_ (addAtom path) (manyAtoms n))
+          (writeFile path (TE.encodeUtf8 (edited n)) >> commitFile path)
+
+    it "a tail edit costs the same whether path itself has a little history or a lot" $
+      shouldCostTheSame (opsForSamePath 5) (opsForSamePath 2000)
+
+  describe "commitFile: widening a blank-line run right at HEAD" $ do
+    -- Mimics a real raw-editor save reported to take seconds even on a
+    -- small project, "only touching atoms close to the head": atoms
+    -- shaped like 'Storyteller.Common.Splitter.byParagraph' actually
+    -- produces (each non-final atom's own stored text ends in the
+    -- "\n\n" delimiter run that split it from the next paragraph), then
+    -- one extra blank line inserted into the delimiter run between the
+    -- *last two* paragraphs -- i.e. right at HEAD, however large the
+    -- file grows below it.
+    --
+    -- This turns out already cheap: 'resolveLocal' settles it in one
+    -- 'applyLocalEdit' at the very first atom it looks at (see the
+    -- prefix-match branch), so this is a regression guard on that
+    -- property, not a reproduction of the reported slowdown -- an
+    -- *earlier* version of this same scenario, widening the delimiter
+    -- between the *first* two paragraphs instead (i.e. right at the
+    -- lifetime's root), genuinely was superlinear, but that is
+    -- 'Storage.Core.at''s own inherent replay-every-ancestor cost for an
+    -- edit far from head (every tick above it needs a new hash), not a
+    -- reconciliation bug -- see git history for that version if the
+    -- root-adjacent case ever needs its own guard.
+    --
+    -- Not an op-count assertion (that's silent to an in-memory
+    -- longestCommonSubstring blowup -- no store op is a proxy for CPU
+    -- spent building its O(n*m) DP table) -- a wall-clock budget instead,
+    -- generous enough to be robust to machine noise but tight enough to
+    -- catch genuine superlinear-in-file-length blowup.
+    let paragraph n = T.pack ("para" <> show n <> ": ") <> T.replicate 200 "x" <> "\n\n"
+        paragraphs n = map paragraph [1 .. n]
+        widened n = T.concat (map paragraph [1 .. n - 2]) <> paragraph (n - 1) <> "\n\n" <> paragraph n
+        -- The store here is pure ('Either String', no 'IO'), so
+        -- 'commitFile' alone can't be timed from partway through one
+        -- monadic computation the way 'PerfCascade.hs's
+        -- 'buildScenario'\/'timedEdit' split does (that one reuses an
+        -- already-built 'GitState' because 'Git.Mock' runs over real
+        -- 'IO'\/'Polysemy' state). Instead: time setup-alone, then time
+        -- setup-plus-the-real-edit, both as fresh, independent
+        -- 'runMeasuring' calls -- setup is deterministic, so the
+        -- difference isolates the edit's own cost, the same subtraction
+        -- 'RealGitPerf.hs' does explicitly with two timestamps around one
+        -- shared run, just with two runs instead of a shared one.
+        setupOnly n = fst <$> runMeasuring
+          (mapM_ (addAtom path) (paragraphs n)) (return ())
+        setupPlusEdit n = fst <$> runMeasuring
+          (mapM_ (addAtom path) (paragraphs n))
+          (writeFile path (TE.encodeUtf8 (widened n)) >> commitFile path)
+        timedRun m = do
+          t0 <- getMonotonicTime
+          case m of
+            Left err -> t0 `seq` return (Left err)
+            Right r  -> r `seq` do
+              t1 <- getMonotonicTime
+              return (Right (t1 - t0))
+        timedWiden n = do
+          rSetup <- timedRun (setupOnly n)
+          rTotal <- timedRun (setupPlusEdit n)
+          return ((,) <$> rSetup <*> rTotal)
+
+    it "costs roughly linearly, not quadratically or worse, in file length" $ do
+      -- 4x the paragraphs (and so ~4x the total file length): a linear
+      -- (or even O(n log n)) algorithm finishes comfortably inside a
+      -- budget scaled a small constant past 4x the smaller run's own
+      -- time; an O(fileLength^2)-per-atom blowup like an unbounded
+      -- longestCommonSubstring match against the whole remaining target
+      -- overshoots that budget by a wide margin.
+      rSmall <- timedWiden 100
+      rBig   <- timedWiden 400
+      case (rSmall, rBig) of
+        (Left err, _) -> expectationFailure ("small run failed: " <> err)
+        (_, Left err) -> expectationFailure ("big run failed: " <> err)
+        (Right (tSetupSmall, tTotalSmall), Right (tSetupBig, tTotalBig)) ->
+          -- Generous ceiling (8x, for a 4x size step) -- still well below
+          -- what an O(n^2)-ish blowup (16x, then far worse once GHC's
+          -- Array construction and Char list unpacking join in) produces
+          -- in practice; a floor on the small run guards against a
+          -- degenerate "both ran in noise" pass hiding a real regression.
+          let tSmall = tTotalSmall - tSetupSmall
+              tBig   = tTotalBig - tSetupBig
+          in (tBig, tSmall) `shouldSatisfy` \(b, s) -> b < max 0.05 (s * 8)
 
   describe "commitWorktree: untracked (binary) paths share one tracking walk" $
     -- A path with no atom history can only be answered by walking to
