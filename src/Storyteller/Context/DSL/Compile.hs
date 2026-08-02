@@ -1265,9 +1265,15 @@ readConversation = fn1 go
       turns <- liftSem (conversationTurns @branch path)
       pure (leafValue (map turnToMessage turns))
 
+-- | 'NoteTurn' folds into 'User' rather than getting its own case: 'Message'
+--   is deliberately exactly three constructors (see its own Haddock), and a
+--   note is still the author's own words, just addressed to the margin
+--   rather than to the model -- tagged so a reader downstream can still
+--   tell it apart from an actual turn of dialogue.
 turnToMessage :: Turn -> Message
 turnToMessage (UserTurn t)      = User t
 turnToMessage (AssistantTurn t) = Assistant t
+turnToMessage (NoteTurn t)      = User ("[note] " <> t)
 
 -- | Splices @toInsert@ into @conv@ at a bounded depth from the end (2 to 4
 --   turns, a project's own cache-vs-freshness tuning, baked in here the

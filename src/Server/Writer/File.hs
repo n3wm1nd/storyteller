@@ -378,7 +378,7 @@ chatConverse path prompt = do
   let history = historyFromFileTicks ticks
   _ <- runStorage @Main (Tick.storeAs (Prompt path prompt))
   info $ "chat agent starting: " <> T.pack path
-  added <- chatAgent @(BranchTag Main) (history ++ [UserText prompt])
+  added <- chatAgent @(BranchTag Main) @Main (history ++ [UserText prompt])
   let reply = mconcat [t | AssistantText t <- added]
   _ <- runStorage @Main (Ops.append path reply)
   info $ "chat agent done: " <> T.pack path
@@ -427,7 +427,7 @@ chatConverseSwipe path promptTid0 atomTid newPromptText = do
       history = historyFromFileTicks before
   editChatPrompt promptTid newPromptText
   info $ "chat agent regenerating (swipe): " <> T.pack path
-  added <- chatAgent @(BranchTag Main) (history ++ [UserText newPromptText])
+  added <- chatAgent @(BranchTag Main) @Main (history ++ [UserText newPromptText])
   let reply = mconcat [t | AssistantText t <- added]
   _ <- runStorage @Main (Swipe.pushSwipe (Ops.ObjectHash (unTickId atomTid)) reply)
   info $ "chat agent regen (swipe) done: " <> T.pack path

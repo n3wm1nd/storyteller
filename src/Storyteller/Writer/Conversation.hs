@@ -30,13 +30,13 @@ module Storyteller.Writer.Conversation
   , conversationTurns
   ) where
 
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Polysemy
 
 import qualified Storage.Tick as Tick
-import Storyteller.Common.Types (ftHidden)
+import Storyteller.Common.Types (Note(..), ftHidden)
 import Storyteller.Core.Atom (Atom)
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Writer.Agent (Prompt)
@@ -45,7 +45,19 @@ import Storyteller.Writer.Agent (Prompt)
 --   the raw 'Storage.Tick.FileTick': @ftKind@\/@ftFields@ are storage
 --   vocabulary, and a caller asking \"what was said\" should not have to
 --   know them.
-data Turn = UserTurn Text | AssistantTurn Text
+--
+--   'NoteTurn' is the author's own margin commentary attached to the
+--   ticks around it ('Storyteller.Common.Types.Note') -- included here,
+--   unlike every other non-prompt\/non-atom tick kind, because a note is
+--   itself something the author said about the conversation, just not
+--   *to* the model. 'turnsFromFileTicks' keeps it in tick order rather
+--   than grouping all notes together, so a reader (human or model) sees a
+--   note exactly where the author left it relative to the exchange it's
+--   commenting on. Its text already has whatever it quotes inlined
+--   ('quoteRefs') -- a bare 'Storyteller.Core.Types.TickId' means nothing
+--   to a model (or a human skimming a tool result), only the referenced
+--   text itself does.
+data Turn = UserTurn Text | AssistantTurn Text | NoteTurn Text
   deriving (Eq, Show)
 
 -- | The whole derivation, pure: prompts are the user's turns, atoms the
@@ -87,14 +99,34 @@ data Turn = UserTurn Text | AssistantTurn Text
 --   time" but "produce nothing/garbage here", which is a bad thing to
 --   anchor the model's own voice to right before its next continuation.
 turnsFromFileTicks :: [Tick.FileTick] -> [Turn]
-turnsFromFileTicks = concatMap turnOf . filter (not . ftHidden)
+turnsFromFileTicks allTicks = concatMap turnOf (filter (not . ftHidden) allTicks)
   where
     turnOf ft
       | Tick.ftIsType @Prompt ft = [UserTurn (Tick.ftMessage ft)]
       | Tick.ftIsType @Atom   ft =
           let content = T.dropWhileEnd (== '\n') (fromMaybe (Tick.ftMessage ft) (Tick.ftContent ft))
           in [AssistantTurn (if T.null (T.strip content) then blankAssistantPlaceholder else content)]
+      | Tick.ftIsType @Note   ft = [NoteTurn (quoteRefs allTicks ft)]
       | otherwise                = []
+
+-- | A note's own text, with whatever it refers to ('Tick.ftRefs') quoted
+--   ahead of it -- each ref resolved by tick id against @allTicks@ (a
+--   ref to something outside the file's own history, or already dropped
+--   -- e.g. hidden -- resolves to nothing and is silently skipped, same
+--   as a note with no refs at all).
+quoteRefs :: [Tick.FileTick] -> Tick.FileTick -> Text
+quoteRefs allTicks ft
+  | null quoted = Tick.ftMessage ft
+  | otherwise   = T.intercalate "\n" quoted <> "\n" <> Tick.ftMessage ft
+  where
+    quoted = mapMaybe quoteOf (Tick.ftRefs ft)
+    quoteOf refId = do
+      target <- lookupTick refId
+      let text = fromMaybe (Tick.ftMessage target) (Tick.ftContent target)
+      pure ("> " <> T.replace "\n" "\n> " (T.strip text))
+    lookupTick refId = case filter ((== refId) . Tick.ftTickId) allTicks of
+      (t : _) -> Just t
+      []      -> Nothing
 
 -- | Substituted for an 'AssistantTurn' whose real content came out blank
 --   (see 'turnsFromFileTicks'). Deliberately not @"..."@ or silence -- a

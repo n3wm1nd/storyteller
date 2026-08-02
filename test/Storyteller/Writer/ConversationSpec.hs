@@ -10,7 +10,9 @@ import Storyteller.Writer.Conversation (Turn(..), turnsFromFileTicks)
 
 -- | A minimal atom 'FileTick' -- only the fields 'turnsFromFileTicks'
 --   itself actually reads ('ftKind', 'ftContent', 'ftHidden' via
---   'ftFields') are meaningful here.
+--   'ftFields') are meaningful here. @ftTickId@ defaults to @"t"@, fine
+--   as long as nothing in the same list needs to reference it by id --
+--   see 'idTick' for the cases (note refs) that do.
 atomTick :: T.Text -> FileTick
 atomTick content = FileTick
   { ftTickId  = "t"
@@ -24,6 +26,12 @@ atomTick content = FileTick
 
 promptTick :: T.Text -> FileTick
 promptTick msg = (atomTick msg) { ftKind = "prompt", ftContent = Nothing }
+
+idTick :: T.Text -> FileTick -> FileTick
+idTick tid ft = ft { ftTickId = tid }
+
+noteTick :: T.Text -> [T.Text] -> FileTick
+noteTick msg refs = (atomTick msg) { ftKind = "note", ftContent = Nothing, ftRefs = refs }
 
 spec :: Spec
 spec = describe "turnsFromFileTicks" $ do
@@ -66,3 +74,47 @@ spec = describe "turnsFromFileTicks" $ do
         , AssistantTurn "(No text was written for this turn.)"
         , UserTurn "Try again."
         ]
+
+  it "surfaces a note with no refs as a plain NoteTurn" $
+    turnsFromFileTicks [noteTick "watch the pacing here" []]
+      `shouldBe` [NoteTurn "watch the pacing here"]
+
+  it "keeps a note in tick order relative to the exchange it comments on" $
+    turnsFromFileTicks
+      [ promptTick "Write the opening."
+      , atomTick "The door creaked open."
+      , noteTick "too melodramatic" []
+      , promptTick "Try again."
+      ]
+      `shouldBe`
+        [ UserTurn "Write the opening."
+        , AssistantTurn "The door creaked open."
+        , NoteTurn "too melodramatic"
+        , UserTurn "Try again."
+        ]
+
+  it "quotes a note's single ref by resolved content ahead of its own text" $
+    turnsFromFileTicks
+      [ idTick "a1" (atomTick "The door creaked open.")
+      , noteTick "too melodramatic" ["a1"]
+      ]
+      `shouldBe`
+        [ AssistantTurn "The door creaked open."
+        , NoteTurn "> The door creaked open.\ntoo melodramatic"
+        ]
+
+  it "quotes every ref a note carries, in ref order" $
+    turnsFromFileTicks
+      [ idTick "p1" (promptTick "Write the opening.")
+      , idTick "a1" (atomTick "The door creaked open.")
+      , noteTick "these two don't match" ["p1", "a1"]
+      ]
+      `shouldBe`
+        [ UserTurn "Write the opening."
+        , AssistantTurn "The door creaked open."
+        , NoteTurn "> Write the opening.\n> The door creaked open.\nthese two don't match"
+        ]
+
+  it "silently drops a ref that doesn't resolve to any tick in the file" $
+    turnsFromFileTicks [noteTick "orphaned ref" ["missing"]]
+      `shouldBe` [NoteTurn "orphaned ref"]

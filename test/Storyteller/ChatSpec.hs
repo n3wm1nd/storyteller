@@ -52,14 +52,25 @@ spec = describe "historyFromFileTicks" $ do
       , AssistantText "second answer"
       ]
 
-  it "drops non-conversational tick kinds (notes, presence) rather than surfacing them" $ do
+  it "drops non-conversational tick kinds other than notes (e.g. presence) rather than surfacing them" $ do
     let ticks =
           [ tick "prompt"   "hi" Nothing
           , tick "presence" "ignored" Nothing
-          , tick "note"     "ignored" Nothing
           , tick "atom"     "reply" Nothing
           ]
     historyFromFileTicks ticks `shouldBe` [UserText "hi", AssistantText "reply"]
+
+  it "surfaces a note tick as a tagged UserText rather than dropping it" $ do
+    let ticks =
+          [ tick "prompt" "hi" Nothing
+          , tick "note"   "watch the pacing here" Nothing
+          , tick "atom"   "reply" Nothing
+          ]
+    historyFromFileTicks ticks `shouldBe`
+      [ UserText "hi"
+      , UserText "[note] watch the pacing here"
+      , AssistantText "reply"
+      ]
 
   it "drops ticks tagged hidden rather than surfacing them to a model" $ do
     let ticks =
