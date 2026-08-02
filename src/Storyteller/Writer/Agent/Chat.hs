@@ -12,10 +12,10 @@
 --
 -- Unlike 'Storyteller.Writer.Agent.Continuation.proseAgent', this agent
 -- gets no context handed to it up front — by default it sees nothing but
--- the conversation itself. Instead it can find and read files on the
--- current branch via tool calls ('glob'/'read_file'), the same
+-- the conversation itself. Instead it can find, read, and now also write
+-- or edit files on the current branch via tool calls, the same
 -- bind-a-real-effect-behind-a-tool pattern
--- 'Storyteller.Writer.Agent.ReplaceTool' uses, and the same read-only
+-- 'Storyteller.Writer.Agent.ReplaceTool' uses, and the same
 -- agent-loop shape as @runix-code@'s @runixCodeAgentLoop@
 -- (@../runix/apps/runix-code/lib/Agent.hs@): query, and if the model called
 -- a tool, execute it and loop; otherwise return the text.
@@ -30,15 +30,19 @@
 -- "the user asked X, the agent said Y" (or a persisted atom, or a rendered
 -- transcript) is the caller's job — see 'Server.Writer.File.chatConverse'.
 --
--- All three tools are @Runix.Tools@'s own 'Tools.glob'/'Tools.readFile'/
--- 'Tools.sedPrint' — reused as-is, same behaviour as every other Runix
--- agent gets, not a reimplementation. @glob@'s pattern (e.g. @\"**\/*\"@ for
--- "everything") subsumes a plain listing, so there's no separate
--- list-files tool. @grep@/@diff@ aren't included: both need a real
--- filesystem path underneath ('Runix.Grep'/@diff@ shell out), which a
--- git-branch's virtual filesystem doesn't have — a pure, in-memory grep
--- would need its own effect the way 'Storyteller.Core.Git' gave 'Glob' one
--- (see below), not yet worth it without a concrete need.
+-- All five tools are @Runix.Tools@'s own 'Tools.glob'/'Tools.readFile'/
+-- 'Tools.sedPrint'/'Tools.writeFile'/'Tools.editFile' — reused as-is, same
+-- behaviour as every other Runix agent gets, not a reimplementation.
+-- @glob@'s pattern (e.g. @\"**\/*\"@ for "everything") subsumes a plain
+-- listing, so there's no separate list-files tool. @grep@/@diff@ aren't
+-- included: both need a real filesystem path underneath ('Runix.Grep'/
+-- @diff@ shell out), which a git-branch's virtual filesystem doesn't have
+-- — a pure, in-memory grep would need its own effect the way
+-- 'Storyteller.Core.Git' gave 'Glob' one (see below), not yet worth it
+-- without a concrete need. There's no path carve-out the way
+-- 'Storyteller.Writer.Agent.Roleplay' protects @sheet.md@\/@journal.md@ for
+-- its character subagent — the author talking to their own file has no
+-- analogous file it shouldn't be allowed to touch.
 --
 -- Message order matters here for two reasons: correctness (a real
 -- conversation has to replay in the order it happened) and prompt-cache
@@ -77,7 +81,7 @@ import qualified Data.Text as T
 import Polysemy
 import Polysemy.Fail
 
-import Runix.FileSystem (FileSystem, FileSystemRead)
+import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (queryLLM)
 import Runix.Logging (Logging, info)
 import qualified Runix.Tools as Tools
@@ -107,7 +111,7 @@ import Storyteller.Writer.Conversation (Turn(..), turnsFromFileTicks)
 --   exploration looks identical to one long hang.
 chatAgent
   :: forall branch r
-  .  (LLMs r, Members '[PromptStorage, FileSystem branch, FileSystemRead branch, Fail, Logging] r)
+  .  (LLMs r, Members '[PromptStorage, FileSystem branch, FileSystemRead branch, FileSystemWrite branch, Fail, Logging] r)
   => [Message AgentModel]        -- ^ context to send: history plus this turn's new message(s) so far
   -> Sem r [Message AgentModel]  -- ^ everything this call added on top of the given context
 chatAgent context = go (1 :: Int) context
@@ -140,7 +144,9 @@ defaultChatSystemPrompt =
   \use glob (e.g. \"**/*\" for everything), read_file, and sed_print (for a \
   \line range out of a long file) to look at the rest of the project \
   \whenever you need to, rather than assuming or guessing at their \
-  \contents."
+  \contents. You can also use write_file and edit_file to create or change \
+  \files yourself when the author asks you to — but never write or edit a \
+  \file the author hasn't asked you to touch, and say what you changed."
 
 -- | Compiled-in sampling default for @agent.chat@ -- see @$key.llmsettings.
 --   yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'. A conversational
@@ -150,19 +156,24 @@ defaultChatConfig :: [ModelConfig AgentModel]
 defaultChatConfig = [MaxTokens 2048, Temperature 0.8]
 
 -- | The model's window into the branch: find paths by pattern, read one
---   back by exact path, or pull just a line range out of a long one.
---   Deliberately read-only — no write access, no grep — this agent
---   discusses, it doesn't edit. All three are 'Runix.Tools' functions
+--   back by exact path or a line range out of a long one, and now also
+--   create/overwrite ('Tools.writeFile') or make a targeted edit
+--   ('Tools.editFile') — this agent can act on the story on the author's
+--   behalf, not just discuss it. No @grep@, same reason as the module
+--   header: a git branch's virtual filesystem has no real path underneath
+--   for it to shell out against. All five are 'Runix.Tools' functions
 --   already carrying their own name/description via their result types'
 --   'ToolFunction' instances, so no 'mkTool' wrapper needed.
 chatTools
   :: forall branch r
-  .  Members '[FileSystem branch, FileSystemRead branch, Fail] r
+  .  Members '[FileSystem branch, FileSystemRead branch, FileSystemWrite branch, Fail] r
   => [LLMTool (Sem r)]
 chatTools =
   [ LLMTool (Tools.glob @branch)
   , LLMTool (Tools.readFile @branch)
   , LLMTool (Tools.sedPrint @branch)
+  , LLMTool (Tools.writeFile @branch)
+  , LLMTool (Tools.editFile @branch)
   ]
 
 -- | A file's own tick chain, oldest-first, already interleaves the user's
