@@ -4,6 +4,17 @@ import { summaryKindIsIncremental } from "./library";
 
 export type AnnotationMode = "hidden" | "dots" | "expanded";
 
+// Rough row estimate for an edit textarea — assistant replies/atoms can run
+// to paragraphs, so a fixed row count either clips them or wastes space on a
+// one-line prompt. Chars-per-row is a guess (the box's actual width varies
+// with panel size), not a measurement — good enough for an initial size,
+// and 'resize: vertical' on the textarea covers the rest.
+export function estimateRows(text: string): number {
+  const CHARS_PER_ROW = 60;
+  const total = text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / CHARS_PER_ROW)), 0);
+  return Math.min(24, Math.max(3, total));
+}
+
 export function tickChain(ticks: Record<string, WireTick>, head: string | null): WireTick[] {
   if (!head || !ticks[head]) return [];
   const chain: WireTick[] = [];

@@ -299,12 +299,21 @@ roleplayWriter path prompt = do
       -- and the final ref-carrying journal commit both do, so those two
       -- stay inside one 'runBranchAndFS' scope. Resolves 'context.character'
       -- the same override-aware way 'activeCharacterContext' does.
+      --
+      -- 'Ops.commitWorktree' runs before the journal atom itself, same
+      -- reconciliation 'chatConverse' needs and for the same reason (see
+      -- its own Haddock): a write_file/edit_file/add_thought/add_suspicion
+      -- tool call only ever lands in the ambient tree, and
+      -- 'Ops.addAtomWithRefs' below only ever commits 'journalPath' -- any
+      -- other path the model touched (e.g. characters/*.md) would
+      -- otherwise never reach a real commit at all.
     reflectFor narrative sceneRef character@(Character (BranchName name)) = do
       let ident = branchDisplayName name
       charVal    <- resolveContext1 @Main "context.character" ident
       ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
       runBranchAndFS @ActiveChar (BranchName name) $ do
         entry <- characterReflectAgent @(BranchTag ActiveChar) (characterLabel character) ownContext narrative
+        void $ runStorage @ActiveChar Ops.commitWorktree
         void $ runStorage @ActiveChar (Ops.addAtomWithRefs [sceneRef] journalPath entry)
 
 -- | "Correct this": delete an instruction group -- 'promptTid' (a
@@ -370,6 +379,22 @@ chatFixer path prompt _pinnedItems targets = do
 --   pieces get concatenated into the atom, same as before — the tool
 --   exploration stays out of the persisted chain.
 --
+--   'Ops.commitWorktree' runs before the reply's own atom is appended: a
+--   @write_file@\/@edit_file@ tool call only ever lands in the *ambient*
+--   working tree ('Runix.FileSystem.writeFile' -- 'Storage.Core.writeFile'
+--   underneath -- ends there, full stop), never in a real commit on its
+--   own. Nothing else in this function's own 'runStorage' scope would ever
+--   reconcile it: 'Ops.append' below commits an 'Storyteller.Core.Atom.Atom'
+--   scoped to @path@ alone (see 'Storage.Core.store'), which only splices
+--   *that* path into the parent tree, so a write to any other path made
+--   mid-loop would otherwise sit in the ambient tree and vanish once this
+--   scope ends, exactly the way 'Storage.Reconcile.saveFile's own
+--   @writeFile@\/@commitFile@ pairing (and 'Storyteller.Writer.Agent.
+--   ReplaceTool.reworkWholeFile's @Ops.commitFiles@) exist to prevent —
+--   scoped to every ambient path here, not just one, since which paths (if
+--   any) the model actually touched isn't known ahead of the call the way
+--   it is for those.
+--
 --   History is read before the new prompt tick is stored, so it never
 --   includes the message currently being answered.
 chatConverse :: (FileOpen r, SessionEffects r) => FilePath -> T.Text -> Sem r ()
@@ -380,6 +405,7 @@ chatConverse path prompt = do
   info $ "chat agent starting: " <> T.pack path
   added <- chatAgent @(BranchTag Main) @Main (history ++ [UserText prompt])
   let reply = mconcat [t | AssistantText t <- added]
+  _ <- runStorage @Main Ops.commitWorktree
   _ <- runStorage @Main (Ops.append path reply)
   info $ "chat agent done: " <> T.pack path
 
@@ -429,6 +455,9 @@ chatConverseSwipe path promptTid0 atomTid newPromptText = do
   info $ "chat agent regenerating (swipe): " <> T.pack path
   added <- chatAgent @(BranchTag Main) @Main (history ++ [UserText newPromptText])
   let reply = mconcat [t | AssistantText t <- added]
+  -- Same reconciliation 'chatConverse' needs and for the same reason (see
+  -- its own Haddock) -- a regenerate can call write_file/edit_file too.
+  _ <- runStorage @Main Ops.commitWorktree
   _ <- runStorage @Main (Swipe.pushSwipe (Ops.ObjectHash (unTickId atomTid)) reply)
   info $ "chat agent regen (swipe) done: " <> T.pack path
 

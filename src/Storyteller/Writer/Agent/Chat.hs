@@ -156,11 +156,17 @@ defaultChatSystemPrompt =
   \asked you to touch, and say what you changed."
 
 -- | Compiled-in sampling default for @agent.chat@ -- see @$key.llmsettings.
---   yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'. A conversational
---   reply, not a whole chapter or a single-atom edit -- middling budget,
---   middling temperature (natural, but not creative-writing-varied).
+--   yaml@ overrides via 'Storyteller.Core.Prompt.getConfig'. Middling
+--   temperature (natural, but not creative-writing-varied). @MaxTokens@ is
+--   sized well past what a plain conversational reply needs, the same
+--   reasoning as 'Storyteller.Writer.Agent.Roleplay.defaultCharacterConfig':
+--   this agent now runs a real tool loop ('chatTools' -- glob/read/write/
+--   edit/read_conversation), and the cap is shared with a reasoning
+--   model's thinking budget on *every* turn of that loop, not just the
+--   final one, so a cap sized only for the visible reply can starve a
+--   mid-loop tool-call turn (or the concluding text) of room.
 defaultChatConfig :: [ModelConfig AgentModel]
-defaultChatConfig = [MaxTokens 2048, Temperature 0.8]
+defaultChatConfig = [MaxTokens 6000, Temperature 0.8]
 
 -- | The model's window into the branch: find paths by pattern, read one
 --   back by exact path or a line range out of a long one, and now also

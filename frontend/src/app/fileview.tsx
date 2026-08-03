@@ -10,7 +10,7 @@ import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "tiptap-markdown";
 import { useFloating, offset, flip, shift, autoUpdate } from "@floating-ui/react";
 import { type WireTick, useServerCache } from "@/lib/serverCacheStore";
-import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks } from "@/lib/utils";
+import { type AnnotationMode, characterDisplayName, characterColor, splitQuestionAnswer, tailLeadTicks, estimateRows } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
 import { parseCommand, COMMANDS } from "@/lib/commands";
 import {
@@ -76,7 +76,7 @@ export interface PresenceBar {
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
-const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+export const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   p: ({ children }) => (
     <p style={{ margin: "0 0 0.9em", fontSize: 13, lineHeight: 1.8, fontFamily: "Georgia, serif", color: "var(--text-body)" }}>
       {children}
@@ -105,7 +105,7 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
 // Tighter variant for narrow, dense contexts (the journal sidebar panel) —
 // same tags, much less whitespace and a smaller size tuned for a ~200px
 // column rather than a full reading pane.
-const compactMdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+export const compactMdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   p: ({ children }) => <p style={{ margin: "0 0 0.35em", fontSize: 11, lineHeight: 1.45, color: "var(--text-body)" }}>{children}</p>,
   h1: ({ children }) => <h1 style={{ margin: "0 0 0.25em", fontSize: 13, color: "var(--text-heading)", fontWeight: 600 }}>{children}</h1>,
   h2: ({ children }) => <h2 style={{ margin: "0 0 0.25em", fontSize: 12, color: "var(--text-heading)", fontWeight: 600 }}>{children}</h2>,
@@ -230,9 +230,9 @@ const AtomBlock = memo(function AtomBlock({ atom, isLast, inContext, swipeCount,
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitEdit(); }
               if (e.key === "Escape") setEditing(false);
             }}
+            rows={estimateRows(draft)}
             style={{
-              width: "100%", boxSizing: "border-box",
-              minHeight: compact ? 44 : 80, resize: "vertical",
+              width: "100%", boxSizing: "border-box", resize: "vertical",
               background: "var(--surface-deep)",
               border: "1px solid var(--amber-border)",
               borderRadius: 4, padding: compact ? "4px 6px" : "6px 8px",
@@ -468,7 +468,7 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 10px" }}>
         <Icon style={{ width: 11, height: 11, color: accentColor, flexShrink: 0 }} />
-        <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85 }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85, whiteSpace: "pre-wrap" }}>
           {expanded ? tick.message : preview}
         </span>
         {expandable && (
@@ -493,11 +493,13 @@ const AnnotationCard = memo(function AnnotationCard({ tick, inContext, onToggleC
 // the plain edit.prompt command (no regeneration side-effect; regenerating
 // is a separate, explicit action on the atoms themselves).
 
-const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }: {
+const PromptHeader = memo(function PromptHeader({ tick, compact, inContext, onToggleContext, onEditPrompt }: {
   tick: WireTick;
   // "dots" mode: one quiet line, chat-style. "expanded" mode: full card,
   // matching AnnotationCard's own visual weight for consistency.
   compact: boolean;
+  inContext: boolean;
+  onToggleContext: (tickId: string) => void;
   onEditPrompt: (tickId: string, content: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -545,8 +547,12 @@ const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }:
     return (
       <div
         onDoubleClick={startEdit}
-        title="Double-click to edit — the instruction that generated what follows"
-        style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0 4px 12px", cursor: "text" }}
+        onClick={(e) => { if (e.ctrlKey || e.metaKey) onToggleContext(tick.tickId); }}
+        title="Double-click to edit, ctrl/cmd-click to select — the instruction that generated what follows"
+        style={{
+          display: "flex", alignItems: "center", gap: 6, margin: "6px 0 4px 12px", cursor: "text",
+          outline: inContext ? "1px solid var(--amber-border)" : "none", outlineOffset: 2, borderRadius: 3,
+        }}
       >
         <Sparkles style={{ width: 10, height: 10, color: "var(--amber)", flexShrink: 0, opacity: 0.7 }} />
         <span style={{
@@ -564,15 +570,17 @@ const PromptHeader = memo(function PromptHeader({ tick, compact, onEditPrompt }:
   return (
     <div
       onDoubleClick={startEdit}
+      onClick={(e) => { if (e.ctrlKey || e.metaKey) { onToggleContext(tick.tickId); return; } if (expandable) setExpanded((v) => !v); }}
       style={{
         margin: "4px 0 10px 12px", borderRadius: 5, padding: "5px 10px",
         background: "var(--amber-wash)", border: "1px solid var(--amber-border)",
+        outline: inContext ? "2px solid var(--amber)" : "none", outlineOffset: 1,
         cursor: expandable ? "pointer" : "text",
       }}
     >
-      <div onClick={() => expandable && setExpanded((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
         <Sparkles style={{ width: 11, height: 11, color: "var(--amber)", flexShrink: 0 }} />
-        <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85 }}>
+        <span style={{ fontSize: 12, color: "var(--amber)", fontStyle: "italic", lineHeight: 1.5, flex: 1, opacity: expanded ? 1 : 0.85, whiteSpace: "pre-wrap" }}>
           {expanded ? tick.message : preview}
         </span>
         {expandable && (
@@ -924,7 +932,10 @@ export function WireTickList({
   // atom — unlike note/character-answer, a prompt reads forward ("here's
   // what was asked for next"), not as commentary trailing what came
   // before, so it's excluded from annotationsFor's backward-anchored
-  // bucket entirely and rendered by PromptHeader instead (see below).
+  // bucket entirely and rendered by PromptHeader instead (see below). A
+  // prompt with no atom yet (mid-flight, or the chain's last tick) has
+  // nothing to key into promptBefore by — it's rendered trailing, from
+  // the loop's final pendingPrompt, once atoms.map is done.
   const promptBefore = new Map<string, WireTick>();
   const leading: WireTick[] = [];
   let lastAtomId: string | null = null;
@@ -1067,6 +1078,8 @@ export function WireTickList({
                     <PromptHeader
                       tick={promptBefore.get(atom.tickId)!}
                       compact={annotationMode === "dots"}
+                      inContext={contextAnnotations.has(promptBefore.get(atom.tickId)!.tickId)}
+                      onToggleContext={onToggleContextAnnotation}
                       onEditPrompt={onEditPrompt}
                     />
                   )}
@@ -1103,6 +1116,15 @@ export function WireTickList({
               </div>
             );
           })}
+          {pendingPrompt && annotationMode !== "hidden" && onEditPrompt && (
+            <PromptHeader
+              tick={pendingPrompt}
+              compact={annotationMode === "dots"}
+              inContext={contextAnnotations.has(pendingPrompt.tickId)}
+              onToggleContext={onToggleContextAnnotation}
+              onEditPrompt={onEditPrompt}
+            />
+          )}
         </div>
       </div>
       <RebaseHandle

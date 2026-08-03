@@ -7,11 +7,12 @@
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { Send, RotateCcw, EyeOff, RefreshCw, Square } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
-import { tickChain } from "@/lib/utils";
+import { tickChain, estimateRows } from "@/lib/utils";
 import { useAutoScroll } from "@/lib/useAutoScroll";
-import { AgentLogStrip, ChatPreviewStrip } from "./fileview";
+import { AgentLogStrip, ChatPreviewStrip, compactMdComponents } from "./fileview";
 import { useServerCache } from "@/lib/serverCacheStore";
 import { CHAT_COMMANDS, parseCommand } from "@/lib/commands";
 import { useCommandAutocomplete, CommandSuggestionPopup } from "./command-autocomplete";
@@ -52,17 +53,6 @@ const typingBubble: React.CSSProperties = {
   border: "1px solid var(--border-subtle)", color: "var(--text-ghost)", fontStyle: "italic",
 };
 
-// Rough row estimate for the edit textarea — assistant replies can run to
-// paragraphs, so a fixed row count either clips them or wastes space on a
-// one-line user prompt. Chars-per-row is a guess (the bubble's actual width
-// varies with panel size), not a measurement — good enough for an initial
-// size, and 'resize: vertical' on the textarea covers the rest.
-function estimateRows(text: string): number {
-  const CHARS_PER_ROW = 60;
-  const total = text.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / CHARS_PER_ROW)), 0);
-  return Math.min(24, Math.max(3, total));
-}
-
 // A chat bubble that turns into a textarea on double-click — same
 // double-click-to-edit / Cmd-Enter-to-commit / Escape-to-cancel convention
 // as fileview.tsx's AtomBlock. Saving is the caller's job (see ChatView):
@@ -70,7 +60,7 @@ function estimateRows(text: string): number {
 // recent user turn instead drops the stale reply and re-asks, since that
 // reply was generated against the text being replaced.
 function EditableBubble({
-  content, align, bubbleStyle, disabled, onSave, onEditingChange,
+  content, align, bubbleStyle, disabled, onSave, onEditingChange, markdown,
 }: {
   content: string;
   align: "flex-start" | "flex-end";
@@ -82,6 +72,12 @@ function EditableBubble({
   // reply in. The caller (ChatView) owns that cap on an outer wrapper div,
   // so editing needs to tell it to lift it for the duration.
   onEditingChange?: (editing: boolean) => void;
+  // Render `content` as markdown once display-only (never while editing —
+  // double-clicking to edit always shows and edits the raw source text, the
+  // same convention fileview.tsx's AtomBlock follows). Off by default: a
+  // user's own prompt is free-form text the author typed, not something an
+  // assistant composed as markdown, so only AssistantReply opts in.
+  markdown?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -140,7 +136,7 @@ function EditableBubble({
 
   return (
     <div onDoubleClick={startEdit} title={disabled ? undefined : "Double-click to edit"} style={{ alignSelf: align, ...bubbleStyle, cursor: disabled ? undefined : "text" }}>
-      {content}
+      {markdown ? <ReactMarkdown components={compactMdComponents}>{content}</ReactMarkdown> : content}
     </div>
   );
 }
@@ -177,6 +173,7 @@ function AssistantReply({ atomTick, disabled, showRegen, swipeCount, onSave, onR
         onEditingChange={setEditing}
         bubbleStyle={{ ...bubbleBase, maxWidth: "100%", background: "var(--surface-deep)", border: "1px solid var(--border-subtle)", color: "var(--text-muted)" }}
         onSave={onSave}
+        markdown
       />
       {!editing && (
         <div style={{ display: "flex", gap: 6 }}>

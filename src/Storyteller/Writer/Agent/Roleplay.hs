@@ -107,8 +107,9 @@ import qualified Runix.Tools as Tools
 import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
 import UniversalLLM.Tools (ToolParameter(..), LLMTool(..), mkToolWithMeta, llmToolToDefinition)
 
+import qualified Storage.Ops as Ops
 import Storyteller.Core.Branch (Branches, withBranch)
-import Storyteller.Core.Git (BranchOp, BranchTag, runStoryFSGit)
+import Storyteller.Core.Git (BranchOp, BranchTag, runStorage, runStoryFSGit)
 import Storyteller.Core.Context (ContextStorage, resolveContext1, runContextValue)
 import qualified Storyteller.Context.DSL.Library as CtxLibrary
 import Storyteller.Core.LLM.Interceptor (withToolCallBudget)
@@ -183,6 +184,16 @@ roleplayAgent sceneContext characters prompt = do
 --   happened -- with 'characterIntentAgent' potentially running several
 --   turns internally, the question/answer pair is the one thing worth
 --   seeing in the log even when nothing else is.
+--
+--   'Ops.commitWorktree' runs right after the tool loop, still inside the
+--   same 'withBranch' scope: a @write_file@\/@edit_file@\/@add_thought@\/
+--   @add_suspicion@ call only ever lands in the *ambient* working tree
+--   (see 'Storyteller.Writer.Agent.Chat.chatConverse's own Haddock for why
+--   that alone never reaches a real commit), and unlike 'chatConverse'
+--   there is no later same-scope 'Storage.Core.store' call here to
+--   piggyback the reconciliation's timing on -- 'askCharacter' returns
+--   nothing that commits anything -- so without this, every one of those
+--   tool calls silently vanished the moment this scope closed.
 askCharacter
   :: forall r
   .  (LLMs r, Members '[PromptStorage, BranchOp Main, Branches, ContextStorage, FileSystem (BranchTag Main), FileSystemRead (BranchTag Main), Fail, Logging] r)
@@ -192,8 +203,9 @@ askCharacter (Character (BranchName branchName)) name sceneContext question prom
   let ident = branchDisplayName branchName
   charVal    <- resolveContext1 @Main "context.character" ident
   ownContext <- runContextValue @Main (CtxLibrary.characterSummaryOf "journalFull" charVal)
-  answer <- withBranch @RoleplayChar (BranchName branchName) $ runStoryFSGit @RoleplayChar (BranchName branchName) $
-    characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question prompt
+  answer <- withBranch @RoleplayChar (BranchName branchName) $ runStoryFSGit @RoleplayChar (BranchName branchName) $ do
+    a <- characterIntentAgent @(BranchTag RoleplayChar) name ownContext sceneContext question prompt
+    a <$ runStorage @RoleplayChar Ops.commitWorktree
   info (name <> " answers: " <> answer)
   pure answer
 
