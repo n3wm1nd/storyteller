@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | The chat agent: discusses the story with the author rather than
 -- continuing its prose. The file's own tick chain already stores the
@@ -84,10 +85,11 @@ import Polysemy.Fail
 
 import Runix.FileSystem (FileSystem, FileSystemRead, FileSystemWrite)
 import Runix.LLM (queryLLM)
+import Runix.LLM.ToolExecution (executeTool)
 import Runix.Logging (Logging, info)
 import qualified Runix.Tools as Tools
 import UniversalLLM (Message(..), ModelConfig(..), getToolCallName)
-import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, executeToolCallFromList, mkToolWithMeta)
+import UniversalLLM.Tools (LLMTool(..), llmToolToDefinition, mkToolWithMeta)
 
 import Storyteller.Core.Branch (BranchOp, runStorage)
 import Storyteller.Core.LLM.Role (LLMs, AgentModel)
@@ -129,7 +131,7 @@ chatAgent context = go (1 :: Int) context
         [] -> return response
         calls -> do
           mapM_ (\tc -> info ("chatAgent: turn " <> T.pack (show turnNo) <> ": calling " <> getToolCallName tc)) calls
-          results <- mapM (executeToolCallFromList tools) calls
+          results <- mapM (executeTool tools) calls
           let added = response ++ map ToolResultMsg results
           rest <- go (turnNo + 1) (ctx ++ added)
           return (added ++ rest)
@@ -187,8 +189,8 @@ defaultChatConfig = [MaxTokens 6000, Temperature 0.8]
 --   @\@(BranchTag Main)@ and @\@Main@ for the two respectively.
 chatTools
   :: forall branch opBranch r
-  .  Members '[BranchOp opBranch, FileSystem branch, FileSystemRead branch, FileSystemWrite branch, Fail] r
-  => [LLMTool (Sem r)]
+  .  Members '[BranchOp opBranch, FileSystem branch, FileSystemRead branch, FileSystemWrite branch] r
+  => [LLMTool (Sem (Fail ': r))]
 chatTools =
   [ LLMTool (Tools.glob @branch)
   , LLMTool (Tools.readFile @branch)
