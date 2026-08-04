@@ -28,7 +28,7 @@ export function schedulePreviewPlaceholder() {
   clearPreviewDelayTimer();
   previewDelayTimer = setTimeout(() => {
     previewDelayTimer = null;
-    if (getServerCache().preview === null) mirrorServerEvent({ preview: { text: "", thinking: "" } });
+    if (getServerCache().preview === null) mirrorServerEvent({ preview: { text: "", thinking: "", progress: null } });
   }, PREVIEW_DELAY_MS);
 }
 
@@ -50,7 +50,7 @@ function scheduleFlush() {
     flushScheduled = false;
     if (pendingText === "" && pendingThinking === "") return;
     const p = getServerCache().preview;
-    if (p) mirrorServerEvent({ preview: { text: p.text + pendingText, thinking: p.thinking + pendingThinking } });
+    if (p) mirrorServerEvent({ preview: { text: p.text + pendingText, thinking: p.thinking + pendingThinking, progress: p.progress } });
     pendingText = "";
     pendingThinking = "";
   });
@@ -62,7 +62,7 @@ export function handleChatPreview(evt: ChatPreviewEvent) {
     case "chat.preview.start":
       pendingText = "";
       pendingThinking = "";
-      mirrorServerEvent({ preview: { text: "", thinking: "" } });
+      mirrorServerEvent({ preview: { text: "", thinking: "", progress: null } });
       break;
     case "chat.preview":
       pendingText += evt.text;
@@ -72,6 +72,12 @@ export function handleChatPreview(evt: ChatPreviewEvent) {
       pendingThinking += evt.text;
       scheduleFlush();
       break;
+    case "chat.preview.progress": {
+      const p = getServerCache().preview;
+      const progress = { processed: evt.processed, total: evt.total, updatedAt: Date.now() };
+      mirrorServerEvent({ preview: p ? { ...p, progress } : { text: "", thinking: "", progress } });
+      break;
+    }
     case "chat.preview.end":
       pendingText = "";
       pendingThinking = "";

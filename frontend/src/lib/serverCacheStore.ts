@@ -115,7 +115,11 @@ export interface ServerCacheState {
   // followed by) anything actually persisted. See WS-PROTOCOL.md. Shared
   // across the branch connection (chargen) and file connections (chat.*) —
   // see lib/chatPreview.ts.
-  preview: { text: string; thinking: string } | null;
+  // 'progress' tracks the most recent chat.preview.progress event (llama.cpp
+  // prefill progress) for the in-flight generation, if the backend sent one.
+  // 'updatedAt' (Date.now() at receipt) lets the UI derive a processed/sec
+  // rate and ETA from successive events — see fileview.tsx's progress bar.
+  preview: { text: string; thinking: string; progress: { processed: number; total: number; updatedAt: number } | null } | null;
 
   // The wire id of the command 'preview' belongs to, if it was sent with
   // one — what a Stop button targets via SessionCommand's "cancel". Same

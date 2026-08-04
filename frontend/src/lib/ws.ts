@@ -137,6 +137,7 @@ export type ChatPreviewEvent =
   | { type: "chat.preview.start" }
   | { type: "chat.preview";          text: string }
   | { type: "chat.preview.thinking"; text: string }
+  | { type: "chat.preview.progress"; processed: number; total: number }
   | { type: "chat.preview.end" };
 
 // ── Shared tick + update types ────────────────────────────────────────────────

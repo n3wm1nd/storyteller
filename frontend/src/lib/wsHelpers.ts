@@ -51,9 +51,12 @@ export function applyFileUpdate(ticks: Record<string, WireTick>, upd: Update): R
   return next;
 }
 
+// Every ChatPreviewEvent variant's tag starts with "chat.preview" and no
+// other event on the wire does — checked against the prefix, not a hand-kept
+// list of tags, so a new preview variant (see ws.ts) can't silently miss
+// this guard the way "chat.preview.progress" once did.
 export function isChatPreviewEvent(evt: { type: string }): evt is ChatPreviewEvent {
-  return evt.type === "chat.preview.start" || evt.type === "chat.preview"
-      || evt.type === "chat.preview.thinking" || evt.type === "chat.preview.end";
+  return evt.type.startsWith("chat.preview");
 }
 
 // Apply a server-computed old->new tickId remap (from a rebase/replace/move)

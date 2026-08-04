@@ -928,24 +928,27 @@ export function WireTickList({
   const atomIds = new Set(ticks.filter((t) => t.kind === "atom").map((t) => t.tickId));
 
   const annotationsFor = new Map<string, WireTick[]>();
-  // The Prompt tick leading each atom group, keyed by that group's first
+  // The Prompt ticks leading each atom group, keyed by that group's first
   // atom — unlike note/character-answer, a prompt reads forward ("here's
   // what was asked for next"), not as commentary trailing what came
   // before, so it's excluded from annotationsFor's backward-anchored
-  // bucket entirely and rendered by PromptHeader instead (see below). A
-  // prompt with no atom yet (mid-flight, or the chain's last tick) has
-  // nothing to key into promptBefore by — it's rendered trailing, from
-  // the loop's final pendingPrompt, once atoms.map is done.
-  const promptBefore = new Map<string, WireTick>();
+  // bucket entirely and rendered by PromptHeader instead (see below).
+  // Consecutive prompt ticks with no atom between them are a real sequence
+  // (e.g. two commands issued before either produces an atom) — so each
+  // group is a list, not a single slot. Prompts with no atom yet
+  // (mid-flight, or the chain's last ticks) have nothing to key into
+  // promptBefore by — they're rendered trailing, from the loop's final
+  // pendingPrompts, once atoms.map is done.
+  const promptBefore = new Map<string, WireTick[]>();
   const leading: WireTick[] = [];
   let lastAtomId: string | null = null;
-  let pendingPrompt: WireTick | null = null;
+  let pendingPrompts: WireTick[] = [];
   for (const tick of ticks) {
     if (tick.kind === "atom") {
-      if (pendingPrompt) { promptBefore.set(tick.tickId, pendingPrompt); pendingPrompt = null; }
+      if (pendingPrompts.length > 0) { promptBefore.set(tick.tickId, pendingPrompts); pendingPrompts = []; }
       lastAtomId = tick.tickId;
     } else if (tick.kind === "prompt") {
-      pendingPrompt = tick;
+      pendingPrompts = [...pendingPrompts, tick];
     } else {
       const refAtom = [...tick.refs].reverse().find((r) => atomIds.has(r));
       const anchor = refAtom ?? lastAtomId;
@@ -1074,15 +1077,16 @@ export function WireTickList({
                   pointerEvents: suppressed ? "none" : "auto",
                   transition: "opacity 0.15s, filter 0.15s",
                 }}>
-                  {annotationMode !== "hidden" && onEditPrompt && promptBefore.get(atom.tickId) && (
+                  {annotationMode !== "hidden" && onEditPrompt && (promptBefore.get(atom.tickId) ?? []).map((prompt) => (
                     <PromptHeader
-                      tick={promptBefore.get(atom.tickId)!}
+                      key={prompt.tickId}
+                      tick={prompt}
                       compact={annotationMode === "dots"}
-                      inContext={contextAnnotations.has(promptBefore.get(atom.tickId)!.tickId)}
+                      inContext={contextAnnotations.has(prompt.tickId)}
                       onToggleContext={onToggleContextAnnotation}
                       onEditPrompt={onEditPrompt}
                     />
-                  )}
+                  ))}
                   <AtomBlock
                     atom={atom} isLast={isLast}
                     inContext={contextAtoms.has(atom.tickId)}
@@ -1116,15 +1120,16 @@ export function WireTickList({
               </div>
             );
           })}
-          {pendingPrompt && annotationMode !== "hidden" && onEditPrompt && (
+          {annotationMode !== "hidden" && onEditPrompt && pendingPrompts.map((prompt) => (
             <PromptHeader
-              tick={pendingPrompt}
+              key={prompt.tickId}
+              tick={prompt}
               compact={annotationMode === "dots"}
-              inContext={contextAnnotations.has(pendingPrompt.tickId)}
+              inContext={contextAnnotations.has(prompt.tickId)}
               onToggleContext={onToggleContextAnnotation}
               onEditPrompt={onEditPrompt}
             />
-          )}
+          ))}
         </div>
       </div>
       <RebaseHandle
@@ -1902,14 +1907,47 @@ export function ChatPreviewStrip() {
           </div>
         )}
         {isEmpty ? (
-          <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-ghost)" }}>
-            Generating…
-          </div>
+          preview.progress ? (
+            <PrefillProgress progress={preview.progress} />
+          ) : (
+            <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-ghost)" }}>
+              Generating…
+            </div>
+          )
         ) : (
           <div style={{ fontSize: 12, fontFamily: "Georgia, serif", color: "var(--text-muted)", whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
             {preview.text}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Prefill (prompt-processing) progress, from llama.cpp's streamed
+// prompt_progress events — see chat.preview.progress in ws.ts. Tracks the
+// first progress event's own timestamp (not Date.now() at mount) as the
+// rate baseline, so the estimate isn't skewed by whatever gap preceded it.
+function PrefillProgress({ progress }: { progress: { processed: number; total: number; updatedAt: number } }) {
+  const startRef = useRef(progress);
+  if (progress.processed <= startRef.current.processed) startRef.current = progress;
+  const start = startRef.current;
+
+  const fraction = progress.total > 0 ? Math.min(1, progress.processed / progress.total) : 0;
+  const elapsedMs = progress.updatedAt - start.updatedAt;
+  const done = progress.processed - start.processed;
+  const rate = elapsedMs > 0 ? done / elapsedMs : 0; // tokens/ms
+  const remaining = progress.total - progress.processed;
+  const etaSeconds = rate > 0 ? Math.round(remaining / rate / 1000) : null;
+
+  return (
+    <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-ghost)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span>Processing prompt… {progress.processed}/{progress.total}</span>
+        {etaSeconds !== null && <span>{etaSeconds}s left</span>}
+      </div>
+      <div style={{ height: 3, background: "var(--amber-border)", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${fraction * 100}%`, background: "var(--text-ghost)", transition: "width 150ms linear" }} />
       </div>
     </div>
   );

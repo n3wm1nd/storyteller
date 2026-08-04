@@ -108,6 +108,8 @@ previewEvent :: StreamEvent -> Maybe Value
 previewEvent StreamStarted                = Just $ object ["type" .= ("chat.preview.start"    :: T.Text)]
 previewEvent (StreamText t)               = Just $ object ["type" .= ("chat.preview"          :: T.Text), "text" .= t]
 previewEvent (StreamThinking t)           = Just $ object ["type" .= ("chat.preview.thinking" :: T.Text), "text" .= t]
+previewEvent (StreamProgress processed total) =
+  Just $ object ["type" .= ("chat.preview.progress" :: T.Text), "processed" .= processed, "total" .= total]
 previewEvent StreamDone                   = Just $ object ["type" .= ("chat.preview.end"      :: T.Text)]
 previewEvent (StreamError _)              = Just $ object ["type" .= ("chat.preview.end"      :: T.Text)]
 previewEvent (StreamToolCallStarted  _ _) = Nothing
