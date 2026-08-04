@@ -7,7 +7,6 @@
 // never reach into and mutate directly (reading it is fine).
 
 import { create } from "zustand";
-import type { FileCommand } from "./ws";
 
 export type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 
@@ -73,15 +72,6 @@ interface UIState {
   // only show the answer once).
   characterAnswers: { character: string; question: string; answer: string }[];
 
-  // A chat.writer/chat.fixer/chat.append command submitted while a previous
-  // generation ('preview') was still in flight. Held here instead of sent
-  // immediately (the server processes one command at a time per
-  // connection), and flushed the moment the in-flight generation's
-  // "chat.preview.end" arrives. See project notes on FlowWriter — a queued
-  // chat.writer captures 'flowTid' (HEAD at queue-time) into its command
-  // when it's built, not when it's flushed.
-  pendingSubmit: { path: string; cmd: FileCommand } | null;
-
   setHoverHighlight:   (tickIds: Set<string>, color: string) => void;
   clearHoverHighlight: () => void;
   toggleContextAtom:       (tickId: string) => void;
@@ -146,7 +136,6 @@ export const useUI = create<UIState>((set) => ({
   contextAtoms: new Set(),
   contextAnnotations: new Set(),
   rebaseMarker: null,
-  pendingSubmit: null,
   agentLogs: [],
   characterAnswers: [],
 

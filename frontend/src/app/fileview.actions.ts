@@ -39,7 +39,7 @@ export async function openFile(path: string, opts?: { branch?: string; key?: str
   if (!activeBranch) return;
   const key = opts?.key ?? path;
   const branch = opts?.branch ?? activeBranch;
-  useUI.setState({ rebaseMarker: null, pendingSubmit: null });
+  useUI.setState({ rebaseMarker: null });
   if (openFiles[key]) return;
 
   const label = `file:${key}`;
@@ -265,25 +265,23 @@ function sendFileCommand(path: string, cmd: FileCommand) {
   fc.conn.send(atRebase(ui.rebaseMarker, fc.ticks, cmd, ui.journalMarkers));
 }
 
-// Send a chat.* command now, or hold it if a generation is already
-// streaming on this connection (server processes one command at a time).
-// 'buildCmd' receives the captured flowTid (HEAD at queue-time) only when
-// the command is actually being queued — an immediate send has no
-// in-flight generation to be provisional about. An immediate send gets a
-// fresh id attached and recorded as 'previewCommandId' — what a Stop
-// button (see 'cancelGeneration') targets; the queued-and-flushed path
-// gets its own id at flush time instead (see lib/chatPreview.ts).
+// Send a chat.* command right away, even if a generation is still
+// streaming on this connection — the server's per-connection command loop
+// (Server.Writer.File.Connection.commandLoop) already processes one
+// command at a time and simply leaves this one buffered on the socket
+// until the current 'handle cmd' returns, so there's nothing to gain by
+// holding it back client-side first. 'buildCmd' gets the current HEAD
+// (flow-write's flowTid wants "HEAD at the moment this was submitted",
+// which is exactly now, not whenever a previous generation happens to
+// finish). Always gets a fresh id, recorded as 'previewCommandId' — what
+// a Stop button (see 'cancelGeneration') targets.
 function sendChatCommand(path: string, buildCmd: (flowTid?: string) => FileCommand) {
   const fc = getServerCache().openFiles[path];
   if (!fc) return;
-  if (getServerCache().preview !== null) {
-    useUI.setState({ pendingSubmit: { path, cmd: buildCmd(fc.head ?? undefined) } });
-  } else {
-    const cmd = { ...buildCmd(undefined), id: newCommandId() };
-    mirrorServerEvent({ previewCommandId: cmd.id });
-    schedulePreviewPlaceholder();
-    sendFileCommand(path, cmd);
-  }
+  const cmd = { ...buildCmd(fc.head ?? undefined), id: newCommandId() };
+  mirrorServerEvent({ previewCommandId: cmd.id });
+  schedulePreviewPlaceholder();
+  sendFileCommand(path, cmd);
 }
 
 // Ask the server to stop the in-flight chat/write generation early — see

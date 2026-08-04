@@ -243,7 +243,7 @@ export function ChatView({
   const chain = tickChain(ticks, head);
   const exchanges = exchangesFromChain(chain);
   const lastIndex = exchanges.length - 1;
-  const generating = preview !== null || (lastIndex >= 0 && exchanges[lastIndex].atomTick === null);
+  const generating = preview !== null;
 
   // Optimistic prompts: messages the user just sent but the server hasn't
   // confirmed with a real prompt tick yet. Each records the exchange count at

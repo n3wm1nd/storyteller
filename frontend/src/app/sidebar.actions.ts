@@ -137,7 +137,6 @@ export async function selectBranch(name: string): Promise<void> {
     contextAtoms: new Set(),
     contextAnnotations: new Set(),
     rebaseMarker: null,
-    pendingSubmit: null,
     hoverHighlight: null,
   });
   setConnStatus(label, "connecting");
