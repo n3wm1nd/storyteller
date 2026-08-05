@@ -6,7 +6,7 @@
 // user/assistant bubbles. Not a separate connection or cache: this reads the
 // same `openFiles[path]` state page.tsx already maintains for the "File" tab.
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Send, RotateCcw, EyeOff, RefreshCw, Square } from "lucide-react";
 import type { WireTick } from "@/lib/ws";
@@ -59,7 +59,7 @@ const typingBubble: React.CSSProperties = {
 // a mid-conversation edit is a plain content rewrite, but editing the most
 // recent user turn instead drops the stale reply and re-asks, since that
 // reply was generated against the text being replaced.
-function EditableBubble({
+const EditableBubble = memo(function EditableBubble({
   content, align, bubbleStyle, disabled, onSave, onEditingChange, markdown,
 }: {
   content: string;
@@ -139,13 +139,13 @@ function EditableBubble({
       {markdown ? <ReactMarkdown components={compactMdComponents}>{content}</ReactMarkdown> : content}
     </div>
   );
-}
+});
 
 // Wraps the assistant reply + its Regenerate button. Holds its own editing
 // state (can't be a plain inline div in ChatView's .map — the width cap
 // needs to react to EditableBubble's internal edit toggle, and hooks can't
 // live in a loop body) so the 72% display cap can lift only while editing.
-function AssistantReply({ atomTick, disabled, showRegen, swipeCount, onSave, onRegen, onCycle }: {
+const AssistantReply = memo(function AssistantReply({ atomTick, disabled, showRegen, swipeCount, onSave, onRegen, onCycle }: {
   atomTick: WireTick;
   disabled: boolean;
   showRegen: boolean;
@@ -209,7 +209,7 @@ function AssistantReply({ atomTick, disabled, showRegen, swipeCount, onSave, onR
       )}
     </div>
   );
-}
+});
 
 // How many alternates (see Storyteller.Common.Swipe) currently sit in
 // `atomTickId`'s own carousel — every "swipe"-kind tick in the chain that
@@ -217,6 +217,62 @@ function AssistantReply({ atomTick, disabled, showRegen, swipeCount, onSave, onR
 function swipeCount(chain: WireTick[], atomTickId: string): number {
   return chain.filter(t => t.kind === "swipe" && t.refs.includes(atomTickId)).length;
 }
+
+// One prompt/reply pair. Split out of ChatView's .map and memoized so typing
+// in the composer (draft state lives in ChatView, re-rendering it on every
+// keystroke) doesn't force every already-rendered bubble in the transcript
+// to re-render and re-run ReactMarkdown — the dominant cost once there are
+// more than a few exchanges on screen.
+const ExchangeRow = memo(function ExchangeRow({
+  promptTick, atomTick, isLast, generating, swipeCount, onRegen, onEditAtom, onEditPrompt, onCycleSwipe,
+}: {
+  promptTick: WireTick;
+  atomTick: WireTick | null;
+  isLast: boolean;
+  generating: boolean;
+  swipeCount: number;
+  // Passed straight through from ChatView's own props, which the caller
+  // (page.tsx) keeps referentially stable — so these closures, built fresh
+  // here each render, still let AssistantReply/EditableBubble's own memo do
+  // its job: only promptTick/atomTick/isLast/generating/swipeCount actually
+  // vary per row, and the composer's draft state isn't one of them.
+  onRegen: (promptTickId: string, atomTickId: string, text: string) => void;
+  onEditAtom: (tickId: string, content: string) => void;
+  onEditPrompt: (tickId: string, content: string) => void;
+  onCycleSwipe: (atomTickId: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <EditableBubble
+        align="flex-end"
+        content={promptTick.message}
+        disabled={generating}
+        bubbleStyle={{ ...bubbleBase, background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--text-heading)" }}
+        onSave={(text) => {
+          // Editing the most recent turn: the existing reply was generated
+          // against the text being replaced, so it's dropped and re-asked
+          // rather than left stale (same path as the Regenerate button,
+          // just with new text).
+          if (isLast && atomTick) onRegen(promptTick.tickId, atomTick.tickId, text);
+          else onEditPrompt(promptTick.tickId, text);
+        }}
+      />
+      {atomTick ? (
+        <AssistantReply
+          atomTick={atomTick}
+          disabled={generating}
+          showRegen={isLast && !generating}
+          swipeCount={swipeCount}
+          onSave={(text) => onEditAtom(atomTick.tickId, text)}
+          onRegen={() => onRegen(promptTick.tickId, atomTick.tickId, promptTick.message)}
+          onCycle={() => onCycleSwipe(atomTick.tickId)}
+        />
+      ) : (
+        <div style={typingBubble}>…</div>
+      )}
+    </div>
+  );
+});
 
 export function ChatView({
   ticks, head, agentLogs, onClearAgentLogs, onSend, onNote, onRegen, onCycleSwipe, onEditAtom, onEditPrompt,
@@ -287,40 +343,20 @@ export function ChatView({
             Say something to start the conversation
           </div>
         )}
-        {exchanges.map((ex, i) => {
-          const atomTick = ex.atomTick;
-          return (
-            <div key={ex.promptTick.tickId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <EditableBubble
-                align="flex-end"
-                content={ex.promptTick.message}
-                disabled={generating}
-                bubbleStyle={{ ...bubbleBase, background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--text-heading)" }}
-                onSave={(text) => {
-                  // Editing the most recent turn: the existing reply was
-                  // generated against the text being replaced, so it's
-                  // dropped and re-asked rather than left stale (same path
-                  // as the Regenerate button, just with new text).
-                  if (i === lastIndex && atomTick) onRegen(ex.promptTick.tickId, atomTick.tickId, text);
-                  else onEditPrompt(ex.promptTick.tickId, text);
-                }}
-              />
-              {atomTick ? (
-                <AssistantReply
-                  atomTick={atomTick}
-                  disabled={generating}
-                  showRegen={i === lastIndex && !generating}
-                  swipeCount={swipeCount(chain, atomTick.tickId)}
-                  onSave={(text) => onEditAtom(atomTick.tickId, text)}
-                  onRegen={() => onRegen(ex.promptTick.tickId, atomTick.tickId, ex.promptTick.message)}
-                  onCycle={() => onCycleSwipe(atomTick.tickId)}
-                />
-              ) : (
-                <div style={typingBubble}>…</div>
-              )}
-            </div>
-          );
-        })}
+        {exchanges.map((ex, i) => (
+          <ExchangeRow
+            key={ex.promptTick.tickId}
+            promptTick={ex.promptTick}
+            atomTick={ex.atomTick}
+            isLast={i === lastIndex}
+            generating={generating}
+            swipeCount={ex.atomTick ? swipeCount(chain, ex.atomTick.tickId) : 0}
+            onRegen={onRegen}
+            onEditAtom={onEditAtom}
+            onEditPrompt={onEditPrompt}
+            onCycleSwipe={onCycleSwipe}
+          />
+        ))}
         {visiblePending.map(pp => (
           <div key={`opt-${pp.id}`} style={{ display: "flex", flexDirection: "column", gap: 8, opacity: 0.6 }}>
             <div style={{ ...bubbleBase, alignSelf: "flex-end", background: "var(--amber-tint)", border: "1px solid var(--amber-border)", color: "var(--text-heading)" }}>
